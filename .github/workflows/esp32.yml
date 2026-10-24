@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        env: [esp32-generic, esp32-relay-x2]
+        env: [esp32-generic, esp32-relay-x2, esp32-nspanel]
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
@@ -98,6 +98,7 @@ jobs:
 
           - `espurna-esp32-generic-*` - any ESP32 with 4 MB flash, no GPIOs pre-assigned, configure from the WebUI or import a Tasmota template
           - `espurna-esp32-relay-x2-*` - LC-Tech ESP32 2-relay board
+          - `espurna-esp32-nspanel-*` - Sonoff NSPanel EU (gen1) with the Lovelace UI TFT, screen built from `/nspanel.json`, see `nspanel/README.md`
           - `*-full.bin` - merged image (bootloader + partitions + app), flash at 0x0
           - `*-ota.bin` - application only, for OTA upgrade from the WebUI
         make_latest: true

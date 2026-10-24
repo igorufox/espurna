@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "mqtt": { "on": "1", "off": "0", "set": "/set" },
+  "screensaver": {
+    "timeout": 60,
+    "brightness": 100,
+    "dim": 10,
+    "weather": { "lat": 52.52, "lon": 13.40, "refresh": 900 }
+  },
+  "pages": [
+    {
+      "title": "Outside",
+      "type": "grid",
+      "items": [
+        { "name": "Facade",  "icon": "wall-sconce",   "topic": "ESPURNA-FACADE/relay/0" },
+        { "name": "Porch",   "icon": "outdoor-lamp",  "topic": "ESPURNA-PORCH/relay/0" },
+        { "name": "Garden",  "icon": "string-lights", "topic": "ESPURNA-GARDEN/relay/0" },
+        { "name": "Pump",    "icon": "water-pump",    "topic": "ESPURNA-PUMP/relay/0" },
+        { "name": "Gate",    "icon": "gate",          "topic": "ESPURNA-GATE/relay/0", "type": "button" }
+      ]
+    },
+    {
+      "title": "House",
+      "type": "grid",
+      "items": [
+        { "name": "Kitchen",     "icon": "ceiling-light", "topic": "ESPURNA-KITCHEN/relay/0" },
+        { "name": "Living room", "icon": "ceiling-light", "topic": "ESPURNA-LIVINGROOM/relay/0" },
+        { "name": "Bedroom",     "icon": "ceiling-light", "topic": "ESPURNA-BEDROOM/relay/0" },
+        { "name": "Panel light", "icon": "lightbulb",     "relay": 0 },
+        { "name": "All lights",  "icon": "lightbulb-group-off", "type": "scene", "action": "off", "group": "house" }
+      ]
+    }
+  ],
+  "groups": {
+    "house": [ "ESPURNA-KITCHEN/relay/0", "ESPURNA-LIVINGROOM/relay/0", "ESPURNA-BEDROOM/relay/0", 0 ],
+    "outdoor": [ "ESPURNA-FACADE/relay/0", "ESPURNA-PORCH/relay/0", "ESPURNA-GARDEN/relay/0" ]
+  },
+  "buttons": [
+    { "relay": 0 },
+    { "action": "toggle", "group": "outdoor" }
+  ]
+}

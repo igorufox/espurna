@@ -103,6 +103,11 @@
 #define RELAY_SUPPORT               1           // Most of the time we require it
 #endif
 
+#if NSPANEL_SUPPORT && !defined(ARDUINO_ARCH_ESP32)
+#undef NSPANEL_SUPPORT
+#define NSPANEL_SUPPORT             0           // ESP32 only (UART2, LittleFS, esp_ota)
+#endif
+
 #if TERMINAL_WEB_API_SUPPORT
 #undef TERMINAL_SUPPORT
 #define TERMINAL_SUPPORT            1           // Need terminal command line parser and commands

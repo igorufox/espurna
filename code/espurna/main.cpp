@@ -31,6 +31,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "ota.h"
 #include "rtcmem.h"
 
+#if NSPANEL_SUPPORT
+#include "nspanel.h"
+#endif
+
 // -----------------------------------------------------------------------------
 // GENERAL CALLBACKS
 // -----------------------------------------------------------------------------
@@ -239,6 +243,11 @@ void setup() {
         telnetSetup();
     #endif
 
+    // Display power, crash-loop guard and `safeboot`, also in the unstable mode
+    #if NSPANEL_SUPPORT
+        nspanelBootSetup();
+    #endif
+
     // -------------------------------------------------------------------------
     // Check if system is stable
     // -------------------------------------------------------------------------
@@ -396,6 +405,9 @@ void setup() {
     #endif
     #if GARLAND_SUPPORT
         garlandSetup();
+    #endif
+    #if NSPANEL_SUPPORT
+        nspanelSetup();
     #endif
 
     #if USE_EXTRA

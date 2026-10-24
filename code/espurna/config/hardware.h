@@ -185,6 +185,93 @@
     #define SSDP_SUPPORT            0
     #endif
 
+#elif defined(SONOFF_NSPANEL)
+
+    // Sonoff NSPanel gen1 (EU), ESP32-D0WD-V3 4MB, Tasmota safeboot flash layout
+    // Display (Lovelace UI TFT), buzzer and NTC are handled by the nspanel module
+
+    // Info
+    #define MANUFACTURER            "SONOFF"
+    #define DEVICE                  "NSPANEL"
+
+    // Buttons (active LOW). Left one toggles relay 1, right one runs the nspanel.json button action
+    #define BUTTON1_PIN             14
+    #define BUTTON1_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH | BUTTON_SET_PULLUP
+    #define BUTTON1_RELAY           1
+    #define BUTTON1_DBLCLICK        BUTTON_ACTION_NONE
+    #define BUTTON1_TRIPLECLICK     BUTTON_ACTION_NONE
+    #define BUTTON1_LNGCLICK        BUTTON_ACTION_NONE
+    #define BUTTON1_LNGLNGCLICK     BUTTON_ACTION_NONE
+    #define BUTTON2_PIN             27
+    #define BUTTON2_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH | BUTTON_SET_PULLUP
+    #define BUTTON2_CLICK           BUTTON_ACTION_CUSTOM
+
+    // Relays
+    #define RELAY1_PIN              22
+    #define RELAY1_TYPE             RELAY_TYPE_NORMAL
+    #define RELAY2_PIN              19
+    #define RELAY2_TYPE             RELAY_TYPE_NORMAL
+
+    #define NSPANEL_SUPPORT         1
+
+    // No second OTA app slot on the Tasmota layout, image is updated from Tasmota safeboot
+    // (ESPurna web /upgrade is answered with an error by the nspanel module)
+    #ifndef OTA_ARDUINOOTA_SUPPORT
+    #define OTA_ARDUINOOTA_SUPPORT  0
+    #endif
+
+    #ifndef OTA_CLIENT
+    #define OTA_CLIENT              OTA_CLIENT_NONE
+    #endif
+
+    #ifndef MDNS_SERVER_SUPPORT
+    #define MDNS_SERVER_SUPPORT     0
+    #endif
+
+    #ifndef ALEXA_SUPPORT
+    #define ALEXA_SUPPORT           0
+    #endif
+
+    #ifndef FAUXMO_SUPPORT
+    #define FAUXMO_SUPPORT          0
+    #endif
+
+    #ifndef MY92XX_SUPPORT
+    #define MY92XX_SUPPORT          0
+    #endif
+
+    #ifndef HLW8012_SUPPORT
+    #define HLW8012_SUPPORT         0
+    #endif
+
+    #ifndef RCSWITCH_SUPPORT
+    #define RCSWITCH_SUPPORT        0
+    #endif
+
+    #ifndef NEWPING_SUPPORT
+    #define NEWPING_SUPPORT         0
+    #endif
+
+    #ifndef RFM69_SUPPORT
+    #define RFM69_SUPPORT           0
+    #endif
+
+    #ifndef NOFUSS_SUPPORT
+    #define NOFUSS_SUPPORT          0
+    #endif
+
+    #ifndef LLMNR_SUPPORT
+    #define LLMNR_SUPPORT           0
+    #endif
+
+    #ifndef NETBIOS_SUPPORT
+    #define NETBIOS_SUPPORT         0
+    #endif
+
+    #ifndef SSDP_SUPPORT
+    #define SSDP_SUPPORT            0
+    #endif
+
 #elif defined(ESPURNA_MINIMAL_ARDUINO_OTA)
 
     // This is a special device targeted to generate a light-weight binary image

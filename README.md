@@ -32,6 +32,7 @@ Builds (same features, they differ only in the default GPIO assignment):
 |-------|-------|
 | `esp32-generic` | any ESP32 with 4 MB flash; no relays, buttons or LEDs pre-assigned, configure them from the WebUI or a Tasmota template |
 | `esp32-relay-x2` | **LC-Tech ESP32 2-relay**: relays on GPIO16 / GPIO17, button on GPIO0, LED on GPIO23 (inverted) |
+| `esp32-nspanel` | **Sonoff NSPanel EU (gen1)**: 2 relays, 2 buttons, NTC; drives the Lovelace UI TFT, screen and MQTT tiles from one JSON - see [nspanel/README.md](nspanel/README.md) |
 
 Enabled modules: WebUI, API, MQTT, terminal, Home Assistant, Domoticz, Alexa, sensors, PWM.
 
