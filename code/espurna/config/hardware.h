@@ -117,6 +117,32 @@
     #define RELAY2_PIN              5
     #define RELAY2_TYPE             RELAY_TYPE_NORMAL
 
+#elif defined(ESP12F_RELAY_X4)
+
+    // Info
+    #define MANUFACTURER            "LC_TECH"
+    #define DEVICE                  "ESP12F_RELAY_X4"
+
+    // Buttons
+    #define BUTTON1_PIN             0
+    #define BUTTON1_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+    #define BUTTON1_RELAY           1
+
+    // Relays (RY1..RY4 jumpers set to IO16, IO14, IO12, IO13)
+    #define RELAY1_PIN              16
+    #define RELAY1_TYPE             RELAY_TYPE_NORMAL
+    #define RELAY2_PIN              14
+    #define RELAY2_TYPE             RELAY_TYPE_NORMAL
+    #define RELAY3_PIN              12
+    #define RELAY3_TYPE             RELAY_TYPE_NORMAL
+    #define RELAY4_PIN              13
+    #define RELAY4_TYPE             RELAY_TYPE_NORMAL
+
+    // LEDs (ESP-12F module LED and the board LED)
+    #define LED1_PIN                2
+    #define LED1_PIN_INVERSE        1
+    #define LED2_PIN                5
+
 #elif defined(ESP32_RELAY_X2)
 
     // Info
@@ -185,6 +211,80 @@
     #define SSDP_SUPPORT            0
     #endif
 
+#elif defined(ITEAD_SONOFF_MINIR4)
+
+    // Info (MINIR4 "Extreme", ESP32-D0WD-V3, 4MB)
+    #define MANUFACTURER            "ITEAD"
+    #define DEVICE                  "SONOFF_MINIR4"
+
+    // Buttons
+    #define BUTTON1_PIN             0
+    #define BUTTON1_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH | BUTTON_SET_PULLUP
+    #define BUTTON1_RELAY           1
+
+    // S1/S2 wall switch input
+    #define BUTTON2_PIN             27
+    #define BUTTON2_CONFIG          BUTTON_SWITCH | BUTTON_SET_PULLUP | BUTTON_DEFAULT_BOOT
+    #define BUTTON2_RELAY           1
+    #define BUTTON2_PRESS           BUTTON_ACTION_TOGGLE
+    #define BUTTON2_RELEASE         BUTTON_ACTION_TOGGLE
+
+    // Relays
+    #define RELAY1_PIN              26
+    #define RELAY1_TYPE             RELAY_TYPE_NORMAL
+
+    // LEDs
+    #define LED1_PIN                19
+    #define LED1_PIN_INVERSE        1
+
+    #ifndef MDNS_SERVER_SUPPORT
+    #define MDNS_SERVER_SUPPORT     0
+    #endif
+
+    #ifndef ALEXA_SUPPORT
+    #define ALEXA_SUPPORT           0
+    #endif
+
+    #ifndef FAUXMO_SUPPORT
+    #define FAUXMO_SUPPORT          0
+    #endif
+
+    #ifndef MY92XX_SUPPORT
+    #define MY92XX_SUPPORT          0
+    #endif
+
+    #ifndef HLW8012_SUPPORT
+    #define HLW8012_SUPPORT         0
+    #endif
+
+    #ifndef RCSWITCH_SUPPORT
+    #define RCSWITCH_SUPPORT        0
+    #endif
+
+    #ifndef NEWPING_SUPPORT
+    #define NEWPING_SUPPORT         0
+    #endif
+
+    #ifndef RFM69_SUPPORT
+    #define RFM69_SUPPORT           0
+    #endif
+
+    #ifndef NOFUSS_SUPPORT
+    #define NOFUSS_SUPPORT          0
+    #endif
+
+    #ifndef LLMNR_SUPPORT
+    #define LLMNR_SUPPORT           0
+    #endif
+
+    #ifndef NETBIOS_SUPPORT
+    #define NETBIOS_SUPPORT         0
+    #endif
+
+    #ifndef SSDP_SUPPORT
+    #define SSDP_SUPPORT            0
+    #endif
+
 #elif defined(SONOFF_NSPANEL)
 
     // Sonoff NSPanel gen1 (EU), ESP32-D0WD-V3 4MB, Tasmota safeboot flash layout
@@ -193,6 +293,9 @@
     // Info
     #define MANUFACTURER            "SONOFF"
     #define DEVICE                  "NSPANEL"
+
+    // istabai/out and zigbee2mqtt payloads used by the screen are larger than the default 1 KB
+    #define MQTT_BUFFER_MAX_SIZE    2048
 
     // Buttons (active LOW). Left one toggles relay 1, right one runs the nspanel.json button action
     #define BUTTON1_PIN             14
