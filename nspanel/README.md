@@ -193,7 +193,15 @@ After the upload the display installs the TFT and restarts, ESPurna detects it a
 `[NSPANEL] OHpanel TFT ready: design bc629e1e, model NX4832F035_011R, page 4` and `[NSPANEL] Display driver: ohpanel`.
 
 **Custom TFT `d3731fbb`** (built from OHpanel with the grid pages `buttons33` / `buttons32` / `buttons22` / `buttons12`, only the
-aurora background, 9 113 964 bytes; `ohpanel-protocol.md` section 13): flashed the same way from a LAN copy. The driver knows both
+aurora background, 9 113 964 bytes; `ohpanel-protocol.md` section 13). Its source, the generator changes and a Windows-native build
+(Nextion Editor driven by pywinauto) are in the fork [igorufox/ohpanel, branch `espurna-grids`](https://github.com/igorufox/ohpanel/tree/espurna-grids)
+(`ESPURNA.md` there). Flash it straight from the fork:
+
+```
+nspanel.flash https://raw.githubusercontent.com/igorufox/ohpanel/espurna-grids/boards/nspanel/nextion/display/ohpanel-nspanel-eu-display-d3731fbb.tft
+```
+
+The driver knows both
 designs (`nspanel.info`: `Design: custom ESPurna grids: layouts 4x2 3x3 3x2 2x2 1x2, background aurora only; cards split for the
 grid pages; background aurora`, also `"design"` in `/nspanel-status`). With `d3731fbb` `ohpanel.background` is always aurora
 (another one is logged: `Background 'candy' is not in design d3731fbb, aurora used`); the colour overrides still apply. With the

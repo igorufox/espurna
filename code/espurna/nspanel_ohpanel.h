@@ -100,8 +100,9 @@ constexpr Field TileCenterText { 20, 8, 80 };  // center layout: name under the 
 constexpr long TileNameFont { 1 };
 constexpr long TileSmallFont { 0 };
 
-// A page of tiles: the stock `buttons` (4x2) or a grid page of the custom design (ohpanel-custom-layouts.md
-// 3.3). Field limits from the manifest `fit` (font, px, bytes); digit widths of fonts 0..3: 8, 10, 11, 13 px
+// A page of tiles: the stock `buttons` (4x2) or a grid page of the custom design (igorufox/ohpanel, branch
+// espurna-grids, docs/espurna-custom-layouts.md 3.3). Field limits from the manifest `fit` (font, px, bytes);
+// digit widths of fonts 0..3: 8, 10, 11, 13 px
 struct TilePage {
     Grid grid;
     int id;

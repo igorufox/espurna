@@ -1032,10 +1032,12 @@ design `d3731fbb` on its own page `buttons32`.
 Verify on the panel: that `sendxy=1` reports `67` frames on this TFT (NX4832F035) in the rotated design coordinates, the row
 mapping, that `vis rowN_pic,1` before the fields draws them on top, the `»` glyph in font 2, and the `rowcard` ids per background.
 
-## 13. Custom design `d3731fbb`: grid layouts (2026-10-25, built, not yet run on the panel)
+## 13. Custom design `d3731fbb`: grid layouts (2026-10-25, runs on the panel)
 
-Our build of the OHpanel design (spec `nspanel/ohpanel-custom-layouts.md` of the build tree, TFT 9 113 964 B, sha256
-`a3eec0fd...4e62`): every page and object of `bc629e1e` unchanged, four grid pages added, only the aurora background kept.
+Our build of the OHpanel design, TFT 9 113 964 B, sha256 `a3eec0fd...4e62`: every page and object of `bc629e1e` unchanged, four
+grid pages added, only the aurora background kept. Source, TFT and the full object spec are in the fork
+[igorufox/ohpanel, branch `espurna-grids`](https://github.com/igorufox/ohpanel/tree/espurna-grids):
+`ESPURNA.md`, `docs/espurna-custom-layouts.md`, `boards/nspanel/nextion/display/ohpanel-nspanel-eu-display-d3731fbb.tft`.
 
 ### 13.1 Design recognition
 
