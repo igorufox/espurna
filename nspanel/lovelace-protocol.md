@@ -624,6 +624,34 @@ Minimal ESP state machine: `currentPage ∈ {startup, screensaver, card[i]}`, a 
 
 ---
 
+## 8a. TFT upload (Nextion upload protocol v1.2, `FlashNextion`)
+
+Sources, read 2026-10-25: HEAD `tasmota/autoexec.be` (driver version 9, "Extended Flashing to faster speeds"): `begin_nextion_flash`, `every_100ms`, `write_block`, `open_url_at`. ESPHome `esphome/components/nextion/nextion_upload_arduino.cpp` (dev): `upload_tft`, `upload_by_chunks_`. Nextion "HMI upload protocol v1.1" (nextion.tech, 2017-12-08). The v1.2 additions (`whmi-wris`, the `08` reply) are not officially documented. Both implementations above use them in the same way.
+
+| Step | ESP → display | display → ESP |
+|---|---|---|
+| leave protocol reparse mode | `DRAKJHSUYDGBNCJHGJKSHBDN FF FF FF`, `recmod=0 FF FF FF` twice (Berry) | — |
+| handshake, at the display's current speed (Lovelace sets `bauds=115200` in pageStartup, which is persistent) | `connect FF FF FF` (v1.1 also suggests `FF FF FF` before it and the broadcast form `FF FF connect FF FF FF`) | `comok <touch>,<reserved>,<model>,<fw>,<mcu>,<serial>,<flash size> FF FF FF`. The Berry driver waits for `comok 2`. |
+| start | `whmi-wris <file size>,<baud>,res0 FF FF FF` (`whmi-wri` = protocol v1.0/1.1). Then switch the ESP UART to `<baud>`. | `05` when ready (v1.1 doc: within 500 ms; ESPHome waits 5 s) |
+| data | the file in 4096-byte blocks (the last one shorter), each sent after the previous reply | `05` = next block. **v1.2:** after the first block, `08` + uint32 LE file offset. 0 means "continue"; non-zero means "continue from this offset" (unchanged parts are skipped; Berry and ESPHome re-open the URL with `Range: bytes=<offset>-`). ESPHome notes that some bootloaders put a multi-second gap between `08` and the 4 offset bytes. |
+| end | — | after the last block's `05` the display installs the TFT and restarts: `00 00 00 FF FF FF 88 FF FF FF`, then `event,startup,<ver>,eu` |
+
+Berry speeds: `FlashNextion` = v1.2 at 921600. `FlashNextionAdv 0..6` = v1.2/v1.0 at 921600/115200/256000, and 6 opens the UART at 9600 first (for a display without a valid TFT).
+
+Once `whmi-wris` is accepted, the display treats every byte as file data until all `<size>` bytes have arrived, or until it is power-cycled. A display whose upload broke off boots into the Nextion OS without a usable TFT. It still answers `connect`, at its persistent `bauds` (115200 after Lovelace), otherwise at 9600. So the upload can be repeated from that state.
+
+TFT files (served by the project, plain HTTP, `Accept-Ranges: bytes`; checked 2026-10-25):
+
+| File | Size | MD5 | tVersion |
+|---|---|---|---|
+| `http://nspanel.pky.eu/lovelace-ui/github/nspanel-v4.7.3.tft` (= `nspanel-v4.7.4.tft`, identical bytes) | 8 373 960 | `cbcaf903f9e6d07944353498fefeba6a` | 53 (HEAD `HMI/n2t-out/pageStartup.txt`, `tVersion` = 53) |
+| `http://nspanel.pky.eu/lovelace-ui/github/nspanel-v4.1.1.tft` (June 2023) | 8 261 216 | `9d8577af882754c5bbbcbce89b2a2a25` | 51 |
+| `http://nspanel.pky.eu/lui.tft` (main / dev build, = `HMI/nspanel.tft` in git) | 8 550 324 | | dev |
+
+The AppDaemon app (HEAD and V474 `nspanel-lovelace-ui.py`) uses `version = "v4.7.3"` for the EU URL, even in release v4.7.4. GitHub releases have no TFT assets. HTTPS on the same host also works, but TLS needs about 40 KB more heap on the ESP.
+
+---
+
 ## 9. Uncertainties — verify on the real panel
 
 1. **Actual TFT version.** Expected `51` (or `50` if the panel was installed from the ioBroker script). Verify before replacing Tasmota:
@@ -639,7 +667,7 @@ Minimal ESP state machine: `currentPage ∈ {startup, screensaver, card[i]}`, a 
 6. **`timeout` upper bound.** The README says "max 65 s"; the variable is a 32-bit int. Test 300 s.
 7. **Startup retry period.** Inferred "every few seconds" from the spinner timer. Measure it, because ESP boot plus display power-on (GPIO4 LOW) timing decides whether the first `88` frame is caught. The backend must not depend on the raw `88` frame or on the first startup event.
 8. **TFT power sequencing.** Behaviour if the ESP drives GPIO4 HIGH→LOW late, or glitches it during an ESP reboot: does the TFT reboot, and does it show pageStartup? Also check whether the TFT keeps its page across an ESP-only reboot. AppDaemon always sends `pageType~pageStartup` at backend start for this reason.
-9. **`renderCurrentPage`.** Absent in 51. If the panel turns out to be a late 53 build, handle it.
+9. **`renderCurrentPage`.** Absent in 51. If the panel turns out to be a late 53 build, handle it. (ESPurna re-renders the current card. The `entityUpd` of a fresh `pageType` is usually still queued and is coalesced, so nothing is sent twice. HEAD `cardGrid.txt:14` sends it in Preinitialize.)
 10. **Screensaver swipe vs tap.** A swipe sends only `swipeX`, not `bExit`. Decide whether swipes unlock.
 11. **Tasmota → ESPurna UART pins.** BERRY8 opens `serial(17, 16, 115200)`, i.e. RX=17, TX=16, which matches the assumed wiring. On ESP32 Arduino, `Serial2.begin(115200, SERIAL_8N1, 17, 16)`.
 12. **Model string.** EU builds send `eu`. If the panel was ever flashed with a US build it would report `us-l` or `us-p` with a different layout. Check in step 1.

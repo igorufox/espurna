@@ -32,6 +32,7 @@ export const DEFAULT_MODULES = {
     'lightfox': false,
     'mqtt': true,
     'nofuss': true,
+    'nspanel': false,
     'ntp': true,
     'ota': true,
     'relay': true,

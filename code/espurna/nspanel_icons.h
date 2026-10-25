@@ -5,7 +5,11 @@ NSPANEL MODULE - icon table
 Lovelace UI TFT icon font is the Material Design Icons font remapped into the BMP private use area:
     TFT codepoint = MDI codepoint - 0xF0001 + 0xE000
 Values are from joBr99/nspanel-lovelace-ui HMI/code_gen/icons/icons.json (2023-06 state).
+The OHpanel TFT uses the same mapping (MDI_SHIFT, all 92 names checked against its icons.json)
+and holds all 7461 MDI 7.4.47 icons.
 Any other icon can be used in the config as a raw codepoint, e.g. "E334" or "U+E334".
+Entries added 2026-10-25 (cog, heating-coil, home-thermometer, minus, plus, theme-light-dark,
+thermostat, view-grid, view-list) were checked against OHpanel boards/nspanel/nextion/icons.json (ba93619).
 
 */
 
@@ -31,6 +35,17 @@ static constexpr uint16_t WifiOff { 0xE5A9 };
 static constexpr uint16_t LightSwitch { 0xE97D };
 static constexpr uint16_t GestureTapButton { 0xF2A7 };
 static constexpr uint16_t LightbulbGroup { 0xF252 };
+static constexpr uint16_t HomeThermometerOutline { 0xEF54 };
+static constexpr uint16_t CircleMedium { 0xE9DD };
+static constexpr uint16_t CircleSmall { 0xE9DE };
+static constexpr uint16_t Cog { 0xE492 };
+static constexpr uint16_t Minus { 0xE373 };
+static constexpr uint16_t Plus { 0xE414 };
+static constexpr uint16_t ViewGrid { 0xE56F };
+static constexpr uint16_t ViewList { 0xE571 };
+static constexpr uint16_t ThemeLightDark { 0xE50D };
+static constexpr uint16_t Fire { 0xE237 };
+static constexpr uint16_t WaterPercent { 0xE58D };
 
 static constexpr uint16_t WeatherSunny { 0xE598 };
 static constexpr uint16_t WeatherPartlyCloudy { 0xE594 };
@@ -45,6 +60,7 @@ static constexpr uint16_t WeatherLightning { 0xE592 };
 static constexpr uint16_t WeatherLightningRainy { 0xE67D };
 static constexpr uint16_t WeatherNight { 0xE593 };
 static constexpr uint16_t WeatherNightPartlyCloudy { 0xEF30 };
+static constexpr uint16_t WeatherWindy { 0xE59C };
 
 static const Icon Table[] {
     {"alert-circle-outline", 0xE5D5},
@@ -56,6 +72,7 @@ static const Icon Table[] {
     {"ceiling-light", 0xE768},
     {"ceiling-light-outline", 0xF7C6},
     {"coach-lamp", 0xF01F},
+    {"cog", 0xE492},
     {"desk-lamp", 0xE95E},
     {"door", 0xE819},
     {"door-open", 0xE81B},
@@ -73,10 +90,13 @@ static const Icon Table[] {
     {"gate-open", 0xF169},
     {"gesture-tap-button", 0xF2A7},
     {"heat-wave", 0xFA44},
+    {"heating-coil", 0xFAAE},
     {"home", 0xE2DB},
     {"home-floor-1", 0xED7F},
     {"home-floor-2", 0xED80},
     {"home-outline", 0xE6A0},
+    {"home-thermometer", 0xEF53},
+    {"home-thermometer-outline", 0xEF54},
     {"lamp", 0xE6B4},
     {"lamps", 0xF575},
     {"led-strip-variant", 0xF050},
@@ -92,7 +112,9 @@ static const Icon Table[] {
     {"lightbulb-outline", 0xE335},
     {"lock", 0xE33D},
     {"lock-open", 0xE33E},
+    {"minus", 0xE373},
     {"outdoor-lamp", 0xF053},
+    {"plus", 0xE414},
     {"pool", 0xE605},
     {"power", 0xE424},
     {"power-plug", 0xE6A4},
@@ -108,11 +130,15 @@ static const Icon Table[] {
     {"string-lights-off", 0xF2BA},
     {"television", 0xE501},
     {"temperature-celsius", 0xE503},
+    {"theme-light-dark", 0xE50D},
     {"thermometer", 0xE50E},
+    {"thermostat", 0xE392},
     {"toggle-switch", 0xE520},
     {"toggle-switch-off", 0xE521},
     {"track-light", 0xE913},
     {"tree", 0xE530},
+    {"view-grid", 0xE56F},
+    {"view-list", 0xE571},
     {"wall-sconce", 0xE91B},
     {"wall-sconce-flat", 0xE91C},
     {"wall-sconce-round", 0xE747},

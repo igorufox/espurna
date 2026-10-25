@@ -11,6 +11,7 @@ export const MODULE_LIGHT = false;
 export const MODULE_LIGHTFOX = true;
 export const MODULE_MQTT = true;
 export const MODULE_NOFUSS = true;
+export const MODULE_NSPANEL = false;
 export const MODULE_NTP = true;
 export const MODULE_OTA = true;
 export const MODULE_RELAY = true;
@@ -37,6 +38,7 @@ export const MODULES = {
     'lightfox': MODULE_LIGHTFOX,
     'mqtt': MODULE_MQTT,
     'nofuss': MODULE_NOFUSS,
+    'nspanel': MODULE_NSPANEL,
     'ntp': MODULE_NTP,
     'ota': MODULE_OTA,
     'relay': MODULE_RELAY,

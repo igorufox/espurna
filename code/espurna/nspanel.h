@@ -2,7 +2,8 @@
 
 NSPANEL MODULE
 
-Sonoff NSPanel (gen1, ESP32) display backend for the joBr99 "NSPanel Lovelace UI" TFT,
+Sonoff NSPanel (gen1, ESP32) display backend for the OHpanel TFT (nspanel_ohpanel.h) and the
+joBr99 "NSPanel Lovelace UI" TFT (nspanel_lovelace.h), detected automatically,
 plus the board specific bits for the Tasmota safeboot flash layout
 
 */

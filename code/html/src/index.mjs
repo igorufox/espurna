@@ -10,6 +10,7 @@ import {
     MODULE_LED,
     MODULE_LIGHT,
     MODULE_LIGHTFOX,
+    MODULE_NSPANEL,
     MODULE_OTA,
     MODULE_RELAY,
     MODULE_RFB,
@@ -62,6 +63,7 @@ import { init as initHa } from './ha.mjs';
 import { init as initLed } from './led.mjs';
 import { init as initLight } from './light.mjs';
 import { init as initLightfox } from './lightfox.mjs';
+import { init as initNspanel } from './nspanel.mjs';
 import { init as initNtp } from './ntp.mjs';
 import { init as initOta } from './ota.mjs';
 import { init as initButton } from './button.mjs';
@@ -465,6 +467,10 @@ async function init() {
 
     if (MODULE_CURTAIN) {
         initCurtain();
+    }
+
+    if (MODULE_NSPANEL) {
+        initNspanel();
     }
 
     if (MODULE_DEV) {

@@ -85,6 +85,13 @@
     #endif
 #endif
 
+#if NSPANEL_SUPPORT
+    #ifdef WEBUI_IMAGE
+        #undef WEBUI_IMAGE
+    #endif
+    #define WEBUI_IMAGE        WEBUI_IMAGE_FULL
+#endif
+
 #ifndef WEBUI_IMAGE
     #define WEBUI_IMAGE        WEBUI_IMAGE_SMALL
 #endif
