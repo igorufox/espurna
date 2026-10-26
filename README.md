@@ -33,6 +33,7 @@ Builds (same features, they differ only in the default GPIO assignment):
 | `esp32-generic` | any ESP32 with 4 MB flash; no relays, buttons or LEDs pre-assigned, configure them from the WebUI or a Tasmota template |
 | `esp32-relay-x2` | **LC-Tech ESP32 2-relay**: relays on GPIO16 / GPIO17, button on GPIO0, LED on GPIO23 (inverted) |
 | `esp32-nspanel` | **Sonoff NSPanel EU (gen1)**: 2 relays, 2 buttons, NTC; drives the Lovelace UI TFT, screen and MQTT tiles from one JSON - see [nspanel/README.md](nspanel/README.md) |
+| `itead-sonoff-minir4` | **Sonoff MINIR4 "Mini Extreme"** (ESP32-D0WD-V3, 4 MB): relay on GPIO26, button on GPIO0, S1/S2 wall switch on GPIO27, LED on GPIO19 (inverted) - see [Sonoff MINIR4](#sonoff-minir4) |
 
 Enabled modules: WebUI, API, MQTT, terminal, Home Assistant, Domoticz, Alexa, sensors, PWM.
 
@@ -46,6 +47,21 @@ Relays, buttons and LEDs are configured at runtime, so any ESP32 device can run 
 3. Check the preview (number of relays / buttons / LEDs found), press **Import Tasmota Template** and reboot.
 
 Supported GPIO functions (current Tasmota numbering): `Relay1..32` / `Relay_i` (224-287), `Button1..32` with `n` / `i` / `in` variants (32-159), `Switch1..32` / `Switch_n` (160-223, imported as buttons), `Led1..32` / `Led_i` (288-351), `PWM1..32` / `PWM_i` (416-479, as LEDs), `LedLink` / `LedLinki` (544, 576). Template `NAME` becomes the device description. Other functions (sensors, serial, etc.) are skipped, and the import overwrites existing relay, button and LED settings.
+
+### Sonoff MINIR4
+
+Tested on a real MINIR4 (stock eWeLink firmware `FWSW-E32R4-MINIR4`, no Matter in it; the Matter model is the MINIR4M, an ESP32-C3 board that this build does not cover).
+
+- **Serial**: TX, RX, IO0 and GND pads are on the small vertical ESP32 daughter board, 3V3 comes from the U2 pad on the bottom of the main board. Hold the button (GPIO0) while powering up to enter the ROM bootloader.
+- **Backup first** if you may want eWeLink back: `esptool.py --chip esp32 read_flash 0 0x400000 stock.bin`.
+- **Power**: flashing works from the 3V3 of a USB-UART adapter, booting does not - the board resets (`POWERON_RESET`) every time WiFi starts. Run it from mains with the serial wires removed.
+- **Wiring**: the terminal block order differs from the Mini R2, follow the markings on the case.
+- The layout is the usual A/B (app0 / app1 + otadata), so an OTA writes the inactive slot and an interrupted update does not brick the device.
+
+|||
+|---|---|
+|![MINIR4 daughter board serial pads](images/devices/itead-sonoff-minir4-serial-esp32.webp)|![MINIR4 3V3 at the U2 pad](images/devices/itead-sonoff-minir4-serial-3v3.webp)|
+|serial wires on the ESP32 daughter board|3V3 at the U2 pad, bottom of the main board|
 
 ### AC mains wall-switch inputs
 
@@ -64,6 +80,8 @@ Every push to `esp32-port` is built by [GitHub Actions](https://github.com/igoru
 |------|-----|
 | `espurna-<build>-full.bin` | merged image (bootloader + partitions + app), first flash over serial at `0x0` |
 | `espurna-<build>-ota.bin` | application only, OTA upgrade from the WebUI |
+
+The latest build of a board is always at `https://github.com/igorufox/espurna/releases/latest/download/espurna-<build>-full.bin`, e.g. [espurna-itead-sonoff-minir4-full.bin](https://github.com/igorufox/espurna/releases/latest/download/espurna-itead-sonoff-minir4-full.bin).
 
 First flash over serial:
 
