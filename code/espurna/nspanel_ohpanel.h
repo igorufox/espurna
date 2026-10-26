@@ -4,7 +4,8 @@ NSPANEL MODULE - OHpanel TFT driver
 
 Drives the OHpanel display design (EU TFT `bc629e1e`, OHpanel v0.9.2; `4508cd3f` from v0.10.0-rc1 is
 the same design; `d3731fbb` is our custom build of it with the grid pages buttons33 / buttons32 /
-buttons22 / buttons12 and only the aurora background, ohpanel-protocol.md section 13)
+buttons22 / buttons12 and only the aurora background, ohpanel-protocol.md section 13; on the stock
+design the 3x3 / 3x2 / 2x2 / 1x2 grids are drawn at runtime on `buttons`, section 14)
 with plain Nextion commands terminated by FF FF FF, 921600 8N1. The TFT answers with
 FF FF FF terminated frames: 66 (sendme), 71 (get <int>), comok, 92 "nspanelevent" JSON events,
 00 00 00 / 88 (TFT started). Protocol and object names: nspanel/ohpanel-protocol.md
@@ -33,7 +34,8 @@ constexpr char DesignCustom[] = "d3731fbb";
 struct DesignInfo {
     const char* id;
     const char* name;
-    bool grids;        // the grid pages buttons33 / buttons32 / buttons22 / buttons12 (ids 18..21)
+    bool grids;        // the grid pages buttons33 / buttons32 / buttons22 / buttons12 (ids 18..21); else
+                       // those layouts are drawn on `buttons` (fill / cirs / xstr, namespace drawn)
     bool backgrounds;  // all five backgrounds; else only aurora (Backgrounds[0], picture ids 0..188)
 };
 
@@ -424,7 +426,7 @@ String temperatureText(float value) {
     return buf;
 }
 
-// "23,4°"
+// "23.4°" / "23,4°"
 String indoorText() {
     if (!config.temperature || !config.temperature_show || std::isnan(ntc::value)) {
         return String();
@@ -432,11 +434,7 @@ String indoorText() {
 
     char buf[16];
     snprintf(buf, sizeof(buf), "%.1f", ntc::value);
-    for (auto* p = buf; *p; ++p) {
-        if (*p == '.') {
-            *p = ',';
-        }
-    }
+    lang::decimal(buf);
     String out(buf);
     out += "\xC2\xB0";
     return out;
@@ -513,7 +511,8 @@ struct State {
     uint32_t identify_sent { 0 };
     int tft_page { -1 };            // last page id from a 66 answer
     String tft_page_name;           // last currentpage event
-    bool grids { false };           // the cards were split for the design's grid pages (DesignInfo::grids)
+    bool grids { false };           // the cards were split for full grids (a known design: own pages or drawn)
+    bool pages { false };           // the design has the grid pages (DesignInfo::grids)
 
     // RX
     uint8_t rx[FrameMax];
@@ -558,7 +557,7 @@ struct State {
     std::vector<uint32_t> pulse_until; // per item, `button` tiles
     uint32_t pulse_check { 0 };
 
-    // list rows have no hotspots: sendxy=1 on entities_rows, 67 frames give the touch coordinates
+    // list rows and drawn tiles have no hotspots: sendxy=1 on their pages, 67 frames give the touch coordinates
     int8_t sendxy { -1 };           // sent last, -1 unknown
     int touch_x { -1 };             // where the finger came down (67 press), -1 none
     int touch_y { -1 };
@@ -566,6 +565,9 @@ struct State {
     // settings / thermostat pages return where they were opened from
     Screen back { Screen::Home };
     size_t back_card { 0 };
+
+    // nested pages (an item's "page"): where each was opened from, the last on top (-1 home, else a card)
+    std::vector<int> history;
     size_t thermo_item { 0 };       // item shown on the thermostat page
     int knob { -1 };                // ring bead under the knob, -1 none drawn
     String thermo_state;            // state line drawn last
@@ -589,6 +591,16 @@ struct State {
     uint8_t last_error { 0 };
     uint32_t dropped { 0 };
     uint32_t events { 0 };
+    uint32_t queued { 0 };          // commands / bytes (with the terminator) put into the queue
+    uint32_t queued_bytes { 0 };
+
+    // drawn tiles: what the last page draw and the last tile update cost
+    uint16_t draw_page_commands { 0 };
+    uint16_t draw_page_bytes { 0 };
+    uint8_t draw_page_tiles { 0 };
+    uint16_t draw_update_commands { 0 };
+    uint16_t draw_update_bytes { 0 };
+    uint8_t draw_update_tiles { 0 };
 };
 
 State state;
@@ -611,35 +623,37 @@ bool designGrids() {
     return info && info->grids;
 }
 
-// "custom ESPurna grids: layouts 4x2 3x3 3x2 2x2 1x2, background aurora only"
+// "custom ESPurna grids: layouts 4x2 3x3 3x2 2x2 1x2 (own pages), background aurora only"
+// "stock OHpanel v0.9.2: layouts 4x2 (stock tiles), 3x3 3x2 2x2 1x2 drawn, all backgrounds"
 String designText() {
     const auto* info = design();
     if (!info) {
-        return state.design_known ? String(F("unknown design: stock pages assumed")) : String();
+        return state.design_known ? String(F("unknown design: stock pages assumed, layouts on the 4x2 slots")) : String();
     }
 
     String out(info->name);
-    out += F(": layouts");
+    out += F(": layouts 4x2");
+    if (!info->grids) {
+        out += F(" (stock tiles),");
+    }
     for (size_t index = 0; index < (sizeof(GridNames) / sizeof(GridNames[0])); ++index) {
-        if (info->grids || (static_cast<Grid>(index) == Grid::G4x2)) {
+        if (static_cast<Grid>(index) != Grid::G4x2) {
             out += ' ';
             out += GridNames[index];
         }
     }
-    if (!info->grids) {
-        out += F(" (others on the 4x2 slots)");
-    }
+    out += info->grids ? F(" (own pages)") : F(" drawn");
     out += info->backgrounds ? F(", all backgrounds") : F(", background aurora only");
     return out;
 }
 
 // the page of a card's grid: its own page when the design has it, else the stock 4x2 `buttons`
 const TilePage& tilePage(Grid grid) {
-    return state.grids ? TilePages[static_cast<size_t>(grid)] : TilePages[0];
+    return state.pages ? TilePages[static_cast<size_t>(grid)] : TilePages[0];
 }
 
-// tiles a card of the grid shows: all on its own page; on the stock design the layout's columns
-// of the 4x2 slots (3x3 / 3x2: slots 1-3, 5-7; 2x2: 1, 2, 5, 6; 1x2: 1, 5)
+// tiles a card of the grid shows: all of them on a known design (own page or drawn); on an unknown
+// design the layout's columns of the 4x2 slots (3x3 / 3x2: slots 1-3, 5-7; 2x2: 1, 2, 5, 6; 1x2: 1, 5)
 size_t slotsOf(Grid grid) {
     return state.grids ? gridTiles(grid) : (2u * gridCols(grid));
 }
@@ -655,8 +669,7 @@ size_t tileSlot(size_t n, Grid grid) {
 
 // the n-th tile (0-based) in slot 1.., -1 for a slot that holds none
 int slotTile(long slot, Grid grid) {
-    const auto& page = tilePage(grid);
-    if ((slot < 1) || (slot > static_cast<long>(page.tiles))) {
+    if ((slot < 1) || (slot > static_cast<long>(state.grids ? slotsOf(grid) : tilePage(grid).tiles))) {
         return -1;
     }
     if (state.grids) {
@@ -666,6 +679,15 @@ int slotTile(long slot, Grid grid) {
     const long row = (slot - 1) / 4;
     const long col = (slot - 1) % 4;
     return (col < cols) ? static_cast<int>(row * cols + col) : -1;
+}
+
+// a grid card whose tiles are drawn at runtime on `buttons` (ohpanel-protocol.md 14): a known design without
+// the layout's own page (stock: 3x3 / 3x2 / 2x2 / 1x2), or a page with "draw": true (also 4x2)
+bool drawnCard(const Card& card) {
+    if (!state.grids || card.list || card.settings || (card.page >= config.pages.size())) {
+        return false;
+    }
+    return config.pages[card.page].draw || (!state.pages && (card.grid != Grid::G4x2));
 }
 
 // -----------------------------------------------------------------------------
@@ -700,6 +722,10 @@ void cmd(String command) {
     if (state.queue.size() >= QueueMax) {
         state.queue.pop_front();
         ++state.dropped;
+    }
+    if (command.length()) {
+        ++state.queued;
+        state.queued_bytes += command.length() + 3;
     }
     state.queue.push_back(std::move(command));
 }
@@ -842,15 +868,16 @@ void setLevel(int level) {
     }
 }
 
-// page change: the attribute cache starts over, the busy dots are cancelled first (800 ms)
-void loadPage(int id) {
+// page change: the attribute cache starts over, the busy dots are cancelled first (800 ms);
+// xy_touch: the page has no hotspots for its rows / tiles, touches come as sendxy coordinates (else sendxy=0)
+void loadPage(int id, bool xy_touch = false) {
     state.cache.clear();
     state.home_k = 0;
     state.requested_page = id;
     state.requested_at = millis();
     state.touch_x = -1;
     state.touch_y = -1;
-    const int8_t xy = (id == page::EntitiesRows) ? 1 : 0;
+    const int8_t xy = xy_touch ? 1 : 0;
     if (xy != state.sendxy) {
         state.sendxy = xy;
         cmd(String(F("sendxy=")) + xy);
@@ -876,6 +903,57 @@ void refStar() {
     sync();
 }
 
+// filled circle (thermostat ring, drawn tile corners)
+void cirs(int x, int y, int r, uint16_t colour) {
+    String out(F("cirs "));
+    out += x;
+    out += ',';
+    out += y;
+    out += ',';
+    out += r;
+    out += ',';
+    out += colour;
+    cmd(std::move(out));
+}
+
+void fill(int x, int y, int w, int h, uint16_t colour) {
+    String out(F("fill "));
+    out += x;
+    out += ',';
+    out += y;
+    out += ',';
+    out += w;
+    out += ',';
+    out += h;
+    out += ',';
+    out += colour;
+    cmd(std::move(out));
+}
+
+// xstr x,y,w,h,font,pco,bco,xcen,ycen(1: centred),sta(3: no background, the text draws onto what is there),"text"
+void xstr(int x, int y, int w, int h, int font, uint16_t pco, uint16_t bco, int xcen, const String& text) {
+    String out(F("xstr "));
+    out += x;
+    out += ',';
+    out += y;
+    out += ',';
+    out += w;
+    out += ',';
+    out += h;
+    out += ',';
+    out += font;
+    out += ',';
+    out += pco;
+    out += ',';
+    out += bco;
+    out += ',';
+    out += xcen;
+    out += F(",1,3,\"");
+    out += escape(text);
+    out += '"';
+    cmd(std::move(out));
+}
+
 void sendTheme() {
     const auto& bg = background();
     cmd(String(F("th_accent=")) + accent());
@@ -896,8 +974,9 @@ void markDirty() {
     }
 }
 
+// home and the cards of the swipe row (sub-page sheets are not in it)
 size_t rowSize() {
-    return 1 + state.cards.size();
+    return 1 + rowCards(state.cards);
 }
 
 // one glyph per page of the row, circle-medium for the current one
@@ -933,6 +1012,18 @@ void showDots(size_t count, size_t current) {
     }
 }
 
+// the swipe row, or the sheets of a sub-page (none for one sheet)
+void showCardDots() {
+    if ((state.card < state.cards.size()) && state.cards[state.card].sub) {
+        size_t count;
+        size_t current;
+        pageSheets(state.cards, state.card, count, current);
+        showDots(count, current);
+        return;
+    }
+    showDots(rowSize(), state.card + 1);
+}
+
 bool timeValid(tm& out) {
     const time_t now = ::time(nullptr);
     if (now < 1609459200) { // 2021-01-01, not synced yet
@@ -948,7 +1039,7 @@ void homeClock() {
         char buf[8];
         snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
         setText(F("clock"), buf);
-        setText(F("date"), fit(ru::dateShort(t), Date));
+        setText(F("date"), fit(lang::dateShort(t), Date));
         vis(F("date"), true);
     } else {
         setText(F("clock"), F("--:--"));
@@ -1103,7 +1194,7 @@ ItemView itemView(size_t index) {
     case ItemType::Switch: {
         const auto value = entityState(item.target.entity);
         out.active = (value == 1);
-        out.value = (value == 1) ? F("Вкл") : (value == 0) ? F("Выкл") : F("--");
+        out.value = (value == 1) ? lang::texts().on : (value == 0) ? lang::texts().off : "--";
         break;
     }
 
@@ -1117,9 +1208,9 @@ ItemView itemView(size_t index) {
         const auto value = groupState(item.target.group);
         out.active = (value == 1);
         if (value == 1) {
-            out.value = String(F("Вкл: ")) + groupOnCount(item.target.group);
+            out.value = String(lang::texts().on_count) + groupOnCount(item.target.group);
         } else {
-            out.value = (value == 0) ? F("Выкл") : F("--");
+            out.value = (value == 0) ? lang::texts().off : "--";
         }
         break;
     }
@@ -1343,11 +1434,11 @@ TileColors tileColors(const TileFace& face) {
     return {false, color::DarkGrey, dimColor(), color::LightGrey, face.state_line ? color::StateOff : color::LightGrey};
 }
 
-// thermostat state line of a tile: "21,9° » 21,5°", with " · Нагрев" while heating where it fits
+// thermostat state line of a tile: "21.9° » 21.5°", with " · Heating" while heating where it fits
 String thermostatFaceText(size_t index, const TilePage& page, bool heating) {
     const auto out = thermostatTileText(index, page.value_field);
     if (heating && page.states) {
-        auto longer = out + F(" \xC2\xB7 Нагрев");
+        auto longer = out + F(" \xC2\xB7 ") + lang::texts().heating;
         if (fits(longer, page.value_field)) {
             return longer;
         }
@@ -1411,13 +1502,17 @@ TileFace settingsFace(size_t n) {
     if (n == 1) {
         const bool center = (config.layout == Layout::Center);
         face.icon = utf8(center ? icons::ViewGrid : icons::ViewList);
-        face.value = center ? F("Крупные") : F("Мелкие");
-        face.name = F("Иконки");
-    } else {
+        face.value = center ? lang::texts().icons_large : lang::texts().icons_small;
+        face.name = lang::texts().icons;
+    } else if (n == 2) {
         const bool light = (config.theme == Theme::Light);
         face.icon = utf8(icons::ThemeLightDark);
-        face.value = light ? F("Светлая") : F("Тёмная");
-        face.name = F("Тема");
+        face.value = light ? lang::texts().theme_light : lang::texts().theme_dark;
+        face.name = lang::texts().theme;
+    } else {
+        face.icon = utf8(icons::Palette);
+        face.value = lang::texts().backgrounds[backgroundIndex()];
+        face.name = lang::texts().background;
     }
     return face;
 }
@@ -1483,7 +1578,7 @@ void renderTiles(const String& title, bool settings, const Page* info, size_t fi
         vis(F("close"), true);
         vis(F("close_hs"), true);
         if (dots) {
-            showDots(rowSize(), state.card + 1);
+            showCardDots();
         }
         vis(F("swipe"), true);
     }
@@ -1624,12 +1719,12 @@ void drawRow(size_t n, size_t index, bool full) {
 
 void renderList(const Card& card, bool full) {
     if (full) {
-        loadPage(page::EntitiesRows);
+        loadPage(page::EntitiesRows, true);
         setText(F("title"), fit(card.title, Title));
         vis(F("title"), true);
         vis(F("close"), true);
         vis(F("close_hs"), true);
-        showDots(rowSize(), state.card + 1);
+        showCardDots();
         vis(F("swipe"), true);
         refStop();
     }
@@ -1655,6 +1750,216 @@ size_t rowAt(int x, int y) {
     return (row <= RowsPerSheet) ? row : 0;
 }
 
+// -----------------------------------------------------------------------------
+// Drawn tiles (ohpanel-protocol.md 14): grid layouts the design has no page for are drawn on the stock
+// `buttons` page (id 7) with fill / cirs / xstr. Its tile objects stay hidden (no pictures, no hotspots),
+// touches come as sendxy coordinates. A tile is a solid rounded box, so it works on every background:
+// only the corners show the background picture.
+// -----------------------------------------------------------------------------
+
+namespace drawn {
+
+// Grid area: the 3x3 grid checked on the panel, 136x72 tiles with gaps 9 / 8, spans
+//   x 27 .. 453: 27 + 3 * 136 + 2 * 9 = 453, 27 px free on both sides of the 480 px screen,
+//   y 46 .. 278: 46 + 3 * 72 + 2 * 8 = 278, under the title (and close), above the page dots (y 294).
+// Every layout fills the same 426 x 232 area; the remainder of the division is centred:
+//   w = (426 - (cols - 1) * 9) / cols, h = (232 - (rows - 1) * 8) / rows
+//   4x2: (426 - 27) / 4 = 99 (+3 px) x (232 - 8) / 2 = 112
+//   3x3: (426 - 18) / 3 = 136        x (232 - 16) / 3 = 72
+//   3x2: 136                         x 112
+//   2x2: (426 - 9) / 2 = 208 (+1 px) x 112
+//   1x2: 426                         x 112
+constexpr int AreaX { 27 };
+constexpr int AreaY { 46 };
+constexpr int AreaW { 426 };
+constexpr int AreaH { 232 };
+constexpr int GapX { 9 };
+constexpr int GapY { 8 };
+constexpr int Radius { 14 };           // rounded corners: 4 `cirs` of this radius
+constexpr uint16_t FieldBytes { 96 };  // xstr has no txt_maxl; keeps one command short
+
+// a box inside a tile, from its top left corner
+struct Box {
+    int16_t x;
+    int16_t y;
+    int16_t w;
+    int16_t h;
+};
+
+// Fonts (height, digit width): 0 Ubuntu 16 / 8 px, 1: 18 / 10, 2: 22 / 11, 3: 26 / 13; icons 8: 32 px MDI,
+// 9: 48 px MDI. Small tiles (4x2, 3x3, 3x2: 99 / 136 px wide) take font 1 (smaller 0) and the 32 px icon in
+// the corner layout; big tiles (2x2, 1x2: 208 / 426 px) font 2 (1) / 3 (2) and the 48 px icon. The field
+// widths are the boxes minus nothing: fit() measures generously already.
+struct Layout {
+    TilePage page;          // field limits and fonts for itemFace(): page `buttons`, states shown (`states`)
+    uint8_t value_font;     // corner: the state line, or the first half of a split name (= page.small_font)
+    uint8_t center_font;    // center: the name under the icon
+    uint8_t corner_icon;    // icon font of the corner layout
+    uint8_t center_icon;    // icon font of the center layout
+    Box icon;               // corner: icon top left; the state line beside it (short tiles) or above the name
+    Box value;
+    Box name;
+    Box big_icon;           // center: the icon, the name under it, both centred
+    Box big_name;
+};
+
+constexpr Layout Layouts[] {
+    // 4x2, 99 x 112: as the stock tile (icon, state line, name); center: 48 px icon, name in font 0
+    {{Grid::G4x2, page::Buttons, "buttons", 8, 0,
+        {FieldBytes, 10, 83}, {FieldBytes, 8, 83}, {FieldBytes, 8, 83}, {FieldBytes, 8, 91}, 1, 0, true},
+        0, 0, 8, 9, {8, 8, 32, 32}, {8, 60, 83, 20}, {8, 82, 83, 24}, {0, 12, 99, 52}, {4, 72, 91, 24}},
+    // 3x3, 136 x 72: icon 6..38 with the state line beside it (46..128), name 44..66; center: 32 px icon
+    {{Grid::G3x3, page::Buttons, "buttons", 9, 0,
+        {FieldBytes, 10, 120}, {FieldBytes, 8, 120}, {FieldBytes, 8, 82}, {FieldBytes, 10, 124}, 1, 0, true},
+        0, 1, 8, 8, {8, 6, 32, 32}, {46, 6, 82, 32}, {8, 44, 120, 22}, {0, 4, 136, 36}, {6, 44, 124, 22}},
+    // 3x2, 136 x 112: icon, state line, name; center: 48 px icon 12..64, name 72..98
+    {{Grid::G3x2, page::Buttons, "buttons", 6, 0,
+        {FieldBytes, 10, 120}, {FieldBytes, 8, 120}, {FieldBytes, 8, 120}, {FieldBytes, 10, 124}, 1, 0, true},
+        0, 1, 8, 9, {8, 8, 32, 32}, {8, 60, 120, 20}, {8, 82, 120, 24}, {0, 12, 136, 52}, {6, 72, 124, 26}},
+    // 2x2, 208 x 112: 48 px icon 10..58 with the state line beside it (66..198), name 72..102 in font 2
+    {{Grid::G2x2, page::Buttons, "buttons", 4, 0,
+        {FieldBytes, 11, 188}, {FieldBytes, 10, 188}, {FieldBytes, 10, 132}, {FieldBytes, 11, 192}, 2, 1, true},
+        1, 2, 9, 9, {10, 10, 48, 48}, {66, 10, 132, 48}, {10, 72, 188, 30}, {0, 10, 208, 52}, {8, 70, 192, 30}},
+    // 1x2, 426 x 112: as 2x2, state line 72..414 in font 2, name in font 3
+    {{Grid::G1x2, page::Buttons, "buttons", 2, 0,
+        {FieldBytes, 13, 402}, {FieldBytes, 11, 402}, {FieldBytes, 11, 342}, {FieldBytes, 13, 406}, 3, 2, true},
+        2, 3, 9, 9, {12, 10, 48, 48}, {72, 10, 342, 48}, {12, 70, 402, 34}, {0, 8, 426, 52}, {10, 66, 406, 34}},
+};
+
+static_assert((Layouts[static_cast<size_t>(Grid::G3x3)].page.grid == Grid::G3x3)
+    && (Layouts[static_cast<size_t>(Grid::G1x2)].page.grid == Grid::G1x2), "Layouts in Grid order");
+
+const Layout& layoutOf(Grid grid) {
+    return Layouts[static_cast<size_t>(grid)];
+}
+
+// screen box of tile n (0-based, row by row)
+void tileRect(Grid grid, size_t n, int& x, int& y, int& w, int& h) {
+    const int cols = gridCols(grid);
+    const int rows = gridRows(grid);
+    w = (AreaW - (cols - 1) * GapX) / cols;
+    h = (AreaH - (rows - 1) * GapY) / rows;
+    x = AreaX + (AreaW - (cols * w + (cols - 1) * GapX)) / 2 + static_cast<int>(n % cols) * (w + GapX);
+    y = AreaY + (AreaH - (rows * h + (rows - 1) * GapY)) / 2 + static_cast<int>(n / cols) * (h + GapY);
+}
+
+// tile 1..count under a point, 0 for none (gaps, title, close, dots)
+size_t tileAt(Grid grid, size_t count, int px, int py) {
+    for (size_t n = 0; n < count; ++n) {
+        int x;
+        int y;
+        int w;
+        int h;
+        tileRect(grid, n, x, y, w, h);
+        if ((px >= x) && (px < (x + w)) && (py >= y) && (py < (y + h))) {
+            return n + 1;
+        }
+    }
+    return 0;
+}
+
+// rounded box: two crossing bars and a circle in each corner
+void shape(int x, int y, int w, int h, uint16_t colour) {
+    fill(x + Radius, y, w - 2 * Radius, h, colour);
+    fill(x, y + Radius, w, h - 2 * Radius, colour);
+    cirs(x + Radius, y + Radius, Radius, colour);
+    cirs(x + w - 1 - Radius, y + Radius, Radius, colour);
+    cirs(x + Radius, y + h - 1 - Radius, Radius, colour);
+    cirs(x + w - 1 - Radius, y + h - 1 - Radius, Radius, colour);
+}
+
+void text(int x, int y, const Box& box, int font, uint16_t pco, uint16_t bco, bool centred, const String& value) {
+    if (value.length()) {
+        xstr(x + box.x, y + box.y, box.w, box.h, font, pco, bco, centred ? 1 : 0, value);
+    }
+}
+
+// tile n (0-based): the shape over the old one, then the icon and the texts onto it. Not drawn when it
+// looks as drawn last (the page cache, cleared by a page load). True when drawn.
+bool drawTile(const Layout& layout, size_t n, const TileFace& face) {
+    const auto colors = tileColors(face);
+
+    String look;
+    look.reserve(face.icon.length() + face.value.length() + face.name.length() + 32);
+    look += colors.bco;
+    look += face.corner ? 'c' : 'm';
+    look += face.small ? 's' : 'n';
+    look += colors.icon;
+    look += '|';
+    look += face.icon;
+    look += '|';
+    look += colors.value;
+    look += '|';
+    look += face.value;
+    look += '|';
+    look += colors.name;
+    look += '|';
+    look += face.name;
+    if (cached(name("drawn", n + 1, ""), look)) {
+        return false;
+    }
+
+    int x;
+    int y;
+    int w;
+    int h;
+    tileRect(layout.page.grid, n, x, y, w, h);
+    shape(x, y, w, h, colors.bco);
+
+    if (face.corner) {
+        text(x, y, layout.icon, layout.corner_icon, colors.icon, colors.bco, true, face.icon);
+        text(x, y, layout.value, layout.value_font, colors.value, colors.bco, false, face.value);
+        text(x, y, layout.name, face.small ? layout.page.small_font : layout.page.name_font,
+            colors.name, colors.bco, false, face.name);
+    } else {
+        text(x, y, layout.big_icon, layout.center_icon, colors.icon, colors.bco, true, face.icon);
+        text(x, y, layout.big_name, layout.center_font, colors.name, colors.bco, true, face.name);
+    }
+    return true;
+}
+
+} // namespace drawn
+
+// A drawn grid card. Page load: `buttons` with sendxy=1, every object hidden again (the stock tileN_pic /
+// _icon / _name / _value / _bar / _text / _center / _hs; the preinitialize already does it), title, close,
+// dots and the swipe hotspot shown, then all tiles. An update draws only the tiles that look different.
+// One burst either way: the queue syncs every SyncBytes, nothing waits per command.
+void renderDrawn(const Card& card, bool full) {
+    const auto& layout = drawn::layoutOf(card.grid);
+    const auto commands = state.queued;
+    const auto bytes = state.queued_bytes;
+
+    if (full) {
+        loadPage(page::Buttons, true);
+        cmd(F("vis 255,0"));
+        setText(F("title"), fit(card.title, Title));
+        vis(F("title"), true);
+        vis(F("close"), true);
+        vis(F("close_hs"), true);
+        showCardDots();
+        vis(F("swipe"), true);
+    }
+
+    const auto& info = config.pages[card.page];
+    const size_t count = std::min<size_t>(card.count, std::min(gridTiles(card.grid), TilesMaxPage));
+    size_t tiles = 0;
+    for (size_t n = 0; n < count; ++n) {
+        if (drawn::drawTile(layout, n, itemFace(info.items[card.first + n], layout.page))) {
+            ++tiles;
+        }
+    }
+
+    if (full) {
+        state.draw_page_commands = state.queued - commands;
+        state.draw_page_bytes = state.queued_bytes - bytes;
+        state.draw_page_tiles = tiles;
+    } else if (tiles) {
+        state.draw_update_commands = state.queued - commands;
+        state.draw_update_bytes = state.queued_bytes - bytes;
+        state.draw_update_tiles = tiles;
+    }
+}
+
 void renderButtons(bool full) {
     if (state.card >= state.cards.size()) {
         return;
@@ -1665,11 +1970,15 @@ void renderButtons(bool full) {
         renderList(card, full);
         return;
     }
+    if (drawnCard(card)) {
+        renderDrawn(card, full);
+        return;
+    }
     renderTiles(card.title, card.settings, &config.pages[card.page], card.first, card.count, true, full, card.grid);
 }
 
 void renderSettings(bool full) {
-    renderTiles(F("Настройки"), true, nullptr, 0, SettingsTiles, false, full);
+    renderTiles(lang::texts().settings, true, nullptr, 0, SettingsTiles, false, full);
 }
 
 // -----------------------------------------------------------------------------
@@ -1707,15 +2016,7 @@ void bead(int index, int& x, int& y) {
 }
 
 void circle(int x, int y, int r, uint16_t colour) {
-    String out(F("cirs "));
-    out += x;
-    out += ',';
-    out += y;
-    out += ',';
-    out += r;
-    out += ',';
-    out += colour;
-    cmd(std::move(out));
+    cirs(x, y, r, colour);
 }
 
 // the background picture over a box (OHpanel restore())
@@ -1808,7 +2109,7 @@ void drawState(const Thermostat& thermostat) {
 
     String text;
     if (heating) {
-        text = F("Нагрев");
+        text = lang::texts().heating;
     }
     if (!std::isnan(humidity)) {
         char buf[16];
@@ -1914,7 +2215,7 @@ void renderThermostat(bool full) {
 
     const float setpoint = shownSetpoint(state.thermo_item);
     const bool editing = (state.edit_item == static_cast<int>(state.thermo_item)) && !std::isnan(state.edit_value);
-    String target(F("Цель "));
+    String target(lang::texts().target);
     if (std::isnan(setpoint)) {
         target += F("--");
     } else {
@@ -2057,15 +2358,15 @@ void renderWeather(bool full) {
     }
 
     if (!days) {
-        setText(F("title"), F("Погода: нет данных"));
+        setText(F("title"), lang::texts().no_weather);
         vis(F("title"), true);
     } else {
         const auto& day = data.days[state.day];
-        String title = (state.day == 0) ? String(F("Сегодня"))
-            : (state.day == 1) ? String(F("Завтра"))
-            : String(ru::WeekdayFull[day.wday % 7]);
+        String title = (state.day == 0) ? String(lang::texts().today)
+            : (state.day == 1) ? String(lang::texts().tomorrow)
+            : String(lang::weekdayFull(day.wday));
         title += F(" \xC2\xB7 ");
-        title += ru::dayMonth(day.mday, day.mon);
+        title += lang::dayMonth(day.mday, day.mon);
         setText(F("title"), fit(title, Title));
         vis(F("title"), true);
 
@@ -2080,16 +2381,16 @@ void renderWeather(bool full) {
         size_t n = 1;
         char buf[16];
         if (!std::isnan(day.wind)) {
-            snprintf(buf, sizeof(buf), "%ld м/с", lroundf(day.wind));
-            chip(n++, icons::WeatherWindy, buf, F("Ветер"));
+            snprintf(buf, sizeof(buf), lang::texts().wind_speed, lroundf(day.wind));
+            chip(n++, icons::WeatherWindy, buf, lang::texts().wind);
         }
         if (day.rain >= 0) {
             snprintf(buf, sizeof(buf), "%d %%", day.rain);
-            chip(n++, icons::WeatherRainy, buf, F("Осадки"));
+            chip(n++, icons::WeatherRainy, buf, lang::texts().rain);
         }
         if (!std::isnan(day.uv)) {
             snprintf(buf, sizeof(buf), "%ld", lroundf(day.uv));
-            chip(n++, icons::WeatherSunny, buf, F("УФ-индекс"));
+            chip(n++, icons::WeatherSunny, buf, lang::texts().uv);
         }
 
         showDots(days, state.day);
@@ -2101,15 +2402,20 @@ void renderWeather(bool full) {
 }
 
 void showHome() {
+    state.history.clear();
     state.screen = Screen::Home;
     state.dirty = false;
     renderHome(true);
 }
 
+// a card of the swipe row ends the sub-page history
 void showCard(size_t index) {
     if (index >= state.cards.size()) {
         showHome();
         return;
+    }
+    if (!state.cards[index].sub) {
+        state.history.clear();
     }
     state.screen = Screen::Buttons;
     state.card = index;
@@ -2207,12 +2513,38 @@ void openSettings() {
     showSettings();
 }
 
+// a sub-page goes back to where it was opened from (home, a card of the row or another sub-page)
+void goBack() {
+    while (!state.history.empty()) {
+        const int card = state.history.back();
+        state.history.pop_back();
+        if (card < 0) {
+            break;
+        }
+        if (static_cast<size_t>(card) < state.cards.size()) {
+            showCard(card);
+            return;
+        }
+    }
+    showHome();
+}
+
+constexpr size_t HistoryMax { 8 };
+
 void showTarget(int target) {
     if (target >= 0) {
         const int card = firstCard(state.cards, target);
-        if (card >= 0) {
-            showCard(card);
+        if (card < 0) {
+            return;
         }
+        const bool here = (state.screen == Screen::Buttons) && samePage(state.cards, state.card, card);
+        if (state.cards[card].sub && !here) {
+            if (state.history.size() >= HistoryMax) {
+                state.history.erase(state.history.begin());
+            }
+            state.history.push_back((state.screen == Screen::Buttons) ? static_cast<int>(state.card) : -1);
+        }
+        showCard(card);
     } else if (target == PageWeather) {
         showWeather(0);
     } else if (target == PageHome) {
@@ -2222,10 +2554,11 @@ void showTarget(int target) {
     }
 }
 
-// cards split for the identified design (its grid pages, or the stock 4x2 slots); the shown
+// cards split for the identified design (full grids on a known design, else the stock 4x2 slots); the shown
 // card / the card to go back to fall back to home when they no longer exist
 void syncCards() {
-    state.grids = designGrids();
+    state.pages = designGrids();
+    state.grids = (design() != nullptr);
     buildCards(state.cards, TilesPerCard, Title.bytes, true, RowsPerSheet, state.grids);
     if (state.card >= state.cards.size()) {
         state.card = 0;
@@ -2235,6 +2568,12 @@ void syncCards() {
     }
     if (state.back_card >= state.cards.size()) {
         state.back = Screen::Home;
+    }
+    for (const auto card : state.history) {
+        if (card >= static_cast<int>(state.cards.size())) {
+            state.history.clear();
+            break;
+        }
     }
 }
 
@@ -2388,7 +2727,7 @@ void swipe(const String& direction) {
 
     switch (state.screen) {
     case Screen::Home:
-        if (left && !state.cards.empty()) {
+        if (left && rowCards(state.cards)) {
             showCard(0);
         } else if (!left && !right && config.weather && weatherDays()) {
             showWeather(0);
@@ -2396,8 +2735,25 @@ void swipe(const String& direction) {
         break;
 
     case Screen::Buttons:
+        // a sub-page: its own sheets, right of the first one is where it was opened from
+        if ((state.card < state.cards.size()) && state.cards[state.card].sub) {
+            if (left) {
+                if (samePage(state.cards, state.card, state.card + 1)) {
+                    showCard(state.card + 1);
+                }
+            } else if (right) {
+                if ((state.card > 0) && samePage(state.cards, state.card, state.card - 1)) {
+                    showCard(state.card - 1);
+                } else {
+                    goBack();
+                }
+            } else {
+                showHome();
+            }
+            break;
+        }
         if (left) {
-            if ((state.card + 1) < state.cards.size()) {
+            if ((state.card + 1) < rowCards(state.cards)) {
                 showCard(state.card + 1);
             }
         } else if (right) {
@@ -2447,11 +2803,21 @@ void settingsTap(long n) {
         saveLayout((config.layout == Layout::Center) ? Layout::Corner : Layout::Center);
     } else if (n == 2) {
         saveTheme((config.theme == Theme::Light) ? Theme::Dark : Theme::Light);
+    } else if (n == 3) {
+        // the next background; a design with aurora only (d3731fbb) keeps it
+        const auto* info = design();
+        if (info && !info->backgrounds) {
+            return;
+        }
+        constexpr size_t Count { sizeof(Backgrounds) / sizeof(Backgrounds[0]) };
+        saveBackground((backgroundIndex() + 1) % Count);
+        sendTheme();
     } else {
         return;
     }
-    DEBUG_MSG_P(PSTR("[NSPANEL] Settings: icons %s, theme %s\n"),
-        (config.layout == Layout::Corner) ? "corner" : "center", (config.theme == Theme::Light) ? "light" : "dark");
+    DEBUG_MSG_P(PSTR("[NSPANEL] Settings: icons %s, theme %s, background %s\n"),
+        (config.layout == Layout::Corner) ? "corner" : "center", (config.theme == Theme::Light) ? "light" : "dark",
+        BackgroundNames[backgroundIndex()]);
     showCurrent();
 }
 
@@ -2461,6 +2827,10 @@ void act(const String& component) {
         buzzer::beep();
         if ((state.screen == Screen::Settings) || (state.screen == Screen::Thermostat)) {
             showBack();
+        } else if ((state.screen == Screen::Buttons) && (state.card < state.cards.size())
+            && state.cards[state.card].sub)
+        {
+            goBack();
         } else {
             showHome();
         }
@@ -2607,8 +2977,8 @@ void onEvent(const char* page_name, const char* component, const char* value) {
 
 constexpr int TapSlop { 40 };  // px a tap may move (a swipe is 100 px or more)
 
-// 67 frame (sendxy=1, only on entities_rows): a list row tap is a press and a release close to it,
-// then the same swipe disambiguation as a tile release
+// 67 frame (sendxy=1, only on entities_rows and drawn grids): a row / tile tap is a press and a release
+// close to it, at the press point; then the same swipe disambiguation as a tile release
 void onTouchXY(int x, int y, bool press) {
     if (state.link != Link::Ready) {
         return;
@@ -2626,24 +2996,31 @@ void onTouchXY(int x, int y, bool press) {
     state.touch_x = -1;
     state.touch_y = -1;
 
-    if ((state.screen != Screen::Buttons) || (state.card >= state.cards.size()) || !state.cards[state.card].list) {
+    if ((state.screen != Screen::Buttons) || (state.card >= state.cards.size())) {
+        return;
+    }
+    const auto& card = state.cards[state.card];
+    const bool is_drawn = drawnCard(card);
+    if (!card.list && !is_drawn) {
         return;
     }
     if ((down_x < 0) || (std::abs(x - down_x) > TapSlop) || (std::abs(y - down_y) > TapSlop)) {
         return;
     }
 
-    const auto row = rowAt(down_x, down_y);
+    // a list row, or a drawn tile (tile<n>, the slot of the n-th tile on a drawn card); none outside
+    const size_t hit = card.list ? rowAt(down_x, down_y)
+        : drawn::tileAt(card.grid, std::min<size_t>(card.count, gridTiles(card.grid)), down_x, down_y);
     const auto now = millis();
-    if (!row || (now - state.last_swipe < SwipeGuardMs)) {
+    if (!hit || (now - state.last_swipe < SwipeGuardMs)) {
         return;
     }
 
     if (config.debug) {
-        DEBUG_MSG_P(PSTR("[NSPANEL] list tap %d,%d: row %u\n"), down_x, down_y, row);
+        DEBUG_MSG_P(PSTR("[NSPANEL] %s tap %d,%d: %u\n"), card.list ? "list" : "tile", down_x, down_y, hit);
     }
     state.release_pending = true;
-    state.release_component = String(F("row")) + row;
+    state.release_component = String(card.list ? F("row") : F("tile")) + hit;
     state.release_at = now;
 }
 
@@ -3062,7 +3439,7 @@ void info(Print& out) {
     if (design()) {
         const auto& bg = background();
         out.printf_P(PSTR("Design: %s; cards split for %s; background %s (bg_pic %u)\n"),
-            designText().c_str(), state.grids ? "the grid pages" : "the 4x2 slots",
+            designText().c_str(), state.pages ? "the grid pages" : state.grids ? "drawn grids" : "the 4x2 slots",
             BackgroundNames[backgroundIndex()], bg.pic);
     }
     out.printf_P(PSTR("Screen: %s, card %u / %u, day %u, level %d, dimmed %s, asleep %s, idle %u s\n"),
@@ -3071,9 +3448,15 @@ void info(Print& out) {
         static_cast<unsigned>((millis() - state.last_touch) / 1000));
     if ((state.screen == Screen::Buttons) && (state.card < state.cards.size())) {
         const auto& card = state.cards[state.card];
-        out.printf_P(PSTR("Card: '%s', %s, layout %s on page %s, %u tiles\n"), card.title.c_str(),
+        const bool is_drawn = drawnCard(card);
+        out.printf_P(PSTR("Card: '%s', %s, layout %s %s page %s, %u tiles\n"), card.title.c_str(),
             card.list ? "list" : card.settings ? "settings" : "grid", gridName(card.grid),
-            card.list ? "entities_rows" : tilePage(card.grid).name, card.count);
+            is_drawn ? "drawn on" : "on", card.list ? "entities_rows" : tilePage(card.grid).name, card.count);
+    }
+    if (state.draw_page_commands) {
+        out.printf_P(PSTR("Drawn: last page %u tiles, %u commands, %u bytes; last update %u tiles, %u commands, %u bytes; sendxy %d\n"),
+            state.draw_page_tiles, state.draw_page_commands, state.draw_page_bytes,
+            state.draw_update_tiles, state.draw_update_commands, state.draw_update_bytes, state.sendxy);
     }
     out.printf_P(PSTR("TX:%u commands, %u bytes, queued %u, dropped %u, syncs %u, sync timeouts %u, max rtt %u ms%s\n"),
         state.tx_commands, state.tx_bytes, state.queue.size(), state.dropped, state.syncs,

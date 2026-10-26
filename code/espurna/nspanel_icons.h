@@ -44,6 +44,7 @@ static constexpr uint16_t Plus { 0xE414 };
 static constexpr uint16_t ViewGrid { 0xE56F };
 static constexpr uint16_t ViewList { 0xE571 };
 static constexpr uint16_t ThemeLightDark { 0xE50D };
+static constexpr uint16_t Palette { 0xE3D7 };
 static constexpr uint16_t Fire { 0xE237 };
 static constexpr uint16_t WaterPercent { 0xE58D };
 

@@ -22,3 +22,6 @@ code/libraries/
 code/node_modules
 compile_commands.json
 firmware*
+# compiler dependency files from ad-hoc builds, diff dumps in the repo root
+*.d
+/*.patch

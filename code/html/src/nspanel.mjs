@@ -12,6 +12,7 @@ const STYLE = [
     ".nspanel-result.nspanel-error { color: #c0392b; }",
     ".nspanel-card { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 0 0 12px; max-width: 520px; }",
     ".nspanel-card-title { font-weight: bold; margin: 0 0 6px; }",
+    ".nspanel-card.nspanel-nested .nspanel-card-title { font-weight: normal; font-style: italic; }",
     ".nspanel-grid { display: grid; gap: 6px; grid-template-columns: repeat(4, 1fr); }",
     ".nspanel-grid.nspanel-shortcuts { grid-template-columns: repeat(7, 1fr); }",
     `.nspanel-tile { background: #f2f2f2; border-radius: 6px; padding: 6px 4px; text-align: center;
@@ -35,6 +36,10 @@ const PREVIEW_CAPACITY = 8;
 // OHpanel custom TFT design with a page per grid layout (buttons33 / buttons32 / buttons22 / buttons12)
 export const DESIGN_GRIDS = "d3731fbb";
 
+// OHpanel designs that show every layout in full: the custom one on its pages, the stock ones
+// (v0.9.2, v0.10.0-rc1) drawn at runtime on `buttons`
+export const DESIGNS_FULL_GRIDS = [DESIGN_GRIDS, "bc629e1e", "4508cd3f"];
+
 /**
  * "layout" of a grid page: [columns, rows]
  * @type {{[k: string]: [number, number]}}
@@ -47,7 +52,7 @@ export const GRIDS = {
     "1x2": [1, 2],
 };
 
-/** preview as the custom TFT draws it (grid pages), until the status names another design */
+/** preview full grids (OHpanel custom pages or drawn tiles), until the status names an unknown design */
 let __grids = true;
 
 // rows per sheet of a "type": "list" page on the OHpanel entities_rows page
@@ -298,9 +303,33 @@ export function formatValidateResult(result) {
 }
 
 /**
- * list: rows of a "type": "list" page; grid: the page's "layout" ("4x2", "3x3", "3x2", "2x2", "1x2")
- * @typedef {{title: string, items: any[], list: boolean, grid: string}} PreviewCard
+ * list: rows of a "type": "list" page; grid: the page's "layout" ("4x2", "3x3", "3x2", "2x2", "1x2");
+ * depth: 0 for the swipe row (top-level "pages"), 1+ for a nested page (an item's "page", opened by its tile)
+ * @typedef {{title: string, items: any[], list: boolean, grid: string, depth: number}} PreviewCard
  */
+
+/**
+ * an item's nested page ("page": {...}), null when it has none
+ * @param {any} item
+ * @returns {any}
+ */
+export function nestedPage(item) {
+    const page = item?.page;
+    return ((typeof page === "object") && (page !== null) && !Array.isArray(page)) ? page : null;
+}
+
+/**
+ * the name a tile shows: its "name", else the title of the page it opens
+ * @param {any} item
+ * @returns {string}
+ */
+export function itemName(item) {
+    if (typeof item === "string") {
+        return item;
+    }
+    const name = String(item?.name ?? "");
+    return name.length ? name : String(nestedPage(item)?.title ?? "");
+}
 
 /**
  * "layout" as the firmware takes it, else "columns": 3 = "3x2", else "4x2"
@@ -328,7 +357,7 @@ function pagePerScreen(page) {
 
 /**
  * tiles or rows of a page on one screen, as nspanel.cpp gridCapacity() / buildCards()
- * - grids (custom TFT): the layout's own page holds columns x rows tiles
+ * - grids (OHpanel, known design): columns x rows tiles (own page or drawn)
  * - else the layout's columns of the 4x2 slots, at most the driver's capacity
  * @param {any} page
  * @param {number} capacity
@@ -351,7 +380,8 @@ export function perScreen(page, capacity = PREVIEW_CAPACITY, list = false, grids
 }
 
 /**
- * screens as the panel shows them, long pages split into 'Title 1/2', 'Title 2/2'
+ * screens as the panel shows them, long pages split into 'Title 1/2', 'Title 2/2'; the nested pages
+ * of a page's tiles follow its sheets (depth + 1), they are not in the swipe row
  * @param {any} config
  * @param {number} capacity tiles of a full 4x2 grid screen
  * @param {boolean} lists "type": "list" pages as rows (OHpanel); false: as grids (Lovelace)
@@ -362,12 +392,16 @@ export function previewCards(config, capacity = PREVIEW_CAPACITY, lists = true, 
     /** @type {PreviewCard[]} */
     const out = [];
 
-    const pages = Array.isArray(config?.pages) ? config.pages : [];
-    for (const page of pages) {
-        const title = String(page?.title ?? "");
+    /**
+     * @param {any} page
+     * @param {number} depth
+     * @param {string} fallback title when the page has none (the name of its tile)
+     */
+    const add = (page, depth, fallback) => {
+        const title = String(page?.title ?? "") || fallback;
         if (page?.type === "settings") {
-            out.push({title: title || "Settings", items: [], list: false, grid: "4x2"});
-            continue;
+            out.push({title: title || "Settings", items: [], list: false, grid: "4x2", depth});
+            return;
         }
 
         const list = lists && (page?.type === "list");
@@ -381,16 +415,45 @@ export function previewCards(config, capacity = PREVIEW_CAPACITY, lists = true, 
                 items: items.slice(index * per, (index + 1) * per),
                 list,
                 grid,
+                depth,
             });
         }
+
+        if (depth < 8) {
+            for (const item of items) {
+                const nested = nestedPage(item);
+                if (nested) {
+                    add(nested, depth + 1, String(item?.name ?? ""));
+                }
+            }
+        }
+    };
+
+    const pages = Array.isArray(config?.pages) ? config.pages : [];
+    for (const page of pages) {
+        add(page, 0, "");
     }
 
     return out;
 }
 
 /**
+ * titles of the swipe row after home, as the panel swipes them (nested pages are not in it)
+ * @param {any} config
+ * @param {number} capacity
+ * @param {boolean} lists
+ * @param {boolean} grids
+ * @returns {string[]}
+ */
+export function previewRow(config, capacity = PREVIEW_CAPACITY, lists = true, grids = false) {
+    return previewCards(config, capacity, lists, grids)
+        .filter((card) => !card.depth)
+        .map((card) => card.title);
+}
+
+/**
  * the tile slots of a grid card, null where no tile is shown, and the columns they are drawn in
- * - grids (custom TFT): the layout's own page, columns x rows slots
+ * - grids (OHpanel, known design): columns x rows slots (own page or drawn)
  * - else the 4x2 slots of the `buttons` page (tile1..tile8), the layout's columns of each row:
  *   3x3 / 3x2 fill slots 1-3 and 5-7, 2x2 slots 1, 2, 5, 6, 1x2 slots 1 and 5
  * @param {PreviewCard} card
@@ -453,6 +516,15 @@ export function previewTarget(item, groups) {
         return {type, target: String(item?.room ?? item?.topic ?? ""), bad: !item?.topic};
     }
 
+    const nested = nestedPage(item);
+    if (nested) {
+        return {type: "page", target: `page ${itemName(item)}`, bad: !Array.isArray(nested.items)};
+    }
+
+    if (item?.page !== undefined) {
+        return {type: "page", target: "\"page\" must be an object", bad: true};
+    }
+
     if (item?.open !== undefined) {
         return {type: "open", target: `open ${item.open}`, bad: false};
     }
@@ -489,7 +561,7 @@ function previewTile(item, groups, row = false) {
 
     const name = document.createElement("div");
     name.classList.add("nspanel-tile-name");
-    name.textContent = (typeof item === "string") ? item : String(item?.name ?? "");
+    name.textContent = itemName(item);
 
     const type = document.createElement("div");
     type.classList.add("nspanel-tile-type");
@@ -505,15 +577,20 @@ function previewTile(item, groups, row = false) {
  * @param {any} groups
  * @param {"grid" | "shortcuts" | "rows"} kind
  * @param {number} columns grid columns
+ * @param {number} depth nested page depth: indented under its tile, "↳ Title"
  * @returns {HTMLElement}
  */
-function previewCard(title, items, groups, kind = "grid", columns = 4) {
+function previewCard(title, items, groups, kind = "grid", columns = 4, depth = 0) {
     const card = document.createElement("div");
     card.classList.add("nspanel-card");
+    card.classList.toggle("nspanel-nested", depth > 0);
+    if (depth > 0) {
+        card.style.marginLeft = `${depth * 24}px`;
+    }
 
     const head = document.createElement("div");
     head.classList.add("nspanel-card-title");
-    head.textContent = title;
+    head.textContent = (depth > 0) ? `\u21b3 ${title}` : title;
 
     const grid = document.createElement("div");
     grid.classList.add((kind === "rows") ? "nspanel-rows" : "nspanel-grid");
@@ -553,12 +630,12 @@ function renderPreview(text) {
 
     for (const card of previewCards(config, PREVIEW_CAPACITY, true, __grids)) {
         if (card.list) {
-            cards.push(previewCard(card.title, card.items, groups, "rows"));
+            cards.push(previewCard(card.title, card.items, groups, "rows", 4, card.depth));
             continue;
         }
 
         const {columns, slots} = previewGrid(card, __grids);
-        cards.push(previewCard(`${card.title} (${card.grid})`, slots, groups, "grid", columns));
+        cards.push(previewCard(`${card.title} (${card.grid})`, slots, groups, "grid", columns, card.depth));
     }
 
     area.replaceChildren(...cards);
@@ -747,7 +824,8 @@ export function formatStatus(status) {
 }
 
 /**
- * which design the preview draws: the custom grid pages unless the panel reports another OHpanel design
+ * which design the preview draws: full grids (custom pages or drawn tiles) unless the panel reports an
+ * unknown OHpanel design (the layouts then use the 4x2 slots)
  * @param {any} status
  * @param {boolean} current
  * @returns {boolean}
@@ -757,7 +835,7 @@ export function previewDesignGrids(status, current = true) {
         return current;
     }
 
-    return status.version === DESIGN_GRIDS;
+    return DESIGNS_FULL_GRIDS.includes(status.version);
 }
 
 async function updateStatus() {

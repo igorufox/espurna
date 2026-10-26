@@ -192,7 +192,7 @@ Every message ends with `FF FF FF`. Parser (`components/nextion/src/Protocol.cpp
 | `70 …` | n | answer to `get <text>` (not used) |
 | `"comok …"` | n | answer to `connect` |
 | `65 pp cc ee` | 4 | standard Nextion touch (not used by this design; harmless) |
-| `67/68 xH xL yH yL ee` | 6 | touch coordinates, only with `sendxy=1` (not used) |
+| `67/68 xH xL yH yL ee` | 6 | touch coordinates, only with `sendxy=1` (list pages §12.2, drawn tiles §14.3) |
 | **`92 <name> 00 <JSON> 00`** | n | **design event**, name is always `nspanelevent` |
 | **`91 <tag> 00 <int32 LE>`** | n | **design value report** (sliders and drags; not needed for our pages) |
 | single byte | 1 | Nextion status/error: `1A` invalid variable, `24` buffer overflow, `02` invalid component, `1B` invalid operation, `1C` assignment failed, `1E` wrong parameter count |
@@ -851,7 +851,7 @@ Estimate:
 ## 10. Implementation in ESPurna (2026-10-25, built, not yet run on the panel)
 
 Code: `code/espurna/nspanel_ohpanel.h` (driver), `code/espurna/nspanel.cpp` (shared core, detection `link::`, flasher `flash::`).
-User documentation: `README.md`, section "OHpanel TFT".
+User documentation: `README.md` (user guide) and `reference.md`, section "OHpanel TFT".
 
 Implemented as specified above:
 - link state machine (1.5): search with `FF FF FF sendme` + `get design_ver`, identify (`connect` + throw-away `sendme`), theme globals
@@ -1053,7 +1053,7 @@ grid pages added, only the aurora background kept. Source, TFT and the full obje
 An unknown design is drawn like the stock one and logged as unexpected (`nspanel.info`: `(UNEXPECTED)`). With a design without
 the other backgrounds, `background()` is aurora (`Backgrounds[0]`) whatever `ohpanel.background` says; the TFT has no picture
 >= 189, so the black/candy/dunes/forest rows would draw garbage. The theme colour overrides stay. `nspanel.info` prints
-`Design: <name>: layouts ..., background ...; cards split for the grid pages | the 4x2 slots; background <name> (bg_pic n)`
+`Design: <name>: layouts ..., background ...; cards split for the grid pages | drawn grids (§14) | the 4x2 slots; background <name> (bg_pic n)`
 and, on a button screen, `Card: '<title>', grid, layout 3x3 on page buttons33, 9 tiles`. `/nspanel-status` has the same text
 in `"design"`. The cards are split again when the TFT is identified (`syncCards()` in `ready()`), since the design decides the
 capacity.
@@ -1063,13 +1063,13 @@ capacity.
 `"layout": "4x2" | "3x3" | "3x2" | "2x2" | "1x2"` (default 4x2; `"columns": 3` = `"3x2"`, `"layout"` wins; `per_screen`
 1..9 caps it). `nspanel.cpp gridCapacity()`:
 
-| layout | custom design: page, tiles | stock design: 4x2 slots (tile n -> slot (n / cols) * 4 + n % cols + 1) | Lovelace |
-|---|---|---|---|
-| 4x2 | `buttons` (7), 8 | 1..8 | min(8, TFT capacity) |
-| 3x3 | `buttons33` (18), 9 | 1-3, 5-7 (6) | 6 |
-| 3x2 | `buttons32` (19), 6 | 1-3, 5-7 (6) | 6 |
-| 2x2 | `buttons22` (20), 4 | 1, 2, 5, 6 (4) | 4 |
-| 1x2 | `buttons12` (21), 2 | 1, 5 (2) | 2 |
+| layout | custom design: page, tiles | stock design (§14): drawn on `buttons`, tiles | unknown design: 4x2 slots (tile n -> slot (n / cols) * 4 + n % cols + 1) | Lovelace |
+|---|---|---|---|---|
+| 4x2 | `buttons` (7), 8 | stock tiles, 8 (`"draw": true`: drawn) | 1..8 | min(8, TFT capacity) |
+| 3x3 | `buttons33` (18), 9 | 9 | 1-3, 5-7 (6) | 6 |
+| 3x2 | `buttons32` (19), 6 | 6 | 1-3, 5-7 (6) | 6 |
+| 2x2 | `buttons22` (20), 4 | 4 | 1, 2, 5, 6 (4) | 4 |
+| 1x2 | `buttons12` (21), 2 | 2 | 1, 5 (2) | 2 |
 
 Settings cards and the built-in settings always use `buttons`. List pages are unchanged (`entities_rows`).
 
@@ -1104,3 +1104,79 @@ means another item now).
 Verify on the panel: the tile pictures per slot (no aurora seams at the corners), the fonts 2/3 on `buttons22`/`buttons12`,
 that the `_value` / `_name` fields of `buttons33` hold `Вкл` and ~10 Cyrillic letters, the busy dots and `close` on the new
 pages, and `currentpage` names.
+
+## 14. Drawn tiles on the stock design `bc629e1e` (2026-10-25, built, not yet run on the panel)
+
+The custom design needs its own TFT and keeps only aurora. On the stock design (`bc629e1e`, `4508cd3f`: all five backgrounds)
+the driver draws the 3x3 / 3x2 / 2x2 / 1x2 grids itself with Nextion drawing commands on the stock `buttons` page (id 7).
+Checked on the panel beforehand: raw `fill` / `cirs` / `xstr` work on this TFT and are fast (85 commands in one burst drew a 3x3
+grid at once), `xstr` with `sta` 3 draws text without a background onto what is there, UTF-8 Cyrillic and MDI glyphs in fonts 8
+(32 px) and 9 (48 px) work. A page with `"draw": true` is drawn the same way also for 4x2 and on `d3731fbb`. Settings cards, the
+built-in settings and list pages are unchanged. `nspanel.info`: `Design: stock OHpanel v0.9.2: layouts 4x2 (stock tiles), 3x3 3x2
+2x2 1x2 drawn, all backgrounds; cards split for drawn grids`, `Card: '<title>', grid, layout 3x3 drawn on page buttons, 9 tiles`,
+`Drawn: last page <n> tiles, <c> commands, <b> bytes; last update ...; sendxy 1`. Driver: `ohpanel::drawn`, `renderDrawn()`.
+
+### 14.1 Geometry (`drawn::tileRect()`)
+
+The grid area is the one of the 3x3 grid checked on the panel (136x72 tiles, gaps 9 / 8): x 27..453 (27 + 3·136 + 2·9 = 453,
+centred on the 480 px screen) and y 46..278 (46 + 3·72 + 2·8 = 278: under the title and the close cross, above the page dots at
+y 294). Every layout fills it: `w = (426 - (cols - 1)·9) / cols`, `h = (232 - (rows - 1)·8) / rows`, the remainder centred.
+Tile n (0-based, row by row) is at `x = 27 + offset + (n % cols)·(w + 9)`, `y = 46 + (n / cols)·(h + 8)`.
+
+| layout | tile | corner layout (boxes relative to the tile; font) | center layout | name / state field (px, digit px) |
+|---|---|---|---|---|
+| 4x2 | 99x112 (+3 px centred) | icon 8,8 32x32 (font 8); state 8,60 83x20 (0); name 8,82 83x24 (1, smaller 0) | icon 0,12 99x52 (9); name 4,72 91x24 (0) | 83 / 83 |
+| 3x3 | 136x72 | icon 8,6 32x32 (8); state beside it 46,6 82x32 (0); name 8,44 120x22 (1 / 0) | icon 0,4 136x36 (8); name 6,44 124x22 (1) | 120 / 82 |
+| 3x2 | 136x112 | icon 8,8 32x32 (8); state 8,60 120x20 (0); name 8,82 120x24 (1 / 0) | icon 0,12 136x52 (9); name 6,72 124x26 (1) | 120 / 120 |
+| 2x2 | 208x112 (+1 px) | icon 10,10 48x48 (9); state beside it 66,10 132x48 (1); name 10,72 188x30 (2 / 1) | icon 0,10 208x52 (9); name 8,70 192x30 (2) | 188 / 132 |
+| 1x2 | 426x112 | icon 12,10 48x48 (9); state beside it 72,10 342x48 (2); name 12,70 402x34 (3 / 2) | icon 0,8 426x52 (9); name 10,66 406x34 (3) | 402 / 342 |
+
+The field limits feed the same text logic as the tile pages (`itemFace()` with `states` on: switches and scenes show `Вкл` /
+`Выкл` / `Вкл: n` in corner layout, the name one line in the page font, then the smaller one, then `...`; tiles without a state
+split a long name, the first half in the state box; thermostats `21,9° » 21,5°` plus ` · Нагрев` where it fits). `xstr` has no
+`txt_maxl`, the byte limit is 96 only to keep a command short.
+
+### 14.2 Drawing (`drawn::drawTile()`, `renderDrawn()`)
+
+Page load: `sendxy=1` (when it changes), `page 7`, sync, the busy indicator off, **`vis 255,0`** (the page's preinitialize already
+hides everything; repeated so that no stock `tileN_pic/_icon/_name/_value/_bar/_text/_center/_hs` is shown or takes a touch),
+`title.txt` + `vis title,1`, `vis close,1`, `vis close_hs,1`, `dots` + `vis dots,1`, `vis swipe,1`. Then every tile:
+
+```
+fill x+14,y,w-28,h,<tile>                     two crossing bars
+fill x,y+14,w,h-28,<tile>
+cirs x+14,y+14,14,<tile>                      four corners (centres 14 px in from the edges)
+cirs x+w-15,y+14,14,<tile>
+cirs x+14,y+h-15,14,<tile>
+cirs x+w-15,y+h-15,14,<tile>
+xstr ix,iy,iw,ih,8|9,<icon>,<tile>,1,1,3,"<MDI glyph>"
+xstr vx,vy,vw,vh,<font>,<state>,<tile>,0,1,3,"<state line>"      corner layout; center: xcen 1
+xstr nx,ny,nw,nh,<font>,<name>,<tile>,0,1,3,"<name>"
+```
+
+Colours are those of the tile pages (`tileColors()`): dark theme off = 10597 tile, `th_dim` icon, 52857 name, 40147 state; on =
+white tile, accent icon (the background's accent or `ohpanel.accent`, or the item `color`), 10597 name, 27469 state; light theme
+the other way round (off white, on dark); a heating thermostat has its icon and state in #ff8a3d (64615). The tile is solid, so
+only its corners and the gaps show the background picture: it works on all five backgrounds.
+
+The whole page is queued at once; the transport sends it in one burst and only syncs (`sendme`) every 512 bytes, nothing waits per
+command. A 3x3 page of 9 thermostats is about 95 commands / 3.0 KB (14 for the page, 9 per tile, ~310 B per tile, ~5 syncs);
+a 2x2 page about 46..50 commands / 1.3..1.5 KB.
+
+Updates: the look of each tile (colours, icon, state, name) is cached per page load (`drawnN`); a state change redraws only the
+tiles whose look changed (shape over the same shape, then the texts: 9 commands, ~310 B, below one sync), never the page. A theme
+or background change (`nspTheme`, config reload) reloads the page and draws everything again.
+
+### 14.3 Touch
+
+Drawn tiles have no hotspots. As on the list pages (§12.2) the driver sends `sendxy=1` before `page 7` of a drawn card and
+`sendxy=0` before every other page (also the stock `buttons` of 4x2 and settings cards); the value is sent only when it changes and
+is unknown again after a link reset. On the `67` release, when the finger moved at most 40 px from the press point, the press point
+is mapped to the tile under it (`drawn::tileAt()`, the same rectangles; gaps, title, close and dots hit nothing) and queued as the
+release `tile<n>`, which goes through the tile rules: ignored within 300 ms after a swipe, held 60 ms for a swipe that arrives
+after it, then the item's tap (thermostats open their page). The `swipe` TouchCap and the close hotspot work as on every page; the
+page's background `touch` press/release events only wake / undim the screen.
+
+Verify on the panel: the 2x2 / 1x2 / 3x2 / 4x2 boxes and fonts (texts inside their tiles, nothing clipped), the corners on
+black / candy / dunes / forest, that a tile redraw does not flicker, `sendxy` taps on every tile (corners and edges) and that a
+swipe across tiles does not tap.

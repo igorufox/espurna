@@ -3,6 +3,7 @@ import { expect, test } from 'vitest';
 import {
     formatStatus,
     formatValidateResult,
+    itemName,
     jsonErrorOffset,
     offsetToLineColumn,
     pageGrid,
@@ -10,6 +11,7 @@ import {
     previewCards,
     previewDesignGrids,
     previewGrid,
+    previewRow,
     previewSlots,
     previewTarget,
     validateJson,
@@ -126,10 +128,44 @@ test('preview: layouts on the stock TFT use the columns of the 4x2 slots', () =>
 
 test('preview follows the design the panel reports', () => {
     expect(previewDesignGrids({driver: 'ohpanel', version: 'd3731fbb'}, false)).toBe(true);
-    expect(previewDesignGrids({driver: 'ohpanel', version: 'bc629e1e'}, true)).toBe(false);
+    expect(previewDesignGrids({driver: 'ohpanel', version: 'bc629e1e'}, false)).toBe(true);
+    expect(previewDesignGrids({driver: 'ohpanel', version: '4508cd3f'}, false)).toBe(true);
+    expect(previewDesignGrids({driver: 'ohpanel', version: '0badc0de'}, true)).toBe(false);
     expect(previewDesignGrids({driver: 'ohpanel', version: 'unknown'}, true)).toBe(true);
     expect(previewDesignGrids({driver: 'lovelace', version: '53'}, true)).toBe(true);
     expect(previewDesignGrids(null, false)).toBe(false);
+});
+
+test('preview: nested pages follow their tile, outside the swipe row', () => {
+    const lamp = (/** @type {number} */ index) => ({name: `l${index}`, topic: `x/${index}`});
+    const config = {pages: [
+        {title: 'Street', layout: '2x2', items: [
+            {name: 'Front', icon: 'home-outline', page: {layout: '3x2', items: [lamp(1), lamp(2)]}},
+            {icon: 'tree', page: {title: 'Back', layout: '3x2', items: [
+                lamp(3),
+                {name: 'Sockets', page: {layout: '2x2', items: [lamp(4), lamp(5), lamp(6), lamp(7), lamp(8)]}},
+            ]}},
+            {name: 'Gate', icon: 'gate', topic: 'g/0', type: 'button'},
+        ]},
+        {title: 'Heating', items: [lamp(9)]},
+    ]};
+
+    const cards = previewCards(config, 8, true, true);
+    expect(cards.map((card) => [card.title, card.depth, card.grid])).toEqual([
+        ['Street', 0, '2x2'],
+        ['Front', 1, '3x2'],
+        ['Back', 1, '3x2'],
+        ['Sockets 1/2', 2, '2x2'],
+        ['Sockets 2/2', 2, '2x2'],
+        ['Heating', 0, '4x2'],
+    ]);
+    expect(previewRow(config, 8, true, true)).toEqual(['Street', 'Heating']);
+
+    const street = config.pages[0].items;
+    expect(itemName(street[0])).toEqual('Front');
+    expect(itemName(street[1])).toEqual('Back');
+    expect(previewTarget(street[1], {})).toEqual({type: 'page', target: 'page Back', bad: false});
+    expect(previewTarget({name: 'x', page: 2}, {}).bad).toBe(true);
 });
 
 test('preview flags tiles without a target', () => {

@@ -104,6 +104,9 @@ constexpr size_t ConfigHeapPerByte { 3 };
 constexpr size_t ConfigHeapReserve { 16384 };
 constexpr size_t ConfigBlockReserve { 1024 };
 
+// ArduinoJson 5 stops at 10 levels by default; each nested "page" adds 3 (item, page, items)
+constexpr uint8_t ConfigNestingLimit { 24 };
+
 // POST /nspanel.json: loop() waits this long for a running weather fetch (TLS, 40-60 KB)
 // before parsing; the client gets 503 when no answer is ready after UploadAnswerMs
 constexpr uint32_t UploadWeatherWaitMs { 10000 };
@@ -227,62 +230,153 @@ int weekday(int y, int m, int d) {
     return (y + y / 4 - y / 100 + y / 400 + t[(m - 1) % 12] + d) % 7;
 }
 
-namespace ru {
+// screen texts, dates and the decimal separator, by "language" in the JSON
+namespace lang {
 
-const char* const WeekdayFull[] {
-    "Воскресенье", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота",
+enum class Language : uint8_t {
+    English,
+    Russian,
 };
 
-const char* const WeekdayShort[] {
-    "Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб",
+Language current { Language::English };
+
+struct Texts {
+    const char* weekday_full[7];
+    const char* weekday_short[7];
+    const char* month[12];          // as used in a date: "October" / "октября"
+    const char* month_short[12];
+    const char* on;
+    const char* off;
+    const char* on_count;           // followed by the number of devices on
+    const char* settings;
+    const char* heating;
+    const char* target;             // followed by the setpoint
+    const char* no_weather;
+    const char* today;
+    const char* tomorrow;
+    const char* wind_speed;         // printf, one %ld (m/s)
+    const char* wind;
+    const char* rain;
+    const char* uv;
+    const char* icons;
+    const char* icons_large;
+    const char* icons_small;
+    const char* theme;
+    const char* theme_light;
+    const char* theme_dark;
+    const char* background;
+    const char* backgrounds[5];     // same order as BackgroundNames
 };
 
-const char* const MonthGenitive[] {
-    "января", "февраля", "марта", "апреля", "мая", "июня",
-    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+const Texts English {
+    { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" },
+    { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" },
+    { "January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December" },
+    { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" },
+    "On", "Off", "On: ",
+    "Settings",
+    "Heating", "Target ",
+    "Weather: no data", "Today", "Tomorrow", "%ld m/s", "Wind", "Rain", "UV index",
+    "Icons", "Large", "Small",
+    "Theme", "Light", "Dark",
+    "Backdrop", { "Aurora", "Black", "Candy", "Dunes", "Forest" }, // "Background" is wider than the tile name
 };
 
+const Texts Russian {
+    { "Воскресенье", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота" },
+    { "Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб" },
+    { "января", "февраля", "марта", "апреля", "мая", "июня",
+      "июля", "августа", "сентября", "октября", "ноября", "декабря" },
+    { "янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек" },
+    "Вкл", "Выкл", "Вкл: ",
+    "Настройки",
+    "Нагрев", "Цель ",
+    "Погода: нет данных", "Сегодня", "Завтра", "%ld м/с", "Ветер", "Осадки", "УФ-индекс",
+    "Иконки", "Крупные", "Мелкие",
+    "Тема", "Светлая", "Тёмная",
+    "Фон", { "Сияние", "Чёрный", "Огоньки", "Дюны", "Лес" },
+};
+
+const Texts& texts() {
+    return (current == Language::Russian) ? Russian : English;
+}
+
+const char* weekdayFull(int wday) {
+    return texts().weekday_full[((wday % 7) + 7) % 7];
+}
+
+const char* weekdayShort(int wday) {
+    return texts().weekday_short[((wday % 7) + 7) % 7];
+}
+
+// "Saturday, October 24, 2026" / "Суббота, 24 октября 2026", shorter when longer than DateMax
 String date(const tm& t) {
-    const int wday = ((t.tm_wday % 7) + 7) % 7;
-    const int mon = ((t.tm_mon % 12) + 12) % 12;
+    const char* const full = weekdayFull(t.tm_wday);
+    const char* const month = texts().month[((t.tm_mon % 12) + 12) % 12];
     const int year = t.tm_year + 1900;
+    const bool ru = (current == Language::Russian);
 
     char buf[96];
-    snprintf(buf, sizeof(buf), "%s, %d %s %d", WeekdayFull[wday], t.tm_mday, MonthGenitive[mon], year);
+    if (ru) {
+        snprintf(buf, sizeof(buf), "%s, %d %s %d", full, t.tm_mday, month, year);
+    } else {
+        snprintf(buf, sizeof(buf), "%s, %s %d, %d", full, month, t.tm_mday, year);
+    }
     if (strlen(buf) <= build::DateMax) {
         return buf;
     }
 
-    snprintf(buf, sizeof(buf), "%s, %d %s", WeekdayFull[wday], t.tm_mday, MonthGenitive[mon]);
+    if (ru) {
+        snprintf(buf, sizeof(buf), "%s, %d %s", full, t.tm_mday, month);
+    } else {
+        snprintf(buf, sizeof(buf), "%s, %s %d", full, month, t.tm_mday);
+    }
     if (strlen(buf) <= build::DateMax) {
         return buf;
     }
 
-    snprintf(buf, sizeof(buf), "%s, %d %s %d", WeekdayShort[wday], t.tm_mday, MonthGenitive[mon], year);
+    if (ru) {
+        snprintf(buf, sizeof(buf), "%s, %d %s %d", weekdayShort(t.tm_wday), t.tm_mday, month, year);
+    } else {
+        snprintf(buf, sizeof(buf), "%s, %s %d, %d", weekdayShort(t.tm_wday), month, t.tm_mday, year);
+    }
     return buf;
 }
 
-const char* const MonthShort[] {
-    "янв", "фев", "мар", "апр", "мая", "июн",
-    "июл", "авг", "сен", "окт", "ноя", "дек",
-};
-
-// "25 окт"
+// "Oct 25" / "25 окт"
 String dayMonth(int mday, int mon) {
+    const char* const month = texts().month_short[((mon % 12) + 12) % 12];
     char buf[24];
-    snprintf(buf, sizeof(buf), "%d %s", mday, MonthShort[((mon % 12) + 12) % 12]);
+    if (current == Language::Russian) {
+        snprintf(buf, sizeof(buf), "%d %s", mday, month);
+    } else {
+        snprintf(buf, sizeof(buf), "%s %d", month, mday);
+    }
     return buf;
 }
 
-// "Вс, 25 окт" (OHpanel home: 165 px / 26 bytes)
+// "Sun, Oct 25" / "Вс, 25 окт" (OHpanel home: 165 px / 26 bytes)
 String dateShort(const tm& t) {
-    String out(WeekdayShort[((t.tm_wday % 7) + 7) % 7]);
+    String out(weekdayShort(t.tm_wday));
     out += F(", ");
     out += dayMonth(t.tm_mday, t.tm_mon);
     return out;
 }
 
-} // namespace ru
+// a printf'ed number for the screen: "21.5" / "21,5"
+void decimal(char* text) {
+    if (current != Language::Russian) {
+        return;
+    }
+    for (auto* p = text; *p; ++p) {
+        if (*p == '.') {
+            *p = ',';
+        }
+    }
+}
+
+} // namespace lang
 
 // -----------------------------------------------------------------------------
 // Config model
@@ -405,9 +499,9 @@ struct Item {
 
 constexpr size_t TilesMax { 9 };
 
-// "layout" of a grid page: columns x rows of tiles. A TFT with a page per grid (OHpanel custom design
-// d3731fbb: buttons33 / buttons32 / buttons22 / buttons12) shows cols x rows tiles; the others use cols
-// columns of the 4x2 tile slots (2 rows), see gridColumns()
+// "layout" of a grid page: columns x rows of tiles. OHpanel shows cols x rows tiles: the custom design
+// d3731fbb on its own pages (buttons33 / buttons32 / buttons22 / buttons12), the stock design drawn at
+// runtime on `buttons`; an unknown TFT design and Lovelace use cols columns of the 4x2 tile slots (2 rows)
 enum class Grid : uint8_t {
     G4x2,
     G3x3,
@@ -444,6 +538,8 @@ struct Page {
     bool list { false };     // "type": "list": OHpanel entities_rows (one row per item), others draw a grid
     Grid grid { Grid::G4x2 };// "layout": "4x2" | "3x3" | "3x2" | "2x2" | "1x2"; "columns": 3 = "3x2"
     uint8_t per_screen { 0 };// "per_screen": tiles (or list rows) per screen, 0 = as many as fit
+    bool draw { false };     // "draw": true: OHpanel draws the tiles at runtime (fill / cirs / xstr) even for 4x2
+    bool nested { false };   // an item's "page": a sub-page, not in the swipe row, opened by its tile
     std::vector<uint16_t> items;
 };
 
@@ -475,6 +571,7 @@ struct Config {
     uint16_t color_unknown { icons::colors::Unknown };
 
     DriverPref display { DriverPref::Auto };
+    lang::Language language { lang::Language::English };
 
     // OHpanel ("ohpanel" object)
     uint8_t background { 0 };     // index into ohpanel::Backgrounds
@@ -734,7 +831,8 @@ bool parseTarget(JsonObject& obj, Config& out, Target& target, String& error) {
         }
     }
 
-    if (obj.containsKey("page")) {
+    // a page index (hardware buttons); an item's "page" object is a nested page (parsePage())
+    if (obj["page"].is<int>()) {
         target.page = obj["page"].as<int>();
     }
 
@@ -919,7 +1017,7 @@ bool parseItem(JsonObject& item_obj, Config& out, Item& item, std::vector<Pendin
     item.name = sanitize(item_obj["name"].as<const char*>(), build::NameMax);
 
     const char* item_type = item_obj["type"].as<const char*>();
-    const bool open = item_obj.containsKey("open");
+    const bool open = item_obj.containsKey("open") || item_obj.containsKey("page");
     uint16_t fallback = icons::LightSwitch;
     if (open && (!item_type || !strcmp(item_type, "link"))) {
         item.type = ItemType::Link;
@@ -953,7 +1051,13 @@ bool parseItem(JsonObject& item_obj, Config& out, Item& item, std::vector<Pendin
         return false;
     }
 
-    if (item.type == ItemType::Link) {
+    // "page": a nested page, target.page is set once it is parsed (parsePage())
+    if ((item.type == ItemType::Link) && item_obj.containsKey("page")) {
+        if (!item_obj["page"].is<JsonObject&>()) {
+            error = where + F(" '") + item.name + F("': \"page\" must be an object");
+            return false;
+        }
+    } else if (item.type == ItemType::Link) {
         const auto& value = item_obj["open"];
         if (value.is<int>()) {
             item.target.page = value.as<int>();
@@ -1011,13 +1115,133 @@ bool parseItem(JsonObject& item_obj, Config& out, Item& item, std::vector<Pendin
     return true;
 }
 
-// one item ("type" counted for thermostats) for the vector reservations below
-void countItem(JsonObject& obj, size_t& items, size_t& thermostats) {
+// one item ("type" counted for thermostats) and its nested page, for the vector reservations below
+void countItem(JsonObject& obj, size_t& items, size_t& thermostats, size_t& pages, int depth = 0) {
     ++items;
     const char* type = obj["type"].as<const char*>();
     if (type && !strcmp(type, "thermostat")) {
         ++thermostats;
     }
+
+    JsonObject& page = obj["page"];
+    if (page.success() && (depth < 8)) {
+        ++pages;
+        JsonArray& nested = page["items"];
+        for (auto item_variant : nested) {
+            JsonObject& item = item_variant.as<JsonObject>();
+            if (item.success()) {
+                countItem(item, items, thermostats, pages, depth + 1);
+            }
+        }
+    }
+}
+
+// an item's "page", parsed after all top-level pages (their indices stay those of "pages")
+struct PendingPage {
+    JsonObject* obj;
+    size_t item;
+};
+
+bool parsePage(JsonObject& page_obj, Config& out, std::vector<PendingOpen>& pending,
+        std::vector<PendingPage>& nested, size_t page_index, const String& fallback_title,
+        String& error, String& warnings)
+{
+    const char* type = page_obj["type"].as<const char*>();
+    Page page;
+    if (type && !strcmp(type, "settings")) {
+        page.settings = true;
+    } else if (type && !strcmp(type, "list")) {
+        page.list = true;
+    } else if (type && strcmp(type, "grid")) {
+        warnings += F("page type '");
+        warnings += type;
+        warnings += F("' shown as grid; ");
+    }
+
+    page.id = page_obj["id"].as<const char*>();
+    if (!page.id.length()) {
+        page.id = String('p') + page_index;
+    }
+    page.title = sanitize(page_obj["title"].as<const char*>(), build::HeadingMax);
+    if (!page.title.length()) {
+        page.title = sanitize(fallback_title.c_str(), build::HeadingMax);
+    }
+
+    if (page_obj.containsKey("columns")) {
+        const int columns = page_obj["columns"].as<int>();
+        if ((columns == 3) || (columns == 4)) {
+            page.grid = (columns == 3) ? Grid::G3x2 : Grid::G4x2;
+        } else {
+            warnings += F("page ");
+            warnings += page_index;
+            warnings += F(": columns must be 3 or 4; ");
+        }
+    }
+
+    // "layout" wins over "columns"
+    if (page_obj.containsKey("layout")) {
+        const char* layout = page_obj["layout"].as<const char*>();
+        bool found = false;
+        for (size_t index = 0; index < (sizeof(GridNames) / sizeof(GridNames[0])); ++index) {
+            if (layout && !strcmp(layout, GridNames[index])) {
+                page.grid = static_cast<Grid>(index);
+                found = true;
+            }
+        }
+        if (!found) {
+            warnings += F("page ");
+            warnings += page_index;
+            warnings += F(": layout must be 4x2, 3x3, 3x2, 2x2 or 1x2; ");
+        }
+    }
+
+    if (page_obj.containsKey("per_screen")) {
+        const int per_screen = page_obj["per_screen"].as<int>();
+        if ((per_screen >= 1) && (per_screen <= static_cast<int>(TilesMax))) {
+            page.per_screen = per_screen;
+        } else {
+            warnings += F("page ");
+            warnings += page_index;
+            warnings += F(": per_screen must be 1..9; ");
+        }
+    }
+
+    if (page_obj.containsKey("draw")) {
+        page.draw = page_obj["draw"].as<bool>();
+    }
+
+    JsonArray& items = page_obj["items"];
+    if (page.settings && items.success() && items.size()) {
+        warnings += F("settings page: items ignored; ");
+    } else if (items.success()) {
+        page.items.reserve(items.size());
+        const String where = String(F("page ")) + page_index + F(" item");
+        for (auto item_variant : items) {
+            JsonObject& item_obj = item_variant.as<JsonObject>();
+            if (!item_obj.success()) {
+                error = F("item is not an object");
+                return false;
+            }
+
+            Item item;
+            if (!parseItem(item_obj, out, item, pending, where, error, warnings)) {
+                return false;
+            }
+
+            out.items.push_back(std::move(item));
+            page.items.push_back(out.items.size() - 1);
+
+            JsonObject& sub = item_obj["page"];
+            if (sub.success() && (out.items.back().type == ItemType::Link)) {
+                nested.push_back(PendingPage{&sub, out.items.size() - 1});
+            } else if (sub.success()) {
+                warnings += where + F(" '") + out.items.back().name + F("': \"page\" needs no \"type\", ignored; ");
+            }
+        }
+    }
+
+    out.pages.push_back(std::move(page));
+    return true;
 }
 
 bool parseRoot(JsonObject& root, Config& out, String& error, String& warnings) {
@@ -1085,6 +1309,15 @@ bool parseRoot(JsonObject& root, Config& out, String& error, String& warnings) {
             out.display = DriverPref::Lovelace;
         } else if (!display || strcmp(display, "auto")) {
             warnings += F("display: auto, ohpanel or lovelace (using auto); ");
+        }
+    }
+
+    if (root.containsKey("language")) {
+        const char* language = root["language"].as<const char*>();
+        if (language && !strcmp(language, "ru")) {
+            out.language = lang::Language::Russian;
+        } else if (!language || strcmp(language, "en")) {
+            warnings += F("language: en or ru (using en); ");
         }
     }
 
@@ -1198,12 +1431,13 @@ bool parseRoot(JsonObject& root, Config& out, String& error, String& warnings) {
     {
         size_t item_count = 0;
         size_t thermostat_count = 0;
+        size_t page_count = pages.size();
         for (auto page_variant : pages) {
             JsonArray& items = page_variant.as<JsonObject>()["items"];
             for (auto item_variant : items) {
                 JsonObject& obj = item_variant.as<JsonObject>();
                 if (obj.success()) {
-                    countItem(obj, item_count, thermostat_count);
+                    countItem(obj, item_count, thermostat_count, page_count);
                 }
             }
         }
@@ -1212,18 +1446,19 @@ bool parseRoot(JsonObject& root, Config& out, String& error, String& warnings) {
         for (auto shortcut : shortcuts) {
             JsonObject& obj = shortcut.as<JsonObject>();
             if (obj.success() && !obj.containsKey("ref")) {
-                countItem(obj, item_count, thermostat_count);
+                countItem(obj, item_count, thermostat_count, page_count);
             }
         }
         out.shortcuts.reserve(std::min<size_t>(7, shortcuts.size()));
 
         out.items.reserve(item_count);
         out.thermostats.reserve(thermostat_count);
-        out.pages.reserve(pages.size());
+        out.pages.reserve(page_count);
     }
 
     std::vector<PendingOpen> pending;
 
+    std::vector<PendingPage> nested;
     size_t page_index = 0;
     for (auto page_variant : pages) {
         JsonObject& page_obj = page_variant.as<JsonObject>();
@@ -1231,89 +1466,20 @@ bool parseRoot(JsonObject& root, Config& out, String& error, String& warnings) {
             error = F("page is not an object");
             return false;
         }
-
-        const char* type = page_obj["type"].as<const char*>();
-        Page page;
-        if (type && !strcmp(type, "settings")) {
-            page.settings = true;
-        } else if (type && !strcmp(type, "list")) {
-            page.list = true;
-        } else if (type && strcmp(type, "grid")) {
-            warnings += F("page type '");
-            warnings += type;
-            warnings += F("' shown as grid; ");
+        if (!parsePage(page_obj, out, pending, nested, page_index, String(), error, warnings)) {
+            return false;
         }
-
-        page.id = page_obj["id"].as<const char*>();
-        if (!page.id.length()) {
-            page.id = String('p') + page_index;
-        }
-        page.title = sanitize(page_obj["title"].as<const char*>(), build::HeadingMax);
-
-        if (page_obj.containsKey("columns")) {
-            const int columns = page_obj["columns"].as<int>();
-            if ((columns == 3) || (columns == 4)) {
-                page.grid = (columns == 3) ? Grid::G3x2 : Grid::G4x2;
-            } else {
-                warnings += F("page ");
-                warnings += page_index;
-                warnings += F(": columns must be 3 or 4; ");
-            }
-        }
-
-        // "layout" wins over "columns"
-        if (page_obj.containsKey("layout")) {
-            const char* layout = page_obj["layout"].as<const char*>();
-            bool found = false;
-            for (size_t index = 0; index < (sizeof(GridNames) / sizeof(GridNames[0])); ++index) {
-                if (layout && !strcmp(layout, GridNames[index])) {
-                    page.grid = static_cast<Grid>(index);
-                    found = true;
-                }
-            }
-            if (!found) {
-                warnings += F("page ");
-                warnings += page_index;
-                warnings += F(": layout must be 4x2, 3x3, 3x2, 2x2 or 1x2; ");
-            }
-        }
-
-        if (page_obj.containsKey("per_screen")) {
-            const int per_screen = page_obj["per_screen"].as<int>();
-            if ((per_screen >= 1) && (per_screen <= static_cast<int>(TilesMax))) {
-                page.per_screen = per_screen;
-            } else {
-                warnings += F("page ");
-                warnings += page_index;
-                warnings += F(": per_screen must be 1..9; ");
-            }
-        }
-
-        JsonArray& items = page_obj["items"];
-        if (page.settings && items.success() && items.size()) {
-            warnings += F("settings page: items ignored; ");
-        } else if (items.success()) {
-            page.items.reserve(items.size());
-            const String where = String(F("page ")) + page_index + F(" item");
-            for (auto item_variant : items) {
-                JsonObject& item_obj = item_variant.as<JsonObject>();
-                if (!item_obj.success()) {
-                    error = F("item is not an object");
-                    return false;
-                }
-
-                Item item;
-                if (!parseItem(item_obj, out, item, pending, where, error, warnings)) {
-                    return false;
-                }
-
-                out.items.push_back(std::move(item));
-                page.items.push_back(out.items.size() - 1);
-            }
-        }
-
-        out.pages.push_back(std::move(page));
         ++page_index;
+    }
+
+    // nested pages after the swipe row, breadth first (a sub-page may hold further sub-pages)
+    for (size_t index = 0; index < nested.size(); ++index) {
+        const auto job = nested[index];
+        if (!parsePage(*job.obj, out, pending, nested, out.pages.size(), out.items[job.item].name, error, warnings)) {
+            return false;
+        }
+        out.pages.back().nested = true;
+        out.items[job.item].target.page = out.pages.size() - 1;
     }
 
     // home shortcuts (OHpanel, up to 7): an item name, {"ref": "<item name>"} or a full item
@@ -1437,10 +1603,14 @@ bool parseRoot(JsonObject& root, Config& out, String& error, String& warnings) {
         }
     }
 
-    for (const auto& item : out.items) {
+    for (auto& item : out.items) {
         if ((item.type == ItemType::Link) && (item.target.page >= static_cast<int>(out.pages.size()))) {
             error = String(F("item '")) + item.name + F("': no page ") + item.target.page;
             return false;
+        }
+        // an "open" tile without "name" shows the title of its page
+        if ((item.type == ItemType::Link) && (item.target.page >= 0) && !item.name.length()) {
+            item.name = sanitize(out.pages[item.target.page].title.c_str(), build::NameMax);
         }
     }
     JsonArray& buttons = root["buttons"];
@@ -1609,7 +1779,7 @@ ParseResult parseInPlace(char* text, size_t json_size, Config& out, String& erro
 
     try {
         HeapJsonBuffer buffer(nodes.get(), json_size);
-        JsonObject& root = buffer.parseObject(text);
+        JsonObject& root = buffer.parseObject(text, build::ConfigNestingLimit);
         if (!root.success()) {
             error = ((buffer.size() + JSON_OBJECT_SIZE(1)) > json_size)
                 ? F("JSON nesting / size not supported")
@@ -2114,13 +2284,14 @@ struct Card {
     String title;
     bool settings { false }; // the settings tiles (count of them), no items
     bool list { false };     // rows of a "type": "list" page (only when the driver draws lists)
+    bool sub { false };      // a sheet of a nested page: after all cards of the swipe row
     Grid grid { Grid::G4x2 };// the page's "layout"
 };
 
-constexpr size_t SettingsTiles { 2 };
+constexpr size_t SettingsTiles { 3 };
 
 // tiles of a grid page on one screen, the smallest of
-// - grids: the TFT has a page per layout, it holds cols x rows (9, 6, 4, 2 or 8);
+// - grids: the driver shows cols x rows (9, 6, 4, 2 or 8): the TFT's page per layout, or drawn tiles;
 //   else the layout's columns of the 4x2 slot grid (2 x cols: 6, 6, 4, 2 or 8) and the driver's capacity;
 // - "per_screen"
 size_t gridCapacity(const Page& page, size_t capacity, bool grids = false) {
@@ -2133,22 +2304,29 @@ size_t gridCapacity(const Page& page, size_t capacity, bool grids = false) {
 
 // settings: the driver draws "type": "settings" pages (OHpanel), others skip them
 // list_rows: rows per sheet of "type": "list" pages; 0 = the driver shows them as grids
-// grids: the TFT has a page per "layout" (gridCapacity())
+// grids: the driver shows every "layout" in full (gridCapacity())
 void buildCards(std::vector<Card>& cards, size_t capacity, size_t title_max, bool settings = false,
         size_t list_rows = 0, bool grids = false)
 {
     cards.clear();
 
-    for (size_t page = 0; page < config.pages.size(); ++page) {
+    // the swipe row (top-level "pages") first, then the sheets of the nested pages (opened by their tiles)
+    for (size_t index = 0; index < (2 * config.pages.size()); ++index) {
+        const bool sub = (index >= config.pages.size());
+        const size_t page = sub ? (index - config.pages.size()) : index;
         const auto& info = config.pages[page];
+        if (info.nested != sub) {
+            continue;
+        }
         if (info.settings) {
             if (settings) {
                 Card card;
                 card.page = page;
                 card.first = 0;
                 card.count = SettingsTiles;
-                card.title = info.title.length() ? info.title : String(F("Настройки"));
+                card.title = info.title.length() ? info.title : String(lang::texts().settings);
                 card.settings = true;
+                card.sub = sub;
                 utf8Truncate(card.title, title_max);
                 cards.push_back(std::move(card));
             }
@@ -2168,6 +2346,7 @@ void buildCards(std::vector<Card>& cards, size_t capacity, size_t title_max, boo
             card.first = chunk * per;
             card.count = std::min(per, total - std::min(total, chunk * per));
             card.list = list;
+            card.sub = sub;
             card.grid = list ? Grid::G4x2 : info.grid;
             card.title = info.title;
             if (chunks > 1) {
@@ -2190,6 +2369,37 @@ int firstCard(const std::vector<Card>& cards, int page) {
         }
     }
     return -1;
+}
+
+// cards of the swipe row (they come before the sub-page sheets)
+size_t rowCards(const std::vector<Card>& cards) {
+    size_t out = 0;
+    while ((out < cards.size()) && !cards[out].sub) {
+        ++out;
+    }
+    return out;
+}
+
+// both cards exist and are sheets of the same page
+bool samePage(const std::vector<Card>& cards, size_t a, size_t b) {
+    return (a < cards.size()) && (b < cards.size()) && (cards[a].page == cards[b].page);
+}
+
+// sheets of the card's page and the card's position among them
+void pageSheets(const std::vector<Card>& cards, size_t card, size_t& count, size_t& current) {
+    count = 0;
+    current = 0;
+    if (card >= cards.size()) {
+        return;
+    }
+    for (size_t n = 0; n < cards.size(); ++n) {
+        if (cards[n].page == cards[card].page) {
+            if (n == card) {
+                current = count;
+            }
+            ++count;
+        }
+    }
 }
 
 bool itemUses(const Item& item, int entity) {
@@ -2701,15 +2911,11 @@ float thermostatClamp(const Thermostat& thermostat, float value) {
     return std::max(min, std::min(max, value));
 }
 
-// "21,5" (decimal comma, 1 decimal unless the value is whole and the step too)
+// "21.5" / "21,5" (1 decimal unless the value is whole and the step too)
 String temperatureShort(float value) {
     char buf[16];
     snprintf(buf, sizeof(buf), "%.1f", value);
-    for (auto* p = buf; *p; ++p) {
-        if (*p == '.') {
-            *p = ',';
-        }
-    }
+    lang::decimal(buf);
     return buf;
 }
 
@@ -2871,6 +3077,14 @@ void applyUiSettings(Config& out) {
     } else if (theme == F("dark")) {
         out.theme = Theme::Dark;
     }
+
+    const auto background = getSetting(F("nspBg"));
+    for (size_t index = 0; index < (sizeof(BackgroundNames) / sizeof(BackgroundNames[0])); ++index) {
+        if (background == BackgroundNames[index]) {
+            out.background = index;
+            break;
+        }
+    }
 }
 
 void saveLayout(Layout layout) {
@@ -2881,6 +3095,11 @@ void saveLayout(Layout layout) {
 void saveTheme(Theme theme) {
     config.theme = theme;
     setSetting(F("nspTheme"), String((theme == Theme::Light) ? F("light") : F("dark")));
+}
+
+void saveBackground(uint8_t background) {
+    config.background = background;
+    setSetting(F("nspBg"), String(BackgroundNames[background])); // a bare const char* picks the bool overload
 }
 
 // -----------------------------------------------------------------------------
@@ -4091,6 +4310,7 @@ void applyConfig(Config&& next, const String& warnings, const char* source) {
 
     unsubscribeAll();
     config = std::move(next);
+    lang::current = config.language;
     next.entities.clear(); // whatever the move left there, freed before the drivers rebuild
     subscribeAll();
 

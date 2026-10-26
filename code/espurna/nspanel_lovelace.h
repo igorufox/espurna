@@ -61,6 +61,7 @@ struct Display {
     Screen screen { Screen::Unknown };
     size_t card { 0 };
     std::vector<Card> cards;
+    std::vector<int> history; // nested pages: where each was opened from (-1 screensaver, else a card)
 
     bool dirty { false };
     uint32_t dirty_since { 0 };
@@ -336,7 +337,7 @@ void sendWeather() {
             if (n < data.count) {
                 const auto& day = data.days[n];
                 const auto icon = icons::weather(day.code, true);
-                weatherGroup(out, icon.icon, icon.color, ru::WeekdayShort[day.wday % 7], forecastValue(day));
+                weatherGroup(out, icon.icon, icon.color, lang::weekdayShort(day.wday), forecastValue(day));
             } else {
                 weatherGroup(out, 0, 0, String(), String());
             }
@@ -425,7 +426,7 @@ void sendClock(bool force) {
 
     if (force || (t.tm_mday != display.last_mday)) {
         display.last_mday = t.tm_mday;
-        serial::enqueue(String(F("date~")) + ru::date(t), true);
+        serial::enqueue(String(F("date~")) + lang::date(t), true);
     }
 }
 
@@ -436,6 +437,7 @@ void buildCards() {
     if (display.card >= display.cards.size()) {
         display.card = 0;
     }
+    display.history.clear();
 }
 
 const char* cardType(const Card& card) {
@@ -568,7 +570,11 @@ void showCard(size_t index, bool full) {
     display.dirty = false;
 
     const auto& card = display.cards[index];
-    const size_t total = display.cards.size();
+    if (!card.sub) {
+        display.history.clear();
+    }
+    // the row: home + its cards; a nested page: its own sheets, left of the first is where it was opened from
+    const size_t total = card.sub ? display.cards.size() : rowCards(display.cards);
 
     if (full) {
         serial::enqueue(String(F("pageType~")) + cardType(card));
@@ -580,13 +586,15 @@ void showCard(size_t index, bool full) {
     out += card.title;
 
     // Linear navigation: the screensaver sits left of the first card, the last card has no right arrow
-    if (index == 0) {
+    if (card.sub && !samePage(display.cards, index, index - 1)) {
+        renderNav(out, "navPrev", icons::ArrowLeftBold, String());
+    } else if (index == 0) {
         renderNav(out, "navHome", icons::Home, String());
     } else {
         renderNav(out, "navPrev", icons::ArrowLeftBold, display.cards[index - 1].title);
     }
 
-    if ((index + 1) < total) {
+    if (((index + 1) < total) && (!card.sub || samePage(display.cards, index, index + 1))) {
         renderNav(out, "navNext", icons::ArrowRightBold, display.cards[index + 1].title);
     } else {
         renderNavHidden(out);
@@ -605,6 +613,7 @@ void showCard(size_t index, bool full) {
 }
 
 void showScreensaver() {
+    display.history.clear();
     display.screen = Screen::Screensaver;
     display.dirty = false;
     serial::enqueue(F("pageType~screensaver"));
@@ -622,9 +631,17 @@ void requestStartup() {
 void showTarget(int page) {
     if (page >= 0) {
         const int card = firstCard(display.cards, page);
-        if (card >= 0) {
-            showCard(card, true);
+        if (card < 0) {
+            return;
         }
+        const bool here = (display.screen == Screen::Card) && samePage(display.cards, display.card, card);
+        if (display.cards[card].sub && !here) {
+            if (display.history.size() >= 8) {
+                display.history.erase(display.history.begin());
+            }
+            display.history.push_back((display.screen == Screen::Card) ? static_cast<int>(display.card) : -1);
+        }
+        showCard(card, true);
     } else if ((page == PageHome) || (page == PageWeather)) {
         showScreensaver();
     }
@@ -740,11 +757,29 @@ void onMessage(const String& message) {
     }
 
     if (id == F("navPrev") || id == F("navNext")) {
-        const size_t total = display.cards.size();
+        const bool sub = (display.card < display.cards.size()) && display.cards[display.card].sub;
+        const size_t total = sub ? display.cards.size() : rowCards(display.cards);
         if (id == F("navNext")) {
-            if ((display.card + 1) < total) {
+            if (((display.card + 1) < total) && (!sub || samePage(display.cards, display.card, display.card + 1))) {
                 buzzer::beep();
                 showCard(display.card + 1, true);
+            }
+        } else if (sub && !samePage(display.cards, display.card, display.card - 1)) {
+            // back to where the nested page was opened from
+            buzzer::beep();
+            int back = -1;
+            while (!display.history.empty()) {
+                back = display.history.back();
+                display.history.pop_back();
+                if ((back < 0) || (static_cast<size_t>(back) < display.cards.size())) {
+                    break;
+                }
+                back = -1;
+            }
+            if (back >= 0) {
+                showCard(back, true);
+            } else {
+                showScreensaver();
             }
         } else if (display.card > 0) {
             buzzer::beep();
