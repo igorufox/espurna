@@ -32,7 +32,7 @@ Builds (same features, they differ only in the default GPIO assignment):
 |-------|-------|
 | `esp32-generic` | any ESP32 with 4 MB flash; no relays, buttons or LEDs pre-assigned, configure them from the WebUI or a Tasmota template |
 | `esp32-relay-x2` | **LC-Tech ESP32 2-relay**: relays on GPIO16 / GPIO17, button on GPIO0, LED on GPIO23 (inverted) |
-| `esp32-nspanel` | **Sonoff NSPanel EU (gen1)**: 2 relays, 2 buttons, NTC; drives the Lovelace UI TFT, screen and MQTT tiles from one JSON - see [nspanel/README.md](nspanel/README.md) |
+| `esp32-nspanel` | **Sonoff NSPanel EU (gen1)**: 2 relays, 2 buttons, NTC; a stand-alone MQTT touch panel on the OHpanel (or Lovelace UI) screen, built from one JSON - see [Sonoff NSPanel](#sonoff-nspanel) |
 | `itead-sonoff-minir4` | **Sonoff MINIR4 "Mini Extreme"** (ESP32-D0WD-V3, 4 MB): relay on GPIO26, button on GPIO0, S1/S2 wall switch on GPIO27, LED on GPIO19 (inverted) - see [Sonoff MINIR4](#sonoff-minir4) |
 
 Enabled modules: WebUI, API, MQTT, terminal, Home Assistant, Domoticz, Alexa, sensors, PWM.
@@ -47,6 +47,23 @@ Relays, buttons and LEDs are configured at runtime, so any ESP32 device can run 
 3. Check the preview (number of relays / buttons / LEDs found), press **Import Tasmota Template** and reboot.
 
 Supported GPIO functions (current Tasmota numbering): `Relay1..32` / `Relay_i` (224-287), `Button1..32` with `n` / `i` / `in` variants (32-159), `Switch1..32` / `Switch_n` (160-223, imported as buttons), `Led1..32` / `Led_i` (288-351), `PWM1..32` / `PWM_i` (416-479, as LEDs), `LedLink` / `LedLinki` (544, 576). Template `NAME` becomes the device description. Other functions (sensors, serial, etc.) are skipped, and the import overwrites existing relay, button and LED settings.
+
+### Sonoff NSPanel
+
+The first Sonoff NSPanel (EU) as a stand-alone wall panel: the screen and what its tiles switch come from one JSON file on the
+panel, and it talks MQTT directly to the devices. No Home Assistant, ioBroker or other server; the weather comes from Open-Meteo.
+
+- home screen with clock, weather and forecast, room temperature, MQTT info lines and shortcuts;
+- swipeable pages in 4x2, 3x3, 3x2, 2x2 or 1x2 grids or as lists, tiles that open nested pages;
+- switches, pulse buttons, scenes over device groups, sensor values, thermostats with a setpoint dial (zigbee2mqtt, Istabai, any JSON);
+- the two hardware buttons run group actions; JSON editor with a live preview in the WebUI; English or Russian screen texts.
+
+|||
+|---|---|
+|![NSPanel home screen](nspanel/img/home.jpg)|![NSPanel heating page, 9 thermostats](nspanel/img/heating-3x3.jpg)|
+|home screen|nine thermostats on a 3x3 page|
+
+Setup, the JSON format and more photos: [nspanel/README.md](nspanel/README.md).
 
 ### Sonoff MINIR4
 
