@@ -13,7 +13,7 @@ ESPurna replaces the Tasmota + Berry + AppDaemon chain and talks to the TFT dire
 - joBr99 **Lovelace UI** TFT (v4.1.1 / v4.7.3): screensaver and grid cards with arrow navigation (driver `nspanel_lovelace.h`,
   protocol `lovelace-protocol.md`). The fallback: flash it back with `nspanel.flash` (below) and the panel works as before.
 
-Shared by both: `/nspanel.json` model, MQTT state map, groups/scenes, hardware buttons, Open-Meteo weather, NTC, buzzer, web editor,
+Shared by both: `/nspanel.json` model, MQTT state map, groups/scenes, hardware buttons, Open-Meteo weather, room temperature, buzzer, web editor,
 terminal commands and the TFT flasher (`code/espurna/nspanel.cpp`).
 
 ## Hardware mapping
@@ -25,7 +25,7 @@ terminal commands and the TFT flasher (`code/espurna/nspanel.cpp`).
 | Display UART2 | TX 16, RX 17 | 921600 8N1 (OHpanel) / 115200 8N1 (Lovelace) |
 | Display power | 4 | driven LOW (= on) at boot |
 | Buzzer | 21 | LEDC channel 15, short beep on tile tap when `"beep": true` |
-| NTC | 38 (ADC1) | 11.2 kOhm pull-up to 3.3 V, NTC 10 kOhm @ 25 C, B 3950 (Tasmota `ADCParam1 2,11200,10000,3950`, ESPHome configs use the same values) |
+| NTC | 38 (ADC1) | 11.2 kOhm pull-up to 3.3 V, NTC 10 kOhm @ 25 C, B 3950 (Tasmota `ADCParam1 2,11200,10000,3950`, ESPHome configs use the same values); read by the ESPurna `NTC` sensor (`NTC_PIN 38`, `NTC_R_UP 11200`, `NTC_R_DOWN 0` in hardware.h) |
 
 Any hardware button can use the JSON action: set its ESPurna action to `custom` (e.g. `btnClick0` = `custom`), then `buttons[i]` applies.
 
@@ -57,7 +57,7 @@ All three need the normal ESPurna web authentication.
     "dim": 10,                                      // screensaver brightness 0..100 (0 = backlight off); must differ from brightness
     "weather": { "lat": 52.52, "lon": 13.40, "refresh": 900, "enabled": true }
   },
-  "temperature": { "enabled": true, "offset": 0.0, "publish": 60, "show": true },
+  "temperature": { "enabled": true, "show": true },   // room temperature on the screen; correction and MQTT interval: web UI Sensors
   "colors": { "on": 65222, "off": 17299, "unknown": 16904 },   // RGB565 decimal
   "beep": false,
   "debug": false,                                   // log every TX/RX frame
@@ -410,13 +410,14 @@ after a TFT restart, or ≥ 32 bytes outside 55 BB frames (another TFT talking a
 - `<panel root>/nspanel`: the driver when it is detected (again on every MQTT connect), `{"driver":"ohpanel","version":"bc629e1e","model":"NX4832F035_011R"}`
   or `{"driver":"lovelace","version":"53","model":"eu"}`, and every TFT event as received: Lovelace `event,buttonPress2,i3,button`,
   OHpanel `{"page": "buttons", "component": "tile3", "value": "release"}`.
-- `<panel root>/temperature`: NTC temperature, every `temperature.publish` seconds.
+- `<panel root>/temperature`: room temperature, published by the ESPurna sensor module like on any ESPurna device (every
+  `snsRead` x `snsReport` seconds, 6 x 10 by default; units `tmpUnits0`, °C by default; correction `tmpCorrection0`).
 
 ## Terminal
 
 | Command | |
 |---|---|
-| `nspanel.info` | active driver + setting, TFT version/design and model, detection state, screen, card, counters (OHpanel: syncs, sync timeouts, overflows), config summary and errors, UI settings and JSON payload counters, FS, weather, NTC, boot partitions, flasher result, last 8 events |
+| `nspanel.info` | active driver + setting, TFT version/design and model, detection state, screen, card, counters (OHpanel: syncs, sync timeouts, overflows), config summary and errors, UI settings and JSON payload counters, FS, weather, room temperature, boot partitions, flasher result, last 8 events |
 | `nspanel.page <index / home / weather / settings>` | show a page |
 | `nspanel.detect` | detect the display again |
 | `nspanel.reload` | re-read `/nspanel.json` |
@@ -521,7 +522,9 @@ Not verified yet:
   `font` (53) is untested.
 - The Tasmota safeboot install path, `safeboot` and the crash-loop guard.
 - NTC constants are from the Tasmota template and ESPHome configs, not measured; the sensor sits near the ESP and reads high —
-  use `temperature.offset`. ADC is read with `analogReadMilliVolts` (11 dB attenuation).
+  set the temperature correction in the web UI (Sensors, `tmpCorrection0`). On ESP32 the ESPurna analog sensors read the pin
+  with `analogReadMilliVolts` (11 dB attenuation). `temperature.offset` and `temperature.publish` of older configs are
+  ignored with a warning.
 - Icon codepoints: taken from the 2023-06 `icons.json`; glyphs added to MDI after the TFT font was generated may render blank.
 - Byte limits: names are cut at 30 bytes, headings and the date at 40, forecast values at 10 (assumed bytes, not characters).
   Long Cyrillic names (> 15 letters) are truncated.

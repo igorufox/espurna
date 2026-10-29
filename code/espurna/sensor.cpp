@@ -2337,6 +2337,7 @@ void load() {
 #if NTC_SUPPORT
     {
         auto* sensor = new NTCSensor();
+        sensor->setPin(NTC_PIN);
         sensor->setSamples(NTC_SAMPLES);
         sensor->setDelay(NTC_DELAY);
         sensor->setUpstreamResistor(NTC_R_UP);

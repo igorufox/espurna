@@ -13,7 +13,7 @@ Shared core (this file):
 - UART2 (TX GPIO16, RX GPIO17) ownership, display detection (link::), Nextion TFT upload (flash::)
 - config model from /nspanel.json: pages of tiles, groups/scenes, shortcuts, hardware buttons
 - MQTT state map (absolute state topics), local relays, hardware button custom actions
-- Open-Meteo weather task, NTC temperature, buzzer
+- Open-Meteo weather task, room temperature (from the ESPurna NTC sensor), buzzer
 - LittleFS on the existing data/spiffs partition (Tasmota layout), /nspanel and /nspanel.json web endpoints
 - Tasmota safeboot layout support: `safeboot` command, crash-loop guard, web OTA guard
 
@@ -37,6 +37,10 @@ Shared core (this file):
 
 #if RELAY_SUPPORT
 #include "relay.h"
+#endif
+
+#if SENSOR_SUPPORT
+#include "sensor.h"
 #endif
 
 #if WEB_SUPPORT
@@ -80,7 +84,6 @@ constexpr uint32_t LovelaceBaud { 115200 };
 constexpr uint32_t OhpanelBaud { 921600 };
 constexpr int BuzzerPin { 21 };
 constexpr int BuzzerChannel { 15 };       // pwm.cpp allocates LEDC channels from 0
-constexpr int NtcPin { 38 };
 
 constexpr size_t EventsMax { 8 };
 
@@ -114,15 +117,6 @@ constexpr uint32_t UploadAnswerMs { 15000 };
 
 constexpr uint32_t CrashLoopMax { 3 };
 constexpr uint32_t CrashLoopUptimeMs { 60000 };
-
-// Tasmota NSPanel template: ADCParam1 2,11200,10000,3950 (NTC to GND, 11.2k pull-up to 3.3V)
-// ESPHome NSPanel configs use the same values (resistance DOWNSTREAM 11.2kOhm, B 3950, 10kOhm @ 25C)
-constexpr float NtcPullup { 11200.0f };
-constexpr float NtcR0 { 10000.0f };
-constexpr float NtcBeta { 3950.0f };
-constexpr float NtcT0 { 298.15f };
-constexpr float NtcSupplyMv { 3300.0f };
-constexpr uint32_t NtcReadMs { 10000 };
 
 constexpr uint32_t WeatherStack { 12288 };
 constexpr size_t WeatherHeapMin { 50000 };
@@ -568,8 +562,6 @@ struct Config {
 
     bool temperature { true };
     bool temperature_show { true };
-    float temperature_offset { 0.0f };
-    uint32_t temperature_publish { 60 };
 
     bool beep { false };
     bool debug { false };
@@ -1302,9 +1294,9 @@ bool parseRoot(JsonObject& root, Config& out, String& error, String& warnings) {
     if (temperature.success()) {
         out.temperature = temperature["enabled"] | true;
         out.temperature_show = temperature["show"] | true;
-        out.temperature_offset = temperature["offset"] | 0.0f;
-        if (temperature.containsKey("publish")) {
-            out.temperature_publish = clampValue<uint32_t>(temperature["publish"].as<long>(), 0, 86400);
+        // the NTC is an ESPurna sensor: its correction and MQTT interval are the sensor settings
+        if (temperature.containsKey("offset") || temperature.containsKey("publish")) {
+            warnings += F("temperature: offset and publish are ignored, use the Sensors settings of the web UI; ");
         }
     }
 
@@ -2746,35 +2738,14 @@ void loop() {
 } // namespace weather
 
 // -----------------------------------------------------------------------------
-// NTC temperature (GPIO38, ADC1)
+// Room temperature: the NTC on GPIO38 is an ESPurna sensor (NTCSensor), so it shows up in the web UI, the sensor
+// MQTT topics and the correction / units settings; the screen shows the first temperature magnitude
 // -----------------------------------------------------------------------------
 
 namespace ntc {
 
 float value { NAN };
-float millivolts { 0.0f };
-uint32_t last_read { 0 };
-uint32_t last_publish { 0 };
-bool first { true };
-
-void read() {
-    uint32_t sum = 0;
-    for (int n = 0; n < 8; ++n) {
-        sum += analogReadMilliVolts(build::NtcPin);
-    }
-    millivolts = sum / 8.0f;
-
-    if ((millivolts < 10.0f) || (millivolts > (build::NtcSupplyMv - 10.0f))) {
-        value = NAN;
-        return;
-    }
-
-    const float resistance = build::NtcPullup * millivolts / (build::NtcSupplyMv - millivolts);
-    const float kelvin = 1.0f / ((1.0f / build::NtcT0) + (logf(resistance / build::NtcR0) / build::NtcBeta));
-    const float celsius = kelvin - 273.15f + config.temperature_offset;
-
-    value = std::isnan(value) ? celsius : (value * 0.7f + celsius * 0.3f);
-}
+bool reported { false };
 
 String text() {
     if (!config.temperature || std::isnan(value)) {
@@ -2786,30 +2757,44 @@ String text() {
     return buf;
 }
 
-void loop() {
-    if (!config.temperature) {
+#if SENSOR_SUPPORT
+// single readings until the first report, then only reports (filtered over snsReport readings)
+void update(const espurna::sensor::Value& reading, bool report) {
+    if ((reading.type != MAGNITUDE_TEMPERATURE) || (reading.index != 0) || std::isnan(reading.value)) {
         return;
     }
 
-    const auto now = millis();
-    if (first || (now - last_read >= build::NtcReadMs)) {
-        first = false;
-        last_read = now;
-        read();
+    if (!report && reported) {
+        return;
+    }
 
+    reported = reported || report;
+
+    // the screen shows Celsius or Fahrenheit as set for the magnitude, never Kelvin
+    float next = reading.value;
+    if (reading.units == espurna::sensor::Unit::Kelvin) {
+        next -= 273.15f;
+    }
+
+    if (next != value) {
+        value = next;
         driver::temperatureChanged();
     }
+}
 
-#if MQTT_SUPPORT
-    if (config.temperature_publish && !std::isnan(value)
-        && (now - last_publish >= config.temperature_publish * 1000ul)
-        && mqttConnected())
-    {
-        last_publish = now;
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%.1f", value);
-        mqttSend("temperature", buf);
-    }
+void onRead(const espurna::sensor::Value& reading) {
+    update(reading, false);
+}
+
+void onReport(const espurna::sensor::Value& reading) {
+    update(reading, true);
+}
+#endif
+
+void setup() {
+#if SENSOR_SUPPORT
+    sensorOnMagnitudeRead(onRead);
+    sensorOnMagnitudeReport(onReport);
 #endif
 }
 
@@ -5177,7 +5162,8 @@ void terminalInfo(espurna::terminal::CommandContext&& ctx) {
     ctx.output.printf_P(PSTR("Weather: %s, last: %s, %.1fC code %d, %u days\n"),
         config.weather ? "enabled" : "disabled", weather::last_error,
         weather::current.temperature, weather::current.code, weather::current.count);
-    ctx.output.printf_P(PSTR("NTC: %.2f C (%.0f mV)\n"), ntc::value, ntc::millivolts);
+    ctx.output.printf_P(PSTR("Room temperature: %.1f (%s)\n"), ntc::value,
+        ntc::reported ? "sensor report" : std::isnan(ntc::value) ? "no reading yet" : "sensor reading");
 
     const auto* running = esp_ota_get_running_partition();
     ctx.output.printf_P(PSTR("Boot: running '%s', OTA slot %s, factory %s, unstable boots %u\n"),
@@ -5332,7 +5318,6 @@ void panelLoop() {
     link::loop();
 
     weather::loop();
-    ntc::loop();
     buzzer::loop();
 }
 
@@ -5364,9 +5349,11 @@ void nspanelSetup() {
 
     gpioLock(build::TxPin);
     gpioLock(build::RxPin);
-    gpioLock(build::NtcPin);
+#if NTC_SUPPORT
+    gpioLock(NTC_PIN);
+#endif
 
-    analogSetPinAttenuation(build::NtcPin, ADC_11db);
+    ntc::setup();
     buzzer::setup();
     uart::begin();
 

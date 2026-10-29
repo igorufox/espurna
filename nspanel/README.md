@@ -255,6 +255,12 @@ page, `{ "page": 1 }`.
 </p>
 A shortcut can also be the name of an existing tile: `"shortcuts": ["Kitchen"]`.
 
+The room temperature under the weather comes from the panel's own thermistor. It is an ordinary ESPurna sensor: the web UI
+status page shows it as *Temperature #0 (NTC @ GPIO38)*, and it is published to `<hostname>/temperature` once a minute like on
+any ESPurna device. The thermistor sits next to the ESP32 and reads a degree or two high; set the correction in the web UI
+(**Sensors**, or `set tmpCorrection0 -1.5` in the terminal), the units (°C / °F) are there too. `"temperature": { "show": false }`
+(top level) hides it from the screen. The panel has no humidity sensor; show a room thermometer's humidity with an `info` line.
+
 ### 3.7 Thermostats
 
 A thermostat tile reads the current temperature, the target and whether it heats from one JSON topic, and sends the new target

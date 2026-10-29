@@ -902,6 +902,10 @@
 #define NTC_SUPPORT                     0
 #endif
 
+#ifndef NTC_PIN
+#define NTC_PIN                         A0      // ADC pin (ESP32: any ADC1 GPIO)
+#endif
+
 #ifndef NTC_SAMPLES
 #define NTC_SAMPLES                     10      // Number of samples
 #endif

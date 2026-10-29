@@ -93,6 +93,12 @@ using Weeks = std::chrono::duration<rep_type, std::ratio<Days::period::num * 7> 
 
 using ClockCycles = std::chrono::duration<uint32_t, std::ratio<1, 240000000>>;
 
+// Same as esp8266, short busy waits of the sensor drivers
+namespace critical {
+
+using Microseconds = std::chrono::duration<uint16_t, std::micro>;
+
+} // namespace critical
 } // namespace duration
 
 namespace time {
@@ -143,6 +149,15 @@ inline SystemClock::time_point micros() {
     return SystemClock::now();
 }
 
+namespace critical {
+
+// Same as esp8266, wait *without* using SDK or Core timers
+inline void delay(duration::critical::Microseconds) __attribute__((always_inline));
+inline void delay(duration::critical::Microseconds duration) {
+    ::ets_delay_us(duration.count());
+}
+
+} // namespace critical
 } // namespace time
 
 namespace system {
