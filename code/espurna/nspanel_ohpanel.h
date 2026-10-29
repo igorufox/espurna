@@ -571,6 +571,9 @@ struct State {
     size_t thermo_item { 0 };       // item shown on the thermostat page
     int knob { -1 };                // ring bead under the knob, -1 none drawn
     String thermo_state;            // state line drawn last
+    bool thermo_chart { false };    // the thermostat page shows the history chart instead of the dial
+    bool chart_drawn { false };     // the chart (or "no history") is on the screen
+    uint32_t chart_since { 0 };     // when the chart was opened (the retained message is waited for)
 
     // setpoint edited on the panel: shown at once, sent after the last tap (debounce)
     int edit_item { -1 };
@@ -694,11 +697,25 @@ bool drawnCard(const Card& card) {
 // Transport
 // -----------------------------------------------------------------------------
 
+// nspanel.capture: the commands sent to the TFT, kept for replaying them in the Nextion Editor simulator
+// (documentation screenshots); off unless started from the terminal
+namespace capture {
+
+constexpr size_t Max { 800 };
+
+bool on { false };
+std::vector<String> lines;
+
+} // namespace capture
+
 void write(const String& command) {
     auto& port = uart::port();
     port.write(reinterpret_cast<const uint8_t*>(command.c_str()), command.length());
     const uint8_t end[3] {0xFF, 0xFF, 0xFF};
     port.write(end, sizeof(end));
+    if (capture::on && (capture::lines.size() < capture::Max)) {
+        capture::lines.push_back(command);
+    }
     ++state.tx_commands;
     state.tx_bytes += command.length() + 3;
     if (config.debug) {
@@ -2169,6 +2186,292 @@ void drawState(const Thermostat& thermostat) {
 
 } // namespace thermo
 
+// -----------------------------------------------------------------------------
+// Thermostat history chart (the thermostat's "history" topic, history:: in nspanel.cpp): the thermostat page
+// with its objects hidden, a dark rounded box over the grid area with the temperature (accent) and the target
+// (grey, steps), heating (target above temperature, as the Istabai bridge counts it) as dim orange bands in the
+// plot and an orange strip under it, degrees on the left, every 6 h of local time on the bottom. One burst of
+// ~100-250 commands; the series is not kept, the chart subscribes while it is open.
+// -----------------------------------------------------------------------------
+
+namespace chart {
+
+constexpr int BoxX { drawn::AreaX };
+constexpr int BoxY { drawn::AreaY };
+constexpr int BoxW { drawn::AreaW };
+constexpr int BoxH { drawn::AreaH };
+constexpr int PlotX0 { BoxX + 42 };
+constexpr int PlotX1 { BoxX + BoxW - 14 };
+constexpr int PlotY0 { BoxY + 28 };
+constexpr int PlotY1 { BoxY + BoxH - 36 };
+constexpr int StripY { PlotY1 + 4 };
+constexpr int StripH { 5 };
+constexpr int LabelY { PlotY1 + 12 };
+constexpr size_t PointsMax { 96 };     // the newest points; lines per series, the queue holds 320 commands
+constexpr uint32_t WaitMs { 4000 };    // no retained message by then: "no history"
+
+constexpr uint16_t Box { color::DarkGrey };
+constexpr uint16_t Grid { rgb565(0x3c4248) };
+constexpr uint16_t Band { rgb565(0x4a2c18) };
+constexpr uint16_t Target { color::LightGrey };
+
+// the button under the dial: the hidden mode pill m11_hs (165,280 120x32) takes the touch
+constexpr int PillX { 165 };
+constexpr int PillY { 280 };
+constexpr int PillW { 120 };
+constexpr int PillH { 32 };
+
+void line(int x1, int y1, int x2, int y2, uint16_t colour) {
+    String out(F("line "));
+    out += x1;
+    out += ',';
+    out += y1;
+    out += ',';
+    out += x2;
+    out += ',';
+    out += y2;
+    out += ',';
+    out += colour;
+    cmd(std::move(out));
+}
+
+void pill() {
+    drawn::shape(PillX, PillY, PillW, PillH, color::Button);
+    xstr(PillX + 8, PillY + 4, 24, 24, 7, color::White, 0, 1, utf8(icons::ChartLine));
+    xstr(PillX + 34, PillY + 7, PillW - 40, 18, 1, color::White, 0, 0, lang::texts().history);
+}
+
+void message(const String& text) {
+    drawn::shape(BoxX, BoxY, BoxW, BoxH, Box);
+    xstr(BoxX, BoxY + BoxH / 2 - 12, BoxW, 24, 1, color::LightGrey, 0, 1, text);
+}
+
+// the drawn part of a series: its newest PointsMax points on a degree scale
+struct Scale {
+    size_t first;
+    size_t count;
+    int low;    // whole degrees at the bottom / top of the plot
+    int high;
+
+    int x(size_t index) const {
+        return PlotX0 + static_cast<int>((index * static_cast<size_t>(PlotX1 - PlotX0)) / (count - 1));
+    }
+
+    int y(int tenths) const {
+        const float share = (tenths / 10.0f - low) / static_cast<float>(high - low);
+        return PlotY1 - static_cast<int>(lroundf(share * (PlotY1 - PlotY0)));
+    }
+
+    int16_t at(const std::vector<int16_t>& values, size_t index) const {
+        const size_t n = first + index;
+        return (n < values.size()) ? values[n] : history::Missing;
+    }
+};
+
+// a polyline through the points (a missing value breaks it); steps: the value holds until the next point.
+// A run of equal heights (or a vertical step) is one line
+void polyline(const std::vector<int16_t>& values, const Scale& scale, bool steps, uint16_t colour) {
+    bool open = false;
+    int sx = 0;     // the pending segment, straight horizontal or vertical runs grow at its end
+    int sy = 0;
+    int ex = 0;
+    int ey = 0;
+
+    auto flush = [&]() {
+        if (open && ((sx != ex) || (sy != ey))) {
+            line(sx, sy, ex, ey, colour);
+        }
+    };
+
+    auto to = [&](int x, int y) {
+        if (!open) {
+            sx = ex = x;
+            sy = ey = y;
+            open = true;
+        } else if ((sy == ey) && (y == ey)) {
+            ex = x;
+        } else if ((sx == ex) && (x == ex)) {
+            ey = y;
+        } else {
+            flush();
+            sx = ex;
+            sy = ey;
+            ex = x;
+            ey = y;
+        }
+    };
+
+    for (size_t index = 0; index < scale.count; ++index) {
+        const auto value = scale.at(values, index);
+        if (value == history::Missing) {
+            flush();
+            open = false;
+            continue;
+        }
+        const int x = scale.x(index);
+        const int y = scale.y(value);
+        if (steps && open) {
+            to(x, ey);
+        }
+        to(x, y);
+    }
+    flush();
+}
+
+bool heating(const history::Series& series, const Scale& scale, size_t index) {
+    const auto temperature = scale.at(series.temperature, index);
+    const auto setpoint = scale.at(series.setpoint, index);
+    return (temperature != history::Missing) && (setpoint != history::Missing) && (setpoint > temperature);
+}
+
+// a colour bar and its name in font 0 (8 px per digit); where the next one starts
+int legend(int x, uint16_t colour, const char* text) {
+    const int width = static_cast<int>(thermo::textWidth(String(text), 8)) + 4;
+    fill(x, BoxY + 13, 16, 3, colour);
+    xstr(x + 22, BoxY + 5, width, 18, 0, color::LightGrey, 0, 0, text);
+    return x + 22 + width + 18;
+}
+
+void draw(const history::Series& series) {
+    const size_t total = series.temperature.size();
+    Scale scale;
+    scale.first = (total > PointsMax) ? (total - PointsMax) : 0;
+    scale.count = total - scale.first;
+
+    int lo = INT_MAX;
+    int hi = INT_MIN;
+    for (size_t index = 0; index < scale.count; ++index) {
+        for (const auto* values : {&series.temperature, &series.setpoint}) {
+            const auto value = scale.at(*values, index);
+            if (value != history::Missing) {
+                lo = std::min<int>(lo, value);
+                hi = std::max<int>(hi, value);
+            }
+        }
+    }
+    if (lo > hi) {
+        message(lang::texts().no_history);
+        return;
+    }
+
+    scale.low = static_cast<int>(floorf(lo / 10.0f - 0.3f));
+    scale.high = std::max(scale.low + 2, static_cast<int>(ceilf(hi / 10.0f + 0.3f)));
+    const int range = scale.high - scale.low;
+    const int every = (range > 16) ? 5 : (range > 8) ? 2 : 1;
+
+    drawn::shape(BoxX, BoxY, BoxW, BoxH, Box);
+
+    // heating: bands in the plot, the strip under it
+    const int half = std::max(1, (PlotX1 - PlotX0) / static_cast<int>(2 * (scale.count - 1)));
+    for (size_t index = 0; index < scale.count;) {
+        if (!heating(series, scale, index)) {
+            ++index;
+            continue;
+        }
+        size_t last = index;
+        while (((last + 1) < scale.count) && heating(series, scale, last + 1)) {
+            ++last;
+        }
+        const int x1 = std::max(PlotX0, scale.x(index) - half);
+        const int x2 = std::min(PlotX1, scale.x(last) + half);
+        fill(x1, PlotY0, x2 - x1 + 1, PlotY1 - PlotY0 + 1, Band);
+        fill(x1, StripY, x2 - x1 + 1, StripH, color::Heat);
+        index = last + 1;
+    }
+
+    // degrees
+    for (int degree = scale.low + ((every - ((scale.low % every) + every) % every) % every);
+        degree <= scale.high; degree += every)
+    {
+        const int y = scale.y(degree * 10);
+        line(PlotX0, y, PlotX1, y, Grid);
+        xstr(BoxX + 2, y - 9, PlotX0 - BoxX - 6, 18, 0, color::LightGrey, 0, 2, String(degree) + F("\xC2\xB0"));
+    }
+
+    // every 6 h of local time (the point of a full hour, whatever the step)
+    if (series.from > 1000000000UL) {
+        for (size_t index = 0; index < scale.count; ++index) {
+            const time_t when = static_cast<time_t>(series.from + (scale.first + index) * series.step);
+            tm local;
+            localtime_r(&when, &local);
+            if ((local.tm_hour % 6) || (static_cast<uint32_t>(local.tm_min * 60 + local.tm_sec) >= series.step)) {
+                continue;
+            }
+            const int x = scale.x(index);
+            line(x, PlotY0, x, PlotY1, Grid);
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%02d:00", local.tm_hour);
+            const int left = std::max(BoxX + 2, std::min(x - 24, BoxX + BoxW - 50));
+            xstr(left, LabelY, 48, 18, 0, color::LightGrey, 0, 1, buf);
+        }
+    }
+
+    polyline(series.setpoint, scale, true, Target);
+    polyline(series.temperature, scale, false, accent());
+
+    int x = legend(PlotX0, accent(), lang::texts().temperature);
+    x = legend(x, Target, lang::texts().setpoint);
+    legend(x, color::Heat, lang::texts().heating);
+}
+
+} // namespace chart
+
+// the chart instead of the dial: subscribes again on a full render (the retained series comes back)
+void renderChart(bool full) {
+    const auto& item = config.items[state.thermo_item];
+    const auto* thermostat = thermostatOf(item);
+
+    if (full) {
+        loadPage(page::Thermostat);
+        setText(F("title"), fit(item.name, Title));
+        vis(F("title"), true);
+        vis(F("close"), true);
+        vis(F("close_hs"), true);
+        vis(F("swipe"), true);
+        state.chart_drawn = false;
+        state.chart_since = millis();
+        history::open(thermostat->history);
+        return;
+    }
+
+    history::Series series;
+    if (history::take(series)) {
+        const size_t count = std::min(series.temperature.size(), chart::PointsMax);
+        String title(item.name);
+        title += F(" \xC2\xB7 ");
+        title += (series.step * (count - 1) + 1800) / 3600;
+        title += lang::texts().hours;
+        setText(F("title"), fit(title, Title));
+        chart::draw(series);
+        state.chart_drawn = true;
+    } else if (!state.chart_drawn && (millis() - state.chart_since >= chart::WaitMs)) {
+        chart::message(lang::texts().no_history);
+        state.chart_drawn = true;
+    }
+}
+
+void closeChart() {
+    state.thermo_chart = false;
+    history::close();
+}
+
+// loop(): draws the series when it arrives (after the page load went out), "no history" after WaitMs;
+// leaving the thermostat screen in any way drops the subscription
+void chartLoop(uint32_t now) {
+    if (!state.thermo_chart) {
+        return;
+    }
+    if (state.screen != Screen::Thermostat) {
+        closeChart();
+        return;
+    }
+    if (state.queue.empty()
+        && (history::fresh || (!state.chart_drawn && (now - state.chart_since >= chart::WaitMs))))
+    {
+        renderChart(false);
+    }
+}
+
 void renderThermostat(bool full) {
     if (state.thermo_item >= config.items.size()) {
         return;
@@ -2176,6 +2479,13 @@ void renderThermostat(bool full) {
     const auto& item = config.items[state.thermo_item];
     const auto* thermostat = thermostatOf(item);
     if (!thermostat) {
+        return;
+    }
+
+    if (state.thermo_chart) {
+        if (full) {
+            renderChart(true);
+        }
         return;
     }
 
@@ -2235,6 +2545,10 @@ void renderThermostat(bool full) {
         vis(F("plus"), true);
         vis(F("minus_hs"), true);
         vis(F("plus_hs"), true);
+        if (thermostat->history.length()) {
+            chart::pill();
+            vis(F("m11_hs"), true);
+        }
     }
 
     thermo::drawRing(thermo::knobFor(*thermostat, setpoint), full);
@@ -2456,9 +2770,26 @@ void showThermostat(size_t index) {
         return;
     }
     rememberBack();
+    if (state.thermo_chart) {
+        closeChart();
+    }
     state.screen = Screen::Thermostat;
     state.thermo_item = index;
     state.dirty = false;
+    renderThermostat(true);
+}
+
+void openChart() {
+    if ((state.thermo_item >= config.items.size())) {
+        return;
+    }
+    const auto* thermostat = thermostatOf(config.items[state.thermo_item]);
+    if (!thermostat || !thermostat->history.length()) {
+        return;
+    }
+    buzzer::beep();
+    thermoFlush();
+    state.thermo_chart = true;
     renderThermostat(true);
 }
 
@@ -2783,8 +3114,23 @@ void swipe(const String& direction) {
         }
         break;
 
-    case Screen::Settings:
     case Screen::Thermostat:
+        // the chart: right goes back to the dial, up / down leave the thermostat
+        if (state.thermo_chart && !left) {
+            closeChart();
+            if (right) {
+                renderThermostat(true);
+            } else {
+                showBack();
+            }
+            break;
+        }
+        if (!left) {
+            showBack();
+        }
+        break;
+
+    case Screen::Settings:
         if (!left) {
             showBack();
         }
@@ -2825,7 +3171,10 @@ void settingsTap(long n) {
 void act(const String& component) {
     if (component == F("close")) {
         buzzer::beep();
-        if ((state.screen == Screen::Settings) || (state.screen == Screen::Thermostat)) {
+        if ((state.screen == Screen::Thermostat) && state.thermo_chart) {
+            closeChart();
+            renderThermostat(true);
+        } else if ((state.screen == Screen::Settings) || (state.screen == Screen::Thermostat)) {
             showBack();
         } else if ((state.screen == Screen::Buttons) && (state.card < state.cards.size())
             && state.cards[state.card].sub)
@@ -2838,10 +3187,15 @@ void act(const String& component) {
     }
 
     if (state.screen == Screen::Thermostat) {
+        if (state.thermo_chart) {
+            return;
+        }
         if (component == F("minus")) {
             thermoStep(-1);
         } else if (component == F("plus")) {
             thermoStep(1);
+        } else if (component == F("mode1")) {
+            openChart();
         }
         return;
     }
@@ -3222,6 +3576,7 @@ void uiLoop(uint32_t now) {
     }
 
     thermoLoop(now);
+    chartLoop(now);
     idleTick(now);
 
     if (now - state.last_tick >= 1000) {

@@ -47,6 +47,7 @@ static constexpr uint16_t ThemeLightDark { 0xE50D };
 static constexpr uint16_t Palette { 0xE3D7 };
 static constexpr uint16_t Fire { 0xE237 };
 static constexpr uint16_t WaterPercent { 0xE58D };
+static constexpr uint16_t ChartLine { 0xE129 };   // OHpanel icons.json "chart-line" = EE 84 A9
 
 static constexpr uint16_t WeatherSunny { 0xE598 };
 static constexpr uint16_t WeatherPartlyCloudy { 0xE594 };
@@ -71,6 +72,7 @@ static const Icon Table[] {
     {"arrow-up", 0xE05C},
     {"arrow-up-bold", 0xE736},
     {"ceiling-light", 0xE768},
+    {"chart-line", 0xE129},
     {"ceiling-light-outline", 0xF7C6},
     {"coach-lamp", 0xF01F},
     {"cog", 0xE492},

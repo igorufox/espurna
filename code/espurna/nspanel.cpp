@@ -266,6 +266,11 @@ struct Texts {
     const char* theme_dark;
     const char* background;
     const char* backgrounds[5];     // same order as BackgroundNames
+    const char* history;            // thermostat: the chart button
+    const char* no_history;
+    const char* hours;              // chart title suffix, followed by the number of hours
+    const char* temperature;        // chart legend
+    const char* setpoint;
 };
 
 const Texts English {
@@ -281,6 +286,7 @@ const Texts English {
     "Icons", "Large", "Small",
     "Theme", "Light", "Dark",
     "Backdrop", { "Aurora", "Black", "Candy", "Dunes", "Forest" }, // "Background" is wider than the tile name
+    "History", "No history yet", " h", "Temperature", "Target",
 };
 
 const Texts Russian {
@@ -296,6 +302,7 @@ const Texts Russian {
     "Иконки", "Крупные", "Мелкие",
     "Тема", "Светлая", "Тёмная",
     "Фон", { "Сияние", "Чёрный", "Огоньки", "Дюны", "Лес" },
+    "История", "Истории пока нет", " ч", "Температура", "Цель",
 };
 
 const Texts& texts() {
@@ -452,6 +459,7 @@ struct Thermostat {
     float min_value { 5.0f };  // limits while min/max are unknown, or fixed numbers from the config
     float max_value { 30.0f };
     float step { 0.5f };
+    String history;       // topic of a retained history series, shown as a chart (empty: none)
 };
 
 // home info lines (OHpanel info1_* / info2_*, screensaver.info)
@@ -970,6 +978,15 @@ bool parseThermostat(JsonObject& obj, Config& out, Item& item, String& error) {
     }
     if (thermostat.max_value <= thermostat.min_value) {
         thermostat.max_value = thermostat.min_value + thermostat.step;
+    }
+
+    const char* history = obj["history"].as<const char*>();
+    if (history && strlen(history)) {
+        if (strchr(history, '#') || strchr(history, '+')) {
+            error = F("\"history\" must be a plain topic");
+            return false;
+        }
+        thermostat.history = history;
     }
 
     out.thermostats.push_back(thermostat);
@@ -3059,6 +3076,114 @@ void loop() {
 } // namespace json
 
 // -----------------------------------------------------------------------------
+// Thermostat history: a thermostat's "history" topic holds a retained series (e.g. published by an openHAB rule
+// from its persistence). It is subscribed only while the chart is open, so nothing is kept on the panel:
+// {"from": <unix time of the first point>, "step": <seconds>, "t": [<temperature x10> | null, ...], "s": [<setpoint x10> | null, ...]}
+// -----------------------------------------------------------------------------
+
+namespace history {
+
+constexpr size_t PayloadMax { 2048 };   // MQTT_BUFFER_MAX_SIZE of the NSPanel build
+constexpr size_t PointsMax { 192 };
+constexpr int16_t Missing { INT16_MIN };
+
+struct Series {
+    uint32_t from { 0 };
+    uint32_t step { 0 };
+    std::vector<int16_t> temperature;
+    std::vector<int16_t> setpoint;
+};
+
+String topic;               // subscribed while a chart is open, empty otherwise
+String payload;             // the last message, parsed in loop()
+bool fresh { false };
+bool subscribed { false };
+
+void close() {
+#if MQTT_SUPPORT
+    if (subscribed && mqttConnected()) {
+        mqttUnsubscribeRaw(topic.c_str());
+    }
+#endif
+    topic = String();
+    payload = String();
+    fresh = false;
+    subscribed = false;
+}
+
+// the broker sends the retained message right after the subscription
+void open(const String& name) {
+    close();
+    topic = name;
+#if MQTT_SUPPORT
+    subscribed = mqttConnected() && mqttSubscribeRaw(topic.c_str());
+#endif
+}
+
+// loop(): subscribe again after a reconnect (or when the first attempt found no room)
+void loop() {
+#if MQTT_SUPPORT
+    if (topic.length() && !subscribed && mqttConnected()) {
+        subscribed = mqttSubscribeRaw(topic.c_str());
+    }
+#endif
+}
+
+// MQTT callback: only keep the text
+void message(StringView name, StringView body) {
+    if (topic.length() && name.equals(StringView(topic)) && (body.length() < PayloadMax)) {
+        payload = body.toString();
+        fresh = true;
+    }
+}
+
+void read(JsonVariant values, std::vector<int16_t>& out) {
+    out.clear();
+    JsonArray& array = values;
+    if (!array.success()) {
+        return;
+    }
+    out.reserve(std::min(array.size(), PointsMax));
+    for (auto value : array) {
+        if (out.size() >= PointsMax) {
+            break;
+        }
+        if (value.is<long>() || value.is<double>()) {
+            const long number = lroundf(value.as<float>());
+            out.push_back(static_cast<int16_t>(std::max(-32000L, std::min(32000L, number))));
+        } else {
+            out.push_back(Missing);
+        }
+    }
+}
+
+// a new message, parsed into out; false when there is none or it is not a series
+bool take(Series& out) {
+    if (!fresh) {
+        return false;
+    }
+    fresh = false;
+
+    try {
+        DynamicJsonBuffer buffer(2048);
+        JsonObject& root = buffer.parseObject(payload.c_str());
+        if (!root.success()) {
+            return false;
+        }
+        out.from = root["from"].as<unsigned long>();
+        out.step = root["step"].as<unsigned long>();
+        read(root["t"], out.temperature);
+        read(root["s"], out.setpoint);
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+
+    return (out.step > 0) && (out.temperature.size() > 1);
+}
+
+} // namespace history
+
+// -----------------------------------------------------------------------------
 // On-panel settings (OHpanel settings tiles), kept in ESPurna settings so that they survive a
 // reboot and a JSON reload; ohpanel.layout / ohpanel.theme are only the defaults
 // -----------------------------------------------------------------------------
@@ -4477,15 +4602,19 @@ void mqttCallback(unsigned int type, StringView topic, StringView payload) {
         // nothing is sent from here, ref. subscribeAll()
         subscribeAll();
         announce_pending = true;
+        history::subscribed = false;
         break;
 
     case MQTT_DISCONNECT_EVENT:
         subscribed.clear();
         subscribe_pending = false;
         announce_pending = false;
+        history::subscribed = false;
         break;
 
     case MQTT_MESSAGE_EVENT: {
+        history::message(topic, payload);
+
         bool parse = false;
         for (size_t index = 0; index < config.entities.size(); ++index) {
             auto& entity = config.entities[index];
@@ -5114,7 +5243,47 @@ void terminalFlash(espurna::terminal::CommandContext&& ctx) {
     terminalOK(ctx);
 }
 
+// nspanel.capture start | print | stop: records the commands sent to the OHpanel TFT (start also sends the
+// theme again, so a capture replays on its own in the Nextion Editor simulator)
+void terminalCapture(espurna::terminal::CommandContext&& ctx) {
+    const String arg = (ctx.argv.size() == 2) ? ctx.argv[1] : String();
+    if (link::active != Driver::Ohpanel) {
+        terminalError(ctx, F("OHpanel driver only"));
+        return;
+    }
+    if (arg == F("start")) {
+        ohpanel::capture::lines.clear();
+        ohpanel::capture::on = true;
+        ohpanel::sendTheme();
+    } else if (arg == F("stop")) {
+        ohpanel::capture::on = false;
+        ohpanel::capture::lines.clear();
+    } else if (arg == F("print")) {
+        for (const auto& line : ohpanel::capture::lines) {
+            ctx.output.print(line);
+            ctx.output.print('\n');
+        }
+        ctx.output.printf_P(PSTR("# %u commands\n"), ohpanel::capture::lines.size());
+    } else {
+        terminalError(ctx, F("nspanel.capture start | print | stop"));
+        return;
+    }
+    terminalOK(ctx);
+}
+
+// nspanel.event <page> <component> <value>: as if the OHpanel TFT sent it (a tap without a finger)
+void terminalEvent(espurna::terminal::CommandContext&& ctx) {
+    if ((ctx.argv.size() != 4) || (link::active != Driver::Ohpanel)) {
+        terminalError(ctx, F("nspanel.event <page> <component> <value> (OHpanel driver only)"));
+        return;
+    }
+    ohpanel::onEvent(ctx.argv[1].c_str(), ctx.argv[2].c_str(), ctx.argv[3].c_str());
+    terminalOK(ctx);
+}
+
 PROGMEM_STRING(Safeboot, "SAFEBOOT");
+PROGMEM_STRING(PanelCapture, "NSPANEL.CAPTURE");
+PROGMEM_STRING(PanelEvent, "NSPANEL.EVENT");
 PROGMEM_STRING(PanelReload, "NSPANEL.RELOAD");
 PROGMEM_STRING(PanelSend, "NSPANEL.SEND");
 PROGMEM_STRING(PanelInfo, "NSPANEL.INFO");
@@ -5133,6 +5302,8 @@ static constexpr espurna::terminal::Command PanelCommands[] PROGMEM {
     {PanelFlash, terminalFlash},
     {PanelDetect, terminalDetect},
     {PanelPage, terminalPage},
+    {PanelCapture, terminalCapture},
+    {PanelEvent, terminalEvent},
 };
 
 #endif // TERMINAL_SUPPORT
@@ -5148,6 +5319,7 @@ void bootLoop() {
 void panelLoop() {
     upload::process();
     subscribeLoop();
+    history::loop();
     json::loop();
 
     // the upload task owns UART2; frames queued meanwhile are dropped on resume

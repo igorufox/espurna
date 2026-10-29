@@ -60,8 +60,8 @@ panel, and it talks MQTT directly to the devices. No Home Assistant, ioBroker or
 
 |||
 |---|---|
-|![NSPanel home screen](nspanel/img/home.jpg)|![NSPanel heating page, 9 thermostats](nspanel/img/heating-3x3.jpg)|
-|home screen|nine thermostats on a 3x3 page|
+|![NSPanel home screen](nspanel/img/home.jpg)|![NSPanel heating page, 9 thermostats](nspanel/img/heating-3x3.png)|
+|the panel: home screen|nine thermostats on a 3x3 page (rendered)|
 
 Setup, the JSON format and more photos: [nspanel/README.md](nspanel/README.md).
 

@@ -18,10 +18,19 @@ What you get:
 - an editor with a live preview in the ESPurna web UI, OTA updates for both the ESP32 and the screen.
 
 <p>
-  <img src="img/home.jpg" width="49%" alt="Home screen: weather, clock, room temperature, shortcuts, an info line">
-  <img src="img/outside-2x2.jpg" width="49%" alt="A 2x2 page whose tiles open nested pages">
-  <img src="img/heating-3x3.jpg" width="49%" alt="Nine thermostats on one 3x3 page">
-  <img src="img/thermostat.jpg" width="49%" alt="Thermostat page with the setpoint dial">
+  <img src="img/home.jpg" width="49%" alt="The panel: home screen with weather, clock, room temperature, shortcuts, an info line">
+  <img src="img/thermostat.jpg" width="49%" alt="The panel: thermostat page with the setpoint dial">
+</p>
+
+The screens in this guide are not photos: they are rendered in the Nextion Editor simulator from the commands the firmware sent
+to a real panel (stock OHpanel TFT, aurora background), so they look exactly like the panel, only sharper. More photos of the
+panel itself are [at the end](#on-the-wall).
+
+<p>
+  <img src="img/outside-2x2.png" width="24%" alt="A 2x2 page whose tiles open nested pages">
+  <img src="img/heating-3x3.png" width="24%" alt="Nine thermostats on one 3x3 page">
+  <img src="img/thermostat.png" width="24%" alt="Thermostat page with the setpoint dial">
+  <img src="img/thermostat-history.png" width="24%" alt="Thermostat history over 24 h">
 </p>
 
 Everything below is the user guide. Every field, limit and protocol detail is in the [technical reference](reference.md).
@@ -156,9 +165,9 @@ names are cut with `...`.
 | `1x2` | 2 | two wide rows |
 
 <p>
-  <img src="img/first-floor-4x2.jpg" width="32%" alt="A 4x2 page, one light on">
-  <img src="img/front-yard-3x2.jpg" width="32%" alt="A 3x2 page">
-  <img src="img/house-2x2.jpg" width="32%" alt="A 2x2 page with a scene tile (All off) that is on">
+  <img src="img/first-floor-4x2.png" width="32%" alt="A 4x2 page, three lights on">
+  <img src="img/front-yard-3x2.png" width="32%" alt="A 3x2 page">
+  <img src="img/house-2x2.png" width="32%" alt="A 2x2 page with a scene tile (All off) that is on">
 </p>
 
 A page with more tiles than fit is split into sheets (`Outside 1/2`, `Outside 2/2`). `"per_screen": 5` limits how many tiles a
@@ -186,9 +195,9 @@ swipe right) returns to where you came from. Nesting can go deeper:
 ```
 
 <p>
-  <img src="img/outside-2x2.jpg" width="32%" alt="Outside: Back yard opens a nested page">
-  <img src="img/back-yard-3x2.jpg" width="32%" alt="Back yard: Sockets opens another nested page">
-  <img src="img/sockets-2x2.jpg" width="32%" alt="Sockets, two levels deep">
+  <img src="img/outside-2x2.png" width="32%" alt="Outside: Back yard opens a nested page">
+  <img src="img/back-yard-3x2.png" width="32%" alt="Back yard: Sockets opens another nested page">
+  <img src="img/sockets-2x2.png" width="32%" alt="Sockets, two levels deep">
 </p>
 
 The nested page takes the tile name as its title. This keeps the swipe row short: home → Outside → House, and everything else
@@ -242,7 +251,7 @@ page, `{ "page": 1 }`.
 
 <p>
   <img src="img/home-candy.jpg" width="49%" alt="Home screen on the candy background">
-  <img src="img/weather.jpg" width="49%" alt="Weather: one page per day, swipe for the next">
+  <img src="img/weather.png" width="49%" alt="Weather: one page per day, swipe for the next">
 </p>
 A shortcut can also be the name of an existing tile: `"shortcuts": ["Kitchen"]`.
 
@@ -266,6 +275,26 @@ when you change it on the dial (minus / plus, sent 1.5 s after the last tap):
 Nine rooms fit one `3x3` page. A JSON payload for many rooms can be larger than ESPurna's default MQTT buffer (1 KB); the NSPanel
 build raises it to 2 KB. If thermostats stay at `--`, check `nspanel.info` for a warning about it.
 
+**History chart.** With `"history": "<topic>"` the thermostat page gets a *History* button under the dial. It opens a chart of
+the last 24 h: the temperature, the target (steps), heating (target above temperature) as orange bands, degrees on the left and
+every 6 h on the bottom. The panel stores nothing: it subscribes to the topic only while the chart is open and expects a
+**retained** message there, filled by whatever keeps your history:
+
+```jsonc
+{ "from": 1793115900, "step": 900,        // unix time of the first point, seconds between points
+  "t": [224, 224, 223, null, ...],         // temperature x10 (null: no data), up to 96 points are drawn
+  "s": [215, 215, 215, 215, ...] }         // target x10
+```
+
+With openHAB, [`openhab-history-rule.js`](openhab-history-rule.js) is a ready rule (JS Scripting, cron every 15 min) that
+builds this from the persistence of your temperature and setpoint items and publishes it to `istabai/history/<room>`; set the
+thermostat's `"history": "istabai/history/<room>"`.
+
+<p>
+  <img src="img/thermostat-history.png" width="49%" alt="Thermostat history: temperature, target and heating over 24 h">
+  <img src="img/thermostat-history.jpg" width="49%" alt="The same chart on the panel, Russian texts">
+</p>
+
 ### 3.8 Look and the settings page
 
 ```json
@@ -283,8 +312,8 @@ The same three can be changed on the panel: a shortcut or tile with `"open": "se
 Backdrop); a tap on a tile switches to the next choice. A choice made there is kept across reboots and wins over the JSON.
 
 <p>
-  <img src="img/settings.jpg" width="49%" alt="Settings page, dark theme on aurora">
-  <img src="img/settings-light-forest.jpg" width="49%" alt="Settings page, light theme on forest">
+  <img src="img/settings.png" width="49%" alt="Settings page, dark theme on aurora">
+  <img src="img/settings-light-forest.jpg" width="49%" alt="The panel: settings page, light theme on forest">
 </p>
 
 ## 4. Using the panel
@@ -322,6 +351,14 @@ Terminal commands (web UI DEBUG or telnet):
 | `nspanel.reload` | read the stored JSON again |
 | `nspanel.flash <url>` | update the screen firmware (TFT) |
 | `reset` | restart the panel |
+
+## On the wall
+
+<p>
+  <img src="img/heating-3x3.jpg" width="32%" alt="The panel: Heating, nine thermostats">
+  <img src="img/first-floor-4x2.jpg" width="32%" alt="The panel: a 4x2 page, one light on">
+  <img src="img/back-yard-3x2.jpg" width="32%" alt="The panel: a 3x2 page">
+</p>
 
 ## 6. Credits
 

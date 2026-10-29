@@ -189,6 +189,7 @@ zigbee2mqtt switch (state `{"state":"ON",...}`, command `{"state":"OFF"}` to `<n
 | `current`, `setpoint`, `humidity`, `active`, `min`, `max` | explicit paths (override `room`); `setpoint` is required without `room`; `min` / `max` may be numbers (default 5 / 30 while unknown) |
 | `command` | command topic (default `topic + mqtt.set`); the payload is the setpoint with one decimal (`21.5`), or `payload` with `%s` |
 | `step` | minus / plus step, default 0.5 |
+| `history` | topic of a retained history series (`{"from": <unix s>, "step": <s>, "t": [<x10> \| null, ...], "s": [...]}`): shows the *History* button and chart (OHpanel), see below |
 
 Heating = `active` is known and not `off` / `false` / `0` / `idle` (any case).
 
@@ -200,6 +201,16 @@ from min to max with a white knob at the setpoint, minus / plus, and a line with
 the accent colour while not confirmed) and send it 1.5 s after the last tap. The value stays until the state topic reports it (at
 most 6 s). Cross, swipe right / up / down = back to the page it was opened from. Mode buttons and the ring drag are not used.
 The Lovelace driver shows a thermostat as a read-only text tile with the current temperature.
+
+History chart (OHpanel, `history` set): the hidden mode pill `m11_hs` (165,280 120x32) becomes a *History* button (drawn pill,
+`chart-line` icon); its `mode1` release opens the chart on the same thermostat page with the dial objects hidden. The panel then
+subscribes to the topic (unsubscribed again when the chart closes or the thermostat screen is left, so nothing is kept) and draws
+the retained message when it arrives, after 4 s without one `No history yet`. The newest 96 points are drawn into a dark rounded
+box over the grid area: degrees on the left (every 1 / 2 / 5 degrees by the range), a line and a label at every 6 h of local
+time, heating (target above temperature, as the Istabai bridge counts it) as dim orange bands and an orange strip under the
+plot, the target as a grey step line, the temperature in the accent colour; runs of equal height are one `line`, so a chart is
+~100-250 commands. Title `<name> · 24 h`. Cross / swipe right: back to the dial; swipe up / down: back to where the thermostat
+was opened from. Payloads up to 2047 bytes (MQTT buffer); `nspanel/openhab-history-rule.js` builds them in openHAB.
 
 **MQTT buffer:** ESPurna's MQTT module drops `MQTT_MESSAGE_EVENT` payloads of `MQTT_BUFFER_MAX_SIZE` bytes or more (default 1024).
 Istabai `istabai/out` with 9 rooms is ~1.3 KB, so the NSPanel build needs `#define MQTT_BUFFER_MAX_SIZE 2048` (board section
