@@ -106,3 +106,17 @@ jobs:
         files: |
           dist/*-full.bin
           dist/*-ota.bin
+    # keep only the newest automatic builds (esp32-YYMMDD-sha); releases of hand-made esp32-* tags stay
+    - name: Prune old automatic releases
+      env:
+        GH_TOKEN: ${{ github.token }}
+        KEEP: 5
+      run: |
+        gh release list --repo "${GITHUB_REPOSITORY}" --limit 200 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[].tagName' \
+          | grep -E '^esp32-[0-9]{6}-[0-9a-f]{7}$' \
+          | tail -n +$((KEEP + 1)) \
+          | while read -r tag; do
+              echo "deleting ${tag}"
+              gh release delete "${tag}" --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes
+            done
