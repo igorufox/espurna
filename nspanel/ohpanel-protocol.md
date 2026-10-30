@@ -1118,8 +1118,8 @@ built-in settings and list pages are unchanged. `nspanel.info`: `Design: stock O
 
 ### 14.1 Geometry (`drawn::tileRect()`)
 
-The grid area is the one of the 3x3 grid checked on the panel (136x72 tiles, gaps 9 / 8): x 27..453 (27 + 3·136 + 2·9 = 453,
-centred on the 480 px screen) and y 46..278 (46 + 3·72 + 2·8 = 278: under the title and the close cross, above the page dots at
+The grid area (136x72 tiles in 3x3, gaps 9 / 8) is x 12..438 (12 + 3·136 + 2·9 = 438, the span of the stock tiles: the right
+~30 px of the 480 px screen are under the panel's frame, so a grid centred on the screen looks pushed to the right) and y 46..278 (46 + 3·72 + 2·8 = 278: under the title and the close cross, above the page dots at
 y 294). Every layout fills it: `w = (426 - (cols - 1)·9) / cols`, `h = (232 - (rows - 1)·8) / rows`, the remainder centred.
 Tile n (0-based, row by row) is at `x = 27 + offset + (n % cols)·(w + 9)`, `y = 46 + (n / cols)·(h + 8)`.
 

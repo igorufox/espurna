@@ -1,13 +1,14 @@
 // openHAB rule (JS Scripting, ECMAScript 2021+) feeding the NSPanel thermostat history chart.
 // Trigger: time cron "0 */15 * * * ?". Every 15 min it reads the last 24 h of each room from persistence,
-// averages them into 96 points of 15 min (degrees x10, null when missing) and publishes them retained on
+// averages them into 96 points of 15 min (x10, null when missing) and publishes them retained on
 // istabai/history/<room>; a thermostat with "history": "istabai/history/<room>" shows them on the panel.
-// Payload: {"from": <unix seconds of the first point>, "step": 900, "t": [<temperature>...], "s": [<setpoint>...]}
+// Payload: {"from": <unix seconds of the first point>, "step": 900, "t": [<temperature>...], "s": [<setpoint>...],
+//           "h": [<humidity %>...]} ("h" only for rooms with a humidity item; ~1.2 KB, the panel takes up to 2 KB)
 
-// room (the key the panel's "history" topic ends with) -> [temperature item, setpoint item]
+// room (the key the panel's "history" topic ends with) -> [temperature item, setpoint item, humidity item or null]
 const ROOMS = {
-  'Living room': ['GF_LivingRoom_Temperature', 'GF_LivingRoom_Setpoint'],
-  'Bedroom': ['FF_Bedroom_Temperature', 'FF_Bedroom_Setpoint'],
+  'Living room': ['GF_LivingRoom_Temperature', 'GF_LivingRoom_Setpoint', 'GF_LivingRoom_Humidity'],
+  'Bedroom': ['FF_Bedroom_Temperature', 'FF_Bedroom_Setpoint', null],
 };
 const TOPIC = 'istabai/history/';
 const BROKER = 'mqtt:broker:mqtt';     // the MQTT broker thing
@@ -42,9 +43,12 @@ function series(name) {
 
 for (const room of Object.keys(ROOMS)) {
   try {
-    const [temperature, setpoint] = ROOMS[room];
-    const payload = JSON.stringify({ from: from, step: STEP, t: series(temperature), s: series(setpoint) });
-    mqtt.publishMQTT(TOPIC + room, payload, true);
+    const [temperature, setpoint, humidity] = ROOMS[room];
+    const data = { from: from, step: STEP, t: series(temperature), s: series(setpoint) };
+    if (humidity) {
+      data.h = series(humidity);
+    }
+    mqtt.publishMQTT(TOPIC + room, JSON.stringify(data), true);
   } catch (e) {
     console.warn('NSPanel history ' + room + ': ' + e);
   }

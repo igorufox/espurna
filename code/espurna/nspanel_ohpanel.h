@@ -1451,13 +1451,24 @@ TileColors tileColors(const TileFace& face) {
     return {false, color::DarkGrey, dimColor(), color::LightGrey, face.state_line ? color::StateOff : color::LightGrey};
 }
 
-// thermostat state line of a tile: "21.9° » 21.5°", with " · Heating" while heating where it fits
+// thermostat state line of a tile: "21.9° » 21.5°", with " · Heating" while heating and " · 59%" (the humidity) where
+// they fit
 String thermostatFaceText(size_t index, const TilePage& page, bool heating) {
-    const auto out = thermostatTileText(index, page.value_field);
+    auto out = thermostatTileText(index, page.value_field);
     if (heating && page.states) {
         auto longer = out + F(" \xC2\xB7 ") + lang::texts().heating;
         if (fits(longer, page.value_field)) {
-            return longer;
+            out = longer;
+        }
+    }
+
+    // the humidity, where it fits
+    const auto* thermostat = thermostatOf(config.items[index]);
+    const float humidity = thermostat ? entityNumber(thermostat->humidity) : NAN;
+    if (!std::isnan(humidity)) {
+        auto longer = out + F(" \xC2\xB7 ") + String(lroundf(humidity)) + '%';
+        if (fits(longer, page.value_field)) {
+            out = longer;
         }
     }
     return out;
@@ -1776,8 +1787,9 @@ size_t rowAt(int x, int y) {
 
 namespace drawn {
 
-// Grid area: the 3x3 grid checked on the panel, 136x72 tiles with gaps 9 / 8, spans
-//   x 27 .. 453: 27 + 3 * 136 + 2 * 9 = 453, 27 px free on both sides of the 480 px screen,
+// Grid area: 136x72 tiles (3x3) with gaps 9 / 8, spans
+//   x 12 .. 438: 12 + 3 * 136 + 2 * 9 = 438, the stock tiles' span: the right ~30 px of the 480 px
+//     screen are under the frame, so the visible part is centred around x 225, not 240
 //   y 46 .. 278: 46 + 3 * 72 + 2 * 8 = 278, under the title (and close), above the page dots (y 294).
 // Every layout fills the same 426 x 232 area; the remainder of the division is centred:
 //   w = (426 - (cols - 1) * 9) / cols, h = (232 - (rows - 1) * 8) / rows
@@ -1786,7 +1798,7 @@ namespace drawn {
 //   3x2: 136                         x 112
 //   2x2: (426 - 9) / 2 = 208 (+1 px) x 112
 //   1x2: 426                         x 112
-constexpr int AreaX { 27 };
+constexpr int AreaX { 12 };
 constexpr int AreaY { 46 };
 constexpr int AreaW { 426 };
 constexpr int AreaH { 232 };
@@ -2202,6 +2214,7 @@ constexpr int BoxW { drawn::AreaW };
 constexpr int BoxH { drawn::AreaH };
 constexpr int PlotX0 { BoxX + 42 };
 constexpr int PlotX1 { BoxX + BoxW - 14 };
+constexpr int PlotX1Humidity { BoxX + BoxW - 40 };  // room for the % labels on the right
 constexpr int PlotY0 { BoxY + 28 };
 constexpr int PlotY1 { BoxY + BoxH - 36 };
 constexpr int StripY { PlotY1 + 4 };
@@ -2214,6 +2227,7 @@ constexpr uint16_t Box { color::DarkGrey };
 constexpr uint16_t Grid { rgb565(0x3c4248) };
 constexpr uint16_t Band { rgb565(0x4a2c18) };
 constexpr uint16_t Target { color::LightGrey };
+constexpr uint16_t Humidity { rgb565(0x81c784) };
 
 // the button under the dial: the hidden mode pill m11_hs (165,280 120x32) takes the touch
 constexpr int PillX { 165 };
@@ -2246,20 +2260,29 @@ void message(const String& text) {
     xstr(BoxX, BoxY + BoxH / 2 - 12, BoxW, 24, 1, color::LightGrey, 0, 1, text);
 }
 
-// the drawn part of a series: its newest PointsMax points on a degree scale
+// the drawn part of a series: its newest PointsMax points on a degree scale (the humidity on a % scale)
 struct Scale {
     size_t first;
     size_t count;
     int low;    // whole degrees at the bottom / top of the plot
     int high;
+    int right { PlotX1 };
+    int hlow { 0 };    // whole % at the bottom / top
+    int hhigh { 100 };
 
     int x(size_t index) const {
-        return PlotX0 + static_cast<int>((index * static_cast<size_t>(PlotX1 - PlotX0)) / (count - 1));
+        return PlotX0 + static_cast<int>((index * static_cast<size_t>(right - PlotX0)) / (count - 1));
     }
 
     int y(int tenths) const {
         const float share = (tenths / 10.0f - low) / static_cast<float>(high - low);
         return PlotY1 - static_cast<int>(lroundf(share * (PlotY1 - PlotY0)));
+    }
+
+    // a humidity value (% x10) mapped onto the degree scale, so that polyline() draws it as it is
+    int16_t humidityAsDegrees(int16_t tenths) const {
+        const float share = (tenths / 10.0f - hlow) / static_cast<float>(hhigh - hlow);
+        return static_cast<int16_t>(lroundf((low + share * (high - low)) * 10.0f));
     }
 
     int16_t at(const std::vector<int16_t>& values, size_t index) const {
@@ -2324,12 +2347,15 @@ bool heating(const history::Series& series, const Scale& scale, size_t index) {
     return (temperature != history::Missing) && (setpoint != history::Missing) && (setpoint > temperature);
 }
 
-// a colour bar and its name in font 0 (8 px per digit); where the next one starts
-int legend(int x, uint16_t colour, const char* text) {
+// a colour bar and its name in font 0 (8 px per digit); where the next one starts. compact: four entries
+// (with the humidity) fit the plot width
+int legend(int x, uint16_t colour, const char* text, bool compact = false) {
     const int width = static_cast<int>(thermo::textWidth(String(text), 8)) + 4;
-    fill(x, BoxY + 13, 16, 3, colour);
-    xstr(x + 22, BoxY + 5, width, 18, 0, color::LightGrey, 0, 0, text);
-    return x + 22 + width + 18;
+    const int bar = compact ? 10 : 16;
+    const int gap = compact ? 16 : 22;
+    fill(x, BoxY + 13, bar, 3, colour);
+    xstr(x + gap, BoxY + 5, width, 18, 0, color::LightGrey, 0, 0, text);
+    return x + gap + width + (compact ? 8 : 18);
 }
 
 void draw(const history::Series& series) {
@@ -2362,7 +2388,28 @@ void draw(const history::Series& series) {
     drawn::shape(BoxX, BoxY, BoxW, BoxH, Box);
 
     // heating: bands in the plot, the strip under it
-    const int half = std::max(1, (PlotX1 - PlotX0) / static_cast<int>(2 * (scale.count - 1)));
+    // humidity: its own % scale on the right, at least 20 % high, centred on the values (bounds in steps of 5)
+    int hlo = INT_MAX;
+    int hhi = INT_MIN;
+    for (size_t index = 0; index < scale.count; ++index) {
+        const auto value = scale.at(series.humidity, index);
+        if (value != history::Missing) {
+            hlo = std::min<int>(hlo, value);
+            hhi = std::max<int>(hhi, value);
+        }
+    }
+    const bool humidity = (hlo <= hhi);
+    if (humidity) {
+        scale.right = PlotX1Humidity;
+        const float lo_pct = hlo / 10.0f;
+        const float hi_pct = hhi / 10.0f;
+        const int span = std::min(100, std::max(20, static_cast<int>(ceilf((hi_pct - lo_pct + 6.0f) / 10.0f)) * 10));
+        const int low_pct = static_cast<int>(floorf(((lo_pct + hi_pct) / 2.0f - span / 2.0f) / 5.0f)) * 5;
+        scale.hlow = std::max(0, std::min(100 - span, low_pct));
+        scale.hhigh = scale.hlow + span;
+    }
+
+    const int half = std::max(1, (scale.right - PlotX0) / static_cast<int>(2 * (scale.count - 1)));
     for (size_t index = 0; index < scale.count;) {
         if (!heating(series, scale, index)) {
             ++index;
@@ -2373,7 +2420,7 @@ void draw(const history::Series& series) {
             ++last;
         }
         const int x1 = std::max(PlotX0, scale.x(index) - half);
-        const int x2 = std::min(PlotX1, scale.x(last) + half);
+        const int x2 = std::min(scale.right, scale.x(last) + half);
         fill(x1, PlotY0, x2 - x1 + 1, PlotY1 - PlotY0 + 1, Band);
         fill(x1, StripY, x2 - x1 + 1, StripH, color::Heat);
         index = last + 1;
@@ -2384,7 +2431,7 @@ void draw(const history::Series& series) {
         degree <= scale.high; degree += every)
     {
         const int y = scale.y(degree * 10);
-        line(PlotX0, y, PlotX1, y, Grid);
+        line(PlotX0, y, scale.right, y, Grid);
         xstr(BoxX + 2, y - 9, PlotX0 - BoxX - 6, 18, 0, color::LightGrey, 0, 2, String(degree) + F("\xC2\xB0"));
     }
 
@@ -2406,12 +2453,31 @@ void draw(const history::Series& series) {
         }
     }
 
+    if (humidity) {
+        const int every_h = ((scale.hhigh - scale.hlow) > 40) ? 20 : 10;
+        for (int percent = ((scale.hlow + every_h - 1) / every_h) * every_h; percent <= scale.hhigh; percent += every_h) {
+            const int y = scale.y(scale.humidityAsDegrees(percent * 10));
+            xstr(scale.right + 4, y - 9, BoxX + BoxW - scale.right - 6, 18, 0, Humidity, 0, 0,
+                String(percent) + '%');
+        }
+
+        std::vector<int16_t> mapped;
+        mapped.reserve(series.humidity.size());
+        for (const auto value : series.humidity) {
+            mapped.push_back((value == history::Missing) ? value : scale.humidityAsDegrees(value));
+        }
+        polyline(mapped, scale, false, Humidity);
+    }
+
     polyline(series.setpoint, scale, true, Target);
     polyline(series.temperature, scale, false, accent());
 
-    int x = legend(PlotX0, accent(), lang::texts().temperature);
-    x = legend(x, Target, lang::texts().setpoint);
-    legend(x, color::Heat, lang::texts().heating);
+    int x = legend(PlotX0, accent(), lang::texts().temperature, humidity);
+    x = legend(x, Target, lang::texts().setpoint, humidity);
+    if (humidity) {
+        x = legend(x, Humidity, lang::texts().humidity, true);
+    }
+    legend(x, color::Heat, lang::texts().heating, humidity);
 }
 
 } // namespace chart

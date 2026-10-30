@@ -1,10 +1,20 @@
 import { expect, test } from 'vitest';
 
 import {
+    applyField,
     formatStatus,
+    formatValue,
+    itemKind,
+    KIND_FIELDS,
+    KINDS,
+    parsePath,
+    setItemKind,
     formatValidateResult,
+    itemContains,
     itemName,
     jsonErrorOffset,
+    moveItem,
+    newPage,
     offsetToLineColumn,
     pageGrid,
     perScreen,
@@ -14,6 +24,8 @@ import {
     previewRow,
     previewSlots,
     previewTarget,
+    renameItem,
+    TEMPLATES,
     validateJson,
 } from '../src/nspanel.mjs';
 
@@ -90,7 +102,7 @@ test('preview: layout picks the grid page of the custom TFT and its capacity', (
 
     const heating = previewCards({pages: [{title: 'Heating', layout: '3x3', items: rooms}]}, 8, true, true);
     expect(heating.map((card) => card.title)).toEqual(['Heating']);
-    expect(previewGrid(heating[0], true)).toEqual({columns: 3, slots: rooms});
+    expect(previewGrid(heating[0], true)).toEqual({columns: 3, slots: rooms, indexes: [0, 1, 2, 3, 4, 5, 6, 7, 8]});
 
     const big = previewCards({pages: [{title: 'Big', layout: '2x2', items: tiles(5)}]}, 8, true, true);
     expect(big.map((card) => card.title)).toEqual(['Big 1/2', 'Big 2/2']);
@@ -99,7 +111,9 @@ test('preview: layout picks the grid page of the custom TFT and its capacity', (
 
     const wide = previewCards({pages: [{title: 'Wide', layout: '1x2', items: tiles(3)}]}, 8, true, true);
     expect(wide.map((card) => card.items.length)).toEqual([2, 1]);
-    expect(previewGrid(wide[0], true)).toEqual({columns: 1, slots: tiles(2)});
+    expect(previewGrid(wide[0], true)).toEqual({columns: 1, slots: tiles(2), indexes: [0, 1]});
+    expect(previewGrid(big[1], true).indexes).toEqual([0, -1, -1, -1]);
+    expect(big.map((card) => card.offset)).toEqual([0, 4]);
 });
 
 test('preview: layouts on the stock TFT use the columns of the 4x2 slots', () => {
@@ -259,4 +273,136 @@ test('status line', () => {
         design: 'custom ESPurna grids: layouts 4x2 3x3 3x2 2x2 1x2, background aurora only',
     })).toEqual('ohpanel, (config: auto), version d3731fbb, '
         + 'custom ESPurna grids: layouts 4x2 3x3 3x2 2x2 1x2, background aurora only, connected');
+});
+
+test('editor: an item takes the place of the one it is dropped on', () => {
+    const list = ['a', 'b', 'c', 'd'];
+    expect(moveItem(list, 0, list, 2)).toEqual(true);
+    expect(list).toEqual(['b', 'c', 'a', 'd']);
+    expect(moveItem(list, 3, list, 0)).toEqual(true);
+    expect(list).toEqual(['d', 'b', 'c', 'a']);
+    expect(moveItem(list, 1, list, 1)).toEqual(false);
+    expect(moveItem(list, 7, list, 0)).toEqual(false);
+
+    // past the end appends, also into another list
+    const other = ['x'];
+    expect(moveItem(list, 0, other, Number.MAX_SAFE_INTEGER)).toEqual(true);
+    expect(list).toEqual(['b', 'c', 'a']);
+    expect(other).toEqual(['x', 'd']);
+});
+
+test('editor: a page tile never goes into its own nested pages', () => {
+    const inner = {name: 'Inner', page: {items: [{name: 'leaf', topic: 't'}]}};
+    const outer = {name: 'Outer', page: {items: [inner]}};
+    const top = [outer];
+
+    expect(itemContains(outer, inner.page.items)).toEqual(true);
+    expect(itemContains(outer, outer.page.items)).toEqual(true);
+    expect(itemContains(inner, outer.page.items)).toEqual(false);
+    expect(moveItem(top, 0, inner.page.items, 0)).toEqual(false);
+    expect(top).toEqual([outer]);
+
+    // the other way round is fine: the inner page tile moves up a level
+    expect(moveItem(outer.page.items, 0, top, 1)).toEqual(true);
+    expect(top.map(itemName)).toEqual(['Outer', 'Inner']);
+});
+
+test('editor: rename', () => {
+    const list = [{name: 'Lamp', topic: 't'}, 'ref', {page: {title: 'Floor', items: []}, name: 'x'}];
+    renameItem(list, 0, 'Desk');
+    renameItem(list, 1, 'other');
+    renameItem(list, 2, '');
+    renameItem(list, 1, '');
+    expect(list.map(itemName)).toEqual(['Desk', 'other', 'Floor']);
+    expect(list[2]).not.toHaveProperty('name');
+});
+
+test('editor: palette templates make fresh items the preview knows', () => {
+    for (const template of Object.values(TEMPLATES)) {
+        const one = template.make();
+        expect(one).not.toBe(template.make());
+        expect(itemName(one).length).toBeGreaterThan(0);
+        expect(previewTarget(one, {}).type.length).toBeGreaterThan(0);
+    }
+    expect(previewTarget(TEMPLATES.subpage.make(), {}).bad).toEqual(false);
+    expect(previewTarget(TEMPLATES.switch.make(), {}).bad).toEqual(true);
+    expect(previewCards({pages: [newPage()]}).map((card) => card.title)).toEqual(['New page']);
+});
+
+test('settings form: what a tile does', () => {
+    expect(itemKind({name: 'a', topic: 't'})).toEqual('switch');
+    expect(itemKind({type: 'button', topic: 't'})).toEqual('button');
+    expect(itemKind({relay: 0})).toEqual('relay');
+    expect(itemKind({type: 'scene', group: 'g'})).toEqual('scene');
+    expect(itemKind({page: {items: []}})).toEqual('page');
+    expect(itemKind({open: 'settings'})).toEqual('open');
+    expect(itemKind({type: 'thermostat', topic: 't'})).toEqual('thermostat');
+    expect(itemKind({type: 'nonsense', topic: 't'})).toEqual('switch');
+    expect(itemKind('Lamp')).toEqual('ref');
+    expect(Object.keys(KIND_FIELDS).sort()).toEqual(Object.keys(KINDS).sort());
+});
+
+test('settings form: another kind keeps what fits and adds what is needed', () => {
+    const lamp = {name: 'Lamp', icon: 'lamp', topic: 'z/Lamp', path: ['state'], on: 'ON', off: 'OFF', font: 3};
+    expect(setItemKind(lamp, 'button')).toEqual({name: 'Lamp', icon: 'lamp', type: 'button', topic: 'z/Lamp', path: ['state'], on: 'ON'});
+    expect(setItemKind(lamp, 'scene')).toEqual({name: 'Lamp', icon: 'lamp', type: 'scene', group: '', action: 'toggle'});
+    expect(setItemKind(lamp, 'relay')).toEqual({name: 'Lamp', icon: 'lamp', relay: 0});
+    expect(setItemKind(lamp, 'page')).toEqual({name: 'Lamp', icon: 'lamp', page: {items: []}});
+    expect(setItemKind(lamp, 'open')).toEqual({name: 'Lamp', icon: 'lamp', open: 'settings'});
+    expect(setItemKind(lamp, 'switch')).toEqual({name: 'Lamp', icon: 'lamp', topic: ''});
+    expect(setItemKind({name: 'T', topic: 'istabai/out', room: 'Hall', step: 0.5}, 'thermostat'))
+        .toEqual({name: 'T', topic: 'istabai/out', room: 'Hall', step: 0.5, type: 'thermostat'});
+    for (const kind of Object.keys(KINDS)) {
+        expect(itemKind(setItemKind({name: 'x', topic: 't'}, kind))).toEqual(kind);
+    }
+});
+
+test('settings form: values', () => {
+    expect(parsePath('Гостиная, set_temperature')).toEqual(['Гостиная', 'set_temperature']);
+    expect(parsePath('list, 0 ,, value')).toEqual(['list', 0, 'value']);
+    expect(formatValue(['a', 0])).toEqual('a, 0');
+    expect(formatValue(undefined)).toEqual('');
+    expect(formatValue(1.5)).toEqual('1.5');
+
+    /** @type {any} */
+    const item = {topic: 'x', step: 1};
+    applyField(item, 'topic', 'text', '  z/Lamp ');
+    applyField(item, 'step', 'number', '0.5');
+    applyField(item, 'relay', 'number', 'abc');
+    applyField(item, 'min', 'numpath', '5');
+    applyField(item, 'max', 'numpath', 'room, max');
+    applyField(item, 'open', 'numtext', '2');
+    applyField(item, 'draw', 'bool', 'false');
+    applyField(item, 'path', 'path', 'state');
+    expect(item).toEqual({topic: 'z/Lamp', step: 0.5, min: 5, max: ['room', 'max'], open: 2, draw: false, path: ['state']});
+
+    applyField(item, 'open', 'numtext', 'Дом');
+    applyField(item, 'topic', 'text', '');
+    expect(item.open).toEqual('Дом');
+    expect(item).not.toHaveProperty('topic');
+});
+
+test('settings form: group members, a topic or a relay number a line', () => {
+    /** @type {any} */
+    const groups = {house: ['a/relay/0']};
+    applyField(groups, 'house', 'members', 'ESPURNA-KITCHEN/relay/0\n  2 \n\nzigbee2mqtt/Lamp\n');
+    expect(groups).toEqual({house: ['ESPURNA-KITCHEN/relay/0', 2, 'zigbee2mqtt/Lamp']});
+    applyField(groups, 'house', 'members', '  ');
+    expect(groups).toEqual({});
+});
+
+test('settings form: a tile calling a URL', () => {
+    expect(itemKind({name: 'Gate', url: 'http://10.0.0.9/relay/0?turn=on'})).toEqual('url');
+    expect(itemKind({name: 'Lamp', on_url: 'http://x/on', off_url: 'http://x/off', topic: 'x/state'})).toEqual('url');
+
+    // a switch becomes a URL tile: the state topic stays, the MQTT command goes
+    const lamp = {name: 'Lamp', icon: 'lamp', topic: 'z/Lamp', command: 'z/Lamp/set', payload: '%s'};
+    expect(setItemKind(lamp, 'url')).toEqual({name: 'Lamp', icon: 'lamp', topic: 'z/Lamp', url: ''});
+    expect(setItemKind({name: 'x', on_url: 'http://a'}, 'url')).toEqual({name: 'x', on_url: 'http://a'});
+    expect(setItemKind({name: 'x', url: 'http://a', topic: 't'}, 'button'))
+        .toEqual({name: 'x', type: 'button', topic: 't'});
+
+    expect(previewTarget({url: 'http://a/b'}, {})).toEqual({type: 'url', target: 'GET http://a/b', bad: false});
+    expect(previewTarget({url: 'ftp://a'}, {}).bad).toEqual(true);
+    expect(previewTarget(TEMPLATES.url.make(), {}).bad).toEqual(true);
 });

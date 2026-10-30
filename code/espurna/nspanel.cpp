@@ -265,6 +265,7 @@ struct Texts {
     const char* hours;              // chart title suffix, followed by the number of hours
     const char* temperature;        // chart legend
     const char* setpoint;
+    const char* humidity;
 };
 
 const Texts English {
@@ -280,7 +281,7 @@ const Texts English {
     "Icons", "Large", "Small",
     "Theme", "Light", "Dark",
     "Backdrop", { "Aurora", "Black", "Candy", "Dunes", "Forest" }, // "Background" is wider than the tile name
-    "History", "No history yet", " h", "Temperature", "Target",
+    "History", "No history yet", " h", "Temperature", "Target", "Humidity",
 };
 
 const Texts Russian {
@@ -296,7 +297,7 @@ const Texts Russian {
     "Иконки", "Крупные", "Мелкие",
     "Тема", "Светлая", "Тёмная",
     "Фон", { "Сияние", "Чёрный", "Огоньки", "Дюны", "Лес" },
-    "История", "Истории пока нет", " ч", "Температура", "Цель",
+    "История", "Истории пока нет", " ч", "Температура", "Цель", "Влажность",
 };
 
 const Texts& texts() {
@@ -440,6 +441,10 @@ struct Entity {
     String off;
     String payload;  // command template, "%s" is replaced by the value; empty: the plain value
     float number { NAN }; // value as a number, NAN when it is not one
+
+    // "url" / "on_url" / "off_url": an HTTP GET instead of the MQTT command ("url": the same for on and off)
+    String url_on;
+    String url_off;
 };
 
 // "type": "thermostat": entity indices into Config::entities, -1 when not configured
@@ -605,7 +610,8 @@ int findOrAddEntity(Config& out, Entity&& want) {
     for (size_t index = 0; index < out.entities.size(); ++index) {
         auto& entity = out.entities[index];
         if ((entity.relay < 0) && (entity.topic == want.topic) && (entity.path == want.path)
-            && (entity.on == want.on) && (entity.off == want.off) && (entity.payload == want.payload))
+            && (entity.on == want.on) && (entity.off == want.off) && (entity.payload == want.payload)
+            && (entity.url_on == want.url_on) && (entity.url_off == want.url_off))
         {
             if (want.command.length()) {
                 entity.command = want.command;
@@ -633,7 +639,11 @@ int findOrAddTopic(Config& out, const String& topic, const String& command) {
 bool parsePath(const JsonVariant& value, String& out) {
     out = String();
     if (value.is<const char*>()) {
-        out = value.as<const char*>();
+        const char* text = value.as<const char*>();  // NULL for a JSON null
+        if (!text) {
+            return false;
+        }
+        out = text;
         return out.length() > 0;
     }
 
@@ -648,7 +658,7 @@ bool parsePath(const JsonVariant& value, String& out) {
             out += PathSep;
         }
         first = false;
-        if (key.is<const char*>()) {
+        if (key.is<const char*>() && key.as<const char*>()) {
             out += key.as<const char*>();
         } else if (key.is<long>()) {
             out += String(key.as<long>());
@@ -758,7 +768,8 @@ String resolveIcon(const char* value, uint16_t fallback, String& warnings) {
 // "x" -> x, 12 -> "12", true -> "true", missing -> ""
 String jsonText(const JsonVariant& value) {
     if (value.is<const char*>()) {
-        return String(value.as<const char*>());
+        const char* text = value.as<const char*>();  // NULL for a JSON null
+        return text ? String(text) : String();
     }
     if (value.is<bool>()) {
         return value.as<bool>() ? F("true") : F("false");
@@ -774,11 +785,47 @@ String jsonText(const JsonVariant& value) {
     return String();
 }
 
+// "url" (both), "on_url", "off_url": plain http:// or https:// (no certificate check), empty when not set
+bool parseUrls(JsonObject& obj, String& on, String& off, String& error) {
+    const String url = jsonText(obj["url"]);
+    on = jsonText(obj["on_url"]);
+    off = jsonText(obj["off_url"]);
+    if (!on.length()) {
+        on = url;
+    }
+    if (!off.length()) {
+        off = url;
+    }
+
+    for (const auto* value : {&on, &off}) {
+        if (value->length() && (!(value->startsWith(F("http://")) || value->startsWith(F("https://")))
+            || (value->length() > 256)))
+        {
+            error = F("\"url\" must start with http:// or https://, at most 256 characters");
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool parseTarget(JsonObject& obj, Config& out, Target& target, String& error) {
     if (!parseAction(obj["action"].as<const char*>(), target.action)) {
         error = F("unknown action '");
         error += obj["action"].as<const char*>();
         error += '\'';
+        return false;
+    }
+
+    String url_on;
+    String url_off;
+    if (!parseUrls(obj, url_on, url_off, error)) {
+        return false;
+    }
+    const bool urls = url_on.length() || url_off.length();
+
+    if (urls && obj.containsKey("relay")) {
+        error = F("\"url\" and \"relay\" do not go together");
         return false;
     }
 
@@ -811,7 +858,16 @@ bool parseTarget(JsonObject& obj, Config& out, Target& target, String& error) {
         entity.on = jsonText(obj["on"]);
         entity.off = jsonText(obj["off"]);
         entity.payload = jsonText(obj["payload"]);
+        entity.url_on = url_on;
+        entity.url_off = url_off;
         target.entity = findOrAddEntity(out, std::move(entity));
+    } else if (urls) {
+        // no state topic: an entity of its own, the panel keeps its state (entitySet())
+        Entity entity;
+        entity.url_on = url_on;
+        entity.url_off = url_off;
+        out.entities.push_back(std::move(entity));
+        target.entity = out.entities.size() - 1;
     }
 
     if (obj.containsKey("group")) {
@@ -1089,7 +1145,7 @@ bool parseItem(JsonObject& item_obj, Config& out, Item& item, std::vector<Pendin
         const bool need_group = (item.type == ItemType::Scene);
         if (need_group ? (item.target.group < 0) : (item.target.entity < 0)) {
             error = where + F(" '") + item.name
-                + (need_group ? F("': scene needs \"group\"") : F("': needs \"topic\" or \"relay\""));
+                + (need_group ? F("': scene needs \"group\"") : F("': needs \"topic\", \"relay\" or \"url\""));
             return false;
         }
     }
@@ -2211,6 +2267,93 @@ int groupState(int group) {
     return out;
 }
 
+// -----------------------------------------------------------------------------
+// "url" tiles: an HTTP GET per tap, each in a task of its own (a slow or dead server must not stall the
+// loop); the result is logged from the loop, never the URL itself (it may hold a token)
+// -----------------------------------------------------------------------------
+
+namespace http {
+
+constexpr uint32_t Stack { 8192 };
+constexpr uint32_t StackTls { 12288 };
+constexpr int RunningMax { 2 };
+
+std::atomic<int> running { 0 };
+std::atomic<int> last_code { 0 };
+std::atomic<bool> finished { false };
+
+// runs in the task below; returns, so that its locals are destroyed before vTaskDelete()
+void fetch(const String& url) {
+    int code = -1;
+    {
+        std::unique_ptr<WiFiClient> client;
+        if (url.startsWith(F("https://"))) {
+            auto* secure = new WiFiClientSecure();
+            secure->setInsecure();
+            secure->setHandshakeTimeout(10);
+            client.reset(secure);
+        } else {
+            client.reset(new WiFiClient());
+        }
+
+        HTTPClient http;
+        http.setConnectTimeout(5000);
+        http.setTimeout(5000);
+        http.setReuse(false);
+        if (http.begin(*client, url)) {
+            code = http.GET();
+            http.end();
+        }
+    }
+
+    last_code.store(code);
+    finished.store(true);
+}
+
+void task(void* arg) {
+    {
+        std::unique_ptr<String> url(static_cast<String*>(arg));
+        fetch(*url);
+    }
+    --running;
+    vTaskDelete(nullptr);
+}
+
+// false when it could not be started (no WiFi, too many at once, low heap)
+bool get(const String& url) {
+    if (!wifiConnected() || (running.load() >= RunningMax) || (ESP.getFreeHeap() < build::WeatherHeapMin)) {
+        DEBUG_MSG_P(PSTR("[NSPANEL] URL request dropped (no WiFi, busy or low heap)\n"));
+        return false;
+    }
+
+    auto* arg = new String(url);
+    ++running;
+    const bool tls = url.startsWith(F("https://"));
+    if (pdPASS != xTaskCreate(task, "nspurl", tls ? StackTls : Stack, arg, 1, nullptr)) {
+        --running;
+        delete arg;
+        DEBUG_MSG_P(PSTR("[NSPANEL] URL request: task create failed\n"));
+        return false;
+    }
+
+    return true;
+}
+
+void loop() {
+    if (finished.exchange(false)) {
+        const int code = last_code.load();
+        if (code > 0) {
+            DEBUG_MSG_P(PSTR("[NSPANEL] URL request: HTTP %d\n"), code);
+        } else {
+            DEBUG_MSG_P(PSTR("[NSPANEL] URL request failed: %s\n"), HTTPClient::errorToString(code).c_str());
+        }
+    }
+}
+
+} // namespace http
+
+void entityChanged(int entity);
+
 // publishes a value to the entity's command topic, through its "payload" template ("%s" = value)
 void entitySend(int index, const String& value) {
     if ((index < 0) || (static_cast<size_t>(index) >= config.entities.size())) {
@@ -2249,6 +2392,21 @@ void entitySet(int index, Action action) {
         return;
     }
 #endif
+
+    // "url": a GET instead of the MQTT command. Toggle goes by the known state, else on. Without a state
+    // topic and with two different URLs the panel keeps the state itself, as sent
+    if (entity.url_on.length() || entity.url_off.length()) {
+        const bool on = (action == Action::On) || ((action == Action::Toggle) && (entity.state != 1));
+        const String& url = on ? entity.url_on : entity.url_off;
+        if (url.length() && http::get(url) && !entity.topic.length() && (entity.url_on != entity.url_off)) {
+            const int state = on ? 1 : 0;
+            if (config.entities[index].state != state) {
+                config.entities[index].state = state;
+                entityChanged(index);
+            }
+        }
+        return;
+    }
 
     const String& on = entity.on.length() ? entity.on : config.on;
     const String& off = entity.off.length() ? entity.off : config.off;
@@ -2991,7 +3149,13 @@ bool extract(JsonVariant root, const String& path, String& text, float& number) 
 
     number = NAN;
     if (value.is<const char*>()) {
-        text = value.as<const char*>();
+        // ArduinoJson 5 takes a JSON null for a string and gives NULL for it: a String assigned NULL has no
+        // buffer, and strtof(NULL) below crashed the panel on any null at an entity's path (crash loop -> unstable mode)
+        const char* raw = value.as<const char*>();
+        if (!raw) {
+            return false;
+        }
+        text = raw;
         char* end = nullptr;
         const float parsed = strtof(text.c_str(), &end);
         if (text.length() && end && !*end) {
@@ -3063,7 +3227,8 @@ void loop() {
 // -----------------------------------------------------------------------------
 // Thermostat history: a thermostat's "history" topic holds a retained series (e.g. published by an openHAB rule
 // from its persistence). It is subscribed only while the chart is open, so nothing is kept on the panel:
-// {"from": <unix time of the first point>, "step": <seconds>, "t": [<temperature x10> | null, ...], "s": [<setpoint x10> | null, ...]}
+// {"from": <unix time of the first point>, "step": <seconds>, "t": [<temperature x10> | null, ...], "s": [<setpoint x10> | null, ...],
+//  "h": [<humidity % x10> | null, ...]} ("h" is optional)
 // -----------------------------------------------------------------------------
 
 namespace history {
@@ -3077,6 +3242,7 @@ struct Series {
     uint32_t step { 0 };
     std::vector<int16_t> temperature;
     std::vector<int16_t> setpoint;
+    std::vector<int16_t> humidity;
 };
 
 String topic;               // subscribed while a chart is open, empty otherwise
@@ -3150,7 +3316,7 @@ bool take(Series& out) {
     fresh = false;
 
     try {
-        DynamicJsonBuffer buffer(2048);
+        DynamicJsonBuffer buffer(4096);
         JsonObject& root = buffer.parseObject(payload.c_str());
         if (!root.success()) {
             return false;
@@ -3159,6 +3325,7 @@ bool take(Series& out) {
         out.step = root["step"].as<unsigned long>();
         read(root["t"], out.temperature);
         read(root["s"], out.setpoint);
+        read(root["h"], out.humidity);
     } catch (const std::bad_alloc&) {
         return false;
     }
@@ -4986,7 +5153,7 @@ void onStatus(AsyncWebServerRequest* request) {
         return;
     }
 
-    DynamicJsonBuffer buffer(512);
+    DynamicJsonBuffer buffer(3072);
     JsonObject& root = buffer.createObject();
     root["display"] = driverPrefName(config.display);
     root["driver"] = driverName(link::active);
@@ -4999,6 +5166,12 @@ void onStatus(AsyncWebServerRequest* request) {
         root["design"] = design;
     }
     root["flashing"] = flash::busy();
+
+    // the icon names of the built-in table, offered by the editor's icon field
+    JsonArray& names = root.createNestedArray("icons");
+    for (const auto& icon : icons::Table) {
+        names.add(icon.name);
+    }
 
     String out;
     root.printTo(out);
@@ -5267,6 +5440,21 @@ void terminalEvent(espurna::terminal::CommandContext&& ctx) {
     terminalOK(ctx);
 }
 
+// nspanel.url <http(s)://...>: the GET a "url" tile sends, to try an address from the panel
+void terminalUrl(espurna::terminal::CommandContext&& ctx) {
+    if ((ctx.argv.size() != 2)
+        || !(ctx.argv[1].startsWith(F("http://")) || ctx.argv[1].startsWith(F("https://"))))
+    {
+        terminalError(ctx, F("nspanel.url <http(s)://...>, the result follows in the log"));
+        return;
+    }
+    if (!http::get(ctx.argv[1])) {
+        terminalError(ctx, F("not started (no WiFi, busy or low heap)"));
+        return;
+    }
+    terminalOK(ctx);
+}
+
 PROGMEM_STRING(Safeboot, "SAFEBOOT");
 PROGMEM_STRING(PanelCapture, "NSPANEL.CAPTURE");
 PROGMEM_STRING(PanelEvent, "NSPANEL.EVENT");
@@ -5276,6 +5464,7 @@ PROGMEM_STRING(PanelInfo, "NSPANEL.INFO");
 PROGMEM_STRING(PanelFlash, "NSPANEL.FLASH");
 PROGMEM_STRING(PanelDetect, "NSPANEL.DETECT");
 PROGMEM_STRING(PanelPage, "NSPANEL.PAGE");
+PROGMEM_STRING(PanelUrl, "NSPANEL.URL");
 
 static constexpr espurna::terminal::Command BootCommands[] PROGMEM {
     {Safeboot, terminalSafeboot},
@@ -5290,6 +5479,7 @@ static constexpr espurna::terminal::Command PanelCommands[] PROGMEM {
     {PanelPage, terminalPage},
     {PanelCapture, terminalCapture},
     {PanelEvent, terminalEvent},
+    {PanelUrl, terminalUrl},
 };
 
 #endif // TERMINAL_SUPPORT
@@ -5318,6 +5508,7 @@ void panelLoop() {
     link::loop();
 
     weather::loop();
+    http::loop();
     buzzer::loop();
 }
 

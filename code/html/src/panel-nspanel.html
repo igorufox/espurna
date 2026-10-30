@@ -44,7 +44,18 @@
             </fieldset>
 
             <fieldset>
-                <legend>Preview</legend>
+                <legend>Preview and editor</legend>
+
+                <div class="pure-control-group">
+                    <span class="pure-form-message">
+                        Drag tiles, rows and page titles to change the order, drag chips from the palette to add
+                        items and pages, drop on <em>Trash</em> to remove. Double click a tile or a page title to rename
+                        it; the selector next to a title sets the page layout. A click on a tile or a page title
+                        opens its settings beside the preview: what the tile does (switch, button, relay, scene, text,
+                        thermostat, a page) and its topic, group or target. Changes go into the text above;
+                        <em>Save</em> sends them to the device.
+                    </span>
+                </div>
 
                 <div class="pure-control-group">
                     <span class="pure-form-message">
@@ -57,7 +68,11 @@
                     </span>
                 </div>
 
-                <div class="nspanel-preview-area"></div>
+                <div class="nspanel-palette"></div>
+                <div class="nspanel-workspace">
+                    <div class="nspanel-preview-area"></div>
+                    <div class="nspanel-form"></div>
+                </div>
             </fieldset>
 
         </div>

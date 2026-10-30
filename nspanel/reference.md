@@ -34,7 +34,8 @@ Any hardware button can use the JSON action: set its ESPurna action to `custom` 
 Stored on LittleFS in the existing data/spiffs partition (Tasmota's `spiffs`, ~320 KB). If it cannot be mounted it is formatted.
 Without a file, a built-in default shows the two local relays.
 
-Edit it at `http://<panel>/nspanel` (textarea, Save, live preview of the cards), or:
+Edit it at `http://<panel>/nspanel` (textarea, Save, live preview of the cards, which is also a drag-and-drop editor:
+order, palette of item templates, trash, double-click rename, page layout, Undo), or:
 
 - `GET  /nspanel.json` returns the file
 - `POST /nspanel.json` (body = JSON, `Content-Type: application/json`) validates, saves and reloads. The body is only collected
@@ -102,6 +103,7 @@ Item fields:
 | `on`, `off` | state values of this item, compared case-sensitively (e.g. `"ON"` / `"OFF"`); default `mqtt.on` / `mqtt.off`. They are also the command values. Toggle with an unknown state sends `on` (plain items without own `on`: `mqtt.toggle`) |
 | `payload` | command template, `%s` is replaced by the value: `"{\"state\":\"%s\"}"`. Default: the plain value |
 | `relay` | local relay index (0-based), instead of `topic` |
+| `url`, `on_url`, `off_url` | instead of the MQTT command: an HTTP GET to `http://` or `https://` (no certificate check, max 256 characters). `url` is sent on every tap (a toggling endpoint, or a `button`); `on_url` / `off_url` switch on / off (toggle by the known state, else on). With a `topic` the state comes from MQTT as usual; without one and with two different URLs the panel keeps the state as last sent. Each request runs in a task of its own (timeouts 5 s, at most 2 at once); the log shows `URL request: HTTP 200` or the failure, never the URL. Try an address from the panel with `nspanel.url <url>` |
 | `type` | `switch` (default): tap toggles. Known state → sends `on`/`off`; unknown → sends `toggle` (`"2"`, ESPurna toggle payload). `button`: tap sends `on` once (gates are pulse relays, the relay turns itself off). `scene`: `action` (`on`/`off`/`toggle`) over all members of `group`; `toggle` = any on → all off, else all on. `text`: read-only, shows the first 4 characters of the state payload in the icon slot. `thermostat`: see [Thermostat](#thermostat) |
 | `group`, `action` | for `scene` |
 | `page` | instead of a target: a nested page (an object with the fields of a page: `title`, `type`, `layout`, `per_screen`, `items`, which may hold further `page` tiles). The tile opens it; see [Nested pages](#nested-pages). Without `name` the tile shows the page `title`, without `title` the page shows the tile `name` |
@@ -189,13 +191,13 @@ zigbee2mqtt switch (state `{"state":"ON",...}`, command `{"state":"OFF"}` to `<n
 | `current`, `setpoint`, `humidity`, `active`, `min`, `max` | explicit paths (override `room`); `setpoint` is required without `room`; `min` / `max` may be numbers (default 5 / 30 while unknown) |
 | `command` | command topic (default `topic + mqtt.set`); the payload is the setpoint with one decimal (`21.5`), or `payload` with `%s` |
 | `step` | minus / plus step, default 0.5 |
-| `history` | topic of a retained history series (`{"from": <unix s>, "step": <s>, "t": [<x10> \| null, ...], "s": [...]}`): shows the *History* button and chart (OHpanel), see below |
+| `history` | topic of a retained history series (`{"from": <unix s>, "step": <s>, "t": [<x10> \| null, ...], "s": [...], "h": [...]}`, `"h"` = humidity in % x10, optional): shows the *History* button and chart (OHpanel), see below |
 
 Heating = `active` is known and not `off` / `false` / `0` / `idle` (any case).
 
 OHpanel tile: corner layout always (font 9 has no digits), icon, state line `21,9° » 21,5°` (current » setpoint), name; heating =
 highlighted tile with the icon and the state line in orange (`#ff8a3d`, unless the item has its own `color`); on the custom grid
-pages `3x3` .. `1x2` the state line adds ` · Нагрев` where it fits (`2x2`, `1x2`). Tap opens the thermostat page: title = item name, current temperature (large), `Цель 21,5°`, a ring of 89 beads
+pages `3x3` .. `1x2` the state line adds ` · Нагрев` where it fits (`2x2`, `1x2`), and on every page the humidity (` · 59%`) where it fits. Tap opens the thermostat page: title = item name, current temperature (large), `Цель 21,5°`, a ring of 89 beads
 from min to max with a white knob at the setpoint, minus / plus, and a line with `Нагрев · 39%` (fire icon, orange) or the humidity
 (`39%`, water-percent icon). Minus / plus change the setpoint at once (snapped to `step`, clamped to min..max; the target line is in
 the accent colour while not confirmed) and send it 1.5 s after the last tap. The value stays until the state topic reports it (at
@@ -208,13 +210,20 @@ subscribes to the topic (unsubscribed again when the chart closes or the thermos
 the retained message when it arrives, after 4 s without one `No history yet`. The newest 96 points are drawn into a dark rounded
 box over the grid area: degrees on the left (every 1 / 2 / 5 degrees by the range), a line and a label at every 6 h of local
 time, heating (target above temperature, as the Istabai bridge counts it) as dim orange bands and an orange strip under the
-plot, the target as a grey step line, the temperature in the accent colour; runs of equal height are one `line`, so a chart is
-~100-250 commands. Title `<name> · 24 h`. Cross / swipe right: back to the dial; swipe up / down: back to where the thermostat
+plot, the target as a grey step line, the temperature in the accent colour, and with `"h"` the humidity as a green line on its own
+% scale (labels on the right, steps of 10 / 20 %, at least 20 % high; the legend gets compact); runs of equal height are one
+`line`, so a chart is ~100-350 commands. Title `<name> · 24 h`. Cross / swipe right: back to the dial; swipe up / down: back to where the thermostat
 was opened from. Payloads up to 2047 bytes (MQTT buffer); `nspanel/openhab-history-rule.js` builds them in openHAB.
 
 **MQTT buffer:** ESPurna's MQTT module drops `MQTT_MESSAGE_EVENT` payloads of `MQTT_BUFFER_MAX_SIZE` bytes or more (default 1024).
 Istabai `istabai/out` with 9 rooms is ~1.3 KB, so the NSPanel build needs `#define MQTT_BUFFER_MAX_SIZE 2048` (board section
 `SONOFF_NSPANEL` in `config/hardware.h`, or a build flag). Until then thermostats stay `--`; `nspanel.info` lists the warning.
+
+**JSON null:** ArduinoJson 5 reports a JSON `null` as a string whose pointer is NULL. `json::extract()`, `jsonText()` and
+`parsePath()` treat it as a missing value. Before 2026-10-30 a `null` at an entity's path crashed the panel ~2 s after MQTT
+connected (the retained message), three crashes put ESPurna into its unstable mode (WiFi + telnet only, no web / MQTT): the
+"ping only" state. The NSPanel build therefore sets `TELNET_STA 1` (telnet from the LAN, password required), so `reset` over
+telnet gets it out without a power cycle.
 
 ## OHpanel TFT
 
@@ -288,7 +297,7 @@ split into two lines in the small font. Tiles with a state line (`text`, `thermo
   stock `buttons` with its tile objects hidden; title, close, page dots and swipe stay. The driver draws each tile as a solid
   rounded box (two `fill` bars + 4 `cirs` corners, radius 14) in the tile colour (dark theme: off 10597, on white; light theme
   the other way round; heating thermostat on with an orange icon and state), then the icon and texts with `xstr` onto it
-  (no background, any background picture shows only in the corners and gaps). The grid fills x 27..453, y 46..278 with gaps 9 / 8:
+  (no background, any background picture shows only in the corners and gaps). The grid fills x 12..438 (like the stock tiles; the right ~30 px of the screen are under the frame), y 46..278 with gaps 9 / 8:
   `4x2` 99x112, `3x3` 136x72, `3x2` 136x112, `2x2` 208x112, `1x2` 426x112. Fonts: `4x2` / `3x3` / `3x2` name font 1 (smaller 0),
   state font 0, icon 32 px (center layout 48 px except `3x3`); `2x2` name font 2 (1), state font 1, `1x2` name font 3 (2), state
   font 2, icon 48 px. Corner layout: icon top left, the state line beside it (`3x3`, `2x2`, `1x2`) or above the name (`4x2`, `3x2`),

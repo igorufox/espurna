@@ -297,6 +297,10 @@
     // istabai/out and zigbee2mqtt payloads used by the screen are larger than the default 1 KB
     #define MQTT_BUFFER_MAX_SIZE    2048
 
+    // Telnet from the home network (the password is still asked): the panel sits in a wall, after crashes it boots in
+    // the unstable mode (WiFi + telnet only, no web), and `reboot` over telnet is then the only way out without power
+    #define TELNET_STA              1
+
     // Buttons (active LOW). Left one toggles relay 1, right one runs the nspanel.json button action
     #define BUTTON1_PIN             14
     #define BUTTON1_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH | BUTTON_SET_PULLUP

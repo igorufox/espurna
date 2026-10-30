@@ -15,7 +15,8 @@ What you get:
 - any MQTT device: ESPurna / Tasmota style `.../relay/0` topics, zigbee2mqtt JSON, Istabai and other JSON payloads;
 - the two hardware buttons can run a group action ("all lights off", "open both gates");
 - a settings page on the panel itself (icon size, dark / light tiles, background);
-- an editor with a live preview in the ESPurna web UI, OTA updates for both the ESP32 and the screen.
+- an editor with a live preview in the ESPurna web UI (drag and drop: order, palette, rename), OTA updates for both the
+  ESP32 and the screen.
 
 <p>
   <img src="img/home.jpg" width="49%" alt="The panel: home screen with weather, clock, room temperature, shortcuts, an info line">
@@ -132,10 +133,19 @@ so a tap on "Kitchen" sends `0` or `1` to `ESPURNA-KITCHEN/relay/0/set`. For oth
 | `button` | sends `on` once (pulse relays: gates, doorbells) | lights up for a second |
 | `scene` | `action` (`on` / `off` / `toggle`) on all devices of `group` | on while any device of the group is on |
 | `text` | nothing | the value of the topic (a sensor) |
-| `thermostat` | opens the thermostat dial | `21,9° » 21,5°` (current » target), orange while heating |
+| `thermostat` | opens the thermostat dial | `21,9° » 21,5°` (current » target) and the humidity where it fits, orange while heating |
 
 A tile that opens a page has no `type`: it has `page` (a nested page, see 3.4) or `open` (`"settings"`, `"weather"`, `"home"`
 or the `id` of a top-level page).
+
+A tile can also **call a URL** instead of sending MQTT: `"url"` is requested on every tap (a toggling endpoint, or a `button`),
+`"on_url"` / `"off_url"` switch on and off. With a `"topic"` the state still comes from MQTT; without one the panel remembers
+what it sent. The request is a plain HTTP(S) GET in the background, so a slow server does not freeze the screen; try an address
+first with `nspanel.url <url>` (below).
+
+```jsonc
+{ "name": "Shelly", "icon": "power-plug", "on_url": "http://10.0.0.50/relay/0?turn=on", "off_url": "http://10.0.0.50/relay/0?turn=off" }
+```
 
 **Icons** are [Material Design Icons](https://pictogrammers.com/library/mdi/) names: `ceiling-light`, `outdoor-lamp`, `gate`,
 `water-pump`, `radiator`, `string-lights`, `power-socket-eu`, ... The built-in names are listed in
@@ -281,20 +291,30 @@ when you change it on the dial (minus / plus, sent 1.5 s after the last tap):
 Nine rooms fit one `3x3` page. A JSON payload for many rooms can be larger than ESPurna's default MQTT buffer (1 KB); the NSPanel
 build raises it to 2 KB. If thermostats stay at `--`, check `nspanel.info` for a warning about it.
 
+**Humidity.** `"room"` reads it from the room's `humidity`, or set `"humidity": ["<key>"]`. The dial shows it under the target
+and the tile adds ` · 59%` where the line has room. A value that is `null` in the payload counts as not known yet.
+
 **History chart.** With `"history": "<topic>"` the thermostat page gets a *History* button under the dial. It opens a chart of
 the last 24 h: the temperature, the target (steps), heating (target above temperature) as orange bands, degrees on the left and
-every 6 h on the bottom. The panel stores nothing: it subscribes to the topic only while the chart is open and expects a
-**retained** message there, filled by whatever keeps your history:
+every 6 h on the bottom, and the humidity as a green line with its own % scale on the right when the series has one. The panel
+stores nothing: it subscribes to the topic only while the chart is open and expects a **retained** message there, filled by
+whatever keeps your history:
 
 ```jsonc
 { "from": 1793115900, "step": 900,        // unix time of the first point, seconds between points
   "t": [224, 224, 223, null, ...],         // temperature x10 (null: no data), up to 96 points are drawn
-  "s": [215, 215, 215, 215, ...] }         // target x10
+  "s": [215, 215, 215, 215, ...],          // target x10
+  "h": [590, 588, 585, 584, ...] }         // humidity % x10, optional
 ```
 
 With openHAB, [`openhab-history-rule.js`](openhab-history-rule.js) is a ready rule (JS Scripting, cron every 15 min) that
-builds this from the persistence of your temperature and setpoint items and publishes it to `istabai/history/<room>`; set the
-thermostat's `"history": "istabai/history/<room>"`.
+builds this from the persistence of your temperature, setpoint and humidity items and publishes it to
+`istabai/history/<room>`; set the thermostat's `"history": "istabai/history/<room>"`. Three series of 96 points are ~1.2 KB,
+within the 2 KB the panel takes.
+
+Any thermostat openHAB runs itself (a PID rule, say) works the same way: a small rule publishes its items as one retained JSON
+(`{"temperature": 24.2, "set_temperature": 33, "humidity": 50, "active": "on"}`, leave out what is unknown) and a Generic MQTT
+Thing links the panel's command topic to the setpoint item.
 
 <p>
   <img src="img/thermostat-history.png" width="49%" alt="Thermostat history: temperature, target and heating over 24 h">
@@ -332,12 +352,27 @@ Backdrop); a tap on a tile switches to the next choice. A choice made there is k
 
 <p>
   <img src="img/webui-editor.png" width="49%" alt="Web UI: the NSPANEL section with the JSON editor">
-  <img src="img/webui-preview.png" width="49%" alt="Web UI: the preview of the pages, nested pages indented">
+  <img src="img/webui-visual-editor.png" width="49%" alt="Web UI: the visual editor, a switch dropped from the palette and being named">
+</p>
+<p>
+  <img src="img/webui-tile-settings.png" width="70%" alt="Web UI: a tile clicked, its settings beside the preview">
 </p>
 
 - **Web UI → NSPANEL**: Load, edit, Validate (syntax only), Save. The preview under the editor shows how the pages will be split.
-  A save that fails shows the reason (`page 1 item 'Kitchen': needs "topic" or "relay"`) and leaves the old config in place.
-  Warnings (an unknown icon, a wrong layout name) are shown, and the file is saved anyway.
+  A save that fails shows the reason (`page 1 item 'Kitchen': needs "topic", "relay" or "url"`) and leaves the old config in
+  place. Warnings (an unknown icon, a wrong layout name) are shown, and the file is saved anyway.
+- **Visual editor** (the same preview): drag tiles, list rows and page titles to change the order (a tile takes the place
+  of the one it is dropped on; nested pages too, a page tile never into itself), drag chips from the palette (`+ Page`,
+  `+ Switch`, `+ Button`, `+ Scene`, `+ Thermostat`, `+ Text`, `+ URL`, `+ Sub-page`, `+ Settings`) onto a tile, an empty
+  slot or a page title, drop on `Trash` to remove. A double click renames a tile or a page; the selector next to a page title
+  sets its layout. Every change rewrites the JSON above (Undo steps back); a tile without a target stays outlined in red.
+  Nothing reaches the panel before Save.
+- **Settings of a tile**: a click on a tile opens its settings beside the preview: name, icon (a list of the panel's
+  built-in icons), colour, *what it does* (switch, button, relay of the panel, scene, text, calls a URL, thermostat, opens
+  its nested page, opens another page) and the fields of that kind (topic, path, on/off values, command, payload, group and
+  action, URL, thermostat paths, ...). A scene also shows the members of its group, one state topic or relay number a line
+  (the top-level `"groups"`, shared by every tile of that group). A click on a page title opens the page settings (title, id,
+  type, layout, tiles per screen). *Remove the tile* deletes it.
 - **From a script**: `POST /nspanel.json` with the JSON as the body and the web password (HTTP digest), e.g.
 
   ```
@@ -345,8 +380,8 @@ Backdrop); a tap on a tile switches to the next choice. A choice made there is k
   ```
 
   An answer `503 ... retry` means the panel was busy (weather download); send it again.
-- **Size**: at most 16 KB, spaces and line breaks included. A large config fits easily when the indentation is kept small or
-  the file is minified before upload.
+- **Size**: at most 16 KB, spaces and line breaks included. *Save* in the web UI sends the JSON without the indentation (a
+  pretty-printed config is about twice the size); from a script, minify it before the upload.
 
 Terminal commands (web UI DEBUG or telnet):
 
@@ -356,7 +391,12 @@ Terminal commands (web UI DEBUG or telnet):
 | `nspanel.page 1` / `home` / `weather` / `settings` | show a page |
 | `nspanel.reload` | read the stored JSON again |
 | `nspanel.flash <url>` | update the screen firmware (TFT) |
+| `nspanel.url <url>` | send the GET a `url` tile would send; the result (`HTTP 200` or the error) follows in the log |
 | `reset` | restart the panel |
+
+Telnet works from the home network on this build (`TELNET_STA`), with the web password. **If the panel answers ping but
+neither the web UI nor MQTT**, it crashed three times in a row on boot and ESPurna started it in its safe mode (WiFi and telnet
+only). Find what crashes it (a retained message, a fresh config), fix that, then `telnet <panel>`, the password, `reset`.
 
 ## On the wall
 
