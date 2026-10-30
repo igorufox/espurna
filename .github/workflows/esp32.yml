@@ -22,17 +22,17 @@ jobs:
       matrix:
         env: [esp32-generic, esp32-relay-x2, esp32-nspanel, itead-sonoff-minir4]
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
       with:
         python-version: '3.x'
     - name: Cache pip
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-platformio
     - name: Cache PlatformIO
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.platformio
         key: ${{ runner.os }}-pio-${{ matrix.env }}-${{ hashFiles('code/platformio_esp32.ini') }}
@@ -61,7 +61,7 @@ jobs:
         cp ${build}/firmware.bin dist/espurna-${{ matrix.env }}-ota.bin
         cp ${build}/firmware.elf dist/espurna-${{ matrix.env }}.elf
         ls -l dist
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: espurna-${{ matrix.env }}-${{ github.sha }}
         path: dist/
@@ -73,7 +73,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v8
       with:
         pattern: espurna-*-${{ github.sha }}
         merge-multiple: true
@@ -88,7 +88,7 @@ jobs:
         fi
         echo "tag=${tag}" >> "$GITHUB_OUTPUT"
         ls -l dist
-    - uses: softprops/action-gh-release@v2
+    - uses: softprops/action-gh-release@v3
       with:
         tag_name: ${{ steps.release.outputs.tag }}
         target_commitish: ${{ github.sha }}
