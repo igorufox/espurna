@@ -3,6 +3,11 @@
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [26.11.0] (igorufox/espurna fork, esp32-port)
+
+Versions of this fork are year.month (`26.11.0-git<sha>`), apart from the 1.x of the main line: ESP32 with Matter and
+the safeboot, Beken BK7231N, generic images with the pins from the settings, releases and install from GitHub.
+
 ## [1.22.0] (dev)
 
 - ...

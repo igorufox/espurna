@@ -31,6 +31,8 @@ export const DEFAULT_MODULES = {
     'light': false,
     'lightfox': false,
     'matter': false,
+    // installable modules of the ESP8266 1 MB head image (docs/esp8266-modules.md), only its WebUI module has it
+    'mod': false,
     'mqtt': true,
     'nofuss': true,
     'nspanel': false,
@@ -60,7 +62,8 @@ export const DEFAULT_MODULES = {
 export const MODULES_ALL = Object.fromEntries(
     Object.entries(DEFAULT_MODULES).map(
         ([key, _]) => {
-            if (MODULE_DEV === key) {
+            // 'mod' only means something on the ESP8266 1 MB head image ('modules' preset)
+            if ((MODULE_DEV === key) || ('mod' === key)) {
                 return [key, false];
             }
 
@@ -123,6 +126,15 @@ export function makeModules(name) {
             'telnet': false,
             'tspk': false,
         });
+
+    // the WebUI module of the ESP8266 1 MB head image: the sensor panels + MODULES
+    case 'modules':
+        return Object.assign({}, DEFAULT_MODULES, {
+            'light': true,
+            'mod': true,
+            'rfb': true,
+            'sns': true,
+        });
     }
 
     if (NAMED_BUILD[name] === undefined) {
@@ -180,6 +192,7 @@ export const MODULE_PRESETS = new Set([
     'light',
     'lightfox',
     'matter',
+    'modules',
     'rfbridge',
     'rfm69',
     'sensor',

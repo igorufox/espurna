@@ -46,7 +46,7 @@ How the WebUI installs it: [section 6](#6-updates-over-wi-fi) and [docs/updates.
 Enabled modules: web UI, API, MQTT, terminal, Home Assistant, Alexa, Domoticz, Thingspeak, scheduler, the RF bridge
 (rc-switch, unused until `rfbRX` is set) and Matter (off until `matterAuto 1` or MATTER.START; with `matterAuto 1` it
 starts with a delay, see [Matter](#2-matter)). ESPurna's own mDNS responder is off in this image: the Matter stack answers mDNS itself. Boards have no builds of their own: `beken-matter`
-with the device template of the board. The firmware version carries the git revision (`1.22.0-git<sha>`, `scripts/beken_version.py`), the WebUI release list finds the running release by it.
+with the device template of the board. The firmware version carries the git revision (`26.11.0-git<sha>`, `scripts/beken_version.py`), the WebUI release list finds the running release by it.
 
 Pin numbers are GPIO numbers (`P24` is GPIO 24, set it as `24` in the web UI). Only the pins that the module brings out
 can be used.

@@ -1,0 +1,59 @@
+<div class="panel" id="panel-mod">
+
+    <div class="header">
+        <h1>MODULES</h1>
+        <h2>
+            Parts of the firmware that live in the free flash behind the head: switch them on while there is room.
+            <span class="mod-version"></span>
+        </h2>
+    </div>
+
+    <div class="page">
+
+        <div class="mod-off" style="display: none">
+            <strong>The modules are off</strong>: <span class="mod-off-reason"></span>.<br>
+            The guard switched them off so the board stays reachable. Fix what they need (or switch the heavy ones off),
+            then start them again.
+            <div>
+                <button type="button" class="pure-button button-mod-on">Start the modules again</button>
+            </div>
+        </div>
+
+        <fieldset class="pure-form">
+            <legend>Memory</legend>
+            <div class="mod-meters"></div>
+            <span class="pure-form-message">
+                Yellow: almost everything is taken, the board still runs. Point at a module that is off to see what it
+                would take (striped).
+            </span>
+        </fieldset>
+
+        <fieldset class="pure-form">
+            <legend>Modules</legend>
+
+            <div class="mod-cards"></div>
+
+            <div class="mod-restart">
+                <span class="mod-restart-text"></span>
+                <button type="button" class="pure-button button-mod-restart">Restart now</button>
+            </div>
+
+            <div class="mod-source">
+                <label>Modules file</label>
+                <input type="file" class="mod-file" accept=".bin">
+                <button type="button" class="pure-button button-mod-github">From GitHub</button>
+                <button type="button" class="pure-button button-mod-refresh">Refresh</button>
+            </div>
+            <div class="mod-message"></div>
+
+            <span class="pure-form-message">
+                The modules come from <code>espurna-esp8266-1m-modules.bin</code> or the full image
+                <code>espurna-esp8266-1m-full.bin</code> of the release this board runs: from the disk, or
+                <em>From GitHub</em>. On: the module is written into the free flash; off: it is taken out.
+                Both apply at the next restart. Without the <code>webui</code> module the board keeps a small page with
+                the same switches, <a href="modules.html">modules.html</a>.
+            </span>
+        </fieldset>
+
+    </div>
+</div>

@@ -26,7 +26,7 @@ Pages only (next section): the ESP8266 `.bin.gz`, the ESP32 `-safeboot.bin` and 
 Tasmota's safeboot when ESPurna replaces Tasmota).
 
 The firmware knows the image it was built as (`ESPURNA_IMAGE`, `fwImage` in the WebUI) and its version carries the git
-revision (`1.22.0-git<sha>`; on Beken through `scripts/beken_version.py`). The WebUI finds the running release by that
+revision (`26.11.0-git<sha>`; on Beken through `scripts/beken_version.py`). The WebUI finds the running release by that
 revision and lists only the files of the running image.
 
 ### firmware.json on GitHub Pages

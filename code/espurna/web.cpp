@@ -34,7 +34,11 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include "web.h"
 #include "ws.h"
 
-#if WEB_EMBEDDED
+#if MODULES_SUPPORT
+#include "modules.h"
+#endif
+
+#if WEB_EMBEDDED && !MODULES_SUPPORT
 
 namespace {
 
@@ -159,7 +163,7 @@ void _addSecurityHeaders(AsyncWebServerResponse* response) {
         STRING_VIEW("deny"));
 }
 
-#if WEB_EMBEDDED
+#if WEB_EMBEDDED && !MODULES_SUPPORT
 static constexpr auto WebContentEncoding = espurna::StringView(webui_content_encoding);
 static constexpr auto WebLastModified = espurna::StringView(webui_last_modified);
 
@@ -674,7 +678,7 @@ void _onAPCaptiveRequest(AsyncWebServerRequest* request) {
 }
 #endif
 
-#if WEB_EMBEDDED
+#if WEB_EMBEDDED && !MODULES_SUPPORT
 
 void _onHome(AsyncWebServerRequest *request) {
     // only the authentication needs the lock (503 when busy), page itself is static data
@@ -920,7 +924,10 @@ void webSetup() {
     server->rewrite("/", "/index.html");
 
     // Serve home (basic authentication protection is done manually b/c the handler is installed through callback functions)
-    #if WEB_EMBEDDED
+    // the 1 MB head image: the WebUI module, or the head's own page
+    #if MODULES_SUPPORT
+        server->on("/index.html", HTTP_GET, modulesOnHome);
+    #elif WEB_EMBEDDED
         server->on("/index.html", HTTP_GET, _onHome);
     #endif
 

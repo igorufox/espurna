@@ -338,6 +338,12 @@ void setup() {
     // Check if system is stable
     // -------------------------------------------------------------------------
 
+    // Modules of the 1 MB head image: the commands also in the unstable mode
+    #if MODULES_SUPPORT
+        modulesBootSetup();
+        SETUP_HEAP_PROBE("modulesBoot");
+    #endif
+
     #if SYSTEM_CHECK_ENABLED
         if (!systemCheck()) {
             systemSetupUnstable();
@@ -482,6 +488,10 @@ void setup() {
     #if SENSOR_SUPPORT
         sensorSetup();
         SETUP_HEAP_PROBE("sensor");
+    #endif
+    #if MODULES_SUPPORT
+        modulesSetup();
+        SETUP_HEAP_PROBE("modules");
     #endif
     #if INFLUXDB_SUPPORT
         idbSetup();

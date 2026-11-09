@@ -144,6 +144,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "sensor.h"
 #endif
 
+#if MODULES_SUPPORT
+#include "modules.h"
+#endif
+
 #if SSDP_SUPPORT
 #include "ssdp.h"
 #endif

@@ -13,6 +13,10 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #include "espurna_ota.h"
 #include "web.h"
+
+#if MODULES_SUPPORT
+#include "modules.h"
+#endif
 #include "ws.h"
 
 #if MATTER_TAIL_SUPPORT
@@ -259,6 +263,14 @@ void onFile(AsyncWebServerRequest *request, String filename, size_t index, uint8
             setStatus(request, 400, F("ERROR: Upgrade in progress"));
             return;
         }
+
+#if MODULES_SUPPORT
+        // the update is written where the modules are, while their code runs
+        if (modulesRunning()) {
+            setStatus(request, 409, F("ERROR: modules installed, MODULES.OFF first"));
+            return;
+        }
+#endif
 
         // Check that header is correct and there is more data before anything is written to the flash
         if (final || !len) {

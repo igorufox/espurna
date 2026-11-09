@@ -141,7 +141,7 @@ const MANIFEST = {
 };
 
 test('release rows carry the files of the running image and mark the running build', () => {
-    const rows = firmwareRows(MANIFEST, {image: 'beken-matter', arch: 'beken', version: '1.22.0-gitabcdef12'});
+    const rows = firmwareRows(MANIFEST, {image: 'beken-matter', arch: 'beken', version: '26.11.0-gitabcdef12'});
     expect(rows.length).toBe(2);
 
     expect(rows[0].tag).toBe('esp32-261106-abcdef1');
@@ -178,7 +178,7 @@ test('the NSPanel image gets the shared safeboot file of the release, like every
         }],
     };
 
-    const rows = firmwareRows(manifest, {image: 'esp32-matter-nspanel', arch: 'esp32', version: '1.22.0-gitabcdef1'});
+    const rows = firmwareRows(manifest, {image: 'esp32-matter-nspanel', arch: 'esp32', version: '26.11.0-gitabcdef1'});
     expect(rows[0].choices.map((x) => x.file.name))
         .toEqual(['espurna-esp32-matter-nspanel-ota.bin', 'espurna-esp32-safeboot.bin']);
     expect(rows[0].choices.map((x) => installable(x.file))).toEqual([true, false]);

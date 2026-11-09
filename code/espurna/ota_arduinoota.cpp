@@ -12,6 +12,10 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include "espurna_ota.h"
 #include "system.h"
+
+#if MODULES_SUPPORT
+#include "modules.h"
+#endif
 #include "ws.h"
 
 #include <ArduinoOTA.h>
@@ -48,6 +52,11 @@ void loop() {
 }
 
 void start() {
+#if MODULES_SUPPORT
+    // the image is written where the modules are: they do not start again
+    modulesForget();
+#endif
+
     // Disabling EEPROM rotation to prevent writing to EEPROM after the upgrade
     // Because ArduinoOTA is synchronous and will block until either success or error, force backup right now instead of waiting for the next loop()
     eepromRotate(false);
