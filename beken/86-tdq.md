@@ -53,3 +53,46 @@ the Matter code out of it), or let *ADMIN → From GitHub* do both uploads.
 Backup (2 MiB, stock dump kept locally), UART flash, first boot, Wi-Fi, the bootloader recognized (OTA at 0x12A000),
 pins from the stock config, UART RX released to the button, update over Wi-Fi in two uploads (`OK, again`, then the
 Matter code), Matter started with its own identity, the relay switches.
+
+## The same relay with the chip on the board (bare BK7231N QFN32)
+
+A square 1-channel relay of the same kind: 16 A relay with a 5 V coil (FANHAR FH17-1A2TLE), a 6-screw terminal block,
+a button K1, a Wi-Fi LED, a wall switch input. Here the BK7231N (QFN32, 26 MHz crystal, PCB antenna) is soldered
+straight on the board, no module, so there are no module pins: the factory left round test pads next to the chip
+instead. The stock config still calls it CB2S. Stock firmware `oem_bk7231n_control_switch` 1.3.10 (Tuya SDK 2.3.3),
+the standard Tuya bootloader (CRC32 `f684a1dc`, as on CB3S / CBU), 2 MiB flash.
+
+<p>
+  <img src="img/86-tdq-qfn-pads.webp" width="40%" alt="Test pads around the QFN32 chip: A 3V3, B GND, D TX1, E RX1, F CEN, C P21">
+  <img src="img/86-tdq-qfn-5v.webp" width="34%" alt="The 680 uF 10 V capacitor legs by D1 / R9: outer leg GND, inner leg +5 V">
+</p>
+
+**Test pads** (chip pin 1 is the corner next to the crystal and the antenna; pin numbers of the QFN32):
+
+| Pad | Signal | Chip pin |
+|-----|--------|----------|
+| A | 3V3 | |
+| B | GND | |
+| D | TX1 (P11) | 27 |
+| E | RX1 (P10) | 26 |
+| F | CEN | 21 |
+| C | P21, not used by the stock config | 19 |
+
+**Power: 5 V on the 680 µF / 10 V electrolytic** (the relay coil rail). Its legs are the two round joints by D1 / R9;
+the stripe faces the board edge, so the outer leg is GND and the inner one +5 V. Leave the 3.3 V of the USB-UART
+adapter off.
+
+**Pins** from the stock config:
+
+| Function | Pin | Keys |
+|----------|-----|------|
+| relay (active high) | P7 | `relayGpio0 7` |
+| Wi-Fi LED (active high) | P26 | `ledGpio0 26`, `ledInv0 0`, `ledMode0 wifi` |
+| button K1 (active low) | P23 | `btnGpio0 23`, `btnMode0 pushbutton`, `btnPinMode0 pull-up`, `btnDefVal0 high`, `btnRelay0 0` |
+| wall switch | P6 | `btnGpio1 6`, `btnMode1 switch`, `btnPinMode1 pull-up`, `btnDefVal1 initial`, `btnRelay1 0`, `btnPress1 relay-toggle`, `btnRlse1 relay-toggle` |
+
+Flashing as above: read the stock flash first, then `espurna-beken-initial-tuya.uf2` over UART1 (CEN to GND at
+"Connecting"), then `espurna-beken-matter.bin` over Wi-Fi.
+
+Tested: stock backup, UART flash of the release image, Wi-Fi, the relay from the terminal, the Matter code over Wi-Fi
+(`MATTER.TAIL`: ready). Not tested yet: the button and the wall switch, Matter pairing.
