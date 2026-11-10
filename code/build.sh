@@ -9,7 +9,7 @@ destination=../firmware
 
 # ALL env: sections from the .ini, even including those we don't want to build
 list_all_envs() {
-    grep -E '^\[env:' platformio.ini | sed 's/\[env:\(.*\)\]/\1/g'
+    grep -E '^\[env:' platformio_esp8266.ini | sed 's/\[env:\(.*\)\]/\1/g'
 }
 
 # -base is only supposed to be used through `extends = ...-base` for another env:
@@ -59,7 +59,7 @@ build_environments() {
         env ESPURNA_BUILD_NAME=$environment \
             ESPURNA_BUILD_DESTINATION="$destination" \
             ESPURNA_BUILD_SINGLE_SOURCE="1" \
-            pio run --silent --environment $environment -t build-and-copy
+            pio run -c platformio_esp8266.ini --silent --environment $environment -t build-and-copy
     done
     set +x
 
@@ -71,7 +71,7 @@ print_getopts_help() {
     cat <<EOF
 Usage: $(basename "$0") [OPTION] <ENVIRONMENT>...
 
-  Where ENVIRONMENT is environment name(s) from platformio.ini
+  Where ENVIRONMENT is environment name(s) from platformio_esp8266.ini
 
 Options:
 

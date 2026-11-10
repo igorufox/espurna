@@ -53,18 +53,7 @@ import * as path from 'node:path';
 import * as url from 'node:url';
 import * as zlib from 'node:zlib';
 
-import {
-    maybeInline,
-    needElement,
-    stripModules as stripModulesImpl,
-} from './html/lib/inline.mjs';
-
-import {
-    MODULE_PRESETS,
-    MODULE_DEV,
-    build as buildPresets,
-    makeModules,
-} from './html/lib/preset.mjs';
+import { maybeInline } from './html/lib/inline.mjs';
 
 // -----------------------------------------------------------------------------
 // Configuration
@@ -72,16 +61,6 @@ import {
 
 /**
  * @import { default as File } from 'vinyl'
- */
-
-/**
- * module names used internally, usually as element class-name
- * @typedef {{[k: string]: boolean}} Modules
- */
-
-/**
- * name mapping for output filename, when specific module is used
- * @typedef {{[k: string]: string}} NamedBuild
  */
 
 /**
@@ -95,12 +74,16 @@ import {
  */
 
 /**
+ * html/mode/<mode>.mjs, imported as '@build-mode'
+ * @typedef {'webui' | 'dev'} Mode
+ */
+
+/**
  * build pipeline common options
  * @typedef BuildOptions
- * @property {string} name
+ * @property {Mode} mode
  * @property {boolean} minify
  * @property {Compression} compress
- * @property {Modules} modules
  */
 
 /**
@@ -117,8 +100,19 @@ export const NODE_DIR = path.join(ROOT, 'node_modules');
 // ui sources root
 export const HTML_DIR = path.join(ROOT, 'html');
 
-// build preset environment files
-export const PRESET_DIR = path.join(HTML_DIR, 'preset');
+// build mode constants, the '@build-mode' import: webui.mjs for the firmware, dev.mjs for the dev server and tests
+export const MODE_DIR = path.join(HTML_DIR, 'mode');
+
+/** @type {Mode} */
+export const MODE_WEBUI = 'webui';
+
+/** @type {Mode} */
+export const MODE_DEV = 'dev';
+
+/** @param {Mode} mode */
+export function modeFile(mode) {
+    return path.join(MODE_DIR, `${mode}.mjs`);
+}
 
 // html lib root
 export const HTML_LIB_DIR = path.join(HTML_DIR, 'lib');
@@ -142,11 +136,13 @@ export const ENTRYPOINT = path.join(HTML_DIR, 'index.html')
 // .ipp compiled from the .html.{br,gz}, providing static u8[] for the firmware to use
 export const STATIC_DIR = path.join(ROOT, 'espurna', 'static');
 
+// the one WebUI of every chip and board: html/build/index.html{,.gz} and espurna/static/index.html.ipp
+export const WEBUI_NAME = 'index.html';
+
 // importmap manifest for dev server. atm, explicit overrides list
-// based on known locations for the MODULE_DEV preset
 export const IMPORT_MAP = {
     '@jaames/iro': path.join(NODE_DIR, '/@jaames/iro/dist/iro.es.js'),
-    '@build-preset/constants.mjs': path.join(PRESET_DIR, MODULE_DEV, 'constants.mjs'),
+    '@build-mode': modeFile(MODE_DEV),
 };
 
 // files relevant to the build
@@ -156,7 +152,7 @@ export const BUILD_SCRIPTS = [
     'vite.config.mjs',
     'vitest.config.mjs',
     `${HTML_LIB_DIR}/**/*.mjs`,
-    `${PRESET_DIR}/**/*.mjs`,
+    `${MODE_DIR}/**/*.mjs`,
 ];
 
 // files relevant to the vitest
@@ -176,11 +172,6 @@ export const SOURCE_HTML = [
 // dev server lives on localhost by default; note that it accepts one-of 127.0.0.1 or ::1
 const DEV_HOST = 'localhost';
 const DEV_PORT = 8080;
-
-// MODULE_DEV is a special case, not intended for the writtable output
-const MODULE_BUILD_PRESETS = new Set(
-    Array.from(MODULE_PRESETS)
-        .filter((x) => x !== MODULE_DEV));
 
 // -----------------------------------------------------------------------------
 // Build
@@ -624,17 +615,6 @@ function externalBlank() {
 }
 
 /**
- * with an explicit list of modules, strip anything not used by the bundle
- * @param {Modules} modules
- * @returns {HtmlModify}
- */
-function stripModules(modules) {
-    return function(dom) {
-        return stripModulesImpl(dom, modules);
-    };
-}
-
-/**
  * inline and render index.html from the source template
  * expected to be called before any other html parsing happens
  *
@@ -660,12 +640,6 @@ function makeIndexHtml(options, stats) {
 
             stats[src] = await fs.promises.stat(src);
 
-            if (!needElement(elem, options.modules)) {
-                elem.parentElement?.removeChild(elem);
-                changed = true;
-                continue;
-            }
-
             const data = await fs.promises.readFile(src);
             elem.outerHTML = data.toString();
 
@@ -678,12 +652,12 @@ function makeIndexHtml(options, stats) {
 
 /**
  * make an explicit list of all available imports, even the ones using uncommon names
- * @param {string} preset
+ * @param {Mode} mode
  */
-function makeImportAlias(preset) {
+function makeImportAlias(mode) {
     return [
         {find: '/vendor', replacement: VENDOR_DIR},
-        {find: '@build-preset', replacement: path.join(PRESET_DIR, preset)},
+        {find: '@build-mode', replacement: modeFile(mode)},
         {find: '@jaames/iro', replacement: IMPORT_MAP['@jaames/iro']},
     ];
 }
@@ -692,8 +666,8 @@ function makeImportAlias(preset) {
  * Inline every external resource into the entrypoint html.
  * Works outside of gulp context, track everything that passes through manually.
  *
- * nb. '@build-preset' consts module does not work properly w/ esbuild --bundle
- * Instead of creating noop statements when module is disabled, unused import
+ * nb. '@build-mode' consts module does not work properly w/ esbuild --bundle
+ * Instead of creating noop statements for the dev-only code, unused import
  * would still be injected into the resulting bundle.
  *
  * Rollup bundling prevents this from happening, allowing external consts file.
@@ -745,7 +719,7 @@ function makeInlineSource(options, stats) {
                     },
                     plugins: [
                         rollupAlias({
-                            entries: makeImportAlias(options.name),
+                            entries: makeImportAlias(options.mode),
                         }),
                         rollupVirtual({
                             src: code.toString(),
@@ -860,7 +834,6 @@ function buildHtml(options) {
             makeIndexHtml(options, stats),
             makeInlineSource(options, stats),
             injectVendor(options.minify),
-            stripModules(options.modules),
             externalBlank(),
         ]),
         adjustFileStats(stats),
@@ -885,7 +858,7 @@ function buildHtml(options) {
  */
 function buildOutputs(options) {
     const out = [
-        rename(`index.${options.name}.html`),
+        rename(WEBUI_NAME),
         dest(BUILD_DIR),
         modifyHtml([
             dropSourcemap(),
@@ -904,16 +877,12 @@ function buildOutputs(options) {
     return out;
 }
 
-/**
- * @param {string} name
- */
-function buildWebUI(name) {
+function buildWebUI() {
     /** @type {BuildOptions} */
     const opts = {
         compress: 'gz',
         minify: true,
-        modules: makeModules(name),
-        name: name,
+        mode: MODE_WEBUI,
     };
 
     return pipeline(
@@ -924,13 +893,12 @@ function buildWebUI(name) {
 }
 
 /** @typedef ServeOptions
- * @property {string} name
  * @property {string} host
  * @property {number} port
  *
  * @param {ServeOptions} options
  */
-function serveWebUI({name, host, port}) {
+function serveWebUI({host, port}) {
     const server = http.createServer();
 
     /** @param {any} e */
@@ -991,8 +959,7 @@ function serveWebUI({name, host, port}) {
 
     /** @type {BuildOptions} */
     const opts = {
-        name,
-        modules: makeModules(name),
+        mode: MODE_DEV,
         compress: 'none',
         minify: false,
     };
@@ -1168,97 +1135,23 @@ export { html_validate as 'html-validate' };
 // Tasks
 // -----------------------------------------------------------------------------
 
-export async function presets() {
-    /** @type {Error?} */
-    let rethrow = null;
-
-    let results = ['No presets generated'];
-    try {
-        results = await buildPresets();
-    } catch (e) {
-        if (e instanceof Error) {
-            rethrow = e;
-        } else {
-            rethrow = new Error(e?.toString() ?? 'unknown error');
-        }
-    } finally {
-        for (const result of results) {
-            log(result);
-        }
-    }
-
-    if (rethrow) {
-        throw rethrow;
-    }
-}
-
-presets.description = `generate all of the required preset files, based on the ${HTML_LIB_DIR}/preset.mjs configuration`;
-
 /** @import { ParseArgsOptionsConfig } from 'node:util' */
-
-const ERR_PRESET_EMPTY = new Error('preset flag cannot be empty');
 
 const ERR_PARSE_STRING = new Error('flag type !== string');
 const ERR_PARSE_NUMBER = new Error('flag type !== number');
 
 export function build() {
-    const PRESET = 'preset';
-
-    /** @type {ParseArgsOptionsConfig} */
-    const options = {
-        [PRESET]: {
-            type: 'string',
-            multiple: true,
-            default: Array.from(MODULE_BUILD_PRESETS),
-        },
-    };
-
-    // note that this only expects 'build' ...
-    // any extra tasks launched in parallel *may* break
-    // either parsing or the resulting task promise
-    const { values } = parseArgs({
-        allowPositionals: false,
-        args: process.argv.slice(3),
-        options,
-    });
-
-    if (!Array.isArray(values[PRESET])
-     || values[PRESET].length === 0
-     || values[PRESET].some((x) => typeof x === 'boolean' || x.length === 0))
-    {
-        throw ERR_PRESET_EMPTY;
-    }
-
-    /** @param {any} name */
-    async function run(name) {
-        if (typeof name === 'string') {
-            return buildWebUI(name);
-        }
-
-        throw ERR_PARSE_STRING;
-    }
-
-    return Promise.all(values[PRESET].map(run));
+    return buildWebUI();
 }
 
-build.description = `builds one or more of the available presets: ${Array.from(MODULE_BUILD_PRESETS).join(', ')}`;
-build.flags = {
-    '--preset NAME': 'NAME of the build preset; can be specified multiple times',
-};
+build.description = `builds the WebUI of the firmware, ${path.relative(ROOT, path.join(STATIC_DIR, WEBUI_NAME))}.ipp`;
 
 export function dev() {
-    const PRESET = 'preset';
-
     const HOST = 'host';
     const PORT = 'port';
 
     /** @type {ParseArgsOptionsConfig} */
     const options = {
-        [PRESET]: {
-            type: 'string',
-            multiple: false,
-            default: MODULE_DEV,
-        },
         [HOST]: {
             type: 'string',
             multiple: false,
@@ -1277,11 +1170,7 @@ export function dev() {
         options,
     });
 
-    const { preset, port, host } = values;
-    if (typeof preset !== 'string') {
-        throw ERR_PARSE_STRING;
-    }
-
+    const { port, host } = values;
     if (typeof port !== 'string') {
         throw ERR_PARSE_STRING;
     }
@@ -1295,13 +1184,12 @@ export function dev() {
         throw ERR_PARSE_NUMBER;
     }
 
-    return serveWebUI({name: preset, port: parsed, host});
+    return serveWebUI({port: parsed, host});
 }
 
 dev.flags = {
     '--host HOST': `"${DEV_HOST}" by default`,
     '--port PORT': `${DEV_PORT} by default`,
-    '--preset PRESET': `"${MODULE_DEV}" by default`,
 };
 
 export const test =

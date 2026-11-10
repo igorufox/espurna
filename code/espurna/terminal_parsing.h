@@ -15,7 +15,7 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #include <iterator>
 #include <vector>
 
-#include "types_orch.h"
+#include "types.h"
 
 namespace espurna {
 namespace terminal {
@@ -36,22 +36,12 @@ String error(Error);
 } // namespace parser
 
 // Type wrapper that flushes output on finding '\n'.
-// Inherit from `String` to allow us to manage internal buffer directly.
+// Inherit from `String` to reuse its buffer for every line.
 // (and also seamlessly behave like a usual `String`, we import most of its methods)
 template <typename T>
 class PrintLine final : public Print, public String {
 private:
     static_assert(!std::is_reference<T>::value, "");
-
-#if defined(LIBRETINY)
-    // ArduinoCore-API String, buffer and len are plain members
-    using String::buffer;
-    using String::len;
-#else
-    using String::wbuffer;
-    using String::buffer;
-    using String::setLen;
-#endif
 
 public:
     using String::begin;
@@ -77,13 +67,8 @@ public:
     void flush() override {
         if (end() != std::find(begin(), end(), '\n')) {
             send();
-#if defined(LIBRETINY)
-            len = 0;
-            *buffer = '\0';
-#else
-            setLen(0);
-            *wbuffer() = '\0';
-#endif
+            // keeps the buffer, only the length and the terminator change
+            remove(0);
         }
     }
 

@@ -9,6 +9,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #pragma once
 
 #include "espurna.h"
+#include "espurna_tasks.h"
 
 #include <ESPAsyncWebServer.h>
 
@@ -76,11 +77,7 @@ private:
 
     std::list<BufferType> _buffers;
     AsyncWebServerRequest* const _request;
-#if ESPURNA_ASYNC_TASKS
-    std::atomic<State> _state;
-#else
-    State _state;
-#endif
+    espurna::system::Shared<State> _state;
 
     RequestPrint(Config config, AsyncWebServerRequest* request) :
         _config(config),

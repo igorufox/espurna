@@ -21,12 +21,12 @@ $ ./node_modules/.bin/gulp
 
 # Files
 
-- `code/espurna/static/` - .html.ipp, used in the firmware code
+- `code/espurna/static/index.html.ipp` - the WebUI, used in the firmware code
 - `code/gulpfile.mjs` - builder script entrypoint
 - `code/vite.config.mjs` - (experimental) vite dev server configuration
 - `code/html/index.html` - main entrypoint, index.html template
-- `code/html/build` - intermediate build results
-- `code/html/preset` - build configurations
+- `code/html/build` - intermediate build results (`index.html`, `index.html.gz`)
+- `code/html/mode` - `@build-mode` constants: `webui.mjs` for the firmware, `dev.mjs` for the dev server and tests
 - `code/html/spec` - vitest 'spec' files
 - `code/html/src` - source .mjs, .html, etc.
 - `code/node_modules` - build dependencies
@@ -46,7 +46,11 @@ $ npm install
 
 # Building
 
-Run tests and build every .html.ipp (`default` task)
+One WebUI for every chip and board. Every panel is in it, hidden by its `module module-<name>` class until the
+device names `<name>` in the `modulesVisible` message of the WebSocket connection (only the modules the board
+runs, the installable ones included).
+
+Run tests and build the .html.ipp (`default` task)
 
 ```console
 $ gulp
@@ -58,12 +62,6 @@ Build only (does not run tests)
 $ gulp build
 ```
 
-Build specific flavour (preset tasks)
-
-```console
-$ gulp build --preset small
-```
-
 List all available tasks
 ```console
 $ gulp --tasks
@@ -71,7 +69,7 @@ $ gulp --tasks
 
 # Development
 
-Launches development server on port 8080 with the resulting .html bundle. No minification or compression, using `dev` preset as base
+Launches development server on port 8080 with the resulting .html bundle. No minification or compression, `html/mode/dev.mjs`: every panel shown, sample data instead of a device
 
 ```console
 $ gulp dev
@@ -103,7 +101,7 @@ $ npm exec --no -- html-validate html/src/*.html
 $ npm exec --no -- vitest --environment jsdom --dir html/spec --run
 ```
 
-Experimental support of [Vite](https://vitejs.dev/) dev server is also included. Every preset is supported, but only `--mode dev` is expected to work locally
+Experimental support of [Vite](https://vitejs.dev/) dev server is also included. Only `--mode dev` is expected to work locally
 
 ```console
 $ vite --mode dev

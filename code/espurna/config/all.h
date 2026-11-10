@@ -34,6 +34,9 @@
 #include "custom.h"
 #endif
 
+// the head and the module objects (MODULES_SUPPORT / MODULE_BUILD), before the defaults
+#include "head.h"
+
 #include "version.h"
 #include "types.h"
 #include "arduino.h"
@@ -43,5 +46,4 @@
 #include "deprecated.h"
 #include "sensors.h"
 #include "dependencies.h"
-#include "webui.h"
 

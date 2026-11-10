@@ -13,42 +13,12 @@ AC FREQUENCY DETECTION SWITCH MODULE
 #include <algorithm>
 #include <array>
 
-#if defined(ARDUINO_ARCH_ESP32)
-#include <soc/gpio_reg.h>
-#endif
-
-// ESP8266: the ISR always runs on the same (only) core, masking interrupts is enough
-// and the ISR itself does not need any extra protection.
-// ESP32: noInterrupts() only masks the current core. Shared counters are guarded
-// with a spinlock (critical section), which also works across both cores.
-#if defined(ARDUINO_ARCH_ESP32)
-#define AC_SWITCH_ENTER() portENTER_CRITICAL(&_mux)
-#define AC_SWITCH_EXIT() portEXIT_CRITICAL(&_mux)
-#define AC_SWITCH_ISR_ENTER() portENTER_CRITICAL_ISR(&_mux)
-#define AC_SWITCH_ISR_EXIT() portEXIT_CRITICAL_ISR(&_mux)
-#elif defined(LIBRETINY)
-// Single core, but noInterrupts() is not implemented by the ARM968 port
-#define AC_SWITCH_ENTER() const auto _ac_switch_irq = port_disable_interrupts_flag()
-#define AC_SWITCH_EXIT() port_enable_interrupts_flag(_ac_switch_irq)
-#define AC_SWITCH_ISR_ENTER()
-#define AC_SWITCH_ISR_EXIT()
-#else
-#define AC_SWITCH_ENTER() noInterrupts()
-#define AC_SWITCH_EXIT() interrupts()
-#define AC_SWITCH_ISR_ENTER()
-#define AC_SWITCH_ISR_EXIT()
-#endif
+// Counters are shared between the ISR and the task, ref. isr::Lock in espurna_isr.h
 
 namespace espurna {
 namespace {
 
-#if defined(ARDUINO_ARCH_ESP32)
-constexpr size_t AcSwitchPins { 40 };
-#elif defined(LIBRETINY)
-constexpr size_t AcSwitchPins { PINS_GPIO_MAX + 1 };
-#else
-constexpr size_t AcSwitchPins { EXTERNAL_NUM_INTERRUPTS };
-#endif
+constexpr size_t AcSwitchPins { isr::Pins };
 
 // Which object currently owns the pin interrupt. Prevents a second object
 // attaching to the same pin and the first one detaching it from under the second.
@@ -73,9 +43,7 @@ constexpr uint16_t tolerance_max(unsigned long period) {
 
 bool AcSwitch::available(unsigned char pin) {
     return (pin < AcSwitchPins)
-#if !defined(LIBRETINY)
-        && (digitalPinToInterrupt(pin) != NOT_AN_INTERRUPT)
-#endif
+        && isr::attachable(pin)
         && (owners[pin] == nullptr);
 }
 
@@ -127,11 +95,7 @@ void AcSwitch::_attach() {
     }
 
     owners[_pin] = this;
-#if defined(LIBRETINY)
-    attachInterruptParam(_pin, _isr_static, CHANGE, this);
-#else
-    attachInterruptArg(_pin, _isr_static, this, CHANGE);
-#endif
+    isr::attach(_pin, _isr_static, this, CHANGE);
     _attached = true;
 }
 
@@ -141,11 +105,7 @@ void AcSwitch::_detach() {
     }
 
     detachInterrupt(_pin);
-#if defined(ARDUINO_ARCH_ESP32)
-    // in case the ISR is still running on the other core, wait for it to finish
-    AC_SWITCH_ENTER();
-    AC_SWITCH_EXIT();
-#endif
+    isr::Lock::sync(_lock);
 
     if ((_pin < AcSwitchPins) && (owners[_pin] == this)) {
         owners[_pin] = nullptr;
@@ -201,16 +161,17 @@ void AcSwitch::_frequency(int frequency) {
 
 // Settings reload, the current state stays as is and counting starts over with the new parameters
 void AcSwitch::configure(Config config) {
-    AC_SWITCH_ENTER();
-    _timeout_ms = config.timeout_ms;
-    _min_pulses = config.min_pulses;
-    _min_duty = config.min_duty;
-    _confirm = std::max(2ul, std::min(config.confirm, 10ul));
-    _frequency(config.frequency);
-    _pulses = 0;
-    _low_us = 0;
-    _window_start = micros();
-    AC_SWITCH_EXIT();
+    {
+        isr::Lock::Guard guard(_lock);
+        _timeout_ms = config.timeout_ms;
+        _min_pulses = config.min_pulses;
+        _min_duty = config.min_duty;
+        _confirm = std::max(2ul, std::min(config.confirm, 10ul));
+        _frequency(config.frequency);
+        _pulses = 0;
+        _low_us = 0;
+        _window_start = micros();
+    }
 
     _debug = config.debug;
     _candidate_state = _state;
@@ -220,38 +181,35 @@ void AcSwitch::configure(Config config) {
 
 // Direct register read, ISR must not call anything in flash
 bool IRAM_ATTR AcSwitch::_level() const {
-#if defined(ARDUINO_ARCH_ESP32)
-    return (_pin < 32)
-        ? ((REG_READ(GPIO_IN_REG) >> _pin) & 1)
-        : ((REG_READ(GPIO_IN1_REG) >> (_pin - 32)) & 1);
-#elif defined(LIBRETINY)
-    return ::digitalRead(_pin) == HIGH;
-#else
-    return GPIP(_pin);
-#endif
+    return isr::read(_pin);
 }
 
 AcSwitch::Window AcSwitch::_take_window() {
     const unsigned long now = micros();
 
-    AC_SWITCH_ENTER();
-    unsigned long count = _pulses;
-    _pulses = 0;
+    unsigned long count;
+    unsigned long low;
+    unsigned long length;
 
-    unsigned long low = _low_us;
-    _low_us = 0;
+    {
+        isr::Lock::Guard guard(_lock);
+        count = _pulses;
+        _pulses = 0;
 
-    // LOW segment that is still going on belongs to this window as well,
-    // the ISR only adds the part after the new window start
-    if (!_tracked_level) {
-        const unsigned long since =
-            (static_cast<long>(_segment_start - _window_start) > 0) ? _segment_start : _window_start;
-        low += now - since;
+        low = _low_us;
+        _low_us = 0;
+
+        // LOW segment that is still going on belongs to this window as well,
+        // the ISR only adds the part after the new window start
+        if (!_tracked_level) {
+            const unsigned long since =
+                (static_cast<long>(_segment_start - _window_start) > 0) ? _segment_start : _window_start;
+            low += now - since;
+        }
+
+        length = now - _window_start;
+        _window_start = now;
     }
-
-    const unsigned long length = now - _window_start;
-    _window_start = now;
-    AC_SWITCH_EXIT();
 
     return Window{
         .pulses = count,
@@ -265,28 +223,39 @@ bool AcSwitch::_on(const Window& window) const {
 }
 
 void AcSwitch::_debug_stats(unsigned long now) {
-    AC_SWITCH_ENTER();
-    unsigned long d_count = _debug_pulse_count;
-    unsigned long d_valid = _debug_valid_pulse_count;
-    unsigned long d_min = _min_period;
-    unsigned long d_max = _max_period;
-    unsigned long d_sum = _sum_period;
-    unsigned long d_p_count = _period_count;
-    unsigned long d_low = _debug_low_us;
-    unsigned long d_low_min = _min_low;
-    unsigned long d_low_max = _max_low;
+    unsigned long d_count;
+    unsigned long d_valid;
+    unsigned long d_min;
+    unsigned long d_max;
+    unsigned long d_sum;
+    unsigned long d_p_count;
+    unsigned long d_low;
+    unsigned long d_low_min;
+    unsigned long d_low_max;
 
-    // Reset stats
-    _debug_pulse_count = 0;
-    _debug_valid_pulse_count = 0;
-    _min_period = -1UL;
-    _max_period = 0;
-    _sum_period = 0;
-    _period_count = 0;
-    _debug_low_us = 0;
-    _min_low = -1UL;
-    _max_low = 0;
-    AC_SWITCH_EXIT();
+    {
+        isr::Lock::Guard guard(_lock);
+        d_count = _debug_pulse_count;
+        d_valid = _debug_valid_pulse_count;
+        d_min = _min_period;
+        d_max = _max_period;
+        d_sum = _sum_period;
+        d_p_count = _period_count;
+        d_low = _debug_low_us;
+        d_low_min = _min_low;
+        d_low_max = _max_low;
+
+        // Reset stats
+        _debug_pulse_count = 0;
+        _debug_valid_pulse_count = 0;
+        _min_period = -1UL;
+        _max_period = 0;
+        _sum_period = 0;
+        _period_count = 0;
+        _debug_low_us = 0;
+        _min_low = -1UL;
+        _max_low = 0;
+    }
 
     // LOW share of the whole period, plus the shortest and the longest LOW pulse
     const unsigned long elapsed = now - _last_debug;
@@ -345,7 +314,7 @@ void IRAM_ATTR AcSwitch::_isr_static(void* arg) {
 void IRAM_ATTR AcSwitch::_isr() {
     const unsigned long now = micros();
 
-    AC_SWITCH_ISR_ENTER();
+    isr::Lock::IsrGuard guard(_lock);
 
     ++_debug_pulse_count;
 
@@ -403,8 +372,6 @@ void IRAM_ATTR AcSwitch::_isr() {
         ++_pulses;
         ++_debug_valid_pulse_count;
     }
-
-    AC_SWITCH_ISR_EXIT();
 }
 
 } // namespace espurna

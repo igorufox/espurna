@@ -21,8 +21,10 @@ wall-switch cable S1 to S4 + COM.
 `espurna-beken-matter.bin` for updates. Or built from `code/`:
 
 ```
-py -3 -m platformio run -c platformio_beken.ini -e beken-bk7231n
+py -3 -m platformio run -c platformio_beken.ini -e beken
 ```
+
+(newer releases: `espurna-beken.uf2`, the head, and the modules file `espurna-beken-modules.bin`)
 
 ## Wiring
 

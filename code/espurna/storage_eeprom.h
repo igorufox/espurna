@@ -2,156 +2,27 @@
 
 EEPROM MODULE
 
+Settings live in a 4 KiB RAM buffer, Embedis writes them from the end towards the beginning. The buffer is committed
+from the loop as a whole (storage_eeprom.cpp). Where the buffer is kept and how it gets to the flash is the chip part,
+arch/<chip>/storage_eeprom_<chip>.cpp (ref. espurna::storage::chip below)
+
 */
 
 #pragma once
 
 #include <Arduino.h>
 
-#if defined(ESP8266)
-#include <EEPROM_Rotate.h>
-#define STORAGE_EEPROM_BASE : public EEPROM_Rotate
-#else
 #if __has_include(<spi_flash_mmap.h>)
 #include <spi_flash_mmap.h>    // ESP-IDF 5 (core 3.x): SPI_FLASH_SEC_SIZE
+#elif defined(ESP8266)
+#include <spi_flash.h>
 #endif
 #ifndef SPI_FLASH_SEC_SIZE
 #define SPI_FLASH_SEC_SIZE 4096    // LibreTiny
 #endif
-#define STORAGE_EEPROM_BASE
-#endif
 
-class StorageEEPROM_Rotate STORAGE_EEPROM_BASE {
-public:
-    StorageEEPROM_Rotate();
-
-#if defined(ARDUINO_ARCH_ESP32) || defined(LIBRETINY)
-    StorageEEPROM_Rotate(StorageEEPROM_Rotate&) = delete;
-    StorageEEPROM_Rotate& operator=(StorageEEPROM_Rotate&) = delete;
-
-    StorageEEPROM_Rotate(StorageEEPROM_Rotate&&) = delete;
-    StorageEEPROM_Rotate& operator=(StorageEEPROM_Rotate&&) = delete;
-
-    const uint8_t* data() const;
-    uint8_t* data();
-
-    void setDirty();
-    void fill(uint8_t value);
-
-    bool canRotate() const { return false; }
-
-    uint8_t read(size_t address);
-    void write(size_t address, uint8_t value);
-    bool commit();
-
-    void dump(Print& print) const;
-
-    // Compatibility methods for ESP32
-    void offset(size_t offset) {}
-    void begin(size_t size) {}
-    size_t size() const;
-    void backup(uint32_t sector) {}
-    uint32_t getSector(uint8_t index) const { return 0; }
-
-    template <typename T>
-    T &get(size_t address, T &data) {
-        auto *ptr = reinterpret_cast<uint8_t *>(&data);
-        for (size_t n = 0; n < sizeof(T); ++n) {
-            ptr[n] = read(address + n);
-        }
-        return data;
-    }
-
-    template <typename T>
-    void put(size_t address, const T &data) {
-        auto *ptr = reinterpret_cast<const uint8_t *>(&data);
-        for (size_t n = 0; n < sizeof(T); ++n) {
-            write(address + n, ptr[n]);
-        }
-    }
-#else
-    // override original ctor to handle autosizing specific to the app
-    // always using offset(OFFSET) -> begin(SIZE)
-
-    StorageEEPROM_Rotate(StorageEEPROM_Rotate&) = delete;
-    StorageEEPROM_Rotate& operator=(StorageEEPROM_Rotate&) = delete;
-
-    StorageEEPROM_Rotate(StorageEEPROM_Rotate&&) = delete;
-    StorageEEPROM_Rotate& operator=(StorageEEPROM_Rotate&&) = delete;
-
-    // ensure access ptr is inlined, since original class makes this a .cpp method
-    const uint8_t* data() const {
-        return _data;
-    }
-
-    uint8_t* data() {
-        return _data;
-    }
-
-    void setDirty() {
-        _dirty = true;
-    }
-
-    // fill all of the available storage with the 'value'
-    void fill(uint8_t);
-
-    // exception for very small flash / forced size(VALUE)
-    bool canRotate() const {
-        return _pool_size > 1;
-    }
-
-    // Nth sector of the pool
-    uint32_t getSector(uint8_t index) const {
-        return as_this()->_getSector(index);
-    }
-
-    // XXX only Print interface is used, assume this is safe
-
-    void dump(Print& print) const {
-        as_rotate()->dump(static_cast<Stream&>(print));
-    }
-
-    void dump(Print& print, uint32_t sector) const {
-        as_rotate()->dump(static_cast<Stream&>(print), sector);
-    }
-
-private:
-    using EEPROM_Rotate::EEPROM_Rotate;
-
-    StorageEEPROM_Rotate* as_this() const {
-        return const_cast<StorageEEPROM_Rotate*>(this);
-    }
-
-    StorageEEPROM_Rotate* as_this() {
-        return this;
-    }
-
-    EEPROM_Rotate* as_rotate() const {
-        return const_cast<EEPROM_Rotate*>(
-            static_cast<const EEPROM_Rotate*>(this));
-    }
-
-    EEPROM_Rotate* as_rotate() {
-        return static_cast<EEPROM_Rotate*>(this);
-    }
-
-    EEPROMClass* as_base() const {
-        return const_cast<EEPROMClass*>(
-            static_cast<const EEPROMClass*>(this));
-    }
-
-    EEPROMClass* as_base() {
-        return static_cast<EEPROMClass*>(this);
-    }
-
-    // ensure CRC + VALUE for the *current sector* exist on the flash
-    void writeReservedData();
-
-    using EEPROM_Rotate::begin;
-    using EEPROMClass::begin;
-#endif
-};
-
+#include <cstddef>
+#include <cstdint>
 
 // "The library uses 3 bytes to track last valid sector, so there must be at least 3"
 constexpr auto EepromRotateReservedSize = size_t{ 3 };
@@ -163,9 +34,99 @@ constexpr auto EepromRotateOffset = size_t{ 11 };
 constexpr auto EepromReservedSize
     = size_t{ EepromRotateOffset + EepromRotateReservedSize };
 
-// EEPROM_Rotate internals still has to provide real size to the original EEPROM instance,
-// offset & internal bytes are only known to the class itself and don't have to be accounted for here.
+// The whole flash sector, offset & internal bytes included
 constexpr auto EepromSize = size_t{ SPI_FLASH_SEC_SIZE };
+
+class StorageEEPROM_Rotate {
+public:
+    StorageEEPROM_Rotate() = default;
+
+    StorageEEPROM_Rotate(StorageEEPROM_Rotate&) = delete;
+    StorageEEPROM_Rotate& operator=(StorageEEPROM_Rotate&) = delete;
+
+    StorageEEPROM_Rotate(StorageEEPROM_Rotate&&) = delete;
+    StorageEEPROM_Rotate& operator=(StorageEEPROM_Rotate&&) = delete;
+
+    const uint8_t* data() const;
+    uint8_t* data();
+
+    void setDirty();
+
+    // fill all of the available storage with the 'value', reserved bytes stay as they are
+    void fill(uint8_t value);
+
+    uint8_t read(size_t address);
+    void write(size_t address, uint8_t value);
+    bool commit();
+
+    void dump(Print& print) const;
+
+    // flash sectors of the settings: the base one and how many sectors the copies take under it (esp8266 EEPROM_Rotate)
+    uint32_t base() const;
+    uint8_t size() const;
+
+    template <typename T>
+    T& get(size_t address, T& data) {
+        auto* ptr = reinterpret_cast<uint8_t*>(&data);
+        for (size_t n = 0; n < sizeof(T); ++n) {
+            ptr[n] = read(address + n);
+        }
+        return data;
+    }
+
+    template <typename T>
+    void put(size_t address, const T& data) {
+        const auto* ptr = reinterpret_cast<const uint8_t*>(&data);
+        for (size_t n = 0; n < sizeof(T); ++n) {
+            write(address + n, ptr[n]);
+        }
+    }
+};
+
+// Chip part, arch/<chip>/storage_eeprom_<chip>.cpp. What both FreeRTOS chips do the same way is in
+// arch/rtos/storage_eeprom_rtos.cpp
+namespace espurna {
+namespace storage {
+namespace chip {
+
+// RAM copy of the settings, EepromSize bytes
+uint8_t* buffer();
+
+// the saved settings into buffer() from eepromSetup(); false when there is no storage at all, settings only live in RAM
+bool load();
+
+// settings are loaded on the first use (esp8266 EEPROM_Rotate), commits work before eepromSetup() as well
+bool early();
+
+// the buffer was changed
+void changed();
+
+// buffer() to the flash
+bool save();
+
+// a failed save() is tried again from the loop every few seconds. Not on esp8266, every attempt erases a sector there
+bool retry();
+
+// chip specific terminal commands
+void setup();
+
+// EEPROM terminal command, eepromSectors(), eepromSpace(), StorageEEPROM_Rotate::dump()
+void info(Print&, bool dirty);
+String sectors();
+size_t space();
+void dump(Print&);
+
+// flash sectors, ref. StorageEEPROM_Rotate::base() and size()
+uint32_t base();
+uint8_t pool();
+
+// eepromRotate(), true when the storage has to be committed. eepromBackup()
+bool rotate(bool value);
+void backup(uint32_t index);
+
+} // namespace chip
+} // namespace storage
+} // namespace espurna
 
 bool eepromReady();
 
@@ -184,4 +145,3 @@ void eepromCommit();
 void eepromSetup();
 
 StorageEEPROM_Rotate& eepromInstance();
-

@@ -74,7 +74,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: ${{ runner.os }}-platformio-${{ hashFiles('espurna/code/platformio.ini') }}
+          key: ${{ runner.os }}-platformio-${{ hashFiles('espurna/code/platformio_esp8266.ini') }}
 
       - name: Install PlatformIO
         run: |

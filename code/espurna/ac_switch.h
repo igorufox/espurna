@@ -14,11 +14,8 @@ input is expected to be used as a switch with HIGH default (idle) value.
 #pragma once
 
 #include <Arduino.h>
+#include "espurna_isr.h"
 #include "libs/BasePin.h"
-
-#if defined(ARDUINO_ARCH_ESP32)
-#include <freertos/FreeRTOS.h>
-#endif
 
 namespace espurna {
 
@@ -112,10 +109,8 @@ private:
 
     bool _debug { false };
 
-#if defined(ARDUINO_ARCH_ESP32)
-    // noInterrupts() only masks the current core, use a spinlock between the task and the ISR
-    portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
-#endif
+    // between the task and the ISR (nothing on single core chips)
+    [[no_unique_address]] isr::Lock _lock;
 
     volatile unsigned long _pulses { 0 };
     unsigned long _last_check { 0 };

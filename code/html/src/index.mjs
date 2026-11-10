@@ -1,28 +1,4 @@
-import {
-    MODULE_API,
-    MODULE_CMD,
-    MODULE_CURTAIN,
-    MODULE_DBG,
-    MODULE_DCZ,
-    MODULE_DEV,
-    MODULE_GARLAND,
-    MODULE_HA,
-    MODULE_LED,
-    MODULE_LIGHT,
-    MODULE_LIGHTFOX,
-    MODULE_MATTER,
-    MODULE_MOD,
-    MODULE_NSPANEL,
-    MODULE_OTA,
-    MODULE_RELAY,
-    MODULE_RFB,
-    MODULE_RFM69,
-    MODULE_RPN,
-    MODULE_SCH,
-    MODULE_SNS,
-    MODULE_THERMOSTAT,
-    MODULE_TSPK,
-} from '@build-preset/constants.mjs';
+import { MODULE_DEV } from '@build-mode';
 
 import { notifyError, notifyErrorEvent } from './notify.mjs';
 window.addEventListener("error", (event) => {
@@ -34,8 +10,8 @@ import {
     onMenuLinkClick,
     onPanelTargetClick,
     pageReloadIn,
+    modulesVisible,
     showPanelByName,
-    styleInject,
 } from './core.mjs';
 
 import { askAndCall } from './question.mjs';
@@ -117,22 +93,6 @@ const __title_cache = {
 function documentTitle(key, value) {
     __title_cache[key] = value;
     document.title = `${__title_cache.hostname} - ${__title_cache.app_name} ${__title_cache.app_version}`;
-}
-
-/**
- * @param {string} module
- */
-function moduleVisible(module) {
-    styleInject([`.module-${module} { display: revert; }`]);
-}
-
-/**
- * @param {string[]} modules
- */
-function modulesVisible(modules) {
-    modules.forEach((module) => {
-        moduleVisible(module);
-    });
 }
 
 function modulesVisibleAll() {
@@ -409,91 +369,30 @@ async function init() {
     initTasmota();
     initTemplates();
 
-    if (MODULE_OTA) {
-        initOta();
-    }
-
-    if (MODULE_HA) {
-        initHa();
-    }
-
-    if (MODULE_SNS) {
-        initSensor();
-    }
-
-    if (MODULE_GARLAND) {
-        initGarland();
-    }
-
-    if (MODULE_THERMOSTAT) {
-        initThermostat();
-    }
-
-    if (MODULE_LIGHTFOX) {
-        initLightfox();
-    }
-
-    if (MODULE_RELAY) {
-        initRelay();
-        initButton();
-        initUart();
-    }
-
-    if (MODULE_RFM69) {
-        initRfm69();
-    }
-
-    if (MODULE_RFB) {
-        initRfbridge();
-    }
-
-    if (MODULE_CMD || MODULE_DBG) {
-        initDebug();
-    }
-
-    if (MODULE_API) {
-        initApi();
-    }
-
-    if (MODULE_LED) {
-        initLed();
-    }
-
-    if (MODULE_LIGHT) {
-        initLight();
-    }
-
-    if (MODULE_SCH) {
-        initSchedule();
-    }
-
-    if (MODULE_RPN) {
-        initRules();
-    }
-
-    if (MODULE_RELAY && MODULE_DCZ) {
-        initDomoticz();
-    }
-
-    if (MODULE_RELAY && MODULE_TSPK) {
-        initThingspeak();
-    }
-
-    if (MODULE_CURTAIN) {
-        initCurtain();
-    }
-
-    if (MODULE_NSPANEL) {
-        initNspanel();
-    }
-
-    if (MODULE_MATTER) {
-        initMatter();
-    }
-
-    if (MODULE_MOD) {
-        initModules();
-    }
+    // one WebUI for every chip and board: every panel is set up, the device shows the ones it has (modulesVisible)
+    initOta();
+    initHa();
+    initSensor();
+    initGarland();
+    initThermostat();
+    initLightfox();
+    initRelay();
+    initButton();
+    initUart();
+    initRfm69();
+    initRfbridge();
+    initDebug();
+    initApi();
+    initLed();
+    initLight();
+    initSchedule();
+    initRules();
+    initDomoticz();
+    initThingspeak();
+    initCurtain();
+    initNspanel();
+    initMatter();
+    initModules();
 
     if (MODULE_DEV) {
         initDev();

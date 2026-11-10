@@ -155,15 +155,10 @@ migrate_libraries(SHARED_LIBDIR)
 install_libraries(get_shared_libdeps(CONFIG), SHARED_LIBDIR, verbose=VERBOSE)
 
 
-# tweak build system to ignore espurna.ino, but include user code
-# ref: platformio-core/platformio/tools/piomisc.py::ConvertInoToCpp()
-def ConvertInoToCpp(env):
-    pass
+# tweak build system to ignore espurna.ino, but include user code: the one stub of every chip (scripts/no_ino.py)
+import no_ino  # noqa: E402
 
-
-ino = env.Glob("$PROJECT_DIR/espurna/*.ino") + env.Glob("$PROJECT_DIR/espurna/*.pde")
-if len(ino) == 1 and ino[0].name == "espurna.ino":
-    env.AddMethod(ConvertInoToCpp)
+no_ino.install(env)
 
 # merge every .cpp into a single file and **only** build that single file
 if check_env("ESPURNA_BUILD_SINGLE_SOURCE", "0"):

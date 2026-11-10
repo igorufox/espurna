@@ -18,14 +18,7 @@ Copyright (C) 2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #include "libs/URL.h"
 
-// not yet CONNECTING or LISTENING
-#if defined(ESP8266)
-extern "C" struct tcp_pcb *tcp_bound_pcbs;
-// accepting or sending data
-extern "C" struct tcp_pcb *tcp_active_pcbs;
-// // TIME-WAIT status
-extern "C" struct tcp_pcb *tcp_tw_pcbs;
-#endif
+#include "espurna_chip.h"
 
 namespace espurna {
 namespace network {
@@ -48,13 +41,7 @@ void dns_found_callback_impl(const char*, const ip_addr_t* addr, void* arg) {
     auto* pending = reinterpret_cast<Host*>(arg);
 
     if (addr) {
-#if defined(ESP8266)
-        pending->addr = addr;
-#elif defined(ESP32)
-        pending->addr = IPAddress(addr->u_addr.ip4.addr);
-#elif defined(LIBRETINY)
-        pending->addr = IPAddress(ip_addr_get_ip4_u32(addr));
-#endif
+        pending->addr = chip::address(addr);
         pending->err = ERR_OK;
     } else {
         pending->err = ERR_ABRT;
@@ -82,33 +69,11 @@ HostPtr resolve_impl(String hostname, HostCallback callback) {
             .err = ERR_INPROGRESS,
         });
 
-#if defined(ESP8266)
-    const auto err = dns_gethostbyname(
+    const auto err = chip::gethostbyname(
         host->name.c_str(),
         host->addr,
         dns_found_callback_impl,
         host.get());
-#elif defined(ESP32)
-    ip_addr_t addr;
-    const auto err = dns_gethostbyname(
-        host->name.c_str(),
-        &addr,
-        dns_found_callback_impl,
-        host.get());
-    if (err == ERR_OK) {
-        host->addr = IPAddress(addr.u_addr.ip4.addr);
-    }
-#elif defined(LIBRETINY)
-    ip_addr_t addr;
-    const auto err = dns_gethostbyname(
-        host->name.c_str(),
-        &addr,
-        dns_found_callback_impl,
-        host.get());
-    if (err == ERR_OK) {
-        host->addr = IPAddress(ip_addr_get_ip4_u32(&addr));
-    }
-#endif
 
     host->err = err;
 
@@ -197,11 +162,7 @@ void host(::terminal::CommandContext&& ctx) {
     }
 
     const auto result = dns::gethostbyname(ctx.argv[1]);
-#if defined(ESP8266)
-    if (result.isSet()) {
-#else
-    if ((uint32_t)result != 0) {
-#endif
+    if (chip::address_set(result)) {
         ctx.output.printf_P(PSTR("%s has address %s\n"),
             ctx.argv[1].c_str(), ipToString(result).c_str());
         terminalOK(ctx);
@@ -215,27 +176,10 @@ void host(::terminal::CommandContext&& ctx) {
 PROGMEM_STRING(Netstat, "NETSTAT");
 
 void netstat(::terminal::CommandContext&& ctx) {
-#if defined(ESP8266)
-    const struct tcp_pcb* pcbs[] {
-        tcp_active_pcbs,
-        tcp_tw_pcbs,
-        tcp_bound_pcbs,
-    };
-
-    for (const auto* list : pcbs) {
-        for (const tcp_pcb* pcb = list; pcb != nullptr; pcb = pcb->next) {
-            ctx.output.printf_P(PSTR("state %s local %s:%hu remote %s:%hu\n"),
-                    tcp_debug_state_str(pcb->state),
-                    IPAddress(pcb->local_ip).toString().c_str(),
-                    pcb->local_port,
-                    IPAddress(pcb->remote_ip).toString().c_str(),
-                    pcb->remote_port);
-        }
+    // lwIP pcb lists may belong to the tcpip task, can't be walked from loop() safely then
+    if (!chip::netstat(ctx.output)) {
+        terminalError(ctx, F("NETSTAT is not implemented for ESP32"));
     }
-#else
-    // lwIP pcb lists belong to the tcpip task here, can't be walked from loop() safely
-    terminalError(ctx, F("NETSTAT is not implemented for ESP32"));
-#endif
 }
 
 #if SECURE_CLIENT == SECURE_CLIENT_BEARSSL

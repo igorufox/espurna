@@ -4,7 +4,7 @@
 # CONFIGURATION
 # ------------------------------------------------------------------------------
 
-ENVIRONMENT="esp8266-4m"
+ENVIRONMENT="esp8266"
 ADDR2LINE=$HOME/.platformio/packages/toolchain-xtensa/bin/xtensa-lx106-elf-addr2line
 DECODER=utils/EspStackTraceDecoder.jar
 DECODER_ORIGIN=https://github.com/littleyoda/EspStackTraceDecoder/releases/download/untagged-83b6db3208da17a0f1fd/EspStackTraceDecoder.jar
@@ -49,7 +49,7 @@ done
 
 # check environment folder
 if [ ! -f $ELF ]; then
-    ELF=.pio/build/$ENVIRONMENT/firmware.elf
+    ELF=.pio/build_esp8266/$ENVIRONMENT/firmware.elf
 fi
 if [ ! -f $ELF ]; then
     echo "Could not find ELF file for the selected environment: $ELF"

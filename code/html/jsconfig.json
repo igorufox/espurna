@@ -17,7 +17,7 @@
     "target": "es2022",
     "types": ["dom"],
     "paths": {
-      "@build-preset/*": ["./preset/dev/*"]
+      "@build-mode": ["./mode/dev.mjs"]
     }
   },
   "exclude": [

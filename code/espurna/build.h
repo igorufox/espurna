@@ -8,7 +8,7 @@ BUILD INFO
 
 #include <Arduino.h>
 
-#include "types_orch.h"
+#include "types.h"
 
 namespace espurna {
 namespace build {

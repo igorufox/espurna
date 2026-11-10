@@ -1,0 +1,21 @@
+{
+  "name": "DNSServer-espurna",
+  "description": "DNSServer of arduino-esp32 3.3.12 for the ESPurna captive portal, on EspurnaUdp (asynchronous UDP on the lwIP raw API): one implementation for ESP8266, ESP32 and LibreTiny. The framework DNSServer libraries are in lib_ignore",
+  "keywords": "dns,captive",
+  "authors": {
+    "name": "Kristijan Novoselić",
+    "maintainer": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/espressif/arduino-esp32.git"
+  },
+  "version": "3.3.12",
+  "license": "LGPL-2.1",
+  "frameworks": "arduino",
+  "platforms": [
+    "espressif8266",
+    "espressif32",
+    "libretiny"
+  ]
+}

@@ -25,14 +25,6 @@ WebUI. The Matter stack itself is the backend of the architecture (espurna_matte
 #include "alexa.h"
 #endif
 
-#if defined(ARDUINO_ARCH_ESP32)
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#else
-#include <FreeRTOS.h>
-#include <semphr.h>
-#endif
-
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -48,15 +40,8 @@ bool connected { false };
 // This boot was asked for by an OTA upload that cannot run while Matter does (ref. matterRebootForUpload())
 bool skip_start { false };
 
-// The automatic start (`matterAuto`) waits `matterDelay` seconds after the station got its address. On the 2 MiB Beken
-// boards the start right at boot, with both controllers reconnecting at once (CASE, subscriptions, reads) while
-// DHCP, MQTT and the WebUI were busy too, filled the 16 KiB lwIP heap and receiving stopped: the board went deaf until
-// the network watchdog restarted it, often twice in a row. After such a restart the start waits at least 5 minutes.
-#if defined(LIBRETINY)
-constexpr uint32_t DefaultStartDelay { 75 };
-#else
-constexpr uint32_t DefaultStartDelay { 0 };
-#endif
+// The automatic start (`matterAuto`) waits `matterDelay` seconds after the station got its address, by default the
+// backend's start_delay(). After a restart by the network watchdog the start waits at least 5 minutes.
 constexpr uint32_t NetworkResetStartDelay { 300 };
 
 // millis() | 1 of the automatic start that is due, 0 when none
@@ -284,7 +269,7 @@ void wifi_event(espurna::wifi::Event event) {
         // Bring-up: a crash in Matter must not put the board into a boot loop, so it only starts on
         // MATTER.START until `matterAuto 1` is set
         if (getSetting("matterAuto", false) && !skip_start && !started && !start_at) {
-            auto delay = getSetting("matterDelay", DefaultStartDelay);
+            auto delay = getSetting("matterDelay", backend::start_delay());
             if (customResetReason() == CustomResetReason::Network) {
                 delay = std::max(delay, NetworkResetStartDelay);
             }

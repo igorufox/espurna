@@ -19,7 +19,7 @@ Copyright (C) 2019-2024 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include <memory>
 
 #include "libs/BasePin.h"
-#include "types_orch.h"
+#include "types.h"
 #include "system.h"
 
 class OneWire;

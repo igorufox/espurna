@@ -23,11 +23,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <algorithm>
 #include <utility>
 
-#if ESPURNA_ASYNC_TASKS
-#include <mutex>
-#endif
-
 #include "main.h"
+#include "espurna_tasks.h"
 #include "espurna_ota.h"
 #include "rtcmem.h"
 
@@ -92,19 +89,12 @@ volatile uintptr_t current { 0 };
 
 std::forward_list<Callback> once_callbacks;
 
-#if ESPURNA_ASYNC_TASKS
 // once callbacks are also scheduled from other tasks (e.g. SNTP notification in tcpip task)
-std::mutex once_mutex;
-#endif
+system::Mutex once_mutex;
 
 } // namespace internal
 
-#if ESPURNA_ASYNC_TASKS
-using OnceLock = std::lock_guard<std::mutex>;
-#define ONCE_LOCK() OnceLock once_lock(internal::once_mutex)
-#else
-#define ONCE_LOCK()
-#endif
+#define ONCE_LOCK() system::MutexLock once_lock(internal::once_mutex)
 
 void flag_reload() {
     internal::reload_flag = true;
@@ -258,6 +248,9 @@ void setup() {
 
     // Cache initial free heap value
     systemInitialFreeHeap();
+
+    // Chip part that runs before anything reads the settings (esp8266: settings of the old 4 MB layout)
+    system::chip::early_setup();
 
     // Init debug & logging routines
     debugSetup();

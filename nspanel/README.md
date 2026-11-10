@@ -43,17 +43,18 @@ Everything below is the user guide. Every field, limit and protocol detail is in
 - An MQTT broker and devices that publish their state to MQTT.
 - The `esp32-matter-nspanel` image from the [release](https://github.com/igorufox/espurna/releases/latest):
   `espurna-esp32-matter-nspanel.bin`, one file for the serial flash (bootloader, partition table, the ESPurna safeboot
-  and the firmware) and for later updates. Or build it, PlatformIO environment `esp32-nspanel` (the safeboot first, so
-  that it goes into the merged image):
+  and the firmware) and for later updates. Newer releases have one ESP32 image, `espurna-esp32.bin`, with the panel as
+  the `nspanel` module (`espurna-esp32-modules.bin`, WebUI MODULES; pins: `nspTx`, `nspRx`, `nspPower`, `nspBuzzer`).
+  Or build it, PlatformIO environment `esp32` (the safeboot first, so that it goes into the merged image):
 
   ```
   cd code
   pio run -d safeboot-app
-  pio run -c platformio_esp32.ini -e esp32-nspanel
+  pio run -c platformio_esp32.ini -e esp32
   ```
 
-  The build writes the full image as `.pio/build/esp32-nspanel/espurna-esp32-nspanel.bin` and the update image as
-  `firmware.bin` next to it.
+  The build writes the full image as `.pio/build_esp32/esp32/espurna-esp32.bin` (the update image as `firmware.bin`
+  next to it) and the modules file `espurna-esp32-modules.bin`.
 
 ## 2. Install
 

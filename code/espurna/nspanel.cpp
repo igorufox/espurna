@@ -79,12 +79,21 @@ namespace {
 
 namespace build {
 
-constexpr int DisplayPowerPin { 4 };      // LOW = display ON
-constexpr int TxPin { 16 };
-constexpr int RxPin { 17 };
+// the NSPanel's pins by default; on any other ESP32 (the display on a free UART) from the settings nspTx, nspRx,
+// nspPower, nspBuzzer, read at boot (nspanelBootSetup). -1: not connected. A pin another part of ESPurna holds already
+// (a relay) is dropped: without TX and RX the display part stays off
+int DisplayPowerPin { 4 };      // LOW = display ON
+int TxPin { 16 };
+int RxPin { 17 };
 constexpr uint32_t LovelaceBaud { 115200 };
 constexpr uint32_t OhpanelBaud { 921600 };
-constexpr int BuzzerPin { 21 };
+int BuzzerPin { 21 };
+
+inline void powerWrite(int level) {
+    if (DisplayPowerPin >= 0) {
+        digitalWrite(DisplayPowerPin, level);
+    }
+}
 constexpr int BuzzerChannel { 15 };       // pwm.cpp allocates LEDC channels from 0
 
 constexpr size_t EventsMax { 8 };
@@ -2875,6 +2884,9 @@ uint32_t until { 0 };
 
 // core 3.x: ledcWrite() takes the pin, the channel API is ledcAttachChannel() / ledcWriteChannel()
 void duty(uint32_t value) {
+    if (build::BuzzerPin < 0) {
+        return;
+    }
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcWriteChannel(build::BuzzerChannel, value);
 #else
@@ -2883,6 +2895,9 @@ void duty(uint32_t value) {
 }
 
 void setup() {
+    if (build::BuzzerPin < 0) {
+        return;
+    }
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcAttachChannel(build::BuzzerPin, 2700, 8, build::BuzzerChannel);
 #else
@@ -3404,7 +3419,7 @@ void probe(const char* why) {
     episode_start = millis();
     power_cycled = false;
     power = Power::None;
-    digitalWrite(build::DisplayPowerPin, LOW);
+    build::powerWrite(LOW);
     start(first());
 }
 
@@ -3419,7 +3434,7 @@ void loop() {
     switch (power) {
     case Power::Off:
         if (now - power_at >= build::PowerOffMs) {
-            digitalWrite(build::DisplayPowerPin, LOW);
+            build::powerWrite(LOW);
             power = Power::Boot;
             power_at = now;
         }
@@ -3481,7 +3496,7 @@ void loop() {
         power_cycled = true;
         power = Power::Off;
         power_at = now;
-        digitalWrite(build::DisplayPowerPin, HIGH);
+        build::powerWrite(HIGH);
         return;
     }
 
@@ -3815,9 +3830,9 @@ int waitByte(uint32_t timeout) {
 
 void powerCycle() {
     message("power-cycling the display");
-    digitalWrite(build::DisplayPowerPin, HIGH);
+    build::powerWrite(HIGH);
     vTaskDelay(pdMS_TO_TICKS(PowerOffMs));
-    digitalWrite(build::DisplayPowerPin, LOW);
+    build::powerWrite(LOW);
     drain(BootMs); // power-up announcement, not for us
 }
 
@@ -5427,20 +5442,45 @@ void panelLoop() {
 void nspanelBootSetup() {
     using namespace espurna::nspanel;
 
-    pinMode(build::DisplayPowerPin, OUTPUT);
-    digitalWrite(build::DisplayPowerPin, LOW);
-    gpioLock(build::DisplayPowerPin);
+    // a pin of the settings: valid and not held by anything else yet, else -1
+    const auto pin = [](const char* key, int fallback) -> int {
+        const auto value = getSetting(espurna::settings::Key(key), fallback);
+        if ((value < 0) || !gpioValid(static_cast<unsigned char>(value))
+            || !gpioLock(static_cast<unsigned char>(value)))
+        {
+            if (value >= 0) {
+                DEBUG_MSG_P(PSTR("[NSPANEL] %s GPIO%d is not free, not used\n"), key, value);
+            }
+            return -1;
+        }
+        return value;
+    };
 
-    pinMode(build::BuzzerPin, OUTPUT);
-    digitalWrite(build::BuzzerPin, LOW);
-    gpioLock(build::BuzzerPin);
+    build::DisplayPowerPin = pin("nspPower", build::DisplayPowerPin);
+    build::BuzzerPin = pin("nspBuzzer", build::BuzzerPin);
+    build::TxPin = pin("nspTx", build::TxPin);
+    build::RxPin = pin("nspRx", build::RxPin);
+
+    if (build::DisplayPowerPin >= 0) {
+        pinMode(build::DisplayPowerPin, OUTPUT);
+        build::powerWrite(LOW);
+    }
+
+    if (build::BuzzerPin >= 0) {
+        pinMode(build::BuzzerPin, OUTPUT);
+        digitalWrite(build::BuzzerPin, LOW);
+    }
 }
 
 void nspanelSetup() {
     using namespace espurna::nspanel;
 
-    gpioLock(build::TxPin);
-    gpioLock(build::RxPin);
+    // TX and RX were taken at boot (nspanelBootSetup); without them there is no display to drive
+    if ((build::TxPin < 0) || (build::RxPin < 0)) {
+        DEBUG_MSG_P(PSTR("[NSPANEL] No UART pins for the display (nspTx / nspRx), the display part is off\n"));
+        return;
+    }
+
 #if NTC_SUPPORT
     gpioLock(NTC_PIN);
 #endif

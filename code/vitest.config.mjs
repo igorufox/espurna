@@ -1,10 +1,8 @@
-import * as path from 'node:path';
-
-import { MODULE_DEV } from './html/lib/preset.mjs';
 import {
-    PRESET_DIR,
+    MODE_DEV,
     SPEC_DIR,
     VENDOR_DIR,
+    modeFile,
 } from './gulpfile.mjs';
 
 import { defineConfig } from 'vitest/config';
@@ -18,7 +16,7 @@ export default defineConfig({
     resolve: {
         alias: [
             {find: '/vendor', replacement: VENDOR_DIR},
-            {find: '@build-preset', replacement: path.join(PRESET_DIR, MODULE_DEV)},
+            {find: '@build-mode', replacement: modeFile(MODE_DEV)},
         ],
     },
 });

@@ -1,10 +1,10 @@
 /*
 
-PROTOTYPE: functions the modules of the 1 MB head image provide to each other (docs/esp8266-modules.md, modules.h)
+PROTOTYPE: functions the modules of the 1 MB head image provide to each other (docs/modules.md, modules.h)
 
 The head has none of these: here they forward to the slot the provider's entry filled, and answer "nothing" when the
 provider is not installed (no magnitudes, no Domoticz). The provider's own definitions are renamed in its module
-(scripts/esp8266_module_link.py, `provides` in platformio_modules.ini), so every other module ends up here.
+(scripts/esp8266_module_link.py, `provides` in platformio_esp8266.ini), so every other module ends up here.
 
 */
 
@@ -17,9 +17,7 @@ provider is not installed (no magnitudes, no Domoticz). The provider's own defin
 
 using espurna::modules::Api;
 
-extern "C" {
-void* espurna_module_api[static_cast<size_t>(Api::Count)] {};
-}
+// espurna_module_api[] itself is in modules.cpp (every chip)
 
 namespace {
 
@@ -136,6 +134,15 @@ void domoticzSendMagnitude(unsigned char index, const espurna::sensor::Value& va
 bool tspkEnqueueMagnitude(unsigned char index, const String& value) {
     const auto func = api<bool(unsigned char, const String&)>(Api::TspkEnqueueMagnitude);
     return func ? func(index, value) : false;
+}
+
+// --- Alexa module, called by the Matter module (its quiet mode while a controller commissions)
+
+void alexaPause(bool paused) {
+    const auto func = api<void(bool)>(Api::AlexaPause);
+    if (func) {
+        func(paused);
+    }
 }
 
 
@@ -345,7 +352,7 @@ void lightBlue(long value) {
 #if MODULES_SUPPORT
 
 // ArduinoOTA references mDNS although ESPurna starts it without (begin(false)): these stubs take its references
-// (scripts/esp8266_head_exports.py links the head with --wrap), the real mDNS is in the mdns module
+// (scripts/module_head.py, custom_head_wraps links the head with --wrap), the real mDNS is in the mdns module
 extern "C" {
 
 alignas(4) char __wrap_MDNS[8];
@@ -377,3 +384,227 @@ bool espurna_mdns_stub_update(void*) {
 } // extern "C"
 
 #endif // MODULES_SUPPORT
+
+// --- MQTT as a module (modules_mqtt.h): the head's MQTT API forwards to the mqtt module's table ----------------------
+
+#if MODULES_SUPPORT && MQTT_SUPPORT && MQTT_MODULE
+
+#include "modules_mqtt.h"
+
+namespace {
+
+const MqttModuleApi* mqtt_api { nullptr };
+
+// registered before the module started (the head's parts in their setup): handed over when it comes
+MqttCallback mqtt_callbacks[24] {};
+size_t mqtt_callbacks_count { 0 };
+espurna::heartbeat::Callback mqtt_heartbeats[8] {};
+size_t mqtt_heartbeats_count { 0 };
+
+const String& mqttEmpty() {
+    static const String out;
+    return out;
+}
+
+} // namespace
+
+void modulesMqttProvide(const MqttModuleApi* api) {
+    mqtt_api = api;
+    if (!api) {
+        return;
+    }
+    for (size_t index = 0; index < mqtt_callbacks_count; ++index) {
+        api->callback(mqtt_callbacks[index]);
+    }
+    for (size_t index = 0; index < mqtt_heartbeats_count; ++index) {
+        api->heartbeat(mqtt_heartbeats[index]);
+    }
+}
+
+void mqttHeartbeat(espurna::heartbeat::Callback callback) {
+    if (mqtt_api) {
+        mqtt_api->heartbeat(callback);
+    } else if (mqtt_heartbeats_count < std::size(mqtt_heartbeats)) {
+        mqtt_heartbeats[mqtt_heartbeats_count++] = callback;
+    }
+}
+
+void mqttRegister(MqttCallback callback) {
+    if (mqtt_api) {
+        mqtt_api->callback(callback);
+    } else if (mqtt_callbacks_count < std::size(mqtt_callbacks)) {
+        mqtt_callbacks[mqtt_callbacks_count++] = callback;
+    }
+}
+
+void mqttOnPublish(uint16_t pid, MqttPidCallback callback) {
+    if (mqtt_api) {
+        mqtt_api->onPublish(pid, std::move(callback));
+    }
+}
+
+void mqttOnSubscribe(uint16_t pid, MqttPidCallback callback) {
+    if (mqtt_api) {
+        mqtt_api->onSubscribe(pid, std::move(callback));
+    }
+}
+
+String mqttTopic(const String& magnitude) {
+    return mqtt_api ? mqtt_api->topic(magnitude) : String();
+}
+
+String mqttTopic(const String& magnitude, size_t index) {
+    return mqtt_api ? mqtt_api->topicIndex(magnitude, index) : String();
+}
+
+String mqttTopicSetter(const String& magnitude) {
+    return mqtt_api ? mqtt_api->setter(magnitude) : String();
+}
+
+String mqttTopicSetter(const String& magnitude, size_t index) {
+    return mqtt_api ? mqtt_api->setterIndex(magnitude, index) : String();
+}
+
+espurna::StringView mqttMagnitude(espurna::StringView topic) {
+    return mqtt_api ? mqtt_api->magnitude(topic) : espurna::StringView();
+}
+
+uint16_t mqttSendRaw(const char* topic, const char* message, bool retain, int qos) {
+    return mqtt_api ? mqtt_api->sendRaw4(topic, message, retain, qos) : 0;
+}
+
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+uint16_t mqttSendRaw(const char* topic, const char* message, bool retain, int qos, MqttPidCallback on_publish) {
+    return mqtt_api ? mqtt_api->sendRaw5(topic, message, retain, qos, std::move(on_publish)) : 0;
+}
+#endif
+
+uint16_t mqttSendRaw(const char* topic, const char* message, bool retain) {
+    return mqtt_api ? mqtt_api->sendRaw3(topic, message, retain) : 0;
+}
+
+uint16_t mqttSendRaw(const char* topic, const char* message) {
+    return mqtt_api ? mqtt_api->sendRaw2(topic, message) : 0;
+}
+
+uint16_t mqttSubscribeRaw(const char* topic, int qos) {
+    return mqtt_api ? mqtt_api->subscribeRaw2(topic, qos) : 0;
+}
+
+uint16_t mqttSubscribeRaw(const char* topic) {
+    return mqtt_api ? mqtt_api->subscribeRaw1(topic) : 0;
+}
+
+bool mqttSubscribe(const char* topic) {
+    return mqtt_api ? mqtt_api->subscribe(topic) : false;
+}
+
+uint16_t mqttUnsubscribeRaw(const char* topic) {
+    return mqtt_api ? mqtt_api->unsubscribeRaw(topic) : 0;
+}
+
+bool mqttUnsubscribe(const char* topic) {
+    return mqtt_api ? mqtt_api->unsubscribe(topic) : false;
+}
+
+bool mqttSend(const char* topic, const char* message, bool force, bool retain) {
+    return mqtt_api ? mqtt_api->send4(topic, message, force, retain) : false;
+}
+
+bool mqttSend(const char* topic, const char* message, bool force) {
+    return mqtt_api ? mqtt_api->send3(topic, message, force) : false;
+}
+
+bool mqttSend(const char* topic, const char* message) {
+    return mqtt_api ? mqtt_api->send2(topic, message) : false;
+}
+
+bool mqttSend(const char* topic, unsigned int index, const char* message, bool force, bool retain) {
+    return mqtt_api ? mqtt_api->sendIndex5(topic, index, message, force, retain) : false;
+}
+
+bool mqttSend(const char* topic, unsigned int index, const char* message, bool force) {
+    return mqtt_api ? mqtt_api->sendIndex4(topic, index, message, force) : false;
+}
+
+bool mqttSend(const char* topic, unsigned int index, const char* message) {
+    return mqtt_api ? mqtt_api->sendIndex3(topic, index, message) : false;
+}
+
+void mqttSendStatus() {
+    if (mqtt_api) {
+        mqtt_api->sendStatus();
+    }
+}
+
+void mqttFlush() {
+    if (mqtt_api) {
+        mqtt_api->flush();
+    }
+}
+
+void mqttEnqueue(espurna::StringView topic, espurna::StringView payload) {
+    if (mqtt_api) {
+        mqtt_api->enqueue(topic, payload);
+    }
+}
+
+const String& mqttPayloadOnline() {
+    return mqtt_api ? mqtt_api->payloadOnline() : mqttEmpty();
+}
+
+const String& mqttPayloadOffline() {
+    return mqtt_api ? mqtt_api->payloadOffline() : mqttEmpty();
+}
+
+const char* mqttPayloadStatus(bool status) {
+    return mqtt_api ? mqtt_api->payloadStatus(status) : (status ? "1" : "0");
+}
+
+void mqttEnabled(bool status) {
+    if (mqtt_api) {
+        mqtt_api->setEnabled(status);
+    }
+}
+
+bool mqttEnabled() {
+    return mqtt_api ? mqtt_api->enabled() : false;
+}
+
+bool mqttForward() {
+    return mqtt_api ? mqtt_api->forward() : false;
+}
+
+bool mqttConnected() {
+    return mqtt_api ? mqtt_api->connected() : false;
+}
+
+void mqttDisconnect() {
+    if (mqtt_api) {
+        mqtt_api->disconnect();
+    }
+}
+
+// the module's entry runs the real one
+void mqttSetup() {
+}
+
+#endif // MODULES_SUPPORT && MQTT_SUPPORT && MQTT_MODULE
+
+// --- the mdns module: mDNS for the other modules (MQTT finds its broker with it); off - not running, no answers -----
+
+#if MODULES_SUPPORT && !MDNS_SERVER_SUPPORT
+
+#include "espurna_mdns.h"
+
+bool mdnsRunning() {
+    const auto func = modulesApi<decltype(mdnsRunning)>(espurna::modules::Api::MdnsRunning);
+    return func ? func() : false;
+}
+
+bool mdnsServiceQuery(const String& service, const String& protocol, MdnsServerQueryCallback callback) {
+    const auto func = modulesApi<decltype(mdnsServiceQuery)>(espurna::modules::Api::MdnsServiceQuery);
+    return func ? func(service, protocol, callback) : false;
+}
+
+#endif // MODULES_SUPPORT && !MDNS_SERVER_SUPPORT

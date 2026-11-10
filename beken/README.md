@@ -132,15 +132,16 @@ Wi-Fi LED, `remote_io` is the 433 MHz receiver. The `_lv` fields give the active
 [section 1](#1-image)) from the [release](https://github.com/igorufox/espurna/releases/latest), or build it from `code/`:
 
 ```
-py -3 -m platformio run -c platformio_beken.ini -e beken-bk7231n
+py -3 -m platformio run -c platformio_beken.ini -e beken
 ```
 
-The build writes the three files of the table under the same names to `code/.pio/build_beken/beken-bk7231n/`
-(`firmware.uf2` there is LibreTiny's own name of the Tuya UART image, the target of `pio run -t upload`). The build uses its own build directory, so it does not touch
-the ESP8266 / ESP32 builds in `.pio/build`. Then flash it:
+One env, `beken`: the head, every module (thingspeak, domoticz, matter) and the release files in one build
+([docs/modules.md](../docs/modules.md#beken)), in `code/.pio/build_beken/beken/`: `espurna-beken.uf2` (the head, Tuya
+layout; LibreTiny's `firmware.uf2` under the release name) and `espurna-beken-modules.bin`. The Quectel-layout image
+(`-initial-quectel.uf2`) is not made by this build yet. Then flash it:
 
 ```
-ltchiptool flash write -d COM3 -b 921600 -t 45 code/.pio/build_beken/beken-bk7231n/espurna-beken-initial-tuya.uf2
+ltchiptool flash write -d COM3 -b 921600 -t 45 code/.pio/build_beken/beken/espurna-beken.uf2
 ```
 
 `-b 921600` writes in about 30 s; at the default 115200 one board lost the link at the same point (about 1 min 50 s,
@@ -291,12 +292,15 @@ switches the relay.
   LibreTiny's libstdc++ has no threads: two tasks touching the same static for the first time trapped with "undefined
   instruction"; the second one now waits.
 - **Logs on UART1** (`LT_UART_DEFAULT_PORT=1`): LibreTiny, the SDK and ESPurna all print on the flashing pads.
-- **Patched AsyncTCP** ([`code/lib_beken/AsyncTCP-espurna`](../code/lib_beken/AsyncTCP-espurna)), used instead of the
-  registry version. A dropped connection could leave the web server using a freed lwIP connection, and other requests then
-  stalled for 10 to 40 s.
-- **Captive portal DNS** ([`code/lib_beken/DNSServer`](../code/lib_beken/DNSServer), copied from arduino-esp32). The SDK DHCP
-  server runs its own DNS stub on port 53 that refuses every query, so clients of the access point decided there was no
-  internet and never showed the sign-in page. Ours is bound to `192.168.4.1` and gets the queries first.
+- **Web stack from the registry**, the same as on ESP32 and ESP8266: ESP32Async `ESPAsyncWebServer` 3.12.1 on ESP32Async
+  `AsyncTCP` 3.5.0. Two of their options are set here: `CONFIG_ASYNC_TCP_PRIORITY=3` (the default 10 is above the SDK's
+  `configMAX_PRIORITIES`, FreeRTOS made it 9, above the tcpip thread) and `ASYNCWEBSERVER_USE_MUTEX=1` (the web server has
+  its locks only on ESP32 by default, AsyncTCP callbacks run in their own task here as well).
+- **Captive portal DNS** ([`code/lib/DNSServer`](../code/lib/DNSServer), the arduino-esp32 3.3.12 one on `EspurnaUdp`, the
+  asynchronous UDP of the library on the lwIP raw API; the same code on every chip).
+  The SDK DHCP server runs its own DNS stub on port 53 that refuses every query, so clients of the access point decided
+  there was no internet and never showed the sign-in page. Ours is bound to `192.168.4.1` (with `SO_REUSEADDR`, as the
+  stub) and gets the queries first.
 - **Access point on the router's channel.** There is one radio: with STA connected the access point uses its channel, on the
   configured `wifiApChan` the two kept switching the radio and STA dropped every few seconds.
 - **Crash handlers** (`-Wl,--wrap=bk_trap_*`, [`rtcmem_beken.cpp`](../code/espurna/arch/beken/rtcmem_beken.cpp)). The SDK ones

@@ -1,6 +1,6 @@
 /*
 
-PROTOTYPE: the mdns module (docs/esp8266-modules.md), env:esp8266-1m-modules of platformio_modules.ini
+PROTOTYPE: the mdns module (docs/modules.md), env:esp8266-1m-modules of platformio_esp8266.ini
 
 */
 
@@ -11,7 +11,11 @@ PROTOTYPE: the mdns module (docs/esp8266-modules.md), env:esp8266-1m-modules of 
 #include "modules.h"
 #include "espurna_mdns.h"
 
-ESPURNA_MODULE(mdns, "mdns", 20) {
+// before MQTT (its broker autodiscovery queries mDNS through the head)
+ESPURNA_MODULE(mdns, "mdns", 3) {
+    using espurna::modules::Api;
+    modulesProvide(Api::MdnsRunning, &mdnsRunning);
+    modulesProvide(Api::MdnsServiceQuery, &mdnsServiceQuery);
     mdnsServerSetup();
 }
 

@@ -12,7 +12,7 @@ Copyright (C) 2019-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include <ArduinoJson.h>
 #include "pgmspace_orch.h"
 
-#include "types_orch.h"
+#include "types.h"
 
 namespace ArduinoJson {
 namespace Internals {

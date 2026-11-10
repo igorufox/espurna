@@ -1,5 +1,5 @@
 // MODULES panel: the parts of the ESP8266 1 MB firmware that are added to the free flash behind the head
-// (docs/esp8266-modules.md). The board answers /modules with what it has; the modules themselves come from the modules
+// (docs/modules.md). The board answers /modules with what it has; the modules themselves come from the modules
 // file of the running release (espurna-esp8266-1m-modules.bin, from the disk or from the release list). Switching a
 // module on uploads its package to /modules/upload, off: /modules/remove. Both apply at the next restart.
 // The head has its own small page with the same switches (/modules.html), it works without this WebUI.
@@ -38,6 +38,16 @@ const STYLE = [
     "#panel-mod .mod-card-head input.checkbox-toggle { margin: 0; }",
     "#panel-mod input.checkbox-toggle::before { content: 'OFF'; }",
     "#panel-mod input.checkbox-toggle:checked::before { content: 'ON'; }",
+    "#panel-mod .mod-group { grid-column: 1 / -1; margin: .6em 0 0; font-weight: bold; color: #444;"
+        + " border-bottom: 1px solid #ddd; padding: .3em .2em; display: flex; align-items: baseline; gap: .6em;"
+        + " cursor: pointer; user-select: none; }",
+    "#panel-mod .mod-group:hover { background: #f4f4f4; }",
+    "#panel-mod .mod-group::before { content: '▸'; color: #888; width: 1em; }",
+    "#panel-mod .mod-group.mod-open::before { content: '▾'; }",
+    "#panel-mod .mod-group-count { margin-left: auto; font-weight: normal; font-size: 85%; color: #777; }",
+    "#panel-mod .mod-group-count b { color: rgb(28, 184, 65); }",
+    "#panel-mod .button-mod-remove { margin-left: auto; font-size: 85%; padding: .3em .9em;"
+        + " background: rgb(202, 60, 60); color: #fff; border-radius: 4px; }",
     "#panel-mod .mod-desc { color: #666; font-size: 88%; margin: .35em 0 .5em; min-height: 2.4em; }",
     "#panel-mod .mod-sizes { display: flex; flex-wrap: wrap; gap: .3em; align-items: center; font-size: 85%; }",
     "#panel-mod .mod-chip { background: #f0f0f0; border-radius: 1em; padding: .1em .6em; white-space: nowrap; }",
@@ -74,16 +84,57 @@ const DESCRIPTIONS = new Map([
     ["domoticz", "Domoticz MQTT, the DOMOTICZ panel."],
     ["thingspeak", "Sends relays and sensors to ThingSpeak, the THINGSPEAK panel."],
     ["mdns", "Answers <hostname>.local on the network (mDNS)."],
+    ["mqtt", "MQTT client: relays, buttons, LEDs and sensors on the broker, the MQTT panel. Home Assistant and Domoticz need it."],
 ]);
+
+// the panel shows the modules by group, in this order; a module not listed goes to the last one
+export const GROUPS = [
+    ["Interface", ["webui"]],
+    ["Inputs and outputs", ["relay", "button", "led", "rf", "ir", "encoder", "mcp23s08", "tuya", "dual", "stm",
+        "lightfox", "ifan", "kingart"]],
+    ["Light", ["light", "pwm", "my92xx"]],
+    ["Sensors", ["sensors", "dht", "dallas", "bmx280", "hlw8012", "cse7766", "pzem004t", "analog", "ntc", "digital"]],
+    ["Automation", ["scheduler"]],
+    ["Integrations", ["mqtt", "homeassistant", "alexa", "domoticz", "thingspeak", "mdns", "prometheus", "matter"]],
+];
+
+/**
+ * @param {string} name
+ * @returns {string}
+ */
+/**
+ * How many modules of a group are on, installed, listed
+ * @param {Row[]} rows the rows of one group
+ * @returns {{on: number, installed: number, all: number}}
+ */
+export function groupCounts(rows) {
+    const installed = rows.filter((row) => row.installed);
+    return {
+        on: installed.filter((row) => row.installed?.enabled !== 0).length,
+        installed: installed.length,
+        all: rows.length,
+    };
+}
+
+export function groupOf(name) {
+    for (const [group, members] of GROUPS) {
+        if (members.includes(name)) {
+            return group;
+        }
+    }
+
+    return "Other";
+}
 
 // From this share on a meter is yellow: everything is taken, but the board still lives
 export const TIGHT = 0.85;
 const SECTOR = 4096;
-const CONTAINER_MAGIC = 0x31434d45; // "EMC1"
+const CONTAINER_MAGIC = 0x32434d45; // "EMC2"
+const CONTAINER_ENTRY = 72;
 const FULL_MODULES = 0x100000;
 
-/** @typedef {{name: string, size: number, offset: number, ram: number, ram_in: string, iram: number, state: string}} Installed */
-/** @typedef {{image: number, ram: number, iram: number, data: Uint8Array}} Package */
+/** @typedef {{name: string, size: number, offset: number, ram: number, ram_in: string, iram: number, state: string, enabled?: number, requires?: string}} Installed */
+/** @typedef {{image: number, ram: number, iram: number, requires: string[], data: Uint8Array}} Package */
 
 /**
  * @typedef {{
@@ -117,8 +168,119 @@ export function sizeText(size) {
 }
 
 /**
- * The modules file (EMC1): magic, count, 48-byte entries (name16, offset, size, image, ram, iram, 12 reserved), then
- * the packages
+ * @param {DataView} view
+ * @param {number} at
+ * @param {number} size
+ * @returns {string} the bytes up to the first 0
+ */
+function text(view, at, size) {
+    let out = "";
+    for (let offset = 0; offset < size; ++offset) {
+        const code = view.getUint8(at + offset);
+        if (!code) {
+            break;
+        }
+        out += String.fromCharCode(code);
+    }
+
+    return out;
+}
+
+/**
+ * @param {string} list comma separated
+ * @returns {string[]}
+ */
+export function names(list) {
+    return list.split(",").map((x) => x.trim()).filter((x) => x.length > 0);
+}
+
+/**
+ * What a module needs, by name: from the board for an installed one, else from the modules file
+ * @param {string} name
+ * @param {Status} status
+ * @param {Map<string, Package>} packages
+ * @returns {string[]}
+ */
+export function requiresOf(name, status, packages) {
+    const installed = status.modules.find((x) => x.name === name);
+    if (installed && (installed.requires !== undefined)) {
+        return names(installed.requires);
+    }
+
+    return packages.get(name)?.requires ?? [];
+}
+
+/**
+ * The modules to switch on before this one, the deepest first, the module itself last; a module that is neither
+ * installed nor in the modules file stops it
+ * @param {string} name
+ * @param {Status} status
+ * @param {Map<string, Package>} packages
+ * @returns {{order: string[], missing: string[]}}
+ */
+export function switchOnOrder(name, status, packages) {
+    /** @type {string[]} */
+    const order = [];
+    /** @type {string[]} */
+    const missing = [];
+    /** @type {Set<string>} */
+    const seen = new Set();
+
+    /** @param {string} current */
+    const visit = (current) => {
+        if (seen.has(current)) {
+            return;
+        }
+        seen.add(current);
+        for (const needed of requiresOf(current, status, packages)) {
+            visit(needed);
+        }
+
+        const installed = status.modules.find((x) => x.name === current);
+        if (!installed && !packages.has(current)) {
+            missing.push(current);
+            return;
+        }
+        if ((current === name) || !installed || (installed.enabled === 0)) {
+            order.push(current);
+        }
+    };
+
+    visit(name);
+    return {order, missing};
+}
+
+/**
+ * Installed modules that need this one (switched on, or all of them)
+ * @param {string} name
+ * @param {Status} status
+ * @param {Map<string, Package>} packages
+ * @param {boolean} onlyOn
+ * @returns {string[]}
+ */
+export function dependentsOf(name, status, packages, onlyOn) {
+    /** @type {string[]} */
+    const out = [];
+    /** @param {string} current */
+    const visit = (current) => {
+        for (const other of status.modules) {
+            if (out.includes(other.name) || (onlyOn && (other.enabled === 0))) {
+                continue;
+            }
+            if (requiresOf(other.name, status, packages).includes(current)) {
+                out.push(other.name);
+                visit(other.name);
+            }
+        }
+    };
+
+    visit(name);
+    return out;
+}
+
+/**
+ * The modules file (EMC2): magic, count, 72-byte entries (name16, offset, size, image, ram, iram, requires32,
+ * 4 reserved), then the packages
  * @param {ArrayBuffer} buffer
  * @returns {Map<string, Package>}
  */
@@ -140,19 +302,12 @@ export function parseContainer(buffer) {
     const out = new Map();
     const count = view.getUint32(base + 4, true);
     for (let index = 0; index < count; ++index) {
-        const at = base + 8 + (48 * index);
-        if (at + 48 > buffer.byteLength) {
+        const at = base + 8 + (CONTAINER_ENTRY * index);
+        if (at + CONTAINER_ENTRY > buffer.byteLength) {
             throw new Error("the modules file is cut short");
         }
 
-        let name = "";
-        for (let offset = 0; offset < 16; ++offset) {
-            const code = view.getUint8(at + offset);
-            if (!code) {
-                break;
-            }
-            name += String.fromCharCode(code);
-        }
+        const name = text(view, at, 16);
 
         const offset = base + view.getUint32(at + 16, true);
         const size = view.getUint32(at + 20, true);
@@ -164,6 +319,7 @@ export function parseContainer(buffer) {
             image: view.getUint32(at + 24, true),
             ram: view.getUint32(at + 28, true),
             iram: view.getUint32(at + 32, true),
+            requires: names(text(view, at + 36, 32)),
             data: new Uint8Array(buffer, offset, size),
         });
     }
@@ -284,12 +440,16 @@ export function meters(status, preview) {
             added: (add && add.ramIn === "dram") ? add.ram : 0,
             legend: `modules ${sizeText(status.ram_used)} of ${sizeText(status.ram_arena)}; free heap ${sizeText(status.heap)} (${sizeText(status.heap_boot)} after boot)`,
         },
-        {
+    ];
+
+    // only the arenas the chip has (ESP32 and Beken: no IRAM arena, no RAM in IRAM)
+    if (status.iram_arena) {
+        out.push({
             title: "IRAM (code)", total: status.iram_arena, head: 0, used: status.iram_used,
             added: add ? add.iram : 0,
             legend: `module code ${sizeText(status.iram_used)} of ${sizeText(status.iram_arena)}`,
-        },
-    ];
+        });
+    }
 
     if (status.iram_data) {
         out.push({
@@ -345,6 +505,8 @@ const state = {
     /** @type {string | null} */
     preview: null,
     busy: false,
+    /** @type {Map<string, boolean>} groups opened or closed by a click (else: open while a module of it is on) */
+    open: new Map(),
 };
 
 /**
@@ -527,15 +689,18 @@ function chip(text, short = false) {
  */
 function cardElement(status, row) {
     const removed = state.removed.has(row.name);
-    const on = !!row.installed;
+    const installed = row.installed;
+    // installed and switched on; an installed module switched off stays in flash (on again: no upload, no restart)
+    const on = !!installed && (installed.enabled !== 0);
+    const offRunning = !!installed && !on && (installed.state === "running");
 
     const card = document.createElement("div");
     card.classList.add("mod-card");
     if (on) {
-        card.classList.add((row.installed?.state === "running") ? "mod-on" : "mod-pending");
-    } else if (removed) {
+        card.classList.add((installed?.state === "running") ? "mod-on" : "mod-pending");
+    } else if (removed || offRunning) {
         card.classList.add("mod-pending");
-    } else if (!row.fits || !row.package) {
+    } else if (!installed && (!row.fits || !row.package)) {
         card.classList.add("mod-cant");
     }
 
@@ -546,7 +711,7 @@ function cardElement(status, row) {
     toggle.type = "checkbox";
     toggle.classList.add("checkbox-toggle");
     toggle.checked = on;
-    toggle.disabled = state.busy || (!on && (!row.fits || !row.package));
+    toggle.disabled = state.busy || (!installed && (!row.fits || !row.package));
     toggle.addEventListener("change", () => {
         switchModule(row, toggle.checked)
             .catch((error) => message(`${row.name}: ${error.message ?? error}`, true))
@@ -562,12 +727,14 @@ function cardElement(status, row) {
     const badge = document.createElement("span");
     badge.classList.add("mod-state");
     if (on) {
-        const text = row.installed?.state ?? "";
+        const text = installed?.state ?? "";
         badge.textContent = (text === "not started") ? "after restart" : text;
         badge.classList.add(stateClass(text));
-    } else if (removed) {
+    } else if (removed || offRunning) {
         badge.textContent = "off after restart";
         badge.classList.add("mod-state-pending");
+    } else if (installed) {
+        badge.textContent = "off, in flash";
     } else if (!row.package) {
         badge.textContent = "not in the modules file";
     } else if (!row.fits) {
@@ -581,6 +748,23 @@ function cardElement(status, row) {
     }
 
     head.append(toggle, name, badge);
+    if (installed && !on) {
+        // switched off: Remove frees its flash and RAM (on again needs the modules file then)
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.classList.add("pure-button", "button-mod-remove");
+        remove.textContent = "Remove";
+        remove.disabled = state.busy;
+        remove.addEventListener("click", () => {
+            removeModule(row)
+                .catch((error) => message(`${row.name}: ${error.message ?? error}`, true))
+                .finally(() => {
+                    state.busy = false;
+                    loadAndShow();
+                });
+        });
+        head.appendChild(remove);
+    }
 
     const desc = document.createElement("div");
     desc.classList.add("mod-desc");
@@ -593,6 +777,11 @@ function cardElement(status, row) {
             chip(`Flash ${sizeText(row.flash)}`, row.short.includes("flash")),
             chip(`RAM ${sizeText(row.ram)}`, row.short.includes("RAM") || row.short.includes("RAM in IRAM")),
             chip(`IRAM ${sizeText(row.iram)}`, row.short.includes("IRAM")));
+    }
+
+    const needs = requiresOf(row.name, status, state.packages);
+    if (needs.length) {
+        sizes.append(chip(`needs ${needs.join(", ")}`));
     }
 
     const movable = on && canMove(status, row);
@@ -685,11 +874,42 @@ function draw() {
     const cards = element(".mod-cards");
     if (cards) {
         const rows = moduleRows(status, state.packages, state.ramIn);
-        cards.replaceChildren(...rows.map((row) => cardElement(status, row)));
+        /** @type {HTMLElement[]} */
+        const elements = [];
+        for (const group of [...GROUPS.map(([name]) => name), "Other"]) {
+            const members = rows.filter((row) => groupOf(row.name) === group);
+            if (!members.length) {
+                continue;
+            }
+            const counts = groupCounts(members);
+            const open = state.open.get(group) ?? (counts.on > 0);
+
+            const heading = document.createElement("div");
+            heading.classList.add("mod-group");
+            heading.classList.toggle("mod-open", open);
+            heading.textContent = group;
+            const count = document.createElement("span");
+            count.classList.add("mod-group-count");
+            const on = document.createElement("b");
+            on.textContent = `${counts.on} on`;
+            count.append(on, ` · ${counts.installed} in flash · ${counts.all} modules`);
+            heading.appendChild(count);
+            heading.addEventListener("click", () => {
+                state.open.set(group, !open);
+                draw();
+            });
+
+            elements.push(heading);
+            if (open) {
+                elements.push(...members.map((row) => cardElement(status, row)));
+            }
+        }
+        cards.replaceChildren(...elements);
     }
 
     const pending = state.removed.size
-        + status.modules.filter((x) => x.state === "not started").length;
+        + status.modules.filter((x) => ((x.enabled !== 0) && (x.state === "not started"))
+            || ((x.enabled === 0) && (x.state === "running"))).length;
     const restart = element(".mod-restart");
     if (restart) {
         restart.classList.toggle("mod-show", pending > 0);
@@ -707,21 +927,31 @@ function draw() {
  * @param {boolean} on
  */
 async function switchModule(row, on) {
+    const status = state.status;
+    if (!status) {
+        return;
+    }
+
     state.busy = true;
     draw();
 
-    const form = new FormData();
     if (on) {
-        if (!row.package) {
-            throw new Error("not in the modules file");
+        // what it needs first, the deepest first
+        const {order, missing} = switchOnOrder(row.name, status, state.packages);
+        if (missing.length) {
+            throw new Error(`needs ${missing.join(", ")}, not in the modules file`);
         }
+        for (const name of order) {
+            await switchOne(name, true);
+        }
+        await wait(1500);
+        return;
+    }
 
-        form.append("module", new Blob([row.package.data]), `${row.name}.module`);
-        message(`${row.name}: uploading ${sizeText(row.package.data.byteLength)}...`);
-        const where = (row.ramIn === "iram") ? "?ram=iram" : "";
-        const text = await post(`modules/upload${where}`, form);
-        state.removed.delete(row.name);
-        message(`${row.name}: ${text}`);
+    const dependents = dependentsOf(row.name, status, state.packages, true);
+    if (dependents.length
+        && !window.confirm(`${dependents.join(", ")} ${(dependents.length > 1) ? "need" : "needs"} ${row.name}. Switch ${(dependents.length > 1) ? "them" : "it"} off too?`))
+    {
         return;
     }
 
@@ -731,10 +961,60 @@ async function switchModule(row, on) {
         return;
     }
 
+    for (const name of [...dependents.reverse(), row.name]) {
+        await switchOne(name, false);
+    }
+}
+
+/**
+ * One module on or off: installed - its flag (on: it starts now); not installed - uploaded from the modules file
+ * @param {string} name
+ * @param {boolean} on
+ */
+async function switchOne(name, on) {
+    const status = state.status;
+    const installed = status?.modules.find((x) => x.name === name);
+    const form = new FormData();
+    if (on && !installed) {
+        const pkg = state.packages.get(name);
+        if (!pkg) {
+            throw new Error(`${name} is not in the modules file`);
+        }
+
+        form.append("module", new Blob([pkg.data]), `${name}.module`);
+        message(`${name}: uploading ${sizeText(pkg.data.byteLength)}...`);
+        const where = (state.ramIn.get(name) === "iram") ? "?ram=iram" : "";
+        const text = await post(`modules/upload${where}`, form);
+        state.removed.delete(name);
+        message(`${name}: ${text}`);
+        return;
+    }
+
+    form.append("name", name);
+    form.append("on", on ? "1" : "0");
+    message(`${name}: switching ${on ? "on" : "off"}...`);
+    const text = await post("modules/enable", form);
+    message(`${name}: ${text}`);
+}
+
+/**
+ * Out of the flash: a module that is off; its code keeps running until the restart when it ran
+ * @param {Row} row
+ */
+async function removeModule(row) {
+    const status = state.status;
+    const dependents = status ? dependentsOf(row.name, status, state.packages, false) : [];
+    if (dependents.length) {
+        throw new Error(`${dependents.join(", ")} ${(dependents.length > 1) ? "need" : "needs"} it: remove ${(dependents.length > 1) ? "them" : "it"} first`);
+    }
+
+    state.busy = true;
+    draw();
+
+    const form = new FormData();
     form.append("name", row.name);
     message(`${row.name}: removing...`);
     const text = await post("modules/remove", form);
-    // only running code stays until the restart; one that never started is gone now
     if (row.installed?.state === "running") {
         state.removed.add(row.name);
     }

@@ -158,9 +158,15 @@ size_t endpoints() {
     return std::min(relayCount(), MaxPlugs);
 }
 
+// starts right away
+uint32_t start_delay() {
+    return 0;
+}
+
 void setup() {
-    // Matter runs over IPv6 (link-local at least): before ESPurna's first connection attempt
-    WiFi.enableIPv6(true);
+    // Matter runs over IPv6 (link-local at least): through the common Wi-Fi, which also adds the address at once when
+    // the station is connected already (the Matter module starts after wifiSetup())
+    wifiIpv6(true);
 }
 
 bool start() {
@@ -193,7 +199,7 @@ bool start() {
     }
 
     // Basic Information: the speaker hub reads the serial number while commissioning and stops when it is missing
-    serial = systemChipId();
+    serial = systemChipId().toString();
     label = systemHostname();
 
     Matter.setVendorName("ESPurna");

@@ -12,11 +12,17 @@ releases are kept, older ones are deleted with their tags; releases of hand-made
 
 | Build (matrix) | Release files | Image name (`ESPURNA_IMAGE`) |
 |----------------|---------------|------------------------------|
-| `esp32-generic` of `platformio_esp32.ini` | `espurna-esp32-matter.bin` | `esp32-matter` |
-| `esp32-nspanel` | `espurna-esp32-matter-nspanel.bin` | `esp32-matter-nspanel` |
-| `beken-bk7231n` of `platformio_beken.ini` | `espurna-beken-matter.bin`, `espurna-beken-initial-tuya.uf2`, `espurna-beken-initial-quectel.uf2` | `beken-matter` |
-| `esp8266-1m`, `-1m-light`, `-1m-sensor`, `-4m` of `platformio.ini` | `espurna-<image>.bin` | the same as the build |
+| `esp8266` of `platformio_esp8266.ini` | `espurna-esp8266.bin` (the head), `espurna-esp8266-modules.bin`, `espurna-esp8266-full.bin` | `esp8266` |
+| `esp32` of `platformio_esp32.ini` | `espurna-esp32.bin` (merged, the head), `espurna-esp32-modules.bin` | `esp32` |
+| `beken` of `platformio_beken.ini` | `espurna-beken.uf2` (the head), `espurna-beken-modules.bin` | `beken` |
 | `code/mini-app` | `espurna-esp8266-1m-mini.bin` | `esp8266-1m-mini` |
+
+One env per chip: the head, every module and these files are one build ([modules.md](modules.md#building)).
+`firmware.json` lists the files of a release per image name, kinds `ota`, `serial`, `safeboot`, `app`, `modules`
+(the modules file) and `full` (ESP8266 head + modules from `0x0`). Boards still on an image of the older releases
+(`esp8266-1m`, `esp8266-1m-light`, `esp8266-1m-sensor`, `esp32-matter`, `esp32-matter-nspanel`) find the head of their
+chip under their own image name; `esp8266-4m` (settings at the end of 4 MB) and `beken-matter` (its own OTA format)
+do not.
 
 **One file per image.** The ESP32 `.bin` is the merged image (bootloader, partition table, safeboot, ESPurna): serial
 flash at `0x0`, and the same file for every update, the safeboot writes only its ESPurna part (the `ota_0` entry of the
@@ -210,6 +216,9 @@ fits is the free space the board reports minus one sector:
      request once, downloads the `.bin.gz` (https), checks the SHA-256, writes it and restarts into the full image.
   4. The full image shows the result (`/ota/status`, `otaFetchResult`).
 
+- **1 MB boards on the head + modules image** (prototype, not in the releases yet): the head is small enough to
+  update itself in one upload once its modules are off, no mini. See [modules.md](modules.md#updating-the-head).
+
 The mini keeps its own page on port 80 after a failure, or when it has no request: status, last result, the releases
 with the 1 MB images that fit, a file upload. Without Wi-Fi in 30 s it opens `<hostname>-MINI` (WPA2, admin password) at
 192.168.4.1, and tries the Wi-Fi again every 5 minutes. Its log is on the TX pin at 115200.
@@ -222,7 +231,7 @@ Pages next to `firmware.json`, not in the release: `https://igorufox.github.io/e
 **Memory for the WebUI and uploads.** An ESP8266 image has about 40 KB of heap region; the settings buffer (4 KB), Wi-Fi,
 MQTT and the web server leave 10-20 KB. Two things decide whether the WebUI loads and a browser upload finishes:
 
-- **lwIP 'Lower Memory'** (`PIO_FRAMEWORK_ARDUINO_LWIP2_LOW_MEMORY` in `platformio.ini`, all ESP8266 images): MSS 536,
+- **lwIP 'Lower Memory'** (`PIO_FRAMEWORK_ARDUINO_LWIP2_LOW_MEMORY` in `platformio_esp8266.ini`, all ESP8266 images): MSS 536,
   2 KB receive window and 1 KB send buffer per connection. With 'Higher Bandwidth' (MSS 1460: 5.8 KB / 2.9 KB) the page
   load (page + WebSocket) and an upload ran the heap out: truncated index (`ERR_CONTENT_LENGTH_MISMATCH`), uploads dropped
   at 41-63 %, abort in `AsyncWebSocket::makeBuffer`. The price is speed: 825 KB take 30-45 s.

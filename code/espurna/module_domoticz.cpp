@@ -1,6 +1,6 @@
 /*
 
-PROTOTYPE: the domoticz module (docs/esp8266-modules.md), env:esp8266-1m-modules of platformio_modules.ini
+PROTOTYPE: the domoticz module (docs/modules.md), env:esp8266-1m-modules of platformio_esp8266.ini
 
 */
 
@@ -12,7 +12,9 @@ PROTOTYPE: the domoticz module (docs/esp8266-modules.md), env:esp8266-1m-modules
 #include "domoticz.h"
 
 ESPURNA_MODULE(domoticz, "domoticz", 50) {
+#if SENSOR_SUPPORT
     modulesProvide(espurna::modules::Api::DomoticzSendMagnitude, &domoticzSendMagnitude);
+#endif
     domoticzSetup();
 }
 

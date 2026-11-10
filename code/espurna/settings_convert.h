@@ -11,11 +11,19 @@ Copyright (C) 2019-2023 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #include <Arduino.h>
 
+#include <cstdint>
+#include <type_traits>
+
 #include "settings_helpers.h"
 
 namespace espurna {
 namespace settings {
 namespace internal {
+
+// uint32_t / int32_t are unsigned int / int with the xtensa-lx106 (esp8266) toolchain, unsigned long / long with
+// the ESP-IDF 5 and arm-none-eabi (LibreTiny) ones. The other type of each pair gets its own overload
+using OtherUnsigned = std::conditional<std::is_same<uint32_t, unsigned int>::value, unsigned long, unsigned int>::type;
+using OtherSigned = std::conditional<std::is_same<int32_t, int>::value, long, int>::type;
 
 template <typename T>
 T convert(const String& value);
@@ -78,21 +86,13 @@ inline String serialize(uint16_t value, int base = 10) {
 
 String serialize(uint32_t value, int base = 10);
 
-// on ESP-IDF 5 (core 3.x) and LibreTiny (arm-none-eabi) toolchains uint32_t / int32_t are unsigned long / long,
-// the same overload twice; unsigned int (size_t) / int are separate types there instead
-#if !(defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)) && !defined(LIBRETINY)
-inline String serialize(unsigned long value, int base = 10) {
-    return serialize(static_cast<uint32_t>(value), base);
-}
-#else
-inline String serialize(unsigned int value, int base = 10) {
+inline String serialize(OtherUnsigned value, int base = 10) {
     return serialize(static_cast<uint32_t>(value), base);
 }
 
-inline String serialize(int value, int base = 10) {
+inline String serialize(OtherSigned value, int base = 10) {
     return String(value, base);
 }
-#endif
 
 inline String serialize(int16_t value, int base = 10) {
     return String(value, base);
@@ -105,12 +105,6 @@ inline String serialize(int32_t value, int base = 10) {
 inline String serialize(int8_t value, int base = 10) {
     return serialize(static_cast<int32_t>(value), base);
 }
-
-#if !(defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)) && !defined(LIBRETINY)
-inline String serialize(long value, int base = 10) {
-    return String(value, base);
-}
-#endif
 
 inline String serialize(bool value) {
     return value ? PSTR("true") : PSTR("false");

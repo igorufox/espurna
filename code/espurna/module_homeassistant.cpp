@@ -1,6 +1,6 @@
 /*
 
-PROTOTYPE: the homeassistant module (docs/esp8266-modules.md), env:esp8266-1m-modules of platformio_modules.ini
+PROTOTYPE: the homeassistant module (docs/modules.md), env:esp8266-1m-modules of platformio_esp8266.ini
 
 */
 

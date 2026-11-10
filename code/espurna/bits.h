@@ -10,7 +10,7 @@ Part of BITS MODULE
 #include <limits>
 #include <bitset>
 
-#include "types_orch.h"
+#include "types.h"
 
 namespace espurna {
 namespace bits {

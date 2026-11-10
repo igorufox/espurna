@@ -158,7 +158,7 @@ if __name__ == "__main__":
     args = parse_args()
 
     Config = configparser.ConfigParser()
-    with open("platformio.ini", "r") as f:
+    with open("platformio_esp8266.ini", "r") as f:
         Config.read_file(f)
 
     builder_total = args.builder_total

@@ -19,12 +19,8 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include "utils.h"
 #include "web.h"
 
-// LibreTiny has the lwIP responder (services are announced) without queries
-#if defined(LIBRETINY)
-#include <mDNS.h>
-#else
-#include <ESP8266mDNS.h>
-#endif
+// the mDNS library of the chip and what differs between them
+#include "mdns_driver.h"
 
 // -----------------------------------------------------------------------------
 
@@ -46,7 +42,7 @@ void addServices() {
     // to RAM so it could copy it for internal use via `strcpy`
     // Since all we use here is build data exposed with `StringView`s,
     // force everything in RAM first to avoid a runtime exception.
-    if (MDNS.enableArduino(OTA_PORT, systemPassword().length() > 0)) {
+    if (espurna::mdns::driver::enable_arduino(OTA_PORT, systemPassword().length() > 0)) {
         const auto app = buildApp();
         MDNS.addServiceTxt("arduino", "tcp",
             "app_name", String(app.name).c_str());
@@ -70,30 +66,13 @@ void addServices() {
 #endif
 }
 
-#if defined(LIBRETINY)
-bool running { false };
-#endif
-
 void start() {
     const auto hostname = systemHostname();
-#if defined(LIBRETINY)
-    // lwIP itself follows the interface going up and down, nothing to update from the loop
-    if (MDNS.begin(hostname.c_str())) {
+    if (espurna::mdns::driver::begin(hostname)) {
         DEBUG_MSG_P(PSTR("[MDNS] Started with hostname %s\n"), hostname.c_str());
         addServices();
-        running = true;
         return;
     }
-#else
-    if (MDNS.begin(hostname)) {
-        DEBUG_MSG_P(PSTR("[MDNS] Started with hostname %s\n"), hostname.c_str());
-        addServices();
-        espurnaRegisterLoop([]() {
-            MDNS.update();
-        });
-        return;
-    }
-#endif
 
     DEBUG_MSG_P(PSTR("[MDNS] ERROR\n"));
 }
@@ -110,54 +89,16 @@ void start() {
 // (and notice that RTOS SDK alternative would need to use mdns_query_* ESP-IDF API)
 // TODO: both implementations also have separate queries for A and AAAA records :/
 
-#if defined(LIBRETINY)
-bool mdnsServiceQuery(const String&, const String&, MdnsServerQueryCallback) {
-    return false;
-}
-
-bool mdnsRunning() {
-    return mdns::running;
-}
-#else
 bool mdnsServiceQuery(const String& service, const String& protocol, MdnsServerQueryCallback callback) {
-    bool result { false };
-
-    auto found = MDNS.queryService(service, protocol);
-    for (decltype(found) n = 0; n < found; ++n) {
-        if (callback(MDNS.IP(n).toString(), MDNS.port(n))) {
-            result = true;
-            break;
-        }
-    }
-
-    MDNS.removeQuery();
-
-    return result;
+    return espurna::mdns::driver::query(service, protocol, callback);
 }
 
 bool mdnsRunning() {
-    return MDNS.isRunning();
+    return espurna::mdns::driver::running();
 }
-#endif
 
 void mdnsServerSetup() {
-// 2.7.x require MDNS.begin() when interface is UP
-//       note that end() aka close() would clear internal state
-// 3.x.x only need to do MDNS.begin() once at setup()
-//       interface mode changes are handled by the sdk
-// note that calling mdns methods *before* MDNS.begin() is prone to crashing
-#if defined(ARDUINO_ESP8266_RELEASE_2_7_2) \
-    || defined(ARDUINO_ESP8266_RELEASE_2_7_3) \
-    || defined(ARDUINO_ESP8266_RELEASE_2_7_4)
-
-    wifiRegister([](espurna::wifi::Event event) {
-        if ((event == espurna::wifi::Event::StationConnected) && !MDNS.isRunning()) {
-            mdns::start();
-        }
-    });
-#else
-    mdns::start();
-#endif
+    espurna::mdns::driver::setup(mdns::start);
 }
 
 #endif // MDNS_SERVER_SUPPORT

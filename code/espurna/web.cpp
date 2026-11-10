@@ -14,9 +14,6 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <functional>
 #include <memory>
 
-#if defined(ESP8266)
-#include <Schedule.h>
-#endif
 #include <Print.h>
 #if defined(ESP8266)
 #include <Hash.h>
@@ -30,9 +27,11 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include "ntp.h"
 #include "settings.h"
 #include "system.h"
+#include "espurna_tasks.h"
 #include "utils.h"
 #include "web.h"
 #include "ws.h"
+#include "web_guard.h"
 
 #if MODULES_SUPPORT
 #include "modules.h"
@@ -42,29 +41,8 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 namespace {
 
-#if WEBUI_IMAGE == WEBUI_IMAGE_SMALL
-    #include "static/index.small.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_LIGHT
-    #include "static/index.light.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_SENSOR
-    #include "static/index.sensor.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_RFBRIDGE
-    #include "static/index.rfbridge.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_RFM69
-    #include "static/index.rfm69.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_LIGHTFOX
-    #include "static/index.lightfox.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_GARLAND
-    #include "static/index.garland.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_THERMOSTAT
-    #include "static/index.thermostat.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_CURTAIN
-    #include "static/index.curtain.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_MATTER
-    #include "static/index.matter.html.ipp"
-#elif WEBUI_IMAGE == WEBUI_IMAGE_FULL
-    #include "static/index.all.html.ipp"
-#endif
+// the one WebUI of every chip and board (code/html, `gulp build`), panels shown by modulesVisible
+#include "static/index.html.ipp"
 
 } // namespace
 
@@ -393,19 +371,19 @@ bool _isAPModeRequest(AsyncWebServerRequest* request) {
 // ref: https://github.com/xoseperez/espurna/issues/1660
 void _webSendNotFound(AsyncWebServerRequest* request) {
     request->send(404);
-#if ESPURNA_ASYNC_TASKS
-    // AsyncTCP close() runs the disconnect callback right away, deleting both the request and
-    // the client while the server is still parsing the request (and the body) using them.
-    // Close is delayed instead. RX timeout (reset by send()) closes it from the async_tcp poll
-    // callback, unless client does it first. Request is also marked as answered, so that neither
-    // the following body chunks nor the _onRequest() answer it once again (see _onBody())
-    request->client()->setRxTimeout(3);
-    if (!request->_tempObject) {
-        request->_tempObject = malloc(sizeof(bool));
+    if (espurna::system::ParallelTasks) {
+        // AsyncTCP close() runs the disconnect callback right away, deleting both the request and
+        // the client while the server is still parsing the request (and the body) using them.
+        // Close is delayed instead. RX timeout (reset by send()) closes it from the async_tcp poll
+        // callback, unless client does it first. Request is also marked as answered, so that neither
+        // the following body chunks nor the _onRequest() answer it once again (see _onBody())
+        request->client()->setRxTimeout(3);
+        if (!request->_tempObject) {
+            request->_tempObject = malloc(sizeof(bool));
+        }
+    } else {
+        request->client()->close();
     }
-#else
-    request->client()->close();
-#endif
 }
 
 // Allow only requests that use our hostname or IP
@@ -653,31 +631,6 @@ void _onPostConfigFile(AsyncWebServerRequest *request, String, size_t index, uin
 
 }
 
-#if WIFI_AP_CAPTIVE_SUPPORT
-String _apCaptiveLocation() {
-    STRING_VIEW_INLINE(Prefix, "http://");
-    return Prefix.toString() + ipToString(wifiApIp());
-}
-
-void _onAPCaptiveRequest(AsyncWebServerRequest* request) {
-    // no settings and no module state, only WiFi mode and AP address (thread-safe IDF calls),
-    // proceeds without the lock when busy
-    espurna::system::AsyncGuard guard;
-    if (wifiConnectable()) {
-        auto* response = request->beginResponse(302);
-
-        _addHeader(*response,
-            STRING_VIEW("Location"), _apCaptiveLocation());
-        _addConnectionClose(response);
-
-        request->send(response);
-        return;
-    }
-
-    request->send(404);
-}
-#endif
-
 #if WEB_EMBEDDED && !MODULES_SUPPORT
 
 void _onHome(AsyncWebServerRequest *request) {
@@ -782,12 +735,10 @@ int _onCertificate(void * arg, const char *filename, uint8_t **buf) {
 void _onRequest(AsyncWebServerRequest *request){
     espurna::system::AsyncGuard guard;
 
-#if ESPURNA_ASYNC_TASKS
     // already answered by _onBody()
-    if (request->_tempObject) {
+    if (espurna::system::ParallelTasks && request->_tempObject) {
         return;
     }
-#endif
 
     if (!_onAPModeRequest(request)) return;
 
@@ -812,24 +763,21 @@ void _onRequest(AsyncWebServerRequest *request){
 void _onBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
     espurna::system::AsyncGuard guard;
 
-#if ESPURNA_ASYNC_TASKS
     // subscribers (alexa) use module state, 503 when busy. Request is then marked as answered
     // (same as ota_web.cpp, freed by the request itself), so that neither the following chunks
     // nor _onRequest() answer it once again. Same for the 404, see _webSendNotFound()
-    if (request->_tempObject) {
+    if (espurna::system::ParallelTasks && request->_tempObject) {
         return;
     }
-#endif
 
     if (!_onAPModeRequest(request)) return;
 
-#if ESPURNA_ASYNC_TASKS
+    // never the case on esp8266, the guard is always locked there
     if (!guard.locked()) {
         _webSendBusy(request);
         request->_tempObject = malloc(sizeof(bool));
         return;
     }
-#endif
 
     // Send request to subscribers
     for (unsigned char i = 0; i < espurna::web::body_callbacks.size(); i++) {
@@ -899,7 +847,7 @@ void webLog(AsyncWebServerRequest* request) {
 }
 
 class WebAccessLogHandler : public AsyncWebHandler {
-    bool canHandle(AsyncWebServerRequest* request) WEB_HANDLER_CONST override {
+    bool canHandle(AsyncWebServerRequest* request) const override {
         webLog(request);
         return false;
     }
@@ -946,13 +894,7 @@ void webSetup() {
     server->on("/config", HTTP_POST | HTTP_PUT, _onPostConfig, _onPostConfigFile);
     server->on("/discover", HTTP_GET, _onDiscover);
 
-#if WIFI_AP_CAPTIVE_SUPPORT
-    server->on("/generate_204", _onAPCaptiveRequest);
-    server->on("/fwlink", _onAPCaptiveRequest);
-    // Windows 10+ and Apple connectivity checks, any other host name gets 404 while the AP is on
-    server->on("/connecttest.txt", _onAPCaptiveRequest);
-    server->on("/hotspot-detect.html", _onAPCaptiveRequest);
-#endif
+    // the connectivity check redirects of the captive portal are the captive module's (captive.cpp)
 
     // Handle every other request, including 404
     server->onRequestBody(_onBody);
@@ -967,6 +909,9 @@ void webSetup() {
     #endif
 
     DEBUG_MSG_P(PSTR("[WEBSERVER] Webserver running on port %hu\n"), port);
+
+    // new connections wait while the heap is low
+    webGuardSetup();
 
     // CORS setup
     _setupAccessControlHeaders();

@@ -29,7 +29,7 @@ case "$1" in
     ;;
 ("build")
     # simply build the given environment
-    pio run -e $2
+    pio run -c platformio_esp8266.ini -e $2
     ;;
 ("test")
     # run generic build test with the specified environment as base

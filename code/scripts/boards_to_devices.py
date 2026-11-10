@@ -6,7 +6,7 @@ board is picked at runtime from the WebUI device search instead of a build per b
 
     py -3 code/scripts/boards_to_devices.py [--devices PATH] [--envs PATH] [--no-check]
 
-- every [env:...] of platformio.ini and platformio_override.ini is classified (target image,
+- every [env:...] of platformio_esp8266.ini and platformio_override.ini is classified (target image,
   reason, what still needs a runtime setting); --envs writes that as JSON
 - every ESP8266 board / board variant (env with extra hardware -D flags) that the generic images
   can run becomes a devices.json entry. Hand-made entries (notes not starting with the generated
@@ -35,7 +35,7 @@ HARDWARE_H = os.path.join(CODE, "espurna", "config", "hardware.h")
 DEFAULTS_H = os.path.join(CODE, "espurna", "config", "defaults.h")
 SOURCES = os.path.join(CODE, "espurna")
 INIS = [
-    ("platformio.ini", os.path.join(CODE, "platformio.ini")),
+    ("platformio_esp8266.ini", os.path.join(CODE, "platformio_esp8266.ini")),
     ("platformio_override.ini", os.path.join(CODE, "platformio_override.ini")),
 ]
 TEMPLATES_MJS = os.path.join(CODE, "html", "src", "templates.mjs")

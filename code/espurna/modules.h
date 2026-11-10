@@ -1,6 +1,6 @@
 /*
 
-PROTOTYPE: installable modules of the ESP8266 1 MB head image (docs/esp8266-modules.md)
+PROTOTYPE: installable modules of the ESP8266 1 MB head image (docs/modules.md)
 
 The head (MODULES_SUPPORT) keeps a directory of modules in the last sector of the sketch area, places an uploaded
 module package at a free flash slot (adding the slot / arena bases to the relocated words as they arrive) and at boot
@@ -45,9 +45,11 @@ struct Header {
     uint32_t entry;         // void entry(), registers the module with the head. 0 - a data module: the bytes after
                             // the header are its data, data_end is their size (not an address), nothing runs
     uint32_t priority;      // modules start in this order, lower first: providers of an API before its users
+    char needs[32];         // the modules it needs, by name, comma separated (the link writes it, from the ini;
+                            // not `requires`: a C++20 keyword, ESP32 builds with C++20)
 };
 
-static_assert(sizeof(Header) == 96, "");
+static_assert(sizeof(Header) == 128, "");
 
 // functions one module provides to the others through the head (modules_api_esp8266.cpp forwards to the slot the
 // provider's entry fills; scripts/esp8266_module_link.py renames the provider's own ones, `provides` in the ini)
@@ -101,6 +103,9 @@ enum class Api : size_t {
     LightRedSet,
     LightGreenSet,
     LightBlueSet,
+    AlexaPause,
+    MdnsRunning,
+    MdnsServiceQuery,
     Count,
 };
 
@@ -178,10 +183,25 @@ extern char __mod_init_end[];
         reinterpret_cast<uint32_t>(&espurna_module_entry_##ID), PRIORITY }; \
     extern "C" void espurna_module_entry_##ID()
 
-// the setup of a part that came with the module (an address inside it); the head's parts are set up already
+// the setup of a part that came with the module (an address inside it); the head's parts are set up already.
+// ESP32: the code is in the instruction view of the slot (iram_start..iram_end of the header, ref.
+// scripts/esp32_module.ld), flash_start..flash_end is its data view
+#if defined(ESP32)
+#define ESPURNA_MODULE_OWNS(ID, FUNC) \
+    ((reinterpret_cast<uint32_t>(&FUNC) >= espurna_module_header_##ID.iram_start) \
+     && (reinterpret_cast<uint32_t>(&FUNC) < espurna_module_header_##ID.iram_end))
+#else
 #define ESPURNA_MODULE_OWNS(ID, FUNC) \
     ((reinterpret_cast<uint32_t>(&FUNC) >= espurna_module_header_##ID.flash_start) \
      && (reinterpret_cast<uint32_t>(&FUNC) < espurna_module_header_##ID.flash_end))
+#endif
+#endif
+
+// the chips whose backend implements the shared core (modules_core.h); the others still have their own loader
+#if MODULES_SUPPORT && (defined(ESP8266) || defined(LIBRETINY) || defined(ESP32))
+#define MODULES_CORE 1
+#else
+#define MODULES_CORE 0
 #endif
 
 #if MODULES_SUPPORT
@@ -190,6 +210,19 @@ void modulesSetup();
 bool modulesRunning();
 // directory erased, modules do not start at the next boot (ArduinoOTA writes over them)
 void modulesForget();
+
+#if defined(ESP8266)
+// first thing at boot: settings of the old 4 MB layout (pool at the end of the real chip) into the head's pool, once
+void modulesMigrateSettings();
+#endif
+
+// the SDK reserve and the TCP accept gate (heap_reserve_esp8266.cpp)
+void modulesHeapSetup();
+uint32_t modulesHeapReserve();
+uint32_t modulesHeapReserveUsed();
+uint32_t modulesAcceptRefused();
+uint32_t modulesHeapLoop();
+uint32_t modulesHeapLow();
 
 // GET / of the head: the WebUI module (a data module named "webui"), or the head's own page
 class AsyncWebServerRequest;

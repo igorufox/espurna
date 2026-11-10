@@ -597,7 +597,7 @@ bool connect() {
         }
     }
 
-    // same as ESPurna (wifi_esp32.cpp): EU, channels 1..13 scanned actively. The default "01" leaves 12 and 13
+    // same as ESPurna (arch/esp32/wifi_driver_esp32.cpp): EU, channels 1..13 scanned actively. The default "01" leaves 12 and 13
     // out, the APs here are on 13
     const wifi_country_t country { "EU", 1, 13, 20, WIFI_COUNTRY_POLICY_AUTO };
     esp_wifi_set_country(&country);

@@ -1,9 +1,10 @@
-/* PROTOTYPE (docs/esp8266-modules.md): link of one ESP8266 module against the head (--just-symbols).
+/* PROTOTYPE (docs/modules.md): link of one ESP8266 module against the head (--just-symbols).
    scripts/esp8266_module_link.py replaces @FLASH@ / @RAM@ / @IRAM@ with placeholder bases and links twice; the words
    that differ between the two links are the ones the head relocates when it places the module.
 
    Flash: the header, code, PSTR / PROGMEM, vtables, the ctors table, then the load images of IRAM and RAM.
-   RAM: .data and .rodata (byte access, not possible in flash), then .bss. */
+   RAM: .data and .rodata (byte access, not possible in flash), then .bss.
+   The discarded sections and the ones without memory: scripts/module_sections.ld, put in at the SECTIONS placeholder. */
 
 MEMORY
 {
@@ -63,22 +64,5 @@ SECTIONS
     __mod_bss_end = ABSOLUTE(.);
   } > mram
 
-  /DISCARD/ :
-  {
-    *(.dtors .dtors.* .fini_array .fini_array.* .text.exit.* .literal.exit.*)
-    *(.eh_frame .gcc_except_table .gcc_except_table.*)
-    *(.comment .note .note.*)
-  }
-
-  .xtensa.info 0 : { *(.xtensa.info) }
-  .xt.prop 0 : { KEEP(*(.xt.prop .xt.prop.* .gnu.linkonce.prop.*)) }
-  .xt.lit 0 : { KEEP(*(.xt.lit .xt.lit.* .gnu.linkonce.p.*)) }
-  .debug_info 0 : { *(.debug_info .gnu.linkonce.wi.*) }
-  .debug_abbrev 0 : { *(.debug_abbrev) }
-  .debug_line 0 : { *(.debug_line) }
-  .debug_frame 0 : { *(.debug_frame) }
-  .debug_str 0 : { *(.debug_str) }
-  .debug_loc 0 : { *(.debug_loc) }
-  .debug_ranges 0 : { *(.debug_ranges) }
-  .debug_aranges 0 : { *(.debug_aranges) }
+@SECTIONS@
 }

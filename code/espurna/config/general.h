@@ -783,6 +783,32 @@
 #define WEB_PORT                    80          // HTTP port
 #endif
 
+// Low heap guard of the web server and telnet (web_guard.cpp): a new TCP connection is reset (the client tries again)
+// while one of these is not met. Settings webGuardHeap, webGuardBlock, webGuardLwip, webGuardConns; 0 = not checked.
+// - HEAP: free heap, bytes
+// - BLOCK: largest free block, bytes (the BK7231N SDK does not track it)
+// - LWIP: free bytes of lwIP's own heap, where lwIP has one (MEM_LIBC_MALLOC 0: the BK7231N, 16 KB for queued TCP data
+//   and received frames)
+// - CONNS: connections to the server's port, the new one and web sockets included
+#if defined(ESP8266)
+// the 1 MB head with modules runs at 4-9 KB free, one request takes several KB (two WebUI tabs aborted it at 4 / 3 KB)
+#define WEB_GUARD_HEAP_DEFAULT      5120
+#define WEB_GUARD_BLOCK_DEFAULT     0
+#define WEB_GUARD_LWIP_DEFAULT      0
+#define WEB_GUARD_CONNS_DEFAULT     3
+#elif defined(ESP32)
+#define WEB_GUARD_HEAP_DEFAULT      16384
+#define WEB_GUARD_BLOCK_DEFAULT     4096
+#define WEB_GUARD_LWIP_DEFAULT      0
+#define WEB_GUARD_CONNS_DEFAULT     8
+#else
+// BK7231N with Matter: 27.6 KB free, 15 parallel `GET /` took all of it (10.0.5.139, 2026-11-09)
+#define WEB_GUARD_HEAP_DEFAULT      8192
+#define WEB_GUARD_BLOCK_DEFAULT     0
+#define WEB_GUARD_LWIP_DEFAULT      4096
+#define WEB_GUARD_CONNS_DEFAULT     4
+#endif
+
 // Defining a WEB_REMOTE_DOMAIN will enable Cross-Origin Resource Sharing (CORS)
 // so you will be able to login to this device from another domain. This will allow
 // you to manage all ESPurna devices in your local network from a unique installation
@@ -1985,6 +2011,8 @@
 #ifndef PWM_PROVIDER
 #if defined(ESP32)
 #define PWM_PROVIDER                PWM_PROVIDER_ESP32
+#elif defined(LIBRETINY)
+#define PWM_PROVIDER                PWM_PROVIDER_ARDUINO    // Beken: the core's analogWrite()
 #else
 #define PWM_PROVIDER                PWM_PROVIDER_GENERIC // Currently, two software PWM providers are supported
 #endif

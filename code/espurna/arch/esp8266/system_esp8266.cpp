@@ -11,6 +11,11 @@ Chip specific part, common part is in system.cpp
 #include "../../espurna.h"
 
 #include "../../rtcmem.h"
+#include "../../crash.h"
+
+#if MODULES_SUPPORT
+#include "../../modules.h"
+#endif
 
 #include <cstdint>
 #include <cstring>
@@ -54,13 +59,6 @@ String serialize(espurna::duration::ClockCycles value) {
 
 namespace sleep {
 namespace {
-
-namespace internal {
-
-std::forward_list<SleepCallback> before;
-std::forward_list<SleepCallback> after;
-
-} // namespace internal
 
 constexpr auto DeepSleepWakeupPin = uint8_t{ 16 };
 
@@ -161,9 +159,7 @@ private:
 FpmLightSleep::~FpmLightSleep() {
     if (_ok) {
         wifi_fpm_close();
-        for (auto callback : internal::after) {
-            callback();
-        }
+        system::run_after_sleep();
     }
 
     wifi_fpm_auto_sleep_set_in_null_mode(1);
@@ -189,9 +185,7 @@ FpmLightSleep::FpmLightSleep() {
     wifi_fpm_set_sleep_type(LIGHT_SLEEP_T);
     wifi_fpm_open();
 
-    for (auto callback : internal::before) {
-        callback();
-    }
+    system::run_before_sleep();
 
     _ok = true;
 }
@@ -282,10 +276,6 @@ bool forced_light_sleep(uint8_t pin, Interrupt interrupt) {
     return result == 0;
 }
 
-bool forced_light_sleep() {
-    return forced_light_sleep(settings::pin(), settings::interrupt());
-}
-
 // Extended sleep variant that disables everything but RTC memory.
 // Unlike LIGHT sleep, device would be reset via RST pin to wake up.
 bool deep_sleep(sleep::Microseconds time) {
@@ -296,23 +286,13 @@ bool deep_sleep(sleep::Microseconds time) {
 
     system_deep_sleep_set_option(RF_DEFAULT);
     if (system_deep_sleep(time.count())) {
-        for (auto callback : internal::before) {
-            callback();
-        }
+        system::run_before_sleep();
 
         yield();
         return true;
     }
 
     return false;
-}
-
-void before(SleepCallback callback) {
-    internal::before.push_front(callback);
-}
-
-void after(SleepCallback callback) {
-    internal::after.push_front(callback);
 }
 
 // Force WiFi RF peripheral to power down when NULL opmode is selected
@@ -341,80 +321,79 @@ uint32_t RandomDevice::operator()() const {
     return adc_rand_noise ^ *(reinterpret_cast<volatile uint32_t*>(Address));
 }
 
-namespace {
+namespace chip {
 
-StringView chip_id() {
-    const static String out = ([]() {
-        const uint32_t regs[3] {
-            READ_PERI_REG(0x3ff00050),
-            READ_PERI_REG(0x3ff00054),
-            READ_PERI_REG(0x3ff0005c)};
+// efuse, same bytes as the factory STA MAC
+bool mac(uint8_t* out) {
+    const uint32_t regs[3] {
+        READ_PERI_REG(0x3ff00050),
+        READ_PERI_REG(0x3ff00054),
+        READ_PERI_REG(0x3ff0005c)};
 
-        uint8_t mac[6] {
-            0xff,
-            0xff,
-            0xff,
-            static_cast<uint8_t>((regs[1] >> 8ul) & 0xfful),
-            static_cast<uint8_t>(regs[1] & 0xffu),
-            static_cast<uint8_t>((regs[0] >> 24ul) & 0xffu)};
+    out[0] = 0xff;
+    out[1] = 0xff;
+    out[2] = 0xff;
+    out[3] = static_cast<uint8_t>((regs[1] >> 8ul) & 0xfful);
+    out[4] = static_cast<uint8_t>(regs[1] & 0xffu);
+    out[5] = static_cast<uint8_t>((regs[0] >> 24ul) & 0xffu);
 
-        if (mac[2] != 0) {
-            mac[0] = (regs[2] >> 16ul) & 0xffu;
-            mac[1] = (regs[2] >> 8ul) & 0xffu;
-            mac[2] = (regs[2] & 0xffu);
-        } else if (0 == ((regs[1] >> 16ul) & 0xff)) {
-            mac[0] = 0x18;
-            mac[1] = 0xfe;
-            mac[2] = 0x34;
-        } else if (1 == ((regs[1] >> 16ul) & 0xff)) {
-            mac[0] = 0xac;
-            mac[1] = 0xd0;
-            mac[2] = 0x74;
-        }
-
-        return hexEncode(mac);
-    })();
-
-    return out;
-}
-
-StringView short_chip_id() {
-    const auto full = chip_id();
-    return StringView(full.begin() + 6, full.end());
-}
-
-} // namespace
-} // namespace system
-
-namespace time {
-
-// c/p from the Core 3.1.0, allow an additional calculation, so we don't delay more than necessary
-// plus, another helper when there are no external blocking checker
-
-bool tryDelay(CoreClock::time_point start, CoreClock::duration timeout, CoreClock::duration interval) {
-    auto elapsed = CoreClock::now() - start;
-    if (elapsed < timeout) {
-        delay(std::min((timeout - elapsed), interval));
-        return false;
+    if (out[2] != 0) {
+        out[0] = (regs[2] >> 16ul) & 0xffu;
+        out[1] = (regs[2] >> 8ul) & 0xffu;
+        out[2] = (regs[2] & 0xffu);
+    } else if (0 == ((regs[1] >> 16ul) & 0xff)) {
+        out[0] = 0x18;
+        out[1] = 0xfe;
+        out[2] = 0x34;
+    } else if (1 == ((regs[1] >> 16ul) & 0xff)) {
+        out[0] = 0xac;
+        out[1] = 0xd0;
+        out[2] = 0x74;
     }
 
     return true;
 }
 
-bool blockingDelay(CoreClock::duration timeout, CoreClock::duration interval) {
-    return blockingDelay(
-        timeout,
-        interval,
-        []() {
-            return true;
-        });
+bool light_sleep(bool timer, sleep::Microseconds time, int pin, sleep::Interrupt interrupt) {
+    if (timer) {
+        return ::espurna::sleep::forced_light_sleep(time);
+    }
+
+    return ::espurna::sleep::forced_light_sleep(static_cast<uint8_t>(pin), interrupt);
 }
 
-bool blockingDelay(CoreClock::duration timeout) {
-    return blockingDelay(timeout, timeout);
+bool deep_sleep(sleep::Microseconds time) {
+    return ::espurna::sleep::deep_sleep(time);
 }
 
-} // namespace time
+void early_setup() {
+#if MODULES_SUPPORT
+    modulesMigrateSettings();
+#endif
+}
+
+} // namespace chip
+} // namespace system
+
+// The Core crash handler writes the EEPROM record (ref. custom_crash_callback() of crash.cpp)
+namespace debug {
+namespace crash {
+namespace chip {
+
+bool dump(Print&, bool) {
+    return false;
+}
+
+bool dump_empty(Print&) {
+    return false;
+}
+
+void setup() {
+}
+
+} // namespace chip
+} // namespace crash
+} // namespace debug
 
 namespace timer {
 
@@ -512,12 +491,6 @@ namespace {
 
 namespace memory {
 
-// returns 'total stack size' minus 'un-painted area'
-// needs re-painting step, as this never decreases
-size_t freeStack() {
-    return ESP.getFreeContStack();
-}
-
 // esp8266 normally only has a one single heap area, located in DRAM just 'before' the SYS stack
 // since Core 3.x.x, internal C-level allocator was extended to support multiple contexts
 // - external SPI RAM chip (but, this may not work with sizes above 65KiB on older Cores, check the actual version)
@@ -531,14 +504,6 @@ size_t freeStack() {
 
 size_t freeHeap() {
     return system_get_free_heap_size();
-}
-
-decltype(freeHeap()) initialFreeHeap() {
-    static const auto value = ([]() {
-        return system_get_free_heap_size();
-    })();
-
-    return value;
 }
 
 // see https://github.com/esp8266/Arduino/pull/8440
@@ -670,36 +635,6 @@ bool eraseSDKConfig() {
 
 } // namespace
 
-// systemRunInLoop() callbacks. Everything runs in the same context here, only
-// FIFO order of the calls needs to be kept (ref. arch/esp32)
-namespace run_in_loop {
-namespace {
-
-// vector instead of deque, empty one does not allocate anything
-std::vector<std::function<void()>> queue;
-
-} // namespace
-
-void push(std::function<void()> callback) {
-    queue.push_back(std::move(callback));
-}
-
-void drain() {
-    if (queue.empty()) {
-        return;
-    }
-
-    // anything queued while running goes into the next loop() iteration
-    std::vector<std::function<void()>> current;
-    current.swap(queue);
-
-    for (auto& callback : current) {
-        callback();
-    }
-}
-
-} // namespace run_in_loop
-
 // Common system module hooks (ref. system.h)
 namespace system {
 namespace arch {
@@ -713,7 +648,6 @@ void setup() {
 }
 
 void loop() {
-    run_in_loop::drain();
 }
 
 // system_get_rst_info() result is cached by the Core init for internal use
@@ -731,26 +665,12 @@ uint32_t reset_reason() {
 
 // -----------------------------------------------------------------------------
 
-void systemRunInLoop(std::function<void()> callback) {
-    if (callback) {
-        espurna::run_in_loop::push(std::move(callback));
-    }
-}
-
-unsigned long systemFreeStack() {
-    return espurna::memory::freeStack();
-}
-
 HeapStats systemHeapStats() {
     return espurna::memory::heapStats();
 }
 
 size_t systemFreeHeap() {
     return espurna::memory::freeHeap();
-}
-
-size_t systemInitialFreeHeap() {
-    return espurna::memory::initialFreeHeap();
 }
 
 void reset() {
@@ -774,34 +694,3 @@ bool wakeupModemForcedSleep() {
     return espurna::sleep::forced_wakeup();
 }
 
-void systemBeforeSleep(SleepCallback callback) {
-    espurna::sleep::before(callback);
-}
-
-void systemAfterSleep(SleepCallback callback) {
-    espurna::sleep::after(callback);
-}
-
-bool instantLightSleep() {
-    return espurna::sleep::forced_light_sleep();
-}
-
-bool instantLightSleep(espurna::sleep::Microseconds time) {
-    return espurna::sleep::forced_light_sleep(time);
-}
-
-bool instantLightSleep(uint8_t pin, espurna::sleep::Interrupt interrupt) {
-    return espurna::sleep::forced_light_sleep(pin, interrupt);
-}
-
-bool instantDeepSleep(espurna::sleep::Microseconds time) {
-    return espurna::sleep::deep_sleep(time);
-}
-
-espurna::StringView systemChipId() {
-    return espurna::system::chip_id();
-}
-
-espurna::StringView systemShortChipId() {
-    return espurna::system::short_chip_id();
-}

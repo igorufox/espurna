@@ -72,7 +72,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        env: [esp8266-4m, esp8266-4m-sdk3-base]
+        # one env per chip (code/platformio_esp8266.ini: env:esp8266, head + modules); the preset test of
+        # scripts/test_build.py ran on the -base envs, which are gone
+        env: [esp8266]
     steps:
     - uses: actions/checkout@v7
     - uses: actions/setup-python@v7
@@ -87,7 +89,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.platformio
-        key: ${{ runner.os }}-build-${{ matrix.env }}-${{ hashFiles('code/platformio.ini') }}
+        key: ${{ runner.os }}-build-${{ matrix.env }}-${{ hashFiles('code/platformio_esp8266.ini') }}
         restore-keys: |
           ${{ runner.os }}-build-${{ matrix.env }}-
           ${{ runner.os }}-build-
@@ -95,18 +97,13 @@ jobs:
       uses: actions/cache@v6
       with:
         path: libraries/
-        key: ${{ runner.os }}-libraries-${{ hashFiles('code/platformio.ini') }}
+        key: ${{ runner.os }}-libraries-${{ hashFiles('code/platformio_esp8266.ini') }}
         restore-keys: |
           ${{ runner.os }}-libraries-
     - name: PlatformIO prepare
       run: |
         git config --global advice.detachedHead false
         ./ci_install.sh build ${{ matrix.env }}
-    - if: ${{ matrix.env == 'esp8266-4m' }}
-      name: Basic build
+    - name: Basic build
       run: |
         ./ci_script.sh build ${{ matrix.env }}
-    - if: ${{ endsWith(matrix.env, '-base') }}
-      name: Test build
-      run: |
-        ./ci_script.sh test ${{ matrix.env }}

@@ -10,13 +10,16 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #if WEB_SUPPORT
 
+#include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <queue>
 #include <vector>
 
 #include "datetime.h"
 #include "ntp.h"
 #include "system.h"
+#include "espurna_tasks.h"
 #include "utils.h"
 #include "web.h"
 #include "wifi_orch.h"
@@ -26,9 +29,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include "libs/WebSocketIncomingBuffer.h"
 
-#if defined(LIBRETINY)
-#include "arch/beken/layout_beken.h"
-#endif
+#include "espurna_chip.h"
 
 // -----------------------------------------------------------------------------
 // Helpers / utility functions
@@ -999,17 +1000,40 @@ void _wsParseImpl(AsyncWebSocketClient* client, uint8_t* payload, size_t length)
     _wsPostParse(client_id, save, reload);
 }
 
-#if ESPURNA_ASYNC_TASKS
-// ESP32 runs WS events in the AsyncTCP task. When _wsEvent() could not take the loop
-// lock in time (ref. AsyncGuard), parsing (which touches settings and _ws_queue) is
-// handed over to loop() instead. Once anything was deferred, following messages are
-// deferred too until loop() catches up, so they are still handled in order.
-// Flag is only ever touched by the AsyncTCP task, counter is shared with loop().
-bool _ws_parse_unlocked { false };
-std::atomic<size_t> _ws_parse_deferred { 0 };
+// AsyncWebSocket frees a client in the AsyncTCP task as soon as it disconnects, so loop() never keeps a client
+// pointer across calls, it goes through the client id. Ids of the connected clients, for the pending output check
+espurna::system::ConnectionIds _ws_ids;
+
+// Any connected client with queued messages, or with sent data the peer did not acknowledge yet
+bool _wsOutputPending() {
+    for (const auto id : _ws_ids.copy()) {
+        auto* client = _ws.client(id);
+        if (!client) {
+            continue;
+        }
+
+        if (client->queueLen()) {
+            return true;
+        }
+
+        // tcp_sndbuf() only goes back to its initial size once all of the sent data is acked
+        // (ESPAsyncTCP connected() and space() are not const)
+        auto* tcp = client->client();
+        if (tcp && tcp->connected() && (tcp->space() < TCP_SND_BUF)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// WS events run in the AsyncTCP task on chips with parallel network tasks. When _wsEvent() could not
+// take the loop lock in time (ref. AsyncGuard), parsing (which touches settings and _ws_queue) is
+// handed over to loop() instead, in order with the following messages (ref. Deferred in espurna_tasks.h)
+espurna::system::Deferred _ws_parse_deferred;
 
 void _wsParse(AsyncWebSocketClient* client, uint8_t* payload, size_t length) {
-    if (!_ws_parse_unlocked && (_ws_parse_deferred.load() == 0)) {
+    if (!_ws_parse_deferred.defer()) {
         _wsParseImpl(client, payload, length);
         return;
     }
@@ -1019,21 +1043,13 @@ void _wsParse(AsyncWebSocketClient* client, uint8_t* payload, size_t length) {
     copy.push_back('\0');
 
     const auto client_id = client->id();
-
-    ++_ws_parse_deferred;
-    systemRunInLoop([client_id, copy]() mutable {
+    _ws_parse_deferred.run([client_id, copy]() mutable {
         auto* client = _ws.client(client_id);
         if (client) {
             _wsParseImpl(client, copy.data(), copy.size() - 1);
         }
-        --_ws_parse_deferred;
     });
 }
-#else
-void _wsParse(AsyncWebSocketClient* client, uint8_t* payload, size_t length) {
-    _wsParseImpl(client, payload, length);
-}
-#endif
 
 bool _wsOnKeyCheck(espurna::StringView key, const JsonVariant&) {
     return key.startsWith(espurna::web::ws::settings::keys::Prefix);
@@ -1046,17 +1062,8 @@ void _wsOnConnected(JsonObject& root) {
     root[F("sdk")] = info.sdk.base.c_str();
     root[F("core")] = info.sdk.version.c_str();
 
-    // device template search picks the database and the pin layout by these
-#if defined(ARDUINO_ARCH_ESP32)
-    root[F("arch")] = F("esp32");
-    root[F("mcu")] = ESP->getChipModel();
-#elif defined(LIBRETINY)
-    root[F("arch")] = F("beken");
-    root[F("mcu")] = lt_cpu_get_model_name();
-#else
-    root[F("arch")] = F("esp8266");
-    root[F("mcu")] = F("ESP8266");
-#endif
+    // device template search picks the database and the pin layout by 'arch' and 'mcu'
+    espurna::chip::ws_connected(root);
 
     // build values, or the ones written by the device template
     root[F("manufacturer")] = systemManufacturer();
@@ -1067,10 +1074,6 @@ void _wsOnConnected(JsonObject& root) {
     root[F("app_build")] = info.app.build_time;
     // release image this build belongs to, WebUI OTA lists its files from GitHub ("" - local build)
     root[F("fwImage")] = F(ESPURNA_IMAGE);
-#if defined(LIBRETINY)
-    // Beken bootloader ("Tuya" takes an update in two uploads), the WebUI lists the install steps ahead with it
-    root[F("fwLayout")] = espurna::beken::layoutName(espurna::beken::flashLayout().layout);
-#endif
 
     root[F("hostname")] = systemHostname();
     root[F("chipid")] = systemChipId().c_str();
@@ -1086,15 +1089,7 @@ void _wsOnVisible(JsonObject& root) {
     // supply voltage is only known with the ADC measuring it, the row is hidden otherwise
     wsPayloadModule(root, STRING_VIEW("vcc"));
 #endif
-#if defined(LIBRETINY)
-    // static data in the TCM of the BK7231N, it does not change while running
-    const auto tcm = systemTcmStats();
-    if (tcm.size) {
-        wsPayloadModule(root, STRING_VIEW("tcm"));
-        root[F("tcmUsed")] = tcm.used;
-        root[F("tcmSize")] = tcm.size;
-    }
-#endif
+    espurna::chip::ws_visible(root);
 }
 
 void _wsConnected(uint32_t client_id) {
@@ -1120,6 +1115,7 @@ void _wsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType
     switch (type) {
     case WS_EVT_CONNECT:
     {
+        _ws_ids.add(client->id());
         const auto ip = ipToString(client->remoteIP());
 
 #ifndef NOWSAUTH
@@ -1152,6 +1148,7 @@ void _wsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType
 
     case WS_EVT_DISCONNECT:
         DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u disconnected\n"), client->id());
+        _ws_ids.remove(client->id());
         if (client->_tempObject) {
             auto* ptr = reinterpret_cast<WebSocketIncomingBuffer*>(client->_tempObject);
             delete ptr;
@@ -1179,13 +1176,8 @@ void _wsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType
         if (client->_tempObject) {
             auto *buffer = reinterpret_cast<WebSocketIncomingBuffer*>(client->_tempObject);
             AwsFrameInfo * info = (AwsFrameInfo*)arg;
-#if ESPURNA_ASYNC_TASKS
-            _ws_parse_unlocked = !guard.locked();
-#endif
+            auto scope = _ws_parse_deferred.scope(guard);
             buffer->data_event(client, info, data, len);
-#if ESPURNA_ASYNC_TASKS
-            _ws_parse_unlocked = false;
-#endif
         }
         break;
 
@@ -1223,17 +1215,15 @@ void _wsHandlePostponedCallbacks(bool connected) {
 
     // client id equal to 0 means we need to send the message to every client
     if (callbacks.id()) {
-        AsyncWebSocketClient* ws_client = _ws.client(callbacks.id());
-
         // ...but, we need to check if client is still connected
-        if (!ws_client) {
+        if (!_ws.hasClient(callbacks.id())) {
             _ws_queue.pop();
             return;
         }
 
         // wait until we can send the next batch of messages
         // XXX: enforce that callbacks send only one message per iteration
-        if (ws_client->queueIsFull()) {
+        if (!_ws.availableForWrite(callbacks.id())) {
             return;
         }
     }
@@ -1276,11 +1266,6 @@ void _wsHandlePostponedCallbacks(bool connected) {
 }
 
 void _wsLoop() {
-#if ESPURNA_ASYNC_TASKS
-    // disconnected clients are only freed here, so client pointers used by loop()
-    // stay valid while AsyncTCP task drops the connection (ref. lib_esp32/ESPAsyncWebServer-espurna)
-    _ws.cleanupDisconnected();
-#endif
     const auto connected = wsConnected();
     _wsDoUpdate(connected);
     _wsHandlePostponedCallbacks(connected);
@@ -1306,11 +1291,11 @@ void _wsPrintTo(JsonObject& root, ::AsyncWebSocketMessageBuffer* buffer) {
 // -----------------------------------------------------------------------------
 
 WsClientInfo wsClientInfo(uint32_t client_id) {
-    auto* client = _ws.client(client_id);
+    const auto connected = _ws.hasClient(client_id);
 
     return WsClientInfo{
-        .connected = (client != nullptr),
-        .stalled = (client != nullptr) && client->queueIsFull(),
+        .connected = connected,
+        .stalled = connected && !_ws.availableForWrite(client_id),
     };
 }
 
@@ -1368,8 +1353,7 @@ void wsSend(JsonObject& root) {
 }
 
 void wsSend(uint32_t client_id, JsonObject& root) {
-    AsyncWebSocketClient* client = _ws.client(client_id);
-    if (client == nullptr) {
+    if (!_ws.hasClient(client_id)) {
         return;
     }
 
@@ -1383,7 +1367,7 @@ void wsSend(uint32_t client_id, JsonObject& root) {
 
     if (buffer) {
         _wsPrintTo(root, buffer);
-        client->text(buffer);
+        _ws.text(client_id, buffer);
     }
 }
 
@@ -1404,8 +1388,7 @@ void wsSend(const char * payload) {
 }
 
 void wsSend(uint32_t client_id, espurna::web::ws::OnSend callback) {
-    AsyncWebSocketClient* client = _ws.client(client_id);
-    if (client == nullptr) return;
+    if (!_ws.hasClient(client_id)) return;
 
     DynamicJsonBuffer jsonBuffer(512);
     JsonObject& root = jsonBuffer.createObject();
@@ -1429,12 +1412,10 @@ void wsSetup() {
         .onVisible(_wsOnVisible)
         .onKeyCheck(_wsOnKeyCheck);
 
-#if ESPURNA_ASYNC_TASKS
     // e.g. RESET command reply, don't restart before it reaches the client
     espurna::system::registerPendingOutput([]() {
-        return _ws.outputPending();
+        return _wsOutputPending();
     });
-#endif
 
     espurnaRegisterLoop(_wsLoop);
 }

@@ -31,12 +31,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <WiFiUdp.h>
 #endif
 
-#if ESPURNA_ASYNC_TASKS
-#include <mutex>
-
-// Arduino core main.cpp
-extern TaskHandle_t loopTaskHandle;
-#endif
+#include "espurna_tasks.h"
 
 namespace espurna {
 namespace debug {
@@ -488,11 +483,9 @@ const char* release(size_t index) {
     internal::output = null_output;
     internal::port = nullptr;
 
-#if defined(ESP8266)
     if (!CoreDebug && settings::sdkDebug()) {
         uart_set_debug(UART_NO);
     }
-#endif
 
     return PSTR("serial log");
 }
@@ -586,11 +579,11 @@ bool output(const char* message, size_t len) {
 
 void send_now(const char* message, size_t len, Timestamp timestamp);
 
-#if ESPURNA_ASYNC_TASKS
 // Outputs (telnet clients, websocket buffer, log buffer) belong to the loop task.
-// On ESP32 messages also come from AsyncTCP, WiFi events and other tasks running in
-// parallel, and writing into the same buffers from two tasks corrupts the heap.
+// With parallel network tasks (ref. espurna_tasks.h) messages also come from AsyncTCP, WiFi events
+// and other tasks, and writing into the same buffers from two tasks corrupts the heap.
 // Queue those messages instead and let loop() send them out, like everything else.
+// (esp8266: every message comes from the loop, the queue is always empty)
 namespace deferred {
 
 struct Message {
@@ -600,60 +593,38 @@ struct Message {
 
 constexpr size_t BytesMax { 4096 };
 
-std::mutex mutex;
-std::vector<Message> messages;
-size_t bytes { 0 };
-
-bool loop_task() {
-    return xTaskGetCurrentTaskHandle() == loopTaskHandle;
-}
+espurna::system::TaskQueue<Message, BytesMax> messages;
 
 void push(const char* message, size_t len, Timestamp timestamp) {
-    std::lock_guard<std::mutex> lock(mutex);
-    if ((bytes + len) > BytesMax) {
-        return;
-    }
-
     String text;
     text.concat(message, len);
-    messages.push_back(Message{std::move(text), timestamp});
-    bytes += len;
+    messages.push(Message{std::move(text), timestamp}, len);
 }
 
 void flush() {
-    std::vector<Message> ready;
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (messages.empty()) {
-            return;
-        }
-
-        ready.swap(messages);
-        bytes = 0;
+    if (messages.empty()) {
+        return;
     }
 
-    for (const auto& message : ready) {
+    for (const auto& message : messages.take()) {
         send_now(message.text.c_str(), message.text.length(), message.timestamp);
     }
 }
 
 } // namespace deferred
-#endif
 
 void send(const char* message, size_t len, Timestamp timestamp) {
     if (!message || !len) {
         return;
     }
 
-#if ESPURNA_ASYNC_TASKS
-    if (!deferred::loop_task()) {
+    if (!espurna::system::loopTask()) {
         deferred::push(message, len, timestamp);
         return;
     }
 
     // keep the order, anything queued by other tasks goes out first
     deferred::flush();
-#endif
 
     send_now(message, len, timestamp);
 }
@@ -872,10 +843,10 @@ void debugSetup() {
     ets_install_putc1(debugIgnoreChar);
 #endif
 #if DEBUG_SUPPORT
-#if ESPURNA_ASYNC_TASKS
     // messages queued by other tasks, when loop itself has nothing to print
-    espurnaRegisterLoop(espurna::debug::deferred::flush);
-#endif
+    if (espurna::system::ParallelTasks) {
+        espurnaRegisterLoop(espurna::debug::deferred::flush);
+    }
 #if DEBUG_UDP_SUPPORT
     if (espurna::debug::syslog::build::enabled()) {
         espurna::debug::syslog::configure();

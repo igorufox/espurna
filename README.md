@@ -26,7 +26,7 @@ This fork is maintained by **@igorufox**. ESPurna itself is the work of Xose Pé
 
 It lives in the [`esp32-port`](https://github.com/igorufox/espurna/tree/esp32-port) branch: three architectures from the same source, a few generic images per chip instead of per-board builds (the board is picked after flashing, see [Picking the board](#picking-the-board)), and updates from the GitHub releases in the WebUI.
 
-- **ESP8266 / ESP8285** (Arduino core 3.1.2, NONOS SDK 3.0.5): four generic images instead of the 216 per-board builds, a two-step update through a mini image on 1 MB boards, lwIP and module memory tuned so that the WebUI and uploads fit in the heap, AC mains wall-switch inputs; builds in [`code/platformio.ini`](code/platformio.ini), [esp8266/README.md](esp8266/README.md);
+- **ESP8266 / ESP8285** (Arduino core 3.1.2, NONOS SDK 3.0.5): four generic images instead of the 216 per-board builds, a two-step update through a mini image on 1 MB boards, lwIP and module memory tuned so that the WebUI and uploads fit in the heap, AC mains wall-switch inputs; builds in [`code/platformio_esp8266.ini`](code/platformio_esp8266.ini), [esp8266/README.md](esp8266/README.md);
 - **ESP32** (Arduino-ESP32 core 3 / ESP-IDF 5 via [pioarduino](https://github.com/pioarduino/platform-espressif32), PlatformIO Core 6.2 or newer; Matter On/Off plugs; safeboot flash layout with Tasmota's offsets, [`code/esp32_4mb_safeboot.csv`](code/esp32_4mb_safeboot.csv), and an own safeboot image, [`code/safeboot-app`](code/safeboot-app)), code under [`code/espurna/arch/esp32`](code/espurna/arch/esp32), [esp32/README.md](esp32/README.md);
 - **Beken BK7231N** (Tuya CB2S / CB3S / CBU and compatible modules, Tuya or Quectel bootloader) through [LibreTiny](https://docs.libretiny.eu/), Matter On/Off plugs, code under [`code/espurna/arch/beken`](code/espurna/arch/beken), builds in [`code/platformio_beken.ini`](code/platformio_beken.ini), [beken/README.md](beken/README.md).
 
@@ -44,7 +44,8 @@ or the settings, not from the build.
 | **ESP32** | `esp32-matter`, `esp32-matter-nspanel` (+ the safeboot) | LC-Tech ESP32 relay x2, Sonoff MINIR4, Sonoff NSPanel | [esp32/README.md](esp32/README.md) |
 | **Beken BK7231N** | `beken-matter` (+ two UART images) | Tuya TYWRA-RF (CB3S), Tuya 4-gang (CBU), Sparkleiot Mini (XH-CB2S), in-wall relay 86-TDQ (CB2S) and its bare-chip variant (QFN32), MOES MS-104B Matter (CBU) | [beken/README.md](beken/README.md) |
 
-How updates work on each chip, the releases and CI: [docs/updates.md](docs/updates.md).
+How updates work on each chip, the releases and CI: [docs/updates.md](docs/updates.md). A small head image with modules
+you switch on per board (ESP8266 1 MB, prototype): [docs/modules.md](docs/modules.md).
 
 ### Download
 
@@ -68,15 +69,19 @@ WebUI, *ADMIN*, *Device Template*: type the name (e.g. `sonoff mini`, `shelly 1p
 
 ### Build from source
 
+One env per chip: each build makes the head image, every module and the release files of that chip
+([docs/modules.md](docs/modules.md)).
+
 ```
 cd code
-pio run -e esp8266-1m                                # ESP8266, see esp8266/README.md
-pio run -d safeboot-app                              # ESP32: the safeboot first, then
-pio run -c platformio_esp32.ini -e esp32-generic
-py -3 -m platformio run -c platformio_beken.ini -e beken-bk7231n   # Beken
+pio run -c platformio_esp8266.ini -e esp8266         # ESP8266: espurna-esp8266.bin (.gz), -modules.bin, -full.bin
+pio run -d safeboot-app                              # ESP32: the safeboot first (ESP-IDF project), then
+pio run -c platformio_esp32.ini -e esp32             #   espurna-esp32.bin (merged), -modules.bin
+py -3 -m platformio run -c platformio_beken.ini -e beken   # Beken: espurna-beken.uf2, -modules.bin
+pio run -d mini-app                                  # the mini, for 1 MB boards on a full image of an older release
 ```
 
-Details per architecture on its page.
+The files are in `code/.pio/build_<chip>/<chip>/`. Details per architecture on its page.
 
 ---
 

@@ -6,15 +6,9 @@ BUILD INFO
 
 #include "espurna.h"
 #include "utils.h"
+#include "espurna_chip.h"
 
 #include <cstring>
-
-// arduino-esp32 ≤ 2.0.4 does not auto-include this via Arduino.h.
-#if defined(ESP32) && defined(__has_include)
-#  if __has_include("esp_arduino_version.h")
-#    include "esp_arduino_version.h"
-#  endif
-#endif
 
 //--------------------------------------------------------------------------------
 
@@ -30,70 +24,12 @@ espurna::StringView base() {
 }
 
 espurna::StringView core_version() {
-    static const String out = ([]() {
-        String out;
-#ifdef ARDUINO_ESP8266_RELEASE
-        out = ESP.getCoreVersion();
-        if (out.equals("00000000")) {
-            out = String(ARDUINO_ESP8266_RELEASE);
-        }
-        out.replace('_', '.');
-#elif defined(ESP_ARDUINO_VERSION_STR)
-        // arduino-esp32 ≥ 2.0.10 exposes its release as a string literal.
-        out = ESP_ARDUINO_VERSION_STR;
-#elif defined(ESP_ARDUINO_VERSION_MAJOR)
-        // arduino-esp32 2.0.x older releases only expose the numeric triplet.
-        out.reserve(8);
-        out += String(ESP_ARDUINO_VERSION_MAJOR);
-        out += '.';
-        out += String(ESP_ARDUINO_VERSION_MINOR);
-        out += '.';
-        out += String(ESP_ARDUINO_VERSION_PATCH);
-#elif defined(ARDUINO_ESP8266_GIT_DESC)
-#define _GET_COREVERSION_STR(X) #X
-#define GET_COREVERSION_STR(X) _GET_COREVERSION_STR(X)
-        out = GET_COREVERSION_STR(ARDUINO_ESP8266_GIT_DESC);
-#undef _GET_COREVERSION_STR
-#undef GET_COREVERSION_STR
-#elif defined(LIBRETINY) && defined(CFG_BDK_VERSION)
-        // SDK version is the LibreTiny one (ref. system_get_sdk_version()), core is the Beken BDK under it
-        out.reserve(16);
-        out += F("BDK ");
-        out += String(CFG_BDK_VERSION / 10000);
-        out += '.';
-        out += String((CFG_BDK_VERSION / 100) % 100);
-        out += '.';
-        out += String(CFG_BDK_VERSION % 100);
-#elif defined(LIBRETINY)
-        out = F("LibreTiny");
-#else
-        out = "unknown";
-#endif
-        return out;
-    })();
-
+    static const String out = espurna::chip::core_version();
     return out;
 }
 
 espurna::StringView core_revision() {
-    static const String out = ([]() {
-#ifdef ARDUINO_ESP8266_GIT_VER
-        return String(ARDUINO_ESP8266_GIT_VER, 16);
-#elif defined(ESP_ARDUINO_VERSION)
-        // arduino-esp32 exposes a packed version int (MAJOR<<16 | MINOR<<8 | PATCH).
-        String out;
-        out.reserve(16);
-        out += String((ESP_ARDUINO_VERSION >> 16) & 0xFF);
-        out += '.';
-        out += String((ESP_ARDUINO_VERSION >> 8) & 0xFF);
-        out += '.';
-        out += String(ESP_ARDUINO_VERSION & 0xFF);
-        return out;
-#else
-        return String(PSTR("(unspecified)"));
-#endif
-    })();
-
+    static const String out = espurna::chip::core_revision();
     return out;
 }
 
@@ -264,31 +200,7 @@ alignas(4) static constexpr char Modules[] PROGMEM_STRING_ATTR =
     "UART_MQTT "
 #endif
 #if WEB_SUPPORT
-#if WEB_EMBEDDED
-#if WEBUI_IMAGE == WEBUI_IMAGE_SMALL
-    "WEB_SMALL "
-#elif WEBUI_IMAGE == WEBUI_IMAGE_LIGHT
-    "WEB_LIGHT "
-#elif WEBUI_IMAGE == WEBUI_IMAGE_SENSOR
-    "WEB_SENSOR "
-#elif WEBUI_IMAGE == WEBUI_IMAGE_RFBRIDGE
-    "WEB_RFBRIDGE "
-#elif WEBUI_IMAGE == WEBUI_IMAGE_RFM69
-    "WEB_RFM69 "
-#elif WEBUI_IMAGE == WEBUI_IMAGE_LIGHTFOX
-    "WEB_LIGHTFOX "
-#elif WEBUI_IMAGE == WEBUI_IMAGE_GARLAND
-    "WEB_GARLAND "
-#elif WEBUI_IMAGE == WEBUI_IMAGE_THERMOSTAT
-    "WEB_THERMOSTAT "
-#elif WEBUI_IMAGE == WEBUI_IMAGE_CURTAIN
-    "WEB_CURTAIN "
-#elif WEBUI_IMAGE == WEBUI_IMAGE_FULL
-    "WEB_FULL "
-#endif
-#else
     "WEB "
-#endif
 #endif
     "";
 

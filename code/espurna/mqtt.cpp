@@ -9,7 +9,7 @@ Updated secure client support by Niek van der Maas < mail at niekvandermaas dot 
 
 #include "espurna.h"
 
-#if MQTT_SUPPORT
+#if MQTT_SUPPORT && !MQTT_MODULE  // MQTT_MODULE: the head forwards to the mqtt module (modules_mqtt.h)
 
 #include <atomic>
 #include <forward_list>
@@ -17,6 +17,7 @@ Updated secure client support by Niek van der Maas < mail at niekvandermaas dot 
 #include <vector>
 
 #include "system.h"
+#include "espurna_tasks.h"
 #include "espurna_mdns.h"
 #include "mqtt.h"
 #include "ntp.h"
@@ -1824,46 +1825,14 @@ void _mqttOnDisconnectAsync(AsyncMqttClientDisconnectReason reason) {
     _mqttOnDisconnect();
 }
 
-// On ESP32 AsyncMqttClient callbacks run in the AsyncTCP task. When the loop lock could not be
-// taken in time (ref. AsyncGuard), the event is handed over to loop() instead of racing with it.
-// Once anything was deferred, every following event is deferred too until the queue drains,
-// so a later event handled right away could never overtake an earlier deferred one.
-// (pending counter is only checked either unlocked, which always defers, or under the loop lock,
-// which loop() also holds while running the deferred callbacks)
-// On esp8266 the guard is always locked and nothing is ever deferred.
-#if ESPURNA_ASYNC_TASKS
-std::atomic<size_t> _mqtt_async_pending { 0 };
+// AsyncMqttClient callbacks run in the AsyncTCP task on chips with parallel network tasks. When the
+// loop lock could not be taken in time (ref. AsyncGuard), the event is handed over to loop() in order,
+// instead of racing with it (ref. Deferred in espurna_tasks.h). On esp8266 nothing is ever deferred.
+namespace {
 
-bool _mqttAsyncDefer(const espurna::system::AsyncGuard& guard) {
-    return !guard.locked() || (_mqtt_async_pending.load() > 0);
-}
+espurna::system::Deferred _mqtt_deferred;
 
-template <typename T>
-struct MqttAsyncDeferred {
-    void operator()() {
-        callback();
-        --_mqtt_async_pending;
-    }
-
-    T callback;
-};
-
-template <typename T>
-void _mqttAsyncRunInLoop(T&& callback) {
-    ++_mqtt_async_pending;
-    systemRunInLoop(MqttAsyncDeferred<typename std::decay<T>::type>{
-        std::forward<T>(callback) });
-}
-#else
-constexpr bool _mqttAsyncDefer(const espurna::system::AsyncGuard&) {
-    return false;
-}
-
-template <typename T>
-void _mqttAsyncRunInLoop(T&& callback) {
-    systemRunInLoop(std::forward<T>(callback));
-}
-#endif
+} // namespace
 
 // Library buffers are only valid while inside of the callback, deferred message owns a copy
 struct MqttDeferredMessage {
@@ -2367,8 +2336,8 @@ void mqttSetup() {
 
         _mqtt.onMessage([](char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
             espurna::system::AsyncGuard guard;
-            if (_mqttAsyncDefer(guard)) {
-                _mqttAsyncRunInLoop(MqttDeferredMessage(topic, payload, properties, len, index, total));
+            if (_mqtt_deferred.defer(guard)) {
+                _mqtt_deferred.run(MqttDeferredMessage(topic, payload, properties, len, index, total));
                 return;
             }
 
@@ -2377,8 +2346,8 @@ void mqttSetup() {
 
         _mqtt.onConnect([](bool) {
             espurna::system::AsyncGuard guard;
-            if (_mqttAsyncDefer(guard)) {
-                _mqttAsyncRunInLoop([]() {
+            if (_mqtt_deferred.defer(guard)) {
+                _mqtt_deferred.run([]() {
                     _mqttOnConnect();
                 });
                 return;
@@ -2389,8 +2358,8 @@ void mqttSetup() {
 
         _mqtt.onSubscribe([](uint16_t pid, int) {
             espurna::system::AsyncGuard guard;
-            if (_mqttAsyncDefer(guard)) {
-                _mqttAsyncRunInLoop([pid]() {
+            if (_mqtt_deferred.defer(guard)) {
+                _mqtt_deferred.run([pid]() {
                     _mqttPidCallback(_mqtt_subscribe_callbacks, pid);
                 });
                 return;
@@ -2401,8 +2370,8 @@ void mqttSetup() {
 
         _mqtt.onPublish([](uint16_t pid) {
             espurna::system::AsyncGuard guard;
-            if (_mqttAsyncDefer(guard)) {
-                _mqttAsyncRunInLoop([pid]() {
+            if (_mqtt_deferred.defer(guard)) {
+                _mqtt_deferred.run([pid]() {
                     _mqttPidCallback(_mqtt_publish_callbacks, pid);
                 });
                 return;
@@ -2413,8 +2382,8 @@ void mqttSetup() {
 
         _mqtt.onDisconnect([](AsyncMqttClientDisconnectReason reason) {
             espurna::system::AsyncGuard guard;
-            if (_mqttAsyncDefer(guard)) {
-                _mqttAsyncRunInLoop([reason]() {
+            if (_mqtt_deferred.defer(guard)) {
+                _mqtt_deferred.run([reason]() {
                     _mqttOnDisconnectAsync(reason);
                 });
                 return;

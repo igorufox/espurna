@@ -1,10 +1,7 @@
 #pragma once
 
-#if defined(ESP8266)
-    #include <pgmspace.h>
-#elif defined(ESP32)
-    #include <pgmspace.h>
-#elif defined(LIBRETINY)
+// every core has its own pgmspace.h (on ESP32 and LibreTiny, PROGMEM is a no-op)
+#if __has_include(<pgmspace.h>)
     #include <pgmspace.h>
 #else
     #include <sys/pgmspace.h>

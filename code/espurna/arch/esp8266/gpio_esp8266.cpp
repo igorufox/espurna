@@ -1,6 +1,6 @@
 /*
 
-GPIO MODULE
+GPIO MODULE, ESP8266 part (common part is in gpio.cpp)
 
 Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
@@ -10,17 +10,9 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 // --------------------------------------------------------------------------
 
-#include <bitset>
 #include <utility>
 
-#include "mcp23s08_pin.h"
-
 #include "../../rtcmem.h"
-#include "terminal.h"
-
-#if WEB_SUPPORT
-#include "ws.h"
-#endif
 
 namespace espurna {
 namespace peripherals {
@@ -478,53 +470,6 @@ Mode pin_mode(uint8_t pin, Info info) {
     return out;
 }
 
-enum class PinMode : int {
-    Default = INPUT,
-    Output = OUTPUT,
-    Input = INPUT,
-    InputPulldown = INPUT_PULLDOWN,
-    InputPullup = INPUT_PULLUP,
-};
-
-namespace settings {
-namespace options {
-
-using espurna::settings::options::Enumeration;
-
-PROGMEM_STRING(None, "none");
-PROGMEM_STRING(Hardware, "hardware");
-
-#if MCP23S08_SUPPORT
-PROGMEM_STRING(Mcp23s08, "mcp23s08");
-#endif
-
-static constexpr Enumeration<GpioType> GpioTypeOptions[] PROGMEM {
-    {GpioType::Hardware, Hardware},
-#if MCP23S08_SUPPORT
-    {GpioType::Mcp23s08, Mcp23s08},
-#endif
-    {GpioType::None, None},
-};
-
-PROGMEM_STRING(Default, "default");
-PROGMEM_STRING(Output, "output");
-PROGMEM_STRING(Input, "input");
-PROGMEM_STRING(InputPullup, "input-pull-up");
-PROGMEM_STRING(InputPulldown, "input-pull-down");
-
-using espurna::settings::options::Enumeration;
-
-static constexpr std::array<Enumeration<PinMode>, 5> PinModeOptions PROGMEM {
-    {{PinMode::Default, Default},
-     {PinMode::Output, Output},
-     {PinMode::Input, Input},
-     {PinMode::InputPullup, InputPullup},
-     {PinMode::InputPulldown, InputPulldown}}
-};
-
-} // namespace options
-} // namespace settings
-
 // TODO(?)
 // will probably stay cached, but... note that both vtable and method are in flash
 // may not be safe from within ISR (50/50), and our sensor code still uses Core methods
@@ -589,10 +534,8 @@ private:
     unsigned char _pin;
 };
 
-class Hardware : public GpioBase {
+class Hardware : public HardwareGpioBase<17> {
 public:
-    static constexpr size_t Pins { 17 };
-
     Hardware() {
         // https://github.com/espressif/esptool/blob/f04d34bcab29ace798d2d3800ba87020cccbbfdd/esptool.py#L1060-L1070
         // "One or the other efuse bit is set for ESP8285"
@@ -601,22 +544,6 @@ public:
         const auto data = peripherals::efuse::data();
         _esp8285 = (data[0] & (1 << 4))
                 || (data[2] & (1 << 16));
-    }
-
-    const char* id() const override {
-        return "hardware";
-    }
-
-    size_t pins() const override {
-        return Pins;
-    }
-
-    bool lock(unsigned char index) const override {
-        return _mask[index];
-    }
-
-    void lock(unsigned char index, bool value) override {
-        _mask.set(index, value);
     }
 
     bool valid(unsigned char index) const override {
@@ -642,267 +569,8 @@ public:
     }
 
 private:
-    using Mask = std::bitset<Pins>;
-
     bool _esp8285 { false };
-    Mask _mask;
 };
-
-namespace origin {
-namespace internal {
-
-std::forward_list<Origin> origins;
-
-} // namespace internal
-
-void add(Origin origin) {
-    internal::origins.remove_if(
-        [&](const Origin& other) {
-            return other == origin;
-        });
-    internal::origins.emplace_front(origin);
-}
-
-} // namespace origin
-
-#if WEB_SUPPORT
-namespace web {
-
-void onVisible(JsonObject& root) {
-    JsonObject& config = root.createNestedObject(F("gpioConfig"));
-
-    constexpr GpioType known_types[] {
-        GpioType::Hardware,
-#if MCP23S08_SUPPORT
-        GpioType::Mcp23s08,
-#endif
-    };
-
-    JsonArray& types = config.createNestedArray(F("types"));
-
-    for (auto& type : known_types) {
-        auto* base = gpioBase(type);
-        if (base) {
-            JsonArray& entry = types.createNestedArray();
-            entry.add(base->id());
-            entry.add(static_cast<int>(type));
-
-            JsonArray& pins = config.createNestedArray(base->id());
-            for (size_t pin = 0; pin < base->pins(); ++pin) {
-                if (base->valid(pin)) {
-                    pins.add(pin);
-                }
-            }
-        }
-    }
-
-    JsonObject& info = root.createNestedObject(F("gpioInfo"));
-
-    JsonArray& locks = info.createNestedArray(F("failed-locks"));
-    for (auto& origin : origin::internal::origins) {
-        if (!origin.result) {
-            JsonArray& entry = locks.createNestedArray();
-            entry.add(origin.pin);
-            entry.add(origin.location.file);
-            entry.add(origin.location.func);
-            entry.add(origin.location.line);
-        }
-    }
-}
-
-void setup() {
-    wsRegister()
-        .onVisible(onVisible);
-}
-
-} // namespace web
-#endif
-
-#if TERMINAL_SUPPORT
-namespace terminal {
-
-PROGMEM_STRING(GpioLocks, "GPIO.LOCKS");
-
-void gpio_list_origins(::terminal::CommandContext&& ctx) {
-    for (const auto& origin : origin::internal::origins) {
-        ctx.output.printf_P(PSTR("%c %c %s GPIO%hhu\t%d:%s:%s\n"),
-            origin.result ? ' ' : '!',
-            origin.lock ? '*' : ' ',
-            origin.base, origin.pin,
-            origin.location.line,
-            origin.location.file,
-            origin.location.func);
-    }
-}
-
-PROGMEM_STRING(Gpio, "GPIO");
-
-int gpio_pin(const String& value) {
-    int pin = espurna::settings::internal::convert<int>(value);
-    if (pin < 0) {
-        return pin;
-    }
-
-    if (!gpioValid(pin)) {
-        pin = -1;
-    }
-
-    return pin;
-}
-
-void gpio_read_write(::terminal::CommandContext&& ctx) {
-    const auto pin_arg = ctx.argv.size() >= 2;
-    const int pin = pin_arg
-        ? gpio_pin(ctx.argv[1])
-        : -1;
-
-    if (pin_arg && pin < 0) {
-        terminalError(ctx, STRING_VIEW("Invalid pin number"));
-        return;
-    }
-
-    int start = 0;
-    int end = gpioPins();
-
-    const auto gpio_info = info();
-
-    switch (ctx.argv.size()) {
-    case 3:
-    {
-        // even in INPUT mode, we are still techically allowed to set output register
-        // (like it is used in software I2C implementation with INPUT_PULLUP)
-        const bool status = espurna::settings::internal::convert<bool>(ctx.argv[2]);
-        if (pin == 16) {
-            peripherals::rtc::gpio16_set(status);
-        } else {
-            peripherals::pin::set(pin, status);
-        }
-        break;
-    }
-
-    case 2:
-        start = pin;
-        end = pin + 1;
-        // fallthrough!
-
-    case 1:
-        for (auto current = start; current < end; ++current) {
-            if (!gpioValid(current)) {
-                continue;
-            }
-
-            const auto mode = pin_mode(current, gpio_info);
-            ctx.output.printf_P(
-                PSTR("%c %6s @ GPIO%02d%s\n"),
-                    gpioLocked(current) ? '*' : ' ',
-                    (mode.value == OUTPUT)
-                        ? PSTR("OUTPUT")
-                        : PSTR("INPUT"),
-                    current,
-                    (mode.value == OUTPUT)
-                        ? ""
-                        : pin_reading(current, gpio_info).value
-                            ? PSTR(" (HIGH)")
-                            : PSTR(" (LOW)"));
-        }
-
-        break;
-
-    }
-
-    terminalOK(ctx);
-}
-
-PROGMEM_STRING(Mode, "GPIO.MODE");
-
-using PinModeEnumeration = settings::options::Enumeration<gpio::PinMode>;
-
-String gpio_mode_serialize(const PinModeEnumeration* begin, const PinModeEnumeration* end) {
-    String out;
-
-    for (auto it = begin; it != end; ++it) {
-        if (it != begin) {
-            out += '|';
-        }
-
-        out += (*it).string();
-    }
-
-    return out;
-}
-
-void gpio_mode(::terminal::CommandContext&& ctx) {
-    if (ctx.argv.size() == 3) {
-        const auto pin = gpio_pin(ctx.argv[1]);
-        if (pin < 0) {
-            terminalError(ctx, STRING_VIEW("Invalid pin number"));
-            return;
-        }
-
-        const auto parsed_mode = espurna::settings::internal::convert(
-            settings::options::PinModeOptions, ctx.argv[2], PinMode::Input);
-        peripherals::pin::mode(pin, static_cast<int>(parsed_mode));
-
-        return;
-    }
-
-    static const String hint = STRING_VIEW("GPIO.MODE <GPIO> <").toString()
-        + gpio_mode_serialize(
-            settings::options::PinModeOptions.begin(),
-            settings::options::PinModeOptions.end())
-        + '>';
-    terminalError(ctx, hint);
-}
-
-PROGMEM_STRING(RegRead, "REG.READ");
-
-void reg_read(::terminal::CommandContext&& ctx) {
-    if (ctx.argv.size() == 2) {
-        const auto convert = espurna::settings::internal::convert<uint32_t>;
-        const auto address = convert(ctx.argv[1]);
-
-        ctx.output.printf_P(PSTR("0x%08X -> 0x%08X\n"),
-            address, peripherals::reg_read(address));
-        terminalOK(ctx);
-        return;
-    }
-
-    terminalError(ctx, F("REG.READ <ADDRESS>"));
-}
-
-PROGMEM_STRING(RegWrite, "REG.WRITE");
-
-void reg_write(::terminal::CommandContext&& ctx) {
-    if (ctx.argv.size() == 3) {
-        const auto convert = espurna::settings::internal::convert<uint32_t>;
-
-        const auto address = convert(ctx.argv[1]);
-        const auto value = convert(ctx.argv[2]);
-
-        ctx.output.printf_P(PSTR("0x%08X -> 0x%08X\n"), address, value);
-        peripherals::reg_write(address, value);
-
-        terminalOK(ctx);
-        return;
-    }
-
-    terminalError(ctx, F("REG.WRITE <ADDRESS> <VALUE>"));
-}
-
-static constexpr espurna::terminal::Command Commands[] PROGMEM {
-    {GpioLocks, gpio_list_origins},
-    {Gpio, gpio_read_write},
-    {Mode, gpio_mode},
-    {RegRead, reg_read},
-    {RegWrite, reg_write},
-};
-
-void setup() {
-    espurna::terminal::add(Commands);
-}
-
-} // namespace terminal
-#endif
 
 } // namespace
 
@@ -910,105 +578,36 @@ Mode pin_mode(uint8_t pin) {
     return pin_mode(pin, info());
 }
 
+namespace chip {
+
+void setup() {
+}
+
+void print_pin(Print& out, uint8_t pin) {
+    const auto gpio_info = info();
+    const auto mode = pin_mode(pin, gpio_info);
+    out.printf_P(
+        PSTR("%6s @ GPIO%02d%s\n"),
+            (mode.value == OUTPUT)
+                ? PSTR("OUTPUT")
+                : PSTR("INPUT"),
+            pin,
+            (mode.value == OUTPUT)
+                ? ""
+                : pin_reading(pin, gpio_info).value
+                    ? PSTR(" (HIGH)")
+                    : PSTR(" (LOW)"));
+}
+
+} // namespace chip
 } // namespace gpio
-
-namespace settings {
-namespace internal {
-namespace {
-
-using gpio::settings::options::GpioTypeOptions;
-
-} // namespace
-
-template <>
-GpioType convert(const String& value) {
-    return convert(GpioTypeOptions, value, GpioType::None);
-}
-
-String serialize(GpioType value) {
-    return serialize(GpioTypeOptions, value);
-}
-
-} // namespace internal
-} // namespace settings
 } // namespace espurna
 
 // --------------------------------------------------------------------------
 
-// Per https://llvm.org/docs/CodingStandards.html#provide-a-virtual-method-anchor-for-classes-in-headers
-// > If a class is defined in a header file and has a vtable (either it has virtual methods or it derives from classes with virtual methods),
-// > it must always have at least one out-of-line virtual method in the class. Without this, the compiler will copy the vtable and RTTI into
-// > every .o file that #includes the header, bloating .o file sizes and increasing link times.
-// - http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1263r0.pdf
-// > This technique is unfortunate as it relies on detailed knowledge of how common toolchains work, and it may also require creating
-// > a dummy virtual function.
-//
-// `~BasePin() = default;` is technically inlined, so leaving that in the header.
-// Thus, ::description() implementation here becomes that anchor for the BasePin.
-
-String BasePin::description() const {
-    char buffer[64];
-    snprintf_P(buffer, sizeof(buffer),
-        PSTR("%s @ GPIO%02hhu"), id(), pin());
-    return buffer;
-}
-
 GpioBase& hardwareGpio() {
     static espurna::gpio::Hardware gpio;
     return gpio;
-}
-
-GpioBase* gpioBase(GpioType type) {
-    GpioBase* ptr { nullptr };
-
-    switch (type) {
-    case GpioType::Hardware:
-        ptr = &hardwareGpio();
-        break;
-    case GpioType::Mcp23s08:
-#if MCP23S08_SUPPORT
-        ptr = &mcp23s08Gpio();
-#endif
-        break;
-    case GpioType::None:
-        break;
-    }
-
-    return ptr;
-}
-
-BasePinPtr gpioRegister(GpioBase& base, unsigned char gpio,
-        espurna::SourceLocation source_location)
-{
-    BasePinPtr result;
-
-    if (gpioLock(base, gpio, source_location)) {
-        result = base.pin(gpio);
-    }
-
-    return result;
-}
-
-BasePinPtr gpioRegister(unsigned char gpio, espurna::SourceLocation source_location) {
-    return gpioRegister(hardwareGpio(), gpio, source_location);
-}
-
-void gpioSetup() {
-#if WEB_SUPPORT
-    espurna::gpio::web::setup();
-#endif
-#if TERMINAL_SUPPORT
-    espurna::gpio::terminal::setup();
-#endif
-}
-
-void hardwareGpioIgnore(unsigned char gpio) {
-    const auto value = Rtcmem->gpio_ignore;
-    Rtcmem->gpio_ignore = value | (1 << gpio);
-}
-
-void gpioLockOrigin(espurna::gpio::Origin origin) {
-    espurna::gpio::origin::add(origin);
 }
 
 extern "C" {

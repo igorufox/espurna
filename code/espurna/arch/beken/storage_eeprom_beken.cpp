@@ -1,28 +1,27 @@
 /*
 
-EEPROM MODULE FOR BEKEN (LibreTiny)
+EEPROM MODULE, BK72xx (LibreTiny) part (common part is in storage_eeprom.cpp and arch/rtos/storage_eeprom_rtos.cpp)
 
-LibreTiny has no EEPROM library. Settings live in a 4 KiB RAM buffer, which is
-committed to the flash as a whole, rotating between several slots of the
-'userdata' partition. Every slot is two sectors, 4 KiB of data in the first one
-and the header in the second one. Header is written last, so a slot with a valid
-header always has complete data. Latest valid slot is loaded on boot.
+LibreTiny has no EEPROM library. The 4 KiB buffer is committed to the flash as a whole, rotating between several
+slots of the 'userdata' partition. Every slot is two sectors, 4 KiB of data in the first one and the header in the
+second one. Header is written last, so a slot with a valid header always has complete data. Latest valid slot is
+loaded on boot.
 
-Tuya layout keeps its own config at the end of 'userdata' (0x1ED000, 'tuya'
-partition, it has the stock GPIO assignments), slots stay below it.
+Tuya layout keeps its own config at the end of 'userdata' (0x1ED000, 'tuya' partition, it has the stock GPIO
+assignments), slots stay below it.
+
+The buffer is the .bss of this object: platformio_beken.ini (custom_tcm_main_ram) keeps it in the main RAM by name
 
 */
 
 #include "espurna.h"
-#include "storage_eeprom.h"
-
-#if WEB_SUPPORT
-#include "ws.h"
-#endif
 
 #if defined(LIBRETINY)
 
-#define EEPROM_SIZE 4096
+#include "storage_eeprom.h"
+
+#include <algorithm>
+#include <cstring>
 
 namespace {
 
@@ -42,18 +41,14 @@ struct Header {
     uint32_t size;
 };
 
-uint8_t _eeprom_buffer[EEPROM_SIZE];
+uint8_t _eeprom_buffer[EepromSize];
 
 // reads before eepromSetup() see an empty storage, same as an erased flash
 struct BufferInit {
     BufferInit() {
-        std::memset(_eeprom_buffer, 0xFF, EEPROM_SIZE);
+        std::memset(_eeprom_buffer, 0xFF, EepromSize);
     }
 } _eeprom_buffer_init;
-
-bool _eeprom_ready = false;
-bool _eeprom_dirty = false;          // a write happened since the last commit
-bool _eeprom_commit_pending = false; // request from eepromCommit() handled in loop
 
 size_t _eeprom_slot = 0;
 uint32_t _eeprom_sequence = 0;
@@ -80,7 +75,7 @@ bool _eepromReadHeader(size_t slot, Header& header) {
         return false;
     }
 
-    return (header.magic == HeaderMagic) && (header.size == EEPROM_SIZE);
+    return (header.magic == HeaderMagic) && (header.size == EepromSize);
 }
 
 // Latest slot with a matching crc, older ones are fallbacks when the latest one is damaged
@@ -107,11 +102,11 @@ bool _eepromLoad() {
 
     for (size_t index = 0; index < count; ++index) {
         const auto& candidate = candidates[index];
-        if (lt_flash_read(_eepromSlotAddress(candidate.slot), _eeprom_buffer, EEPROM_SIZE) != EEPROM_SIZE) {
+        if (lt_flash_read(_eepromSlotAddress(candidate.slot), _eeprom_buffer, EepromSize) != EepromSize) {
             continue;
         }
 
-        if (_eepromCrc(_eeprom_buffer, EEPROM_SIZE) != candidate.header.crc) {
+        if (_eepromCrc(_eeprom_buffer, EepromSize) != candidate.header.crc) {
             DEBUG_MSG_P(PSTR("[EEPROM] Slot #%u is damaged\n"), candidate.slot);
             continue;
         }
@@ -121,7 +116,7 @@ bool _eepromLoad() {
         return true;
     }
 
-    std::memset(_eeprom_buffer, 0xFF, EEPROM_SIZE);
+    std::memset(_eeprom_buffer, 0xFF, EepromSize);
     return false;
 }
 
@@ -134,15 +129,15 @@ bool _eepromWrite() {
         return false;
     }
 
-    if (lt_flash_write(address, _eeprom_buffer, EEPROM_SIZE) != EEPROM_SIZE) {
+    if (lt_flash_write(address, _eeprom_buffer, EepromSize) != EepromSize) {
         return false;
     }
 
     Header header;
     header.magic = HeaderMagic;
     header.sequence = _eeprom_sequence + 1;
-    header.crc = _eepromCrc(_eeprom_buffer, EEPROM_SIZE);
-    header.size = EEPROM_SIZE;
+    header.crc = _eepromCrc(_eeprom_buffer, EepromSize);
+    header.size = EepromSize;
 
     if (lt_flash_write(address + FLASH_SECTOR_SIZE, reinterpret_cast<const uint8_t*>(&header), sizeof(header)) != sizeof(header)) {
         return false;
@@ -160,96 +155,48 @@ bool _eepromWrite() {
     return true;
 }
 
-void _eepromMarkDirty() {
-    _eeprom_dirty = true;
-}
-
 } // namespace
 
-unsigned char eepromRead(size_t address) {
-    if (address >= EEPROM_SIZE) return 0xFF;
-    return _eeprom_buffer[address];
+namespace espurna {
+namespace storage {
+namespace chip {
+
+uint8_t* buffer() {
+    return _eeprom_buffer;
 }
 
-void eepromWrite(size_t address, unsigned char value) {
-    if (address >= EEPROM_SIZE) return;
-    if (_eeprom_buffer[address] != value) {
-        _eeprom_buffer[address] = value;
-        _eepromMarkDirty();
-    }
-}
-
-void _eepromCommit() {
-    if (!_eeprom_dirty || !_eeprom_ready) {
-        return;
-    }
-
-    // buffer is only changed from the loop task, which is also the only one committing
-    if (_eepromWrite()) {
-        _eeprom_dirty = false;
-        DEBUG_MSG_P(PSTR("[EEPROM] Saved to slot #%u (#%u)\n"),
-            _eeprom_slot, _eeprom_sequence);
+// no saved slot is an empty storage, the first write goes into slot #0
+bool load() {
+    if (_eepromLoad()) {
+        DEBUG_MSG_P(PSTR("[EEPROM] Loaded slot #%u (#%u)\n"), _eeprom_slot, _eeprom_sequence);
     } else {
-        // Leave _eeprom_dirty set, eepromLoop() retries with a backoff
-        DEBUG_MSG_P(PSTR("[EEPROM] Error: flash write failed, will retry\n"));
+        _eeprom_slot = Slots - 1;
+        _eeprom_sequence = 0;
+        DEBUG_MSG_P(PSTR("[EEPROM] Warning: no saved settings\n"));
     }
+
+    return true;
 }
 
-void eepromCommit() {
-    _eeprom_commit_pending = true;
+// buffer is only changed from the loop task, which is also the only one committing
+bool save() {
+    if (!_eepromWrite()) {
+        DEBUG_MSG_P(PSTR("[EEPROM] Error: flash write failed, will retry\n"));
+        return false;
+    }
+
+    DEBUG_MSG_P(PSTR("[EEPROM] Saved to slot #%u (#%u)\n"),
+        _eeprom_slot, _eeprom_sequence);
+    return true;
 }
 
-void eepromForceCommit() {
-    _eepromCommit();
+void info(Print& out, bool dirty) {
+    out.printf_P(PSTR("Size: %u, slot #%u (0x%06X), sequence #%u, %s\n"),
+        EepromSize, _eeprom_slot, _eepromSlotAddress(_eeprom_slot), _eeprom_sequence,
+        dirty ? PSTR("changes pending") : PSTR("saved"));
 }
 
-void eepromForceCommit(StorageEEPROM_Rotate&) {
-    _eepromCommit();
-}
-
-StorageEEPROM_Rotate::StorageEEPROM_Rotate() {}
-
-// settings/embedis writes go directly through this pointer and then mark the storage dirty
-const uint8_t* StorageEEPROM_Rotate::data() const {
-    return _eeprom_buffer;
-}
-
-uint8_t* StorageEEPROM_Rotate::data() {
-    return _eeprom_buffer;
-}
-
-void StorageEEPROM_Rotate::setDirty() {
-    _eepromMarkDirty();
-}
-
-void StorageEEPROM_Rotate::fill(uint8_t value) {
-    std::memset(_eeprom_buffer, value, EEPROM_SIZE);
-    _eepromMarkDirty();
-}
-
-size_t StorageEEPROM_Rotate::size() const { return EEPROM_SIZE; }
-bool StorageEEPROM_Rotate::commit() { _eepromCommit(); return !_eeprom_dirty; }
-uint8_t StorageEEPROM_Rotate::read(size_t pos) { return eepromRead(pos); }
-void StorageEEPROM_Rotate::write(size_t pos, uint8_t val) { eepromWrite(pos, val); }
-
-void StorageEEPROM_Rotate::dump(Print& print) const {
-    print.printf_P(PSTR("[EEPROM] Slot #%u, sequence #%u\n"), _eeprom_slot, _eeprom_sequence);
-}
-
-StorageEEPROM_Rotate& eepromInstance() {
-    static StorageEEPROM_Rotate instance;
-    return instance;
-}
-
-size_t eepromSpace() {
-    return EEPROM_SIZE;
-}
-
-bool eepromReady() {
-    return _eeprom_ready;
-}
-
-String eepromSectors() {
+String sectors() {
     String out;
     for (size_t slot = 0; slot < Slots; ++slot) {
         if (out.length()) {
@@ -261,84 +208,21 @@ String eepromSectors() {
     return out;
 }
 
-void eepromClear() {
-    std::memset(_eeprom_buffer, 0xFF, EEPROM_SIZE);
-    _eepromMarkDirty();
-    _eepromCommit();
+void dump(Print& out) {
+    out.printf_P(PSTR("[EEPROM] Slot #%u, sequence #%u\n"), _eeprom_slot, _eeprom_sequence);
 }
 
-void eepromRotate(bool) {}
-void eepromBackup(uint32_t) {}
-
-#if TERMINAL_SUPPORT
-
-STRING_VIEW_INLINE(EepromCommand, "EEPROM");
-
-static void _eepromCommand(::terminal::CommandContext&& ctx) {
-    ctx.output.printf_P(PSTR("Size: %u, slot #%u (0x%06X), sequence #%u, %s\n"),
-        EEPROM_SIZE, _eeprom_slot, _eepromSlotAddress(_eeprom_slot), _eeprom_sequence,
-        _eeprom_dirty ? PSTR("changes pending") : PSTR("saved"));
-    terminalOK(ctx);
+// first sector of the slots and how many they take
+uint32_t base() {
+    return SlotsOffset / FLASH_SECTOR_SIZE;
 }
 
-STRING_VIEW_INLINE(EepromCommitCommand, "EEPROM.COMMIT");
-
-static void _eepromCommandCommit(::terminal::CommandContext&& ctx) {
-    _eepromCommit();
-    if (_eeprom_dirty) {
-        terminalError(ctx, F("Commit failed"));
-        return;
-    }
-
-    terminalOK(ctx);
+uint8_t pool() {
+    return (Slots * SlotSize) / FLASH_SECTOR_SIZE;
 }
 
-static constexpr ::terminal::Command EepromCommands[] PROGMEM {
-    {EepromCommand, _eepromCommand},
-    {EepromCommitCommand, _eepromCommandCommit},
-};
-
-static void _eepromCommandsSetup() {
-    espurna::terminal::add(EepromCommands);
-}
-#endif
-
-void eepromLoop() {
-    static unsigned long _next_retry_ms = 0;
-    if (_eeprom_commit_pending) {
-        _eeprom_commit_pending = false;
-        _eepromCommit();
-        if (_eeprom_dirty) {
-            _next_retry_ms = millis() + 5000;
-        }
-        return;
-    }
-
-    if (_eeprom_dirty && _next_retry_ms && (long)(millis() - _next_retry_ms) >= 0) {
-        _next_retry_ms = millis() + 5000;
-        _eepromCommit();
-        if (!_eeprom_dirty) {
-            _next_retry_ms = 0;
-        }
-    }
-}
-
-void eepromSetup() {
-#if TERMINAL_SUPPORT
-    _eepromCommandsSetup();
-#endif
-
-    if (_eepromLoad()) {
-        DEBUG_MSG_P(PSTR("[EEPROM] Loaded slot #%u (#%u)\n"), _eeprom_slot, _eeprom_sequence);
-    } else {
-        // first write goes into slot #0
-        _eeprom_slot = Slots - 1;
-        _eeprom_sequence = 0;
-        DEBUG_MSG_P(PSTR("[EEPROM] Warning: no saved settings\n"));
-    }
-
-    espurnaRegisterLoop(eepromLoop);
-    _eeprom_ready = true;
-}
+} // namespace chip
+} // namespace storage
+} // namespace espurna
 
 #endif // LIBRETINY

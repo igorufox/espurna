@@ -1,27 +1,27 @@
 import * as path from 'node:path';
-import * as url from 'node:url';
 import * as fs from 'node:fs/promises';
 
 import { minify as htmlMinifyImpl } from 'html-minifier-terser';
 
-import { MODULE_PRESETS } from './html/lib/preset.mjs';
-import { maybeInline, needElement } from './html/lib/inline.mjs';
+import { maybeInline } from './html/lib/inline.mjs';
 import { defineConfig } from 'vite';
 import { JSDOM } from 'jsdom';
 
 import {
-    HTML_DIR,
-    VENDOR_DIR,
-    PRESET_DIR,
     BUILD_DIR,
+    HTML_DIR,
+    MODE_DEV,
+    MODE_WEBUI,
+    VENDOR_DIR,
+    WEBUI_NAME,
+    modeFile,
 } from './gulpfile.mjs';
 
 // vite build pipeline is simplified compared to the gulp one
 // assets are mostly handled through the rollup <-> vite
 //
-// two parts are not
+// one part is not
 // - index.html pre-generation has to happen before build starts
-// - modules stripping before and after index.html is pre-gened
 //
 // compared to (some) of the external plugins
 // - https://www.npmjs.com/package/vite-plugin-singlefile
@@ -37,29 +37,6 @@ import {
 //   package JSDOM dependency instead of plugin parser(s)
 
 /** @import { PluginOption } from 'vite' */
-
-/**
- * @param {import("./html/lib/preset.mjs").Modules} modules
- * @returns {PluginOption}
- */
-function stripModules(modules) {
-    return {
-        name: stripModules.name,
-        enforce: 'pre',
-        async transformIndexHtml(html) {
-            const dom = new JSDOM(html);
-            const doc = dom.window.document;
-
-            for (const elem of Array.from(doc.querySelectorAll('[class*=module-]'))) {
-                if (!needElement(elem, modules)) {
-                    elem.parentElement?.removeChild(elem);
-                }
-            }
-
-            return dom.serialize();
-        }
-    };
-}
 
 /**
  * @returns {PluginOption}
@@ -179,53 +156,40 @@ function htmlMinify() {
 }
 
 /**
- * @param {string} name
  * @returns {PluginOption}
  */
-function rename(name) {
+function rename() {
     return {
         name: rename.name,
         apply: 'build',
         enforce: 'post',
         generateBundle(_, bundle) {
-            bundle['index.html'].fileName = `index.${name}.html`;
+            bundle['index.html'].fileName = WEBUI_NAME;
         },
     };
 }
 
-export default defineConfig(async ({ mode }) => {
-    if (!MODULE_PRESETS.has(mode)) {
-        throw new Error(`'mode' has to be one of: ${Array.from(MODULE_PRESETS).join(', ')}`);
-    }
-
-    const preset = path.join(PRESET_DIR, mode);
-    const constants = url.pathToFileURL(
-        path.join(preset, 'constants.mjs'));
-
-    const { MODULES: modules } = await import(constants.href);
+// `vite --mode dev`: the dev constants (html/mode/dev.mjs), any other mode builds the WebUI of the firmware
+export default defineConfig(({ mode }) => {
+    const buildMode = (mode === MODE_DEV) ? MODE_DEV : MODE_WEBUI;
 
     return {
-        // build order is declared by the plugin, but make sure 'pre' happen exactly like this
-        // stripModules has to also help out the inlineHtmlPre, since it is not aware of the module deps
         plugins: [
-            stripModules(modules),
             inlineHtmlPre(),
-            stripModules(modules),
             inlineAssetsPost(),
             htmlMinify(),
-            rename(mode),
+            rename(),
         ],
         // vite-specific overrides, both for the build and importmap helper script
         resolve: {
             alias: [
                 {find: '/vendor', replacement: VENDOR_DIR},
-                {find: '@build-preset', replacement: preset},
+                {find: '@build-mode', replacement: modeFile(buildMode)},
             ],
         },
         // one should be very careful when injecting relative paths in the html / js / configs
         // step into the HTML_DIR by default (aka `vite ... html/` in the cli)
         root: HTML_DIR,
-        envDir: preset,
         // rollup settings stay mostly the same, with the exception of the @jaames/iro workaround
         build: {
             modulePreload: {

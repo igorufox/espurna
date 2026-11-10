@@ -103,18 +103,11 @@ String serialize(uint32_t value, int base) {
     return formatUnsigned(value, base);
 }
 
-// on ESP-IDF 5 (core 3.x) and LibreTiny toolchains uint32_t is unsigned long, and unsigned int is the type left over
-#if (defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)) || defined(LIBRETINY)
+// the one of unsigned int / unsigned long that is not uint32_t (ref. OtherUnsigned)
 template <>
-unsigned int convert(const String& value) {
+OtherUnsigned convert(const String& value) {
     return convert<uint32_t>(value);
 }
-#else
-template <>
-unsigned long convert(const String& value) {
-    return convert<unsigned int>(value);
-}
-#endif
 
 template <>
 unsigned short convert(const String& value) {

@@ -22,6 +22,15 @@ export function styleInject(rules) {
 }
 
 /**
+ * One WebUI for every chip and board: an element of a module (`module module-<name>` classes) stays hidden until the
+ * device names <name> in the `modulesVisible` message, i.e. runs that module (built in or installed and switched on)
+ * @param {string[]} modules
+ */
+export function modulesVisible(modules) {
+    styleInject(modules.map((module) => `.module-${module} { display: revert; }`));
+}
+
+/**
  * @param {string} selector
  * @param {boolean} value
  */

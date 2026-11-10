@@ -15,8 +15,12 @@
 # - espurna-beken-initial-tuya.uf2: a copy of firmware.uf2 (LibreTiny's name, its upload target), the release name
 
 import os
+import sys
 
 Import("env")  # noqa: F821
+# release_image.py is in this folder: PlatformIO runs extra scripts without it on sys.path
+sys.path.insert(0, os.path.join(env.subst("$PROJECT_DIR"), "scripts"))  # noqa: F821
+from release_image import copy, enabled, listing, path  # noqa: E402
 
 TAIL_ORIGIN = 0x120000  # logical; flash 0x132000, sector aligned (0x120000 * 34 / 32)
 TAIL_END_FLASH = 0x1D0000  # 'calibration' of the Tuya 2 MiB layout
@@ -78,7 +82,7 @@ def patch_ldscript(env):
         f.write(text)
 
 
-if env.GetProjectOption("custom_matter_tail", "no") in ("yes", "true", "1"):
+if enabled(env, "custom_matter_tail"):  # noqa: F821
     patch_ldscript(env)
     env.Append(LINKFLAGS=["-Wl,--build-id=sha1", "-Wl,--cref"])
     # the sources of the project are built with projenv, a copy made before this script ran
@@ -97,8 +101,11 @@ if env.GetProjectOption("custom_matter_tail", "no") in ("yes", "true", "1"):
 
     # the build outputs carry the names of the release files (beken_link_tail.py writes the other two)
     def copy_initial_tuya(target, source, env):
-        import shutil
-        uf2 = str(target[0])
-        shutil.copyfile(uf2, os.path.join(os.path.dirname(uf2), "espurna-beken-initial-tuya.uf2"))
+        folder = os.path.dirname(str(target[0]))
+        listing([
+            copy(str(target[0]), path(folder, "beken", "initial", "tuya", ext=".uf2")),
+            path(folder, "beken", "initial", "quectel", ext=".uf2"),
+            path(folder, "beken", "matter"),
+        ])
 
     env.AddPostAction(os.path.join("$BUILD_DIR", "firmware.uf2"), copy_initial_tuya)

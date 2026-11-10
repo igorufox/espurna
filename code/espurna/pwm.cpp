@@ -120,6 +120,7 @@ using StopPwmFunc = void(*)(uint8_t);
 
 namespace detail {
 
+#if defined(ESP8266)
 void stop_waveform(uint8_t pin) {
     stopWaveform(pin);
 }
@@ -127,6 +128,12 @@ void stop_waveform(uint8_t pin) {
 void stop_pwm(uint8_t pin) {
     _stopPWM(pin);
 }
+#else
+// LibreTiny (Beken): the PWM of a pin stops with a duty of 0, digitalWrite() below sets the level
+void stop_duty(uint8_t pin) {
+    ::analogWrite(pin, 0);
+}
+#endif
 
 } // namespace detail
 
@@ -158,9 +165,9 @@ void setup() {
     internal::resolution = resolution;
 
     const auto max_duty = scale::max(resolution);
-    ::analogWriteRange(max_duty);
-
     const auto frequency = settings::frequency();
+#if defined(ESP8266)
+    ::analogWriteRange(max_duty);
     ::analogWriteFreq(frequency);
 
     // Handle 2.7.4 -> 3.x.x migration
@@ -168,6 +175,12 @@ void setup() {
         (_stopPWM)
             ? detail::stop_pwm
             : detail::stop_waveform;
+#else
+    // LibreTiny: the same API with its own names, resolution in bits
+    ::analogWriteResolution(resolution);
+    ::analogWriteFrequency(frequency);
+    internal::stop = detail::stop_duty;
+#endif
 
     // stop() above needs to check for the internal value
     internal::duty_limit = max_duty;

@@ -33,3 +33,8 @@ extern volatile RtcmemData* Rtcmem;
 
 bool rtcmemStatus();
 void rtcmemSetup();
+
+// Rtcmem->sys survives a reset with the rest of the RTCMEM (on Beken it is the only part that does)
+inline bool rtcmemSysStatus() {
+    return rtcmemStatus();
+}

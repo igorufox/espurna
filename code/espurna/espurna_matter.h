@@ -39,6 +39,9 @@ namespace backend {
 // Relays that get an endpoint (index 0 -> endpoint 1, ...)
 size_t endpoints();
 
+// Default `matterDelay`, seconds between the station address and the automatic start
+uint32_t start_delay();
+
 void setup();
 bool start();
 void network(bool up);

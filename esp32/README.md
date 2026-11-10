@@ -77,11 +77,13 @@ LED settings.
 
 ```
 cd code
-pio run -d safeboot-app               # the safeboot first, it goes into the merged image
-pio run -c platformio_esp32.ini -e esp32-generic
+pio run -d safeboot-app               # the safeboot first (ESP-IDF project), it goes into the merged image
+pio run -c platformio_esp32.ini -e esp32   # the head, every module, the release files (docs/modules.md)
 ```
 
-The merged image is written to `code/.pio/build/<build>/espurna-<build>.bin` by
+One env, `esp32`: the head (relays, buttons, LEDs, web, MQTT ...) and the modules (sensors, scheduler, alexa,
+homeassistant, domoticz, thingspeak, matter, nspanel) in one build; `espurna-esp32-modules.bin` next to the image is
+the modules file of the WebUI MODULES panel. The merged image is written to `code/.pio/build_esp32/esp32/espurna-esp32.bin` by
 [`scripts/esp32_merge.py`](../code/scripts/esp32_merge.py) (the release `.bin`); `firmware.bin` next to it is ESPurna
 alone (an application image, what Tasmota's safeboot takes). Without the
 safeboot built first ESPurna still runs, only the `safeboot` command refuses to switch.

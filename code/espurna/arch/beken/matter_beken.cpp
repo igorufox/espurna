@@ -1284,6 +1284,13 @@ size_t endpoints() {
     return std::min(relayCount(), library_plugs);
 }
 
+// On the 2 MiB boards the start right at boot, with both controllers reconnecting at once (CASE, subscriptions, reads)
+// while DHCP, MQTT and the WebUI were busy too, filled the 16 KiB lwIP heap and receiving stopped: the board went deaf
+// until the network watchdog restarted it, often twice in a row
+uint32_t start_delay() {
+    return 75;
+}
+
 void setup() {
 #if TERMINAL_SUPPORT
     terminal::add(Commands);

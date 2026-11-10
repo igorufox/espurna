@@ -103,7 +103,7 @@ def build_configurations(args: argparse.Namespace, configurations: list[pathlib.
     if cache_path.is_dir():
         cache_cleanup(cache_path, args.expire_cache)
 
-    cmd = ["platformio", "run"]
+    cmd = ["platformio", "run", "-c", "platformio_esp8266.ini"]
     if args.silent:
         cmd.extend(["-s"])
     cmd.extend(["-e", args.environment])

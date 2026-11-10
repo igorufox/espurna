@@ -2,7 +2,7 @@
 
 The architecture ESPurna started on. This fork builds it with Arduino core 3.1.2 and NONOS SDK 3.0.5 (SDK 2.2.x crashed
 inside its Wi-Fi stack on the home fleet) and replaces the 216 per-board builds with a few generic images: the board is
-picked after flashing, from a device template or the settings. Builds: [`code/platformio.ini`](../code/platformio.ini).
+picked after flashing, from a device template or the settings. Builds: [`code/platformio_esp8266.ini`](../code/platformio_esp8266.ini).
 
 ## Images: four instead of 216
 
@@ -134,9 +134,13 @@ instead, because a plain pin would read the pulses as constant presses and relea
 
 ```
 cd code
-pio run -e esp8266-1m                 # -1m-light, -1m-sensor, -4m
+pio run -c platformio_esp8266.ini -e esp8266   # the head, every module, the release files (docs/modules.md)
 pio run -d mini-app                   # the mini, code/mini-app/.pio/build/esp8266-1m-mini/firmware.bin
 ```
+
+One env, one head image for every ESP8266 (the 1 MB layout on every chip size); the images of the table above are the
+older releases, their drivers are modules now. Files in `code/.pio/build_esp8266/esp8266/`: `espurna-esp8266.bin`
+(+ `.bin.gz`), `espurna-esp8266-modules.bin`, `espurna-esp8266-full.bin`.
 
 `code/scripts/boards_to_devices.py` regenerates the board entries of `../espurna-devices/devices.json` from `hardware.h`
 (hand-made entries are kept).

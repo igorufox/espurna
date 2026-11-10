@@ -1,6 +1,10 @@
 import { expect, test } from 'vitest';
 import {
     canMove,
+    dependentsOf,
+    groupCounts,
+    groupOf,
+    switchOnOrder,
     meterLevel,
     meters,
     moduleRows,
@@ -10,20 +14,22 @@ import {
 } from '../src/modules.mjs';
 
 /**
- * @param {{name: string, image: number, ram: number, iram: number, data: number[]}[]} list
+ * EMC2: 72-byte entries (name16, offset, size, image, ram, iram, requires32, 4 reserved)
+ * @param {{name: string, image: number, ram: number, iram: number, data: number[], requires?: string}[]} list
  * @returns {ArrayBuffer}
  */
 function container(list) {
-    const size = 8 + (48 * list.length) + list.reduce((sum, x) => sum + x.data.length, 0);
+    const size = 8 + (72 * list.length) + list.reduce((sum, x) => sum + x.data.length, 0);
     const buffer = new ArrayBuffer(size);
     const view = new DataView(buffer);
-    view.setUint32(0, 0x31434d45, true);
+    view.setUint32(0, 0x32434d45, true);
     view.setUint32(4, list.length, true);
 
-    let offset = 8 + (48 * list.length);
+    let offset = 8 + (72 * list.length);
     list.forEach((x, index) => {
-        const at = 8 + (48 * index);
+        const at = 8 + (72 * index);
         [...x.name].forEach((ch, n) => view.setUint8(at + n, ch.charCodeAt(0)));
+        [...(x.requires ?? "")].forEach((ch, n) => view.setUint8(at + 36 + n, ch.charCodeAt(0)));
         view.setUint32(at + 16, offset, true);
         view.setUint32(at + 20, x.data.length, true);
         view.setUint32(at + 24, x.image, true);
@@ -81,7 +87,7 @@ test('the modules file is read, a foreign or cut file is refused', () => {
     expect([...fromFull.keys()]).toEqual(['rf']);
     expect([...(fromFull.get('rf')?.data ?? [])]).toEqual([7, 8, 9]);
 
-    const cut = container([{name: 'rf', image: 1, ram: 0, iram: 0, data: [1, 2, 3, 4]}]).slice(0, 58);
+    const cut = container([{name: 'rf', image: 1, ram: 0, iram: 0, data: [1, 2, 3, 4]}]).slice(0, 82);
     expect(() => parseContainer(cut)).toThrow('cut short');
 });
 
@@ -159,4 +165,52 @@ test('meters: flash counts the head and whole sectors, the preview adds the modu
     expect(meterLevel({title: '', total: 100, head: 0, used: 50, added: 0, legend: ''})).toBe('');
     expect(meterLevel({title: '', total: 100, head: 0, used: 85, added: 0, legend: ''})).toBe('mod-tight');
     expect(meterLevel({title: '', total: 100, head: 0, used: 90, added: 20, legend: ''})).toBe('mod-over');
+});
+
+test('switching on takes what a module needs first, the deepest first; others that need it go off with it', () => {
+    const packages = parseContainer(container([
+        {name: 'sensors', image: 9000, ram: 100, iram: 0, data: [0]},
+        {name: 'dht', image: 3000, ram: 50, iram: 0, data: [0], requires: 'sensors'},
+        {name: 'thingspeak', image: 4000, ram: 60, iram: 0, data: [0], requires: 'dht, mqtt'},
+    ]));
+    expect(packages.get('thingspeak')?.requires).toEqual(['dht', 'mqtt']);
+
+    // nothing installed: sensors, dht, then thingspeak; mqtt is in neither place
+    const none = status({modules: []});
+    expect(switchOnOrder('dht', none, packages)).toEqual({order: ['sensors', 'dht'], missing: []});
+    expect(switchOnOrder('thingspeak', none, packages).missing).toEqual(['mqtt']);
+
+    // sensors installed and on: only what is off or missing is switched
+    const board = status({modules: [
+        {name: 'sensors', size: 9000, offset: 0xE0000, ram: 100, ram_in: 'dram', iram: 0, state: 'running',
+            enabled: 1, requires: ''},
+        {name: 'dht', size: 3000, offset: 0xD0000, ram: 50, ram_in: 'dram', iram: 0, state: 'off', enabled: 0,
+            requires: 'sensors'},
+    ]});
+    expect(switchOnOrder('dht', board, packages).order).toEqual(['dht']);
+
+    // who needs sensors: dht (off) - all installed ones, or only those switched on
+    expect(dependentsOf('sensors', board, packages, false)).toEqual(['dht']);
+    expect(dependentsOf('sensors', board, packages, true)).toEqual([]);
+});
+
+test('modules are grouped for the panel', () => {
+    expect(groupOf('webui')).toBe('Interface');
+    expect(groupOf('dht')).toBe('Sensors');
+    expect(groupOf('homeassistant')).toBe('Integrations');
+    expect(groupOf('something')).toBe('Other');
+});
+
+test('a group counts its modules: on, in flash, all', () => {
+    const packages = parseContainer(container([
+        {name: 'alexa', image: 9000, ram: 100, iram: 0, data: [0]},
+        {name: 'domoticz', image: 9000, ram: 100, iram: 0, data: [0]},
+        {name: 'mdns', image: 9000, ram: 100, iram: 0, data: [0]},
+    ]));
+    const board = status({modules: [
+        {name: 'alexa', size: 9000, offset: 0xE0000, ram: 100, ram_in: 'dram', iram: 0, state: 'running', enabled: 1},
+        {name: 'domoticz', size: 9000, offset: 0xD0000, ram: 100, ram_in: 'dram', iram: 0, state: 'off', enabled: 0},
+    ]});
+    const rows = moduleRows(board, packages, new Map()).filter((row) => groupOf(row.name) === 'Integrations');
+    expect(groupCounts(rows)).toEqual({on: 1, installed: 2, all: 3});
 });

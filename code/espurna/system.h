@@ -5,24 +5,33 @@ SYSTEM MODULE
 Copyright (C) 2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 Common part, shared by every architecture. Chip specific parts (timers, sleep,
-memory, reset) are declared in arch/<arch>/system_<arch>.h and implemented in
-arch/<arch>/system_<arch>.cpp
+memory, reset) are declared in arch/esp8266/system_esp8266.h, and for the FreeRTOS
+chips (ESP32, BK72xx) in arch/rtos/system_rtos.h; implemented in arch/<arch>/system_<arch>.cpp
+and arch/rtos/system_rtos.cpp
 
 */
 
 #pragma once
 
-#include "system_time_orch.h"
+#include "system_time.h"
 #include "settings.h"
-#include "types_orch.h"
+#include "types.h"
 
 #if defined(ESP8266)
 #include "arch/esp8266/system_esp8266.h"
-#elif defined(ESP32)
-#include "arch/esp32/system_esp32.h"
-#elif defined(LIBRETINY)
-#include "arch/beken/system_beken.h"
+#elif defined(ESP32) || defined(LIBRETINY)
+#include "arch/rtos/system_rtos.h"
 #endif
+
+namespace espurna {
+namespace sleep {
+
+// light sleep timer limits, 0xFFFFFFF is 'until woken up' of the esp8266 NONOS API (wifi_fpm_do_sleep)
+constexpr auto FpmSleepMin = Microseconds{ 1000 };
+constexpr auto FpmSleepIndefinite = Microseconds{ 0xFFFFFFF };
+
+} // namespace sleep
+} // namespace espurna
 
 #include <chrono>
 #include <cstdint>
@@ -245,6 +254,31 @@ Interrupt interrupt();
 } // namespace settings
 } // namespace sleep
 
+namespace system {
+
+// Chip part of every chip, arch/<chip>/system_<chip>.cpp. Only the SDK calls, everything around them is in
+// system.cpp (and for the FreeRTOS chips in arch/rtos/system_rtos.cpp, ref. its own chip part)
+namespace chip {
+
+// MAC the chip id is made of (6 bytes), false when it could not be read
+bool mac(uint8_t* out);
+
+// instantLightSleep() and instantDeepSleep(), either a timer or a pin wakes the chip up.
+// Callbacks of systemBeforeSleep() / systemAfterSleep() are run by the chip, ref. run_before_sleep()
+bool light_sleep(bool timer, sleep::Microseconds time, int pin, sleep::Interrupt interrupt);
+bool deep_sleep(sleep::Microseconds time);
+
+// First thing in setup(), before anything reads the settings. esp8266: the 1 MB head on a 4 MB board moves the
+// settings of the old 4 MB layout (pool at the end of the chip) into its own pool, once
+void early_setup();
+
+} // namespace chip
+
+void run_before_sleep();
+void run_after_sleep();
+
+} // namespace system
+
 namespace settings {
 namespace internal {
 
@@ -271,16 +305,6 @@ HeapStats systemHeapStats();
 
 size_t systemFreeHeap();
 size_t systemInitialFreeHeap();
-
-#if defined(LIBRETINY)
-// BK7231N data TCM: the static data placed there (Wi-Fi driver, and ref. scripts/beken_tcm.py), out of its size
-struct TcmStats {
-    size_t used;
-    size_t size;
-};
-
-TcmStats systemTcmStats();
-#endif
 
 [[noreturn]] void forceEraseSDKConfig();
 

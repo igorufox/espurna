@@ -1,4 +1,4 @@
-# PROTOTYPE: head functions the modules call (scripts/esp8266_head_exports.py, written by esp8266_module_link.py)
+# PROTOTYPE: head functions the modules call (kept by scripts/module_head.py, written by esp8266_module_link.py)
 _Z17schedule_functionRKSt8functionIFvvEE
 _ZN8LwipIntf14statusChangeCBESt8functionIFvP5netifEE
 _Z10getSettingRKN7espurna8settings3KeyEPK19__FlashStringHelper
@@ -94,3 +94,32 @@ _Z9lightBluel
 pwm_init
 pwm_set_duty
 pwm_start
+_Z8mqttSendPKcS0_
+_ZN7espurna9ReadyFlag4stopEv
+_ZN7espurna9ReadyFlag4waitENSt6chrono8durationIjSt5ratioILx1ELx1000EEEE
+_ZN19ESP8266WiFiSTAClass10macAddressEv
+_Z18modulesMqttProvidePK13MqttModuleApi
+_Z19systemStopHeartbeatPFbiE
+_Z8isNumberN7espurna10StringViewE
+_ZN19ESP8266WiFiSTAClass8BSSIDstrEv
+_ZN6StringixEj
+_ZNK19ESP8266WiFiSTAClass4SSIDEv
+_ZNK7espurna10StringView8endsWithES0_
+_Z11mqttSendRawPKcS0_b
+_Z15mqttTopicSetterRK6String
+_Z9mqttTopicRK6String
+_Z8mqttSendPKcS0_bb
+_Z11mdnsRunningv
+_Z16mdnsServiceQueryRK6StringS1_PFbOS_tE
+_ZN7WiFiUDP10remotePortEv
+_ZN7WiFiUDP11beginPacketE9IPAddresst
+_ZN7WiFiUDP11parsePacketEv
+_ZN7WiFiUDP4readEPhj
+_ZN7WiFiUDP5writeEPKhj
+_ZN7WiFiUDP8remoteIPEv
+_ZN7WiFiUDP9endPacketEv
+_ZN7WiFiUDPC1Ev
+_Z13wifiApCaptivev
+_ZN7WiFiUDP4stopEv
+_ZN7WiFiUDP5beginEt
+_ZN6String9setCharAtEjc

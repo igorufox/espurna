@@ -12,20 +12,13 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #if WEB_SUPPORT && OTA_WEB_SUPPORT
 
 #include "espurna_ota.h"
+#include "ota_driver.h"
 #include "web.h"
 
 #if MODULES_SUPPORT
 #include "modules.h"
 #endif
 #include "ws.h"
-
-#if MATTER_TAIL_SUPPORT
-#include "espurna_matter.h"
-#endif
-
-#if defined(LIBRETINY)
-#include "arch/beken/ota_beken.h"
-#endif
 
 namespace ota {
 namespace web {
@@ -84,44 +77,8 @@ bool installed { false };
 // 'in progress' and every following upload fails with 400 until the reboot
 AsyncWebServerRequest* owner { nullptr };
 
-#if defined(LIBRETINY)
-// Beken uploads that ESPurna writes itself instead of Update: espurna-beken-matter.bin, the image for every bootloader
-// (arch/beken/ota_beken.cpp), and matter-tail.bin, the Matter code of the Tuya layout (arch/beken/matter_beken.cpp).
-// Each function returns nullptr or a PSTR() error
-struct Writer {
-    const char* name;
-    const char* (*begin)();
-    const char* (*write)(const uint8_t*, size_t);
-    const char* (*end)();
-    void (*abort)();
-};
-
-const Writer BekenImage {"image", bekenImageBegin, bekenImageWrite, bekenImageEnd, bekenImageAbort};
-#if MATTER_TAIL_SUPPORT
-const Writer MatterTail {"Matter code", matterTailBegin, matterTailWrite, matterTailEnd, matterTailAbort};
-#endif
-
-const Writer* writer { nullptr };
-
-#if MATTER_TAIL_SUPPORT
-// 409 sent, the reboot without Matter is due once its request ended (body read or connection gone)
-bool matterReboot { false };
-
-void matterRebootNow() {
-    if (matterReboot) {
-        matterReboot = false;
-        systemRunInLoop([]() {
-            matterRebootForUpload();
-        });
-    }
-}
-#endif
-
-void setWriterError(AsyncWebServerRequest* request, const char* error) {
-    writer = nullptr;
-    setStatus(request, 500, String(FPSTR(error)));
-}
-#endif
+// Some uploads are written by the chip code itself instead of Update (ref. own_...() in ota_driver.h)
+namespace driver = ::espurna::ota::driver;
 
 void onDisconnect(AsyncWebServerRequest* request) {
     if (owner != request) {
@@ -129,15 +86,13 @@ void onDisconnect(AsyncWebServerRequest* request) {
     }
 
     owner = nullptr;
-#if defined(LIBRETINY)
-    if (writer) {
-        writer->abort();
-        writer = nullptr;
+    if (driver::own_running()) {
+        driver::own_abort();
         pending = false;
         DEBUG_MSG_P(PSTR("[UPGRADE] Connection closed before the upload finished, aborted\n"));
         return;
     }
-#endif
+
     if (Update.isRunning()) {
         pending = false;
         Update.end();
@@ -169,9 +124,7 @@ void onUpgrade(AsyncWebServerRequest *request) {
     }
 
     if (request->_tempObject) {
-#if defined(LIBRETINY) && MATTER_TAIL_SUPPORT
-        matterRebootNow();
-#endif
+        driver::upload_blocked_done();
         return;
     }
 
@@ -179,29 +132,22 @@ void onUpgrade(AsyncWebServerRequest *request) {
         pending = false;
         owner = nullptr;
 
-#if defined(LIBRETINY)
-        if (writer) {
-            const auto* current = writer;
-            writer = nullptr;
-            const auto* error = complete(request)
-                ? current->end()
-                : PSTR("ERROR: Incomplete upload");
+        if (driver::own_running()) {
+            bool again { false };
+            const auto* error = driver::own_finish(complete(request), again);
             if (error) {
-                current->abort();
                 sendResponse(request, 400, String(FPSTR(error)));
                 return;
             }
 
-            // Tuya layout: the image is in, its Matter code comes with the same file after the reboot
-            sendResponse(request, 200,
-                ((current == &BekenImage) && bekenImageAgain()) ? F("OK, again") : F("OK"));
+            // e.g. the image is in, the rest of it comes with the same file after the reboot
+            sendResponse(request, 200, again ? F("OK, again") : F("OK"));
             installed = true;
             systemRunInLoop([]() {
                 prepareReset(CustomResetReason::Ota);
             });
             return;
         }
-#endif
 
         if (!complete(request)) {
             DEBUG_MSG_P(PSTR("[UPGRADE] Incomplete upload, received %u of %s bytes\n"),
@@ -278,61 +224,40 @@ void onFile(AsyncWebServerRequest *request, String filename, size_t index, uint8
             return;
         }
 
-#if defined(LIBRETINY)
-#if MATTER_TAIL_SUPPORT
-        // Matter code is where the OTA image goes: one reboot without Matter first, then upload again
-        if (matterTailBlocksOta()) {
-            // the reboot waits for the end of the request: a reboot while the browser still sends drops the
-            // connection and the browser never reads the 409
-            setStatus(request, 409, F("ERROR: Matter is running from the OTA partition. Rebooting without Matter, upload again in a minute"));
-            matterReboot = true;
+        // the board has to reboot first, the reboot waits for the end of the request (ref. onUpgrade())
+        const auto* blocked = driver::upload_blocked();
+        if (blocked) {
+            setStatus(request, 409, String(FPSTR(blocked)));
             request->onDisconnect([]() {
-                matterRebootNow();
+                driver::upload_blocked_done();
             });
             return;
         }
-#endif
 
-        writer = nullptr;
-        if (bekenImageIsUpload(data, len)) {
-            writer = &BekenImage;
-#if MATTER_TAIL_SUPPORT
-        } else if (matterTailIsUpload(data, len)) {
-            writer = &MatterTail;
-#endif
+        const auto own = driver::own_begin(data, len);
+        if (own.error) {
+            setStatus(request, own.code, String(FPSTR(own.error)));
+            return;
         }
 
-        if (writer) {
-            const auto* error = writer->begin();
-            if (error) {
-                setWriterError(request, error);
-                return;
-            }
-
-            DEBUG_MSG_P(PSTR("[UPGRADE] Start (%s): %s\n"), writer->name, filename.c_str());
+        if (own.own) {
+            DEBUG_MSG_P(PSTR("[UPGRADE] Start (%s): %s\n"), driver::own_name(), filename.c_str());
             owner = request;
             uploadRxTimeout(request);
             request->onDisconnect([request]() {
                 onDisconnect(request);
             });
-        } else {
-            const auto* error = bekenUf2Allowed();
-            if (error) {
-                setStatus(request, 400, String(FPSTR(error)));
-                return;
-            }
         }
     }
 
-    if (writer) {
+    if (driver::own_running()) {
         if (request->_tempObject) {
             return;
         }
 
-        const auto* error = writer->write(data, len);
+        const auto* error = driver::own_write(data, len);
         if (error) {
-            writer->abort();
-            setWriterError(request, error);
+            setStatus(request, 500, String(FPSTR(error)));
             return;
         }
 
@@ -347,8 +272,6 @@ void onFile(AsyncWebServerRequest *request, String filename, size_t index, uint8
     }
 
     if (!index) {
-#endif
-
         if (!otaVerifyHeader(data, len)) {
             setStatus(request, 400, F("ERROR: No magic byte / invalid flash config"));
             return;
@@ -358,17 +281,10 @@ void onFile(AsyncWebServerRequest *request, String filename, size_t index, uint8
         eepromRotate(false);
 
         DEBUG_MSG_P(PSTR("[UPGRADE] Start: %s\n"), filename.c_str());
-#if defined(ESP8266)
-        Update.runAsync(true);
-#endif
+        driver::update_prepare();
 
         // Note: cannot use request->contentLength() for multipart/form-data
-#if defined(LIBRETINY)
-        // .uf2 package is a lot bigger than the image it carries, Update checks the OTA partition itself
-        const size_t size = UPDATE_SIZE_UNKNOWN;
-#else
-        const size_t size = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
-#endif
+        const size_t size = driver::update_size();
         if (!Update.begin(size)) {
             setStatus(request, 500);
             eepromRotate(true);

@@ -11,7 +11,7 @@ Copyright (C) 2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #include <Arduino.h>
 #include <vector>
 
-#include "types_orch.h"
+#include "types.h"
 
 // -----------------------------------------------------------------------------
 

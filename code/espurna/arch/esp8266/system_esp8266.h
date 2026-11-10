@@ -12,10 +12,10 @@ Chip specific part, included by the common system.h
 
 #include <user_interface.h>
 
-#include "../../system_time_orch.h"
+#include "../../system_time.h"
 
 #include "../../settings.h"
-#include "../../types_orch.h"
+#include "../../types.h"
 
 #include <chrono>
 #include <cstdint>
@@ -27,9 +27,6 @@ namespace sleep {
 // Both LIGHT and DEEP sleep accept microseconds as input
 // Effective limit is ~31bit - 1 in size
 using Microseconds = std::chrono::duration<uint32_t, std::micro>;
-
-constexpr auto FpmSleepMin = Microseconds{ 1000 };
-constexpr auto FpmSleepIndefinite = Microseconds{ 0xFFFFFFF };
 
 } // namespace sleep
 

@@ -135,13 +135,9 @@ void clear() {
 // Print out crash information that has been previusly saved in EEPROM
 // Optionally, check whether the timestamp is erased / EEPROM contains no data.
 void dump(Print& print, bool check) {
-#if defined(LIBRETINY)
-    // Beken keeps it in its own flash record (rtcmem_beken.cpp), the EEPROM part is not written there
-    if (!check) {
-        rtcmemCrashDump(print);
+    if (chip::dump(print, check)) {
+        return;
     }
-    return;
-#endif
 
     char buffer[256] = {0};
 
@@ -155,17 +151,9 @@ void dump(Print& print, bool check) {
         return;
     }
 
-#if defined(ARDUINO_ARCH_ESP32)
-    // Nothing writes crash data to EEPROM on ESP32 (esp8266 custom_crash_callback() is never called),
-    // stored bytes are meaningless. Panic info is saved in the core dump partition instead
-    if (crash_time_erased) {
-        snprintf_P(buffer, sizeof(buffer),
-            PSTR("Reason of restart: %s\nCrash details (if any) are in the core dump, see COREDUMP\n"),
-            ESP.getResetReason().c_str());
-        print.print(buffer);
+    if (crash_time_erased && chip::dump_empty(print)) {
         return;
     }
-#endif
 
     uint8_t reason = instance.read(EepromCrashBegin + SAVE_CRASH_RESTART_REASON);
     if (!crash_time_erased) {
@@ -287,9 +275,7 @@ void setup() {
         clear();
     }
 
-#if defined(LIBRETINY)
-    rtcmemCrashSetup();
-#endif
+    chip::setup();
 
 #if TERMINAL_SUPPORT
     terminal::add(Commands);

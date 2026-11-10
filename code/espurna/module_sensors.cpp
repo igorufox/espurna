@@ -1,7 +1,7 @@
 /*
 
-PROTOTYPE: the sensors module (docs/esp8266-modules.md). Compiled in env:esp8266-1m-modules of
-platformio_modules.ini; scripts/esp8266_module_link.py links it with sensor.cpp against the head.
+PROTOTYPE: the sensors module (docs/modules.md). Compiled in env:esp8266-1m-modules of
+platformio_esp8266.ini; scripts/esp8266_module_link.py links it with sensor.cpp against the head.
 
 Provides the magnitude API to the other modules (Home Assistant, Domoticz, Thingspeak ...) through the head.
 

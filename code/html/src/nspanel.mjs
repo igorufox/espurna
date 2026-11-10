@@ -3,8 +3,7 @@ import { styleInject } from './core.mjs';
 import { variableListeners } from './settings.mjs';
 import { DESIGN, Screen } from './nspanel-screen.mjs';
 
-// <link> stylesheets are not stripped per-module by the build, keep the rules
-// here so that only the variant(s) built with MODULE_NSPANEL carry them
+// style rules of the NSPANEL panel, injected by init()
 const STYLE = [
     `.nspanel-editor { font-family: 'Courier New', monospace; font-size: 85%; line-height: 1.3;
         height: 480px; resize: vertical; tab-size: 2; white-space: pre; }`,

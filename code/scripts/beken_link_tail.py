@@ -24,6 +24,10 @@ from datetime import datetime
 from io import BytesIO
 from os.path import basename, dirname, join
 
+# release_image.py is in this folder (this script runs under ltchiptool's python, from the project dir)
+sys.path.insert(0, dirname(__file__) if "__file__" in globals() else "scripts")
+from release_image import path as release_path, write  # noqa: E402
+
 TAIL_ORIGIN = int(sys.argv.pop(1), 16)
 QUECTEL_BOARD = sys.argv.pop(1)
 
@@ -146,10 +150,7 @@ def make_tail(self, elf):
         CONTAINER_MAGIC, 1, flash_offset, len(flash), zlib.crc32(flash) & 0xFFFFFFFF, build_id
     ).ljust(CONTAINER_SIZE, b"\xff")
 
-    out_path = join(folder, "matter-tail.bin")
-    with open(out_path, "wb") as f:
-        f.write(header)
-        f.write(flash)
+    out_path = write(join(folder, "matter-tail.bin"), header, flash)
 
     print(
         f"|-- {basename(out_path)}: {len(data)} bytes of code at 0x{TAIL_ORIGIN:X}, "
@@ -240,12 +241,8 @@ def make_image(self, elf, build_id, tail_header):
         table += IMAGE_PART.pack(kind, offset, len(data), zlib.crc32(data) & 0xFFFFFFFF)
         offset += len(data)
 
-    image_path = join(folder, "espurna-beken-matter.bin")
-    with open(image_path, "wb") as f:
-        f.write(IMAGE_HEADER.pack(IMAGE_MAGIC, 1, len(parts), build_id))
-        f.write(table)
-        for _, data in parts:
-            f.write(data)
+    image_path = write(release_path(folder, "beken", "matter"), IMAGE_HEADER.pack(IMAGE_MAGIC, 1, len(parts), build_id),
+                       table, *(data for _, data in parts))
 
     print(
         f"|-- {basename(image_path)}: Tuya {len(rbl_tuya)} B, Quectel {len(rbl_quectel)} B "
@@ -270,9 +267,7 @@ def make_image(self, elf, build_id, tail_header):
 
     app_offs = to_offset(app_addr)
     rbl_offs = to_offset(app_size) - 102
-    ota_path = join(folder, "image_quectel_app.ota.rbl")
-    with open(ota_path, "wb") as f:
-        f.write(rbl_quectel)
+    ota_path = write(join(folder, "image_quectel_app.ota.rbl"), rbl_quectel)
 
     # the whole application partition in one piece (image, padding, RBL header at its end): written as one aligned
     # run over UART. The RBL header alone at its unaligned offset fails to write on the Quectel bootloader
@@ -284,13 +279,9 @@ def make_image(self, elf, build_id, tail_header):
     padding = rbl_offs - len(crc_data)
     if padding < 0:
         raise ValueError("the image overlaps the RBL header of the Quectel layout")
-    app_path = join(folder, "image_quectel_app.0x011000.rbl")
-    with open(app_path, "wb") as f:
-        f.write(crc_data)
-        f.write(bytes([0xFF]) * padding)
-        f.write(rblh_data)
+    app_path = write(join(folder, "image_quectel_app.0x011000.rbl"), crc_data, bytes([0xFF]) * padding, rblh_data)
 
-    uf2_path = join(folder, "espurna-beken-initial-quectel.uf2")
+    uf2_path = release_path(folder, "beken", "initial", "quectel", ext=".uf2")
     subprocess.run(
         [
             sys.executable, "-m", "ltchiptool", "uf2", "write",

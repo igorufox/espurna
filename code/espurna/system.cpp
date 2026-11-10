@@ -12,6 +12,7 @@ in arch/<arch>/system_<arch>.cpp (ref. espurna::system::arch in system.h)
 #include "espurna.h"
 
 #include "rtcmem.h"
+#include "espurna_tasks.h"
 
 #if WEB_SUPPORT
 #include "ws.h"
@@ -26,11 +27,7 @@ in arch/<arch>/system_<arch>.cpp (ref. espurna::system::arch in system.h)
 #endif
 
 #if SYSTEM_CHECK_ENABLED
-#if defined(ESP8266)
-#include <Updater.h>
-#elif defined(ESP32)
-#include <Update.h>
-#endif
+#include "ota_driver.h"
 #endif
 
 #include <cstdint>
@@ -38,6 +35,73 @@ in arch/<arch>/system_<arch>.cpp (ref. espurna::system::arch in system.h)
 #include <forward_list>
 #include <random>
 #include <vector>
+
+// -----------------------------------------------------------------------------
+// DEFERRED CALLBACKS (ref. system.h systemRunInLoop())
+// -----------------------------------------------------------------------------
+
+// Network handlers that could not take the loop lock in time (ref. AsyncGuard) hand
+// their work over to the loop task. Queue is only ever touched under the mutex (no-op on esp8266,
+// where everything runs in the same context), callbacks themselves run outside of it, in the order
+// they were queued.
+namespace run_in_loop {
+namespace {
+
+espurna::system::Mutex mutex;
+std::vector<std::function<void()>> queue;
+
+// Normally only a few callbacks are queued between two loop() iterations. A lot more means
+// loop() is not keeping up with the network (or is stuck), which is reported once per burst.
+constexpr size_t QueueWarning { 32 };
+bool warned { false };
+
+} // namespace
+
+void push(std::function<void()> callback) {
+    size_t size;
+    bool warn { false };
+    {
+        espurna::system::MutexLock lock(mutex);
+        queue.push_back(std::move(callback));
+        size = queue.size();
+        if (!warned && (size > QueueWarning)) {
+            warned = true;
+            warn = true;
+        }
+    }
+
+    // outside of the queue mutex, debug output from other tasks is queued as well
+    if (warn) {
+        DEBUG_MSG_P(PSTR("[MAIN] Loop is falling behind, %u deferred callbacks queued\n"), size);
+    }
+}
+
+void drain() {
+    std::vector<std::function<void()>> current;
+    {
+        espurna::system::MutexLock lock(mutex);
+        if (queue.empty()) {
+            return;
+        }
+        current.swap(queue);
+        if (current.size() <= QueueWarning) {
+            warned = false;
+        }
+    }
+
+    // anything queued while running goes into the next loop() iteration
+    for (auto& callback : current) {
+        callback();
+    }
+}
+
+} // namespace run_in_loop
+
+void systemRunInLoop(std::function<void()> callback) {
+    if (callback) {
+        run_in_loop::push(std::move(callback));
+    }
+}
 
 // -----------------------------------------------------------------------------
 
@@ -260,6 +324,68 @@ void setup() {
 
 // -----------------------------------------------------------------------------
 
+namespace time {
+
+// c/p from the Core 3.1.0, allow an additional calculation, so we don't delay more than necessary
+// plus, another helper when there are no external blocking checker
+
+bool tryDelay(CoreClock::time_point start, CoreClock::duration timeout, CoreClock::duration interval) {
+    auto elapsed = CoreClock::now() - start;
+    if (elapsed < timeout) {
+        delay(std::min((timeout - elapsed), interval));
+        return false;
+    }
+
+    return true;
+}
+
+bool blockingDelay(CoreClock::duration timeout, CoreClock::duration interval) {
+    return blockingDelay(
+        timeout,
+        interval,
+        []() {
+            return true;
+        });
+}
+
+bool blockingDelay(CoreClock::duration timeout) {
+    return blockingDelay(timeout, timeout);
+}
+
+} // namespace time
+
+// -----------------------------------------------------------------------------
+// SLEEP (ref. system.h chip::light_sleep() and chip::deep_sleep())
+// -----------------------------------------------------------------------------
+
+namespace system {
+namespace {
+namespace sleep_callbacks {
+
+std::forward_list<SleepCallback> before;
+std::forward_list<SleepCallback> after;
+
+void run(const std::forward_list<SleepCallback>& callbacks) {
+    for (auto callback : callbacks) {
+        callback();
+    }
+}
+
+} // namespace sleep_callbacks
+} // namespace
+
+void run_before_sleep() {
+    sleep_callbacks::run(sleep_callbacks::before);
+}
+
+void run_after_sleep() {
+    sleep_callbacks::run(sleep_callbacks::after);
+}
+
+} // namespace system
+
+// -----------------------------------------------------------------------------
+
 bool ReadyFlag::wait(duration::Milliseconds interval) {
     if (_ready) {
         _ready = false;
@@ -378,12 +504,7 @@ struct Data {
     {}
 
     bool status() const {
-#if defined(LIBRETINY)
-        // BK72xx only keeps this word across a reset, not the whole RTCMEM
         return rtcmemSysStatus();
-#else
-        return rtcmemStatus();
-#endif
     }
 
     uint8_t counter() const {
@@ -945,12 +1066,7 @@ void onConnected(JsonObject& root) {
 
 bool onKeyCheck(StringView key, const JsonVariant& value) {
     if (key == system::settings::keys::Password) {
-        const auto password = system::password();
-#if defined(ESP8266)
-        return !equalsConstantTime(password, value.as<String>());
-#else
-        return !password.equals(value.as<String>());
-#endif
+        return !equalsConstantTime(system::password(), value.as<String>());
     }
 
     return (key == system::settings::keys::Description)
@@ -1012,6 +1128,7 @@ duration::Seconds uptime() {
 
 void loop() {
     system::arch::loop();
+    ::run_in_loop::drain();
     pending_reset_loop();
     load_average::loop();
     heartbeat::loop();
@@ -1062,8 +1179,68 @@ uint32_t randomNumber() {
     return (espurna::system::RandomDevice{})();
 }
 
+// 'total stack size' minus 'un-painted area' of the loop task (esp8266 CONT)
+unsigned long systemFreeStack() {
+    return ESP.getFreeContStack();
+}
+
 unsigned long systemLoadAverage() {
     return espurna::load_average::value();
+}
+
+// Cached on the first call, which is the first thing setup() does
+size_t systemInitialFreeHeap() {
+    static const size_t value = systemFreeHeap();
+    return value;
+}
+
+espurna::StringView systemChipId() {
+    static const String out = ([]() {
+        uint8_t mac[6];
+        if (espurna::system::chip::mac(mac)) {
+            return hexEncode(mac);
+        }
+
+        return String(F("000000000000"));
+    })();
+
+    return out;
+}
+
+espurna::StringView systemShortChipId() {
+    const auto full = systemChipId();
+    return espurna::StringView(full.begin() + 6, full.end());
+}
+
+void systemBeforeSleep(SleepCallback callback) {
+    espurna::system::sleep_callbacks::before.push_front(callback);
+}
+
+void systemAfterSleep(SleepCallback callback) {
+    espurna::system::sleep_callbacks::after.push_front(callback);
+}
+
+// Same on every chip, wakeup pin is not configured by default
+bool instantLightSleep() {
+    const auto pin = espurna::sleep::settings::pin();
+    if (pin == GPIO_NONE) {
+        return false;
+    }
+
+    return espurna::system::chip::light_sleep(false, {}, pin,
+        espurna::sleep::settings::interrupt());
+}
+
+bool instantLightSleep(espurna::sleep::Microseconds time) {
+    return espurna::system::chip::light_sleep(true, time, -1, espurna::sleep::Interrupt::Low);
+}
+
+bool instantLightSleep(uint8_t pin, espurna::sleep::Interrupt interrupt) {
+    return espurna::system::chip::light_sleep(false, {}, pin, interrupt);
+}
+
+bool instantDeepSleep(espurna::sleep::Microseconds time) {
+    return espurna::system::chip::deep_sleep(time);
 }
 
 void factoryReset() {

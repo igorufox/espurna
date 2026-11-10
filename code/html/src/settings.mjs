@@ -42,7 +42,7 @@ import {
     onGroupSettingsEventDel,
 } from './settings/group.mjs';
 
-import { MODULE_DEV } from '@build-preset/constants.mjs';
+import { MODULE_DEV } from '@build-mode';
 
 /**
  * @typedef { HTMLInputElement | HTMLSelectElement } InputOrSelect

@@ -8,10 +8,13 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #pragma once
 
-#include "types_orch.h"
+#include "types.h"
 #include "libs/BasePin.h"
 
+#include <bitset>
 #include <cstddef>
+
+class Print;
 
 enum class GpioType : int {
     None,
@@ -44,6 +47,16 @@ struct Mode {
 
 Mode pin_mode(uint8_t);
 
+// Chip part, arch/<chip>/gpio_<chip>.cpp
+namespace chip {
+
+// last thing in gpioSetup()
+void setup();
+
+// state of the pin for the GPIO terminal command, rest of the line after the lock mark
+void print_pin(Print&, uint8_t pin);
+
+} // namespace chip
 } // namespace gpio
 
 namespace settings {
@@ -66,6 +79,59 @@ public:
     // input-only or flash-reserved pins (ESP32) override this.
     virtual bool validForOutput(unsigned char index) const { return valid(index); }
     virtual BasePinPtr pin(unsigned char index) = 0;
+};
+
+// Hardware GPIO of a chip. Which pins it has (and which of them may drive outputs) and how they are driven is in
+// arch/<chip>/gpio_<chip>.cpp
+template <size_t Size>
+class HardwareGpioBase : public GpioBase {
+public:
+    static constexpr size_t Pins { Size };
+
+    const char* id() const override {
+        return "hardware";
+    }
+
+    size_t pins() const override {
+        return Pins;
+    }
+
+    bool lock(unsigned char index) const override {
+        return (index < Pins) && _locked[index];
+    }
+
+    void lock(unsigned char index, bool value) override {
+        if (index < Pins) {
+            _locked.set(index, value);
+        }
+    }
+
+private:
+    std::bitset<Pins> _locked;
+};
+
+// Pin of the FreeRTOS chips, driven through the Arduino API. How the mode and the level are set is the chip part
+// (ref. arch/<chip>/gpio_<chip>.cpp)
+class ArduinoPin : public BasePin {
+public:
+    explicit ArduinoPin(unsigned char pin) :
+        _pin(pin)
+    {}
+
+    const char* id() const override {
+        return "hardware";
+    }
+
+    unsigned char pin() const override {
+        return _pin;
+    }
+
+    int digitalRead() override {
+        return ::digitalRead(_pin);
+    }
+
+protected:
+    unsigned char _pin;
 };
 
 GpioBase* gpioBase(GpioType);

@@ -11,7 +11,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <Arduino.h>
 #include <cstdint>
 
-#include "types_orch.h"
+#include "types.h"
 
 using RfbCodeHandler = void(*)(unsigned char protocol, espurna::StringView code);
 void rfbOnCode(RfbCodeHandler);

@@ -10,6 +10,7 @@ BK7231N: ONE OTA FILE FOR BOTH BOOTLOADERS (ref. ota_beken.h, scripts/beken_link
 
 #include "layout_beken.h"
 #include "ota_beken.h"
+#include "../../ota_driver.h"
 
 #if MATTER_SUPPORT
 #include "espurna_matter.h"
@@ -356,5 +357,132 @@ const char* bekenUf2Allowed() {
 
     return nullptr;
 }
+
+// Web OTA (ref. ota_driver.h, ota_web.cpp): espurna-beken-matter.bin, the image for every bootloader (above),
+// and matter-tail.bin, the Matter code of the Tuya layout (arch/beken/matter_beken.cpp), are written here
+// instead of Update. Plain .uf2 goes through Update
+namespace espurna {
+namespace ota {
+namespace driver {
+namespace {
+
+struct Writer {
+    const char* name;
+    const char* (*begin)();
+    const char* (*write)(const uint8_t*, size_t);
+    const char* (*end)();
+    void (*abort)();
+};
+
+const Writer BekenImage {"image", bekenImageBegin, bekenImageWrite, bekenImageEnd, bekenImageAbort};
+#if MATTER_TAIL_SUPPORT
+const Writer MatterTail {"Matter code", matterTailBegin, matterTailWrite, matterTailEnd, matterTailAbort};
+
+// 409 sent, the reboot without Matter is due once its request ended (body read or connection gone)
+bool matter_reboot { false };
+#endif
+
+const Writer* writer { nullptr };
+
+} // namespace
+
+const char* upload_blocked() {
+#if MATTER_TAIL_SUPPORT
+    // Matter code is where the OTA image goes: one reboot without Matter first, then upload again.
+    // The reboot waits for the end of the request: a reboot while the browser still sends drops the
+    // connection and the browser never reads the 409
+    if (matterTailBlocksOta()) {
+        matter_reboot = true;
+        return PSTR("ERROR: Matter is running from the OTA partition. Rebooting without Matter, upload again in a minute");
+    }
+#endif
+
+    return nullptr;
+}
+
+void upload_blocked_done() {
+#if MATTER_TAIL_SUPPORT
+    if (matter_reboot) {
+        matter_reboot = false;
+        systemRunInLoop([]() {
+            matterRebootForUpload();
+        });
+    }
+#endif
+}
+
+OwnUpload own_begin(const uint8_t* data, size_t len) {
+    writer = nullptr;
+    if (bekenImageIsUpload(data, len)) {
+        writer = &BekenImage;
+#if MATTER_TAIL_SUPPORT
+    } else if (matterTailIsUpload(data, len)) {
+        writer = &MatterTail;
+#endif
+    }
+
+    if (writer) {
+        const auto* error = writer->begin();
+        if (error) {
+            writer = nullptr;
+            return OwnUpload{false, 500, error};
+        }
+
+        return OwnUpload{true, 0, nullptr};
+    }
+
+    const auto* error = bekenUf2Allowed();
+    if (error) {
+        return OwnUpload{false, 400, error};
+    }
+
+    return OwnUpload{false, 0, nullptr};
+}
+
+bool own_running() {
+    return writer != nullptr;
+}
+
+const char* own_name() {
+    return writer ? writer->name : "";
+}
+
+const char* own_write(const uint8_t* data, size_t len) {
+    const auto* error = writer->write(data, len);
+    if (error) {
+        writer->abort();
+        writer = nullptr;
+    }
+
+    return error;
+}
+
+const char* own_finish(bool complete, bool& again) {
+    const auto* current = writer;
+    writer = nullptr;
+
+    const auto* error = complete
+        ? current->end()
+        : PSTR("ERROR: Incomplete upload");
+    if (error) {
+        current->abort();
+        return error;
+    }
+
+    // Tuya layout: the image is in, its Matter code comes with the same file after the reboot
+    again = (current == &BekenImage) && bekenImageAgain();
+    return nullptr;
+}
+
+void own_abort() {
+    if (writer) {
+        writer->abort();
+        writer = nullptr;
+    }
+}
+
+} // namespace driver
+} // namespace ota
+} // namespace espurna
 
 #endif

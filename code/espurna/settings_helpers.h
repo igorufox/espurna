@@ -14,7 +14,7 @@ Copyright (C) 2020-2023 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include <memory>
 #include <utility>
 
-#include "types_orch.h"
+#include "types.h"
 
 namespace espurna {
 namespace settings {

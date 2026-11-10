@@ -899,13 +899,14 @@ template <>
     return __builtin_bswap64(value);
 }
 
-// on ESP-IDF 5 (core 3.x) and LibreTiny toolchains uint32_t is already long unsigned int
-#if !(defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)) && !defined(LIBRETINY)
+// the one of unsigned int / unsigned long that is not uint32_t (unsigned long with the esp8266 toolchain), also 32bit
+using _rfb_other_u32 = std::conditional<std::is_same<uint32_t, unsigned int>::value, unsigned long, unsigned int>::type;
+static_assert(sizeof(_rfb_other_u32) == sizeof(uint32_t), "");
+
 template <>
-[[gnu::unused]] inline long unsigned int _rfb_bswap(long unsigned int value) {
+[[gnu::unused]] inline _rfb_other_u32 _rfb_bswap(_rfb_other_u32 value) {
     return __builtin_bswap32(value);
 }
-#endif
 
 void _rfbRcsEnqueue(uint8_t protocol, uint16_t timing, uint8_t bits, RfbMessage::code_type code, unsigned char repeats = 1u) {
     if (!_rfb_transmit) return;

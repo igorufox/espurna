@@ -118,7 +118,7 @@
 
     // Any ESP8266 board. Same as ESP32_GENERIC, nothing is pre-assigned and pins come from
     // the settings (device template search, Tasmota import, WebUI or terminal). Drivers are
-    // chosen by the build (esp8266-1m, -sensor, -all ... in platformio.ini)
+    // chosen by the build (esp8266-1m, -sensor, -all ... in platformio_esp8266.ini)
 
     // Info
     #define MANUFACTURER            "GENERIC"
@@ -5865,6 +5865,7 @@
 // -----------------------------------------------------------------------------
 
 #if defined(LIBRETINY)
+
 
     // UART1 (P11 TX, P10 RX), same pads as for flashing
     #ifndef UART1_TX_PIN

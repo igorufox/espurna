@@ -4,7 +4,7 @@
 # CONFIGURATION
 # ------------------------------------------------------------------------------
 
-ENVIRONMENT="esp8266-4m"
+ENVIRONMENT="esp8266"
 READELF="xtensa-lx106-elf-readelf"
 NUMBER=20
 
@@ -47,7 +47,7 @@ if [ $ENVIRONMENT == "" ]; then
     help
     exit 1
 fi
-ELF=.pio/build/$ENVIRONMENT/firmware.elf
+ELF=.pio/build_esp8266/$ENVIRONMENT/firmware.elf
 if [ ! -f $ELF ]; then
     echo "Could not find ELF file for the selected environment: $ELF"
     exit 2

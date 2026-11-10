@@ -26,3 +26,25 @@ void crashClear();
 
 void crashSetup();
 
+// Chip part, arch/<chip>/system_<chip>.cpp. The common record in the EEPROM is written by the esp8266 Core
+// crash handler (custom_crash_callback()); other chips keep what they know elsewhere
+namespace espurna {
+namespace debug {
+namespace crash {
+namespace chip {
+
+// Crash record of the chip itself, instead of the EEPROM one (Beken flash record). true when the chip has one,
+// `check` only asks for a crash that was not shown yet
+bool dump(Print&, bool check);
+
+// EEPROM record is empty, what the chip knows about the last reset instead (ESP32 core dump). true when printed
+bool dump_empty(Print&);
+
+// After the EEPROM record was checked at boot
+void setup();
+
+} // namespace chip
+} // namespace crash
+} // namespace debug
+} // namespace espurna
+

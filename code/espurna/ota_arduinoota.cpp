@@ -20,10 +20,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include <ArduinoOTA.h>
 
-#if defined(ARDUINO_ARCH_ESP32)
-#include <esp_task_wdt.h>
-#include "storage_eeprom.h"
-#endif
+#include "ota_driver.h"
 
 namespace espurna {
 namespace ota {
@@ -38,13 +35,8 @@ void configure() {
 #if USE_PASSWORD
     ArduinoOTA.setPassword(systemPassword().c_str());
 #endif
-#if defined(ESP8266)
-    ArduinoOTA.begin(false);
-#else
-    // same as esp8266, mDNS is handled by the mdns module (and only when enabled)
-    ArduinoOTA.setMdnsEnabled(false);
-    ArduinoOTA.begin();
-#endif
+    // mDNS is handled by the mdns module (and only when enabled)
+    driver::arduino_ota_begin(ArduinoOTA);
 }
 
 void loop() {
@@ -61,10 +53,7 @@ void start() {
     // Because ArduinoOTA is synchronous and will block until either success or error, force backup right now instead of waiting for the next loop()
     eepromRotate(false);
     eepromBackup(0);
-#if defined(ARDUINO_ARCH_ESP32)
-    // no backup sectors on ESP32, make sure pending settings reach NVS before the restart
-    eepromForceCommit();
-#endif
+    driver::arduino_ota_started();
 
     DEBUG_MSG_P(PSTR("[OTA] Started...\n"));
 #if WEB_SUPPORT
@@ -84,10 +73,8 @@ void end() {
 }
 
 void progress(unsigned int progress, unsigned int total) {
-#if defined(ARDUINO_ARCH_ESP32)
     // ArduinoOTA receives the whole image inside of a single loop() call
-    esp_task_wdt_reset();
-#endif
+    driver::arduino_ota_progress();
 
     // Removed to avoid websocket ping back during upgrade (see #1574)
     // TODO: implement as a custom payload that reports progress in non-text form?

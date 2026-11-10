@@ -11,6 +11,7 @@ Copyright (C) 2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #if UART_SUPPORT
 
 #include "uart.h"
+#include "uart_driver.h"
 #include "utils.h"
 
 #if WEB_SUPPORT
@@ -25,25 +26,6 @@ Copyright (C) 2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #include <utility>
 
 namespace espurna {
-namespace driver {
-namespace uart {
-namespace {
-
-enum class Parity {
-    None,
-    Even,
-    Odd,
-};
-
-struct Config {
-    uint8_t data_bits;
-    Parity parity;
-    uint8_t stop_bits;
-};
-
-} // namespace
-} // namespace uart
-} // namespace driver
 
 namespace settings {
 namespace internal {
@@ -79,9 +61,6 @@ namespace {
 
 namespace types {
 
-using HardwareConfig = ::SerialConfig;
-using HardwareMode = ::SerialMode;
-
 #if UART_SOFTWARE_SUPPORT
 #if defined(ARDUINO_ESP8266_RELEASE_2_7_2) \
     || defined(ARDUINO_ESP8266_RELEASE_2_7_3) \
@@ -105,24 +84,6 @@ namespace build {
 // i.e. uart0, uart1 and a single sw port
 // for general use, hardware uart *should* be prefered method
 constexpr size_t PortsMax { 3 };
-
-// todo; technically, tx==2 is also possible
-// but, we reserve that for the uart1 TX-only interface
-constexpr bool uart0_normal(uint8_t tx, uint8_t rx) {
-    return ((tx == 1) && (rx == 3))
-        || ((tx == GPIO_NONE) && (rx == 3))
-        || ((tx == 1) && (rx == GPIO_NONE));
-}
-
-constexpr bool uart0_swapped(uint8_t tx, uint8_t rx) {
-    return ((tx == 15) && (rx == 13))
-        || ((tx == GPIO_NONE) && (rx == 13))
-        || ((tx == 15) && (rx == GPIO_NONE));
-}
-
-constexpr bool uart1_normal(uint8_t tx, uint8_t rx) {
-    return (tx == 2) && (rx == GPIO_NONE);
-}
 
 constexpr uint8_t tx(size_t index) {
     return (0 == index) ? (UART1_TX_PIN) :
@@ -175,37 +136,8 @@ constexpr bool invert(size_t index) {
 
 } // namespace build
 
-constexpr int data_bits_from_config(uint8_t bits) {
-    return (bits == 5) ? 0 :
-        (bits == 6) ? 0b100 :
-        (bits == 7) ? 0b1000 :
-        (bits == 8) ? 0b1100 :
-            data_bits_from_config(8);
-}
-
-constexpr int parity_from_config(Parity parity) {
-    return (parity == Parity::None) ? 0 :
-        (parity == Parity::Even) ? 0b10 :
-        (parity == Parity::Odd) ? 0b11 :
-            parity_from_config(Parity::None);
-}
-
-constexpr int stop_bits_from_config(uint8_t bits) {
-    return (bits == 1) ? 0b10000 :
-        (bits == 2) ? 0b110000 :
-            stop_bits_from_config(1);
-}
-
 template <typename T>
 constexpr T from_config(Config);
-
-template <>
-constexpr types::HardwareConfig from_config(Config config) {
-    return static_cast<types::HardwareConfig>(
-        data_bits_from_config(config.data_bits)
-        | parity_from_config(config.parity)
-        | stop_bits_from_config(config.stop_bits));
-}
 
 namespace settings {
 namespace keys {
@@ -356,7 +288,6 @@ using BasePortPtr = std::unique_ptr<BasePort>;
 namespace internal {
 
 BasePortPtr ports[build::PortsMax];
-bool used_hardware_ports[2] = {false, false};
 
 // exclusive owner of the port, ref. claim()
 const __FlashStringHelper* owners[build::PortsMax] {};
@@ -366,142 +297,23 @@ UartClaimRelease on_claim[4] {};
 
 } // namespace internal
 
-#if defined(ARDUINO_ARCH_ESP32)
-// Any pins are routed through the GPIO matrix. UART0 keeps its default pins (1 & 3, serial
-// console / debug), UART2 is used for everything else (UART1 default pins are the flash ones).
-// Unlike esp8266, HardwareSerial::begin() takes (baud, config, rx, tx, invert) and there is no
-// separate mode or swap(). -1 leaves the pin unused.
+// chip UART of these pins, ref. uart_driver.h
 BasePortPtr hardware_port(
         uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert)
 {
-    if ((tx == GPIO_NONE) && (rx == GPIO_NONE)) {
+    const auto opened = hardware::open(baudrate, tx, rx, config, invert);
+    if (!opened.stream) {
         return nullptr;
-    }
-
-    const int number = build::uart0_normal(tx, rx) ? 0 : 2;
-    const int slot = (number == 0) ? 0 : 1;
-    if (internal::used_hardware_ports[slot]) {
-        return nullptr;
-    }
-
-    internal::used_hardware_ports[slot] = true;
-
-    auto* ptr = new HardwareSerial(number);
-    ptr->begin(baudrate,
-        from_config<types::HardwareConfig>(config),
-        (rx == GPIO_NONE) ? -1 : static_cast<int8_t>(rx),
-        (tx == GPIO_NONE) ? -1 : static_cast<int8_t>(tx),
-        invert);
-
-    return std::make_unique<BasePort>(
-        BasePort{
-            .type = (number == 0) ? Type::Uart0 : Type::Uart1,
-            .tx = (tx != GPIO_NONE),
-            .rx = (rx != GPIO_NONE),
-            .stream = StreamPtr(ptr),
-        });
-}
-#elif defined(LIBRETINY)
-// Pins are fixed, UART1 is P11 (TX) & P10 (RX), same pads are used for flashing.
-// UART2 is P0 (TX) & P1 (RX), SDK and LibreTiny log there by default.
-// Unlike esp8266, config is ArduinoCore-API SERIAL_... values
-constexpr uint16_t libretiny_config(Config config) {
-    return ((config.data_bits == 5) ? SERIAL_DATA_5 :
-            (config.data_bits == 6) ? SERIAL_DATA_6 :
-            (config.data_bits == 7) ? SERIAL_DATA_7 : SERIAL_DATA_8)
-        | ((config.parity == Parity::Even) ? SERIAL_PARITY_EVEN :
-            (config.parity == Parity::Odd) ? SERIAL_PARITY_ODD : SERIAL_PARITY_NONE)
-        | ((config.stop_bits == 2) ? SERIAL_STOP_BIT_2 : SERIAL_STOP_BIT_1);
-}
-
-BasePortPtr hardware_port(
-        uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool)
-{
-    const auto pins = [&](uint8_t port_tx, uint8_t port_rx) {
-        return ((tx == port_tx) || (tx == GPIO_NONE))
-            && ((rx == port_rx) || (rx == GPIO_NONE))
-            && ((tx != GPIO_NONE) || (rx != GPIO_NONE));
-    };
-
-    const int number =
-        pins(11, 10) ? 1 :
-        pins(0, 1) ? 2 : -1;
-    if (number < 0) {
-        return nullptr;
-    }
-
-    const int slot = number - 1;
-    if (internal::used_hardware_ports[slot]) {
-        return nullptr;
-    }
-
-    internal::used_hardware_ports[slot] = true;
-
-    auto* ptr = new SerialClass(number,
-        (rx == GPIO_NONE) ? PIN_INVALID : rx,
-        (tx == GPIO_NONE) ? PIN_INVALID : tx);
-    ptr->begin(baudrate, libretiny_config(config));
-
-    return std::make_unique<BasePort>(
-        BasePort{
-            .type = (number == 1) ? Type::Uart0 : Type::Uart1,
-            .tx = (tx != GPIO_NONE),
-            .rx = (rx != GPIO_NONE),
-            .stream = StreamPtr(ptr),
-        });
-}
-#else
-BasePortPtr hardware_port(
-        uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert)
-{
-    const int number =
-        build::uart0_normal(tx, rx)
-            ? 0 :
-        build::uart0_swapped(tx, rx)
-            ? 0 :
-        build::uart1_normal(tx, rx)
-            ? 1
-            : -1;
-
-    if ((number < 0) || (internal::used_hardware_ports[number])) {
-        return nullptr;
-    }
-
-    const int mode =
-        (tx == GPIO_NONE)
-            ? SERIAL_RX_ONLY :
-        (rx == GPIO_NONE)
-            ? SERIAL_TX_ONLY :
-        ((tx != GPIO_NONE) && (rx != GPIO_NONE))
-            ? SERIAL_FULL
-            : -1;
-    if (mode < 0) {
-        return nullptr;
-    }
-
-    internal::used_hardware_ports[number] = true;
-
-    auto* ptr = new HardwareSerial(number);
-    ptr->begin(baudrate,
-        from_config<types::HardwareConfig>(config),
-        static_cast<types::HardwareMode>(mode),
-        tx, invert);
-    if ((number == 0) && (build::uart0_swapped(tx, rx))) {
-        ptr->flush();
-#if defined(ESP8266)
-        ptr->swap();
-#endif
     }
 
     return std::make_unique<BasePort>(
         BasePort{
-            .type = (number == 0) ? Type::Uart0 : Type::Uart1,
+            .type = opened.type,
             .tx = (tx != GPIO_NONE),
             .rx = (rx != GPIO_NONE),
-            .stream = StreamPtr(ptr),
+            .stream = StreamPtr(opened.stream),
         });
 }
-#endif
 
 // based on the values in v6 of the lib. still, return bits instead of the octal notation used there
 #if UART_SOFTWARE_SUPPORT
@@ -583,17 +395,7 @@ BasePortPtr make_port(size_t index) {
     const auto baudrate = settings::baudrate(index);
     const auto invert = settings::invert(index);
 
-#if defined(LIBRETINY)
-    // esp8266 pin pairs mean nothing here, hardware_port() checks the BK72xx ones itself
     out = hardware_port(baudrate, tx, rx, config, invert);
-#else
-    if (build::uart0_normal(tx, rx)
-     || build::uart0_swapped(tx, rx)
-     || build::uart1_normal(tx, rx))
-    {
-        out = hardware_port(baudrate, tx, rx, config, invert);
-    }
-#endif
 
 #if UART_SOFTWARE_SUPPORT
     if (!out) {
@@ -882,9 +684,7 @@ void setup() {
     }
 
     if (disable_uart0_rx) {
-#if defined(ESP8266)
-        ets_isr_mask(1 << ETS_UART_INUM);
-#endif
+        hardware::disable_uart0_rx();
     }
 }
 
