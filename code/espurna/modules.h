@@ -214,6 +214,9 @@ void modulesRamSetup();
 void modulesBootSetup();
 void modulesSetup();
 bool modulesRunning();
+// the modules off at the next boot with this reason (the off mark of the directory; nothing when none is installed or
+// the mark is set already): leaving the unstable mode (system.cpp) must not start the modules that put it there
+bool modulesOffMark(const char* reason);
 // directory erased, modules do not start at the next boot (ArduinoOTA writes over them)
 void modulesForget();
 

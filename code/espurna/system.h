@@ -58,6 +58,7 @@ enum class CustomResetReason : uint8_t {
     Web,       // webui action
     Stability, // stable counter action
     Network,   // the network stack stopped receiving while Wi-Fi stayed connected
+    Modules,   // the module loader: /modules/off, the Apply, /modules/on, the panel's restart
 };
 
 namespace espurna {

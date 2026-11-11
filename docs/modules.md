@@ -143,6 +143,33 @@ again*; the terminal command is `MODULES.ON`. ESPurna's unstable mode (after cra
 | A module crashes the board | modules off after 3 crashed boots, head only | fix or leave that module off, *Start the modules again* |
 | Head updated, modules of the old build | not started, shown as stale | switch them on from the new build's file |
 | Head update stopped half-way | new head, no modules, the head's page on `/` | switch the modules on from the file |
+| Apply broken off (power cut, the page closed) | modules off with the reason (the old directory stays: the new one is written only at the very end), but the new packages may already lie over the old ones: those fail their check sum and are not started | Apply again |
+
+### Steps of a board in trouble, and the ways back without a soldering iron
+
+The board goes down step by step and keeps the network as long as it can:
+
+1. **Normal**: network and modules.
+2. **Without modules**: network, WebUI, telnet and OTA, the modules off with the reason shown (the off mark of the
+   directory). The board gets here
+   - after crashes with the modules running (the guard above);
+   - when a boot follows a crash and one more crash would make it unstable (`SYSTEM_CHECK_MAX`);
+   - when the power was switched on three times in a row, each time for less than 10 seconds (the light switch of a
+     board in a wall);
+   - after the unstable mode (step 3) ends.
+3. **Unstable**: its own access point `ESPURNA-xxxxxx` (192.168.4.1) and telnet, no network, never any module. After
+   10 minutes without a crash it restarts into step 2, not into the modules.
+
+Ways back, from the cheapest:
+
+- **Wait**: from the unstable mode the board comes back by itself after 10 minutes, with the network and without the
+  modules; the MODULES panel says why, *Start the modules again* or an Apply brings them back.
+- **The light switch** (a board in a wall): on and off three times, each time less than 10 seconds, then on: the board
+  comes up without the modules.
+- **Its access point**: join `ESPURNA-xxxxxx`, telnet 192.168.4.1: `MODULES.OFF`, `reset`, or an OTA from there.
+- **ESP32**: the safeboot (its own small image in the factory partition) takes a new ESPurna over the network even
+  when ESPurna does not start; it opens its own access point when it cannot join the Wi-Fi.
+- **A wire**: only when nothing above works (no access point, no network at all).
 
 ## Commands and endpoints
 

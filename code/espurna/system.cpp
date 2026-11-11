@@ -30,6 +30,10 @@ in arch/<arch>/system_<arch>.cpp (ref. espurna::system::arch in system.h)
 #include "ota_driver.h"
 #endif
 
+#if MODULES_SUPPORT
+#include "modules.h"
+#endif
+
 #include <cstdint>
 #include <cstring>
 #include <forward_list>
@@ -478,8 +482,12 @@ String serialize(CustomResetReason reason) {
         break;
     case CustomResetReason::Stability:
         ptr = PSTR("Reboot after changing stability counter");
-        break;    case CustomResetReason::Network:
+        break;
+    case CustomResetReason::Network:
         ptr = PSTR("Reboot after the network stopped receiving");
+        break;
+    case CustomResetReason::Modules:
+        ptr = PSTR("Reboot for the modules (Apply, off, on, the MODULES panel)");
         break;
     }
 
@@ -682,6 +690,11 @@ void init() {
         case CustomResetReason::Ota:
             force_stable();
             return;
+        // the same for the module loader: an Apply restarts twice within a minute, a third restart (the next
+        // Apply, a test) put the bench boards into the unstable mode (11-11, ESP8266 and ESP32 at once)
+        case CustomResetReason::Modules:
+            force_stable();
+            return;
         default:
             break;
         }
@@ -703,6 +716,10 @@ void exit_unstable() {
 
     DEBUG_MSG_P(PSTR("[MAIN] No crashes for %u min in the unstable mode, rebooting\n"),
         static_cast<unsigned>(build::ExitTime.count()));
+#if MODULES_SUPPORT
+    // back with the network but without the modules: they may be what crashed it
+    modulesOffMark("left the unstable mode");
+#endif
     reset();
     ::prepareReset(CustomResetReason::Stability);
 }

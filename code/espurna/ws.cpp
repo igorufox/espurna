@@ -1184,6 +1184,17 @@ void _wsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType
     }
 }
 
+// ESP32 and Beken: contiguous heap kept free next to a WebSocket message (the AsyncWebSocket buffer, lwIP). There `new`
+// throws on a failed allocation and the board aborts: ESP32 with Matter (free heap 24 KB, lowest 632 B) restarted in
+// AsyncWebSocket::makeBuffer 15 s after the start (11-11). The ESP8266 keeps upstream's behaviour (decision 11-10)
+#if !defined(ESP8266)
+#define WS_HEAP_GUARD 1
+constexpr size_t WsSendHeadroom { 1536 };
+constexpr size_t WsMessageHeadroom { 512 };
+#else
+#define WS_HEAP_GUARD 0
+#endif
+
 void _wsHandlePostponedCallbacks(bool connected) {
     // TODO: make this generic loop method to queue important ws messages?
     //       or, if something uses ticker / async ctx to send messages,
@@ -1223,6 +1234,13 @@ void _wsHandlePostponedCallbacks(bool connected) {
             return;
         }
     }
+
+#if WS_HEAP_GUARD
+    // the JSON buffer and then the message need that much contiguous heap: wait for it instead of aborting
+    if (systemHeapStats().usable < (callbacks.buffer_hint() + WsSendHeadroom)) {
+        return;
+    }
+#endif
 
     // XXX: block allocation will try to create *2 next time,
     // likely failing and causing wsSend to reference empty objects
@@ -1328,6 +1346,12 @@ espurna::web::ws::Callbacks& wsRegister() {
 
 void wsSend(JsonObject& root) {
     const auto len = root.measureLength();
+#if WS_HEAP_GUARD
+    if (systemHeapStats().usable < (len + WsMessageHeadroom)) {
+        DEBUG_MSG_P(PSTR("[WEBSOCKET] No heap for %u bytes, message dropped\n"), len);
+        return;
+    }
+#endif
     auto* buffer = _ws.makeBuffer(len);
 
     if (buffer) {
@@ -1342,6 +1366,12 @@ void wsSend(uint32_t client_id, JsonObject& root) {
     }
 
     const auto len = root.measureLength();
+#if WS_HEAP_GUARD
+    if (systemHeapStats().usable < (len + WsMessageHeadroom)) {
+        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u no heap for %u bytes, message dropped\n"), client_id, len);
+        return;
+    }
+#endif
     auto* buffer = _ws.makeBuffer(len);
 
     if (buffer) {

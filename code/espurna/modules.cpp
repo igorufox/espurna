@@ -2025,7 +2025,7 @@ void onApplyDone(AsyncWebServerRequest* request) {
     } else {
         answer(request, 200, String(F("OK, applied: ")) + (applying->done.length() ? applying->done : String(F("no modules")))
             + F(", restarting"));
-        prepareReset(CustomResetReason::Web);
+        prepareReset(CustomResetReason::Modules);
     }
 
     DEBUG_MSG_P(PSTR("[MODULES] Apply: %s\n"), error ? error : PSTR("done"));
@@ -2040,10 +2040,10 @@ void onModulesOff(AsyncWebServerRequest* request) {
         return;
     }
 
-    offWrite("restarted for an Apply");
+    offWrite("an Apply started and did not finish: Apply again");
 
     answer(request, 200, F("OK, modules off, restarting"));
-    prepareReset(CustomResetReason::Web);
+    prepareReset(CustomResetReason::Modules);
 }
 
 // --- web -----------------------------------------------------------------------------------------------------------
@@ -2176,7 +2176,7 @@ void onModulesOn(AsyncWebServerRequest* request) {
 
     modulesOffClear();
     request->send(200, String(F("text/plain")), String(F("OK, modules on, restarting")));
-    prepareReset(CustomResetReason::Web);
+    prepareReset(CustomResetReason::Modules);
 }
 
 // a module out of the directory; its code keeps running until the restart
@@ -2229,7 +2229,7 @@ void onRestart(AsyncWebServerRequest* request) {
     }
 
     request->send(200, String(F("text/plain")), String(F("OK")));
-    prepareReset(CustomResetReason::Web);
+    prepareReset(CustomResetReason::Modules);
 }
 
 void onPage(AsyncWebServerRequest* request) {
@@ -2337,14 +2337,12 @@ void commandList(::terminal::CommandContext&& ctx) {
     terminalOK(ctx);
 }
 
+// the modules off from the next boot (the off mark, as /modules/off): they stay installed, MODULES.ON brings them back.
+// Works from the unstable mode too (telnet over the board's own access point)
 void commandOff(::terminal::CommandContext&& ctx) {
-    if (!eraseDirectory()) {
-        terminalError(ctx, F("erase failed"));
-        return;
-    }
-
+    modulesOffMark("MODULES.OFF from the terminal");
     terminalOK(ctx);
-    prepareReset(CustomResetReason::Terminal);
+    prepareReset(CustomResetReason::Modules);
 }
 
 void commandRemove(::terminal::CommandContext&& ctx) {
@@ -2409,6 +2407,108 @@ void modulesRamSetup() {
 }
 
 // before the stability check: the commands are there in the unstable mode as well
+namespace espurna {
+namespace modules {
+namespace {
+
+// Boots cut short, for the light switch of a board in a wall: a pair of words per boot in the last quarter of the
+// directory sector (the Beken guard's marks are at 2048..2560), written without an erase (bits only go 1 -> 0):
+// [0] cleared at boot, [1] once the boot ran PowerSeconds or when the next boot was a restart ESPurna asked for.
+// PowerQuick boots in a row that never got to [1] (switched on and off again, or crashing right away): the modules
+// stay off (the off mark), the board comes up with the network. A directory write erases the sector: the count
+// starts anew, nothing lost. Full: the directory is written again into that sector
+constexpr uint32_t PowerMarksOffset { 3072 };
+constexpr size_t PowerMarks { 128 };
+constexpr size_t PowerQuick { 3 };
+constexpr espurna::duration::Seconds PowerSeconds { 10 };
+
+constexpr uint32_t MarkFree { 0xffffffff };
+
+espurna::timer::SystemTimer power_timer;
+uint32_t power_at { 0 };
+
+bool powerZero(uint32_t at) {
+    const uint32_t zero = 0;
+    return arch::rawWrite(at, &zero, sizeof(zero));
+}
+
+void powerSurvived() {
+    if (power_at) {
+        powerZero(power_at + 4);
+    }
+}
+
+void powerMarks() {
+    const auto area = arch::area();
+    if (!area.hi) {
+        return;
+    }
+
+    // nothing installed: nothing to keep off
+    auto dir = boxed<Directory>();
+    if (!dir || !readDirectory(*dir) || !dir->count) {
+        return;
+    }
+
+    std::unique_ptr<uint32_t[]> marks(new (std::nothrow) uint32_t[PowerMarks * 2]);
+    if (!marks || !arch::rawRead(area.hi + PowerMarksOffset, marks.get(), PowerMarks * 2 * sizeof(uint32_t))) {
+        return;
+    }
+
+    size_t index = 0;
+    while ((index < PowerMarks) && (marks[index * 2] != MarkFree)) {
+        ++index;
+    }
+
+    if (index == PowerMarks) {
+        if (!writeDirectoryPrimary(*dir)) {
+            return;
+        }
+        index = 0;
+    }
+
+    const uint32_t base = area.hi + PowerMarksOffset;
+    const bool requested = customResetReason() != CustomResetReason::None;
+    if (requested && index) {
+        // the boot before ended by a restart ESPurna asked for, not cut
+        powerZero(base + ((index - 1) * 8) + 4);
+    }
+
+    size_t quick = 0;
+    for (size_t before = index; !requested && before; --before) {
+        if ((marks[(before - 1) * 2] == 0) && (marks[((before - 1) * 2) + 1] == MarkFree)) {
+            ++quick;
+        } else {
+            break;
+        }
+    }
+
+    powerZero(base + (index * 8));
+    power_at = base + (index * 8);
+    power_timer.once(PowerSeconds, powerSurvived);
+
+    if ((quick + 1) >= PowerQuick) {
+        DEBUG_MSG_P(PSTR("[MODULES] %u short boots in a row\n"), static_cast<unsigned>(quick + 1));
+        modulesOffMark("the power was switched on 3 times within seconds");
+    }
+}
+
+} // namespace
+} // namespace modules
+} // namespace espurna
+
+bool modulesOffMark(const char* reason) {
+    using namespace espurna::modules;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box || !readDirectory(*dir_box) || !dir_box->count || dir_box->off[0]) {
+        return false;
+    }
+
+    offWrite(reason);
+    DEBUG_MSG_P(PSTR("[MODULES] Off at the next boot: %s\n"), reason);
+    return true;
+}
+
 void modulesBootSetup() {
     using namespace espurna::modules;
 
@@ -2419,6 +2519,21 @@ void modulesBootSetup() {
 #endif
 
     guardBoot();
+
+    powerMarks();
+
+#if SYSTEM_CHECK_ENABLED
+    // the step before the unstable mode: this boot follows a crash and one more makes the board unstable (its own
+    // access point, no network). The modules stay off from here: the board keeps the network, the WebUI tells why,
+    // "Start the modules again" or an Apply brings them back
+    // The count starts anew with the modules off: two more crashes without them before the unstable mode, else the
+    // next crash went straight there and the step without modules never came (ESP32 10.0.5.66, 11-11)
+    if (arch::crashRestart() && (systemStabilityCounter() >= SYSTEM_CHECK_MAX)
+        && modulesOffMark("the board crashed at boot again and again"))
+    {
+        systemForceStable();
+    }
+#endif
 
     Directory dir;
     if (!readDirectory(dir)) {

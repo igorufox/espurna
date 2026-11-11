@@ -1041,7 +1041,7 @@ function draw() {
                 : adds
                     ? `${pending.join(", ")}: adding a module needs the install image (.ota): pick it below.`
                     : `${pending.join(", ")}: Apply switches them off and restarts the board, no file needed.`
-                        + " Their flash stays taken: an Apply with the install image (.ota) frees it.";
+                        + " Their flash becomes a gap: an Apply with the install image (.ota) packs the area.";
         }
     }
 }
@@ -1231,16 +1231,21 @@ async function applySteps() {
         state.busy = true;
         draw();
         for (const name of removed) {
+            // the board removes only a module that is switched off (400 "switch it off first")
+            const off = new FormData();
+            off.append("name", name);
+            off.append("on", "0");
+            message(`${name}: switching off...`);
+            await post("modules/enable", off);
             const form = new FormData();
             form.append("name", name);
-            message(`${name}: switching off...`);
             await post("modules/remove", form);
         }
         message("Restarting...");
         await post("modules/restart", new FormData());
         await waitBoard();
         state.selected = null;
-        message(`Switched off: ${removed.join(", ")}. Their flash stays taken until an Apply with the install image (.ota)`);
+        message(`Switched off: ${removed.join(", ")}. Their flash is a gap until an Apply with the install image (.ota)`);
         return;
     }
 
