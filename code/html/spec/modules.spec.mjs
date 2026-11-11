@@ -1,6 +1,7 @@
-import { expect, test } from 'vitest';
+import { describe, expect, test } from 'vitest';
 import {
-    canMove,
+    blockedBy,
+    conflictsOf,
     dependentsOf,
     groupCounts,
     groupOf,
@@ -10,6 +11,7 @@ import {
     moduleRows,
     parseContainer,
     sectors,
+    selectionAfter,
     sizeText,
 } from '../src/modules.mjs';
 
@@ -104,13 +106,14 @@ test('rows: installed first-hand, the rest say whether they fit and what is shor
 
     const byName = Object.fromEntries(rows.map((x) => [x.name, x]));
     expect(byName.webui.installed?.state).toBe('running');
-    expect(byName.sensors).toMatchObject({fits: true, short: [], ramIn: 'dram'});
+    // the RAM goes into the fixed pool while it has room (as the Apply places it)
+    expect(byName.sensors).toMatchObject({fits: true, short: [], ramIn: 'iram'});
     expect(byName.light).toMatchObject({fits: false, short: ['flash']});
-    expect(byName.rf).toMatchObject({fits: false, short: ['RAM']});
+    expect(byName.rf).toMatchObject({fits: true, ramIn: 'iram'});
 
-    // its RAM in the IRAM tail: 5000 fits there
-    const iram = moduleRows(status(), packages, new Map([['rf', 'iram']]));
-    expect(iram.find((x) => x.name === 'rf')).toMatchObject({fits: true, ramIn: 'iram'});
+    // no room left in the pool: the heap, 5000 is more than it gives
+    const full = moduleRows(status({iram_data_max: 1000}), packages, new Map());
+    expect(full.find((x) => x.name === 'rf')).toMatchObject({fits: false, short: ['RAM'], ramIn: 'dram'});
 });
 
 test('a module that takes the RAM to 85 % and more is tight', () => {
@@ -118,32 +121,8 @@ test('a module that takes the RAM to 85 % and more is tight', () => {
         {name: 'sensors', image: 9000, ram: 3500, iram: 0, data: [0]},
     ]));
 
-    const [row] = moduleRows(status({modules: []}), packages, new Map());
+    const [row] = moduleRows(status({modules: [], iram_data: 0}), packages, new Map());
     expect(row).toMatchObject({fits: true, tight: true});
-});
-
-test('the RAM of a running module moves when a second copy fits next to the running one', () => {
-    const packages = parseContainer(container([
-        {name: 'sensors', image: 90000, ram: 2900, iram: 1100, data: [0]},
-        {name: 'webui', image: 50000, ram: 0, iram: 0, data: [0]},
-    ]));
-    const installed = {name: 'sensors', size: 90000, offset: 0xE2000, ram: 2900, ram_in: 'dram', iram: 1100,
-        state: 'running'};
-    const board = status({modules: [installed], free_max: 180000});
-    const row = (/** @type {import('../src/modules.mjs').Status} */ s) =>
-        moduleRows(s, packages, new Map()).find((x) => x.name === 'sensors');
-
-    expect(canMove(board, row(board))).toBe(true);
-    // no gap for the second copy: off, restart, then on with the other choice
-    const full = status({modules: [installed], free_max: 68000});
-    expect(canMove(full, row(full))).toBe(false);
-    // into DRAM: the RAM arena must hold it
-    const inIram = status({modules: [{...installed, ram_in: 'iram'}], ram_max: 600});
-    expect(canMove(inIram, row(inIram))).toBe(false);
-    // a module without RAM has nothing to move, nor one without the modules file
-    const webui = moduleRows(board, packages, new Map()).find((x) => x.name === 'webui');
-    expect(canMove(board, webui)).toBe(false);
-    expect(canMove(board, moduleRows(board, new Map(), new Map())[0])).toBe(false);
 });
 
 test('meters: flash counts the head and whole sectors, the preview adds the module that is off', () => {
@@ -154,13 +133,16 @@ test('meters: flash counts the head and whole sectors, the preview adds the modu
     const rows = moduleRows(st, packages, new Map());
     const preview = rows.find((x) => x.name === 'sensors') ?? null;
 
-    const [flash, ram, iram, data] = meters(st, preview);
+    const [flash, ram, pool] = meters(st, preview);
     expect(flash).toMatchObject({head: 598016, used: sectors(50000), added: sectors(9000)});
-    expect(ram).toMatchObject({used: 1000, added: 1200});
-    expect(iram).toMatchObject({added: 100});
-    expect(data).toMatchObject({title: 'RAM in IRAM', added: 0});
+    // its statics and its IRAM code go into the IRAM tail
+    expect(ram).toMatchObject({used: 1000, added: 0, total: 1000 + 11000});
+    expect(pool).toMatchObject({title: 'IRAM tail', added: 1300});
 
-    expect(meters(status({iram_data: 0}), null)).toHaveLength(3);
+    // the heap the modules took when they started: its own segment
+    expect(meters(status({ram_dynamic: 3000}), null)[1]).toMatchObject({used: 1000, dynamic: 3000, total: 15000});
+    expect(meters(status({iram_data: 0}), null)).toHaveLength(2);
+    expect(meters(status({pool: 'TCM'}), null)[2]).toMatchObject({title: 'TCM'});
 
     expect(meterLevel({title: '', total: 100, head: 0, used: 50, added: 0, legend: ''})).toBe('');
     expect(meterLevel({title: '', total: 100, head: 0, used: 85, added: 0, legend: ''})).toBe('mod-tight');
@@ -213,4 +195,68 @@ test('a group counts its modules: on, in flash, all', () => {
     ]});
     const rows = moduleRows(board, packages, new Map()).filter((row) => groupOf(row.name) === 'Integrations');
     expect(groupCounts(rows)).toEqual({on: 1, installed: 2, all: 3});
+});
+
+describe('install image and the ticked set', async () => {
+    const { otaParts, modulesFileOf, selectionAfter, runningSet, OTA_MODULES } = await import('../src/modules.mjs');
+
+    /** an install image: one head and one modules file */
+    function ota(head, modules) {
+        const count = 2;
+        const table = 8 + 32 * count;
+        const out = new Uint8Array(table + head.length + modules.length);
+        const view = new DataView(out.buffer);
+        view.setUint32(0, 0x31544f45, true);
+        view.setUint32(4, count, true);
+        const parts = [[1, 'esp32', head], [2, 'modules', modules]];
+        let offset = table;
+        parts.forEach(([kind, name, data], index) => {
+            const at = 8 + 32 * index;
+            view.setUint32(at, kind, true);
+            [...name].forEach((c, i) => view.setUint8(at + 4 + i, c.charCodeAt(0)));
+            view.setUint32(at + 20, offset, true);
+            view.setUint32(at + 24, data.length, true);
+            out.set(data, offset);
+            offset += data.length;
+        });
+        return out.buffer;
+    }
+
+    test('the parts of an install image', () => {
+        const buffer = ota(new Uint8Array([0xe9, 1, 2]), new Uint8Array([0x45, 0x4d, 0x43, 0x32, 0, 0, 0, 0]));
+        const parts = otaParts(buffer);
+        expect(parts.map((x) => [x.kind, x.name, x.data.length])).toEqual([[1, 'esp32', 3], [2, 'modules', 8]]);
+        expect(new Uint8Array(modulesFileOf(buffer))).toEqual(parts.find((x) => x.kind === OTA_MODULES).data);
+    });
+
+    test('not an install image: the buffer as it is', () => {
+        const plain = new Uint8Array([0x45, 0x4d, 0x43, 0x32]).buffer;
+        expect(otaParts(plain)).toBe(null);
+        expect(modulesFileOf(plain)).toBe(plain);
+    });
+
+    test('ticking a module ticks what it needs, unticking unticks what needs it', () => {
+        const status = {modules: [{name: 'mqtt', enabled: 1, requires: ''}, {name: 'captive', enabled: 1, requires: ''}]};
+        const packages = new Map([
+            ['domoticz', {requires: ['mqtt']}],
+            ['homeassistant', {requires: ['mqtt']}],
+        ]);
+        const now = runningSet(status);
+        expect([...now].sort()).toEqual(['captive', 'mqtt']);
+
+        const on = selectionAfter(new Set(['captive']), 'domoticz', true, status, packages);
+        expect([...on].sort()).toEqual(['captive', 'domoticz', 'mqtt']);
+
+        const more = selectionAfter(on, 'homeassistant', true, status, packages);
+        const off = selectionAfter(more, 'mqtt', false, status, packages);
+        expect([...off]).toEqual(['captive']);
+    });
+});
+
+test('matter unticks mdns on the ESP32 and the Beken, not on the ESP8266', () => {
+    const beken = status({image: 'beken'});
+    expect(selectionAfter(new Set(['mdns', 'mqtt']), 'matter', true, beken, new Map())).toEqual(new Set(['mqtt', 'matter']));
+    expect(blockedBy('mdns', new Set(['matter']), beken)).toEqual(['matter']);
+    expect(blockedBy('mdns', new Set(['matter']), status())).toEqual([]);
+    expect(conflictsOf('matter', status())).toEqual([]);
 });

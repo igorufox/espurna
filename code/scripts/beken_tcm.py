@@ -74,6 +74,10 @@ def patch_ldscript(env):
             raise ValueError(f"{path}: no .tcm section to patch")
         text = text.replace(anchor, anchor + block, 1)
 
+    # the end of the TCM for the modules' fixed pool (modules_beken.cpp: from _tcmbss_end up to it)
+    if "_espurna_tcm_end" not in text:
+        text += "\nPROVIDE(_espurna_tcm_end = ORIGIN(tcm) + LENGTH(tcm));\n"
+
     with open(path, "w") as f:
         f.write(text)
 

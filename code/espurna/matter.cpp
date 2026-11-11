@@ -37,9 +37,6 @@ namespace {
 bool started { false };
 bool connected { false };
 
-// This boot was asked for by an OTA upload that cannot run while Matter does (ref. matterRebootForUpload())
-bool skip_start { false };
-
 // The automatic start (`matterAuto`) waits `matterDelay` seconds after the station got its address, by default the
 // backend's start_delay(). After a restart by the network watchdog the start waits at least 5 minutes.
 constexpr uint32_t NetworkResetStartDelay { 300 };
@@ -268,7 +265,7 @@ void wifi_event(espurna::wifi::Event event) {
         backend::network(true);
         // Bring-up: a crash in Matter must not put the board into a boot loop, so it only starts on
         // MATTER.START until `matterAuto 1` is set
-        if (getSetting("matterAuto", false) && !skip_start && !started && !start_at) {
+        if (getSetting("matterAuto", false) && !started && !start_at) {
             auto delay = getSetting("matterDelay", backend::start_delay());
             if (customResetReason() == CustomResetReason::Network) {
                 delay = std::max(delay, NetworkResetStartDelay);
@@ -440,11 +437,6 @@ void onData(JsonObject& root) {
     root["matterProduct"] = backend::product();
     root["matterWindow"] = started ? window_left() : 0;
 
-#if MATTER_TAIL_SUPPORT
-    // Beken, Tuya layout: the Matter code comes with a second upload of the image, empty when it is in place
-    const auto* problem = matterTailProblem();
-    root["matterCode"] = problem ? problem : "";
-#endif
 
     // [[#, vendor id, "node id (hex)", "label"], ...]
     JsonArray& list = root.createNestedArray("matterControllers");
@@ -606,11 +598,8 @@ void plug_name(size_t index, char* label, size_t label_size, char* unique, size_
 }
 
 void setup() {
-    skip_start = getSetting("matterSkip", false);
-    if (skip_start) {
-        delSetting("matterSkip");
-        DEBUG_MSG_P(PSTR("[MATTER] Not started on this boot, it is for an OTA upload\n"));
-    }
+    // left by older builds (the Matter code in the OTA partition): nothing reads it any more
+    delSetting("matterSkip");
 
     log::mutex = xSemaphoreCreateMutex();
     backend::setup();
@@ -638,12 +627,6 @@ void matterSetup() {
 
 bool matterStarted() {
     return espurna::matter::started;
-}
-
-// Matter code lives where the OTA image is written (2 MiB Beken boards): restart once without starting Matter
-void matterRebootForUpload() {
-    setSetting("matterSkip", 1);
-    prepareReset(CustomResetReason::Ota);
 }
 
 #endif

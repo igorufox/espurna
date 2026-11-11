@@ -82,8 +82,9 @@ void _encoderConfigure() {
         const auto& defaults = EncoderDefaults[index];
         const uint8_t pin1 = getSetting({"encAGPIO", index}, defaults.pin1);
         const uint8_t pin2 = getSetting({"encBGPIO", index}, defaults.pin2);
+        // each encoder on its own, as upstream: ENCODER2 works without ENCODER1
         if (!gpioValid(pin1) || !gpioValid(pin2)) {
-            break;
+            continue;
         }
 
         const uint8_t button = getSetting({"encBtnGPIO", index}, defaults.button_pin);

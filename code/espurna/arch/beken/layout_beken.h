@@ -35,6 +35,9 @@ struct FlashLayout {
     // the bootloader installs our OTA image (RBL). Tuya's bootloader 3.00 of the Matter firmware takes only its own
     // diff2ya packages: firmware updates over UART there, or after its replacement by the standard Tuya one
     bool installs_rbl { true };
+    // the sector of the crash record (rtcmem_beken.cpp), 0 - none: only where the stock dumps of that bootloader
+    // show it blank (firmware-dumps/: CB3S, CBU, the slot board, the square QFN, two XH-CB2S - 0x1EB000 blank)
+    uint32_t crash_offset { 0 };
 };
 
 const FlashLayout& flashLayout();

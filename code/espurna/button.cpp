@@ -1753,15 +1753,8 @@ espurna::button::Button _buttonWithPin(size_t index, BasePinPtr&& pin) {
             .lngclick = ButtonAction::None,
             .lnglngclick = ButtonAction::None,
             .trplclick = ButtonAction::None};
-    // Wall switch toggles on every flip, with the action this input would do as a button
-    } else if (config.mode == debounce_event::types::Mode::Switch) {
-        if (actions.pressed == ButtonAction::None) {
-            actions.pressed = actions.click;
-        }
-        if (actions.released == ButtonAction::None) {
-            actions.released = actions.pressed;
-        }
     }
+    // a Switch with empty press / release actions does nothing, as upstream (D6, owner 2026-11-10)
 
     espurna::AcSwitch* ac_switch { nullptr };
     if (pin && espurna::button::settings::isFrequency(index)) {
@@ -1876,7 +1869,8 @@ void buttonSetup() {
                     break;
                 }
             }
-            if (already_registered) {
+            // nor on a pin something else holds already (e.g. the old pin of a moved button, D6)
+            if (already_registered || gpioLocked(static_cast<unsigned char>(pin_num))) {
                 continue;
             }
 

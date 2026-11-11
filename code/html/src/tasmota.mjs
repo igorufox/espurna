@@ -1,4 +1,4 @@
-import { send, sendAction } from './connection.mjs';
+import { applyHardware } from './applyHardware.mjs';
 import { notifyError } from './notify.mjs';
 
 /**
@@ -383,21 +383,7 @@ function doImport(json) {
         return;
     }
 
-    const msg = `Import Tasmota template "${tmpl.NAME}"?\n\n${importSummary(settings)}\n\nNote: existing relay/button/LED settings will be overwritten.`;
-    if (!window.confirm(msg)) return;
-
-    send(JSON.stringify({
-        settings: {
-            set: settings,
-            del: []
-        }
-    }));
-
-    setTimeout(() => {
-        if (window.confirm(`Tasmota settings have been sent to the device!\n\nReboot now to apply?`)) {
-            sendAction('reboot');
-        }
-    }, 500);
+    applyHardware(settings, `Import Tasmota template "${tmpl.NAME}"?\n\n${importSummary(settings)}`);
 }
 
 export function init() {

@@ -123,5 +123,9 @@ class Esp32Linker(module_link.Linker):
         esp32_full_image.build(ctx["head_bin"], container, ctx["build_dir"], merged if os.path.exists(merged) else None,
                                on=on)
 
+    def ota_heads(self, ctx):
+        """the head of the install image: the merged initial image (the safeboot takes its ESPurna part)"""
+        return [("esp32", release_path(ctx["build_dir"], "esp32"))]
+
 
 Esp32Linker(env, globals()["projenv"]).install()

@@ -40,9 +40,9 @@ extern "C" bool spi_flash_check_and_flush_cache(size_t start_addr, size_t length
 #include <cstring>
 #include <memory>
 
-// the most RAM the modules may take together; the arena itself is as big as the installed ones need
-#ifndef MODULES_RAM_ARENA
-#define MODULES_RAM_ARENA 16384
+// heap the head keeps for itself (Wi-Fi, the web server, TLS) when the Apply sizes the modules' heap block
+#ifndef MODULES_HEAP_KEEP
+#define MODULES_HEAP_KEEP 32768
 #endif
 
 namespace espurna {
@@ -50,7 +50,7 @@ namespace modules {
 namespace {
 
 constexpr uint32_t PageSize { 0x10000 };
-constexpr uint32_t DirectoryMagic { 0x34524445 }; // "EDR4": ESP32, the core's entry with the bases in arch[]
+constexpr uint32_t DirectoryMagic { 0x35524445 }; // "EDR5": ESP32, the core's entry with the bases in arch[], 16 entries
 constexpr uint32_t PackageVersion { 2 };          // ESP32 kinds: 1 data view, 2 RAM, 3 instruction view
 
 // Entry::arch[]: the bases the module's words hold now
@@ -289,26 +289,15 @@ void bases(const Entry& entry, uint32_t& drom, uint32_t& irom, uint32_t& ram) {
     }
 }
 
-// the arena only as big as the installed modules need (MODULES_RAM_ARENA is the most they may take): every byte of
-// it is gone from the heap, and Matter and the WebUI need the heap
+// the arena is the core's heap block (modulesRamSetup), as big as the installed modules need: the Apply placed them
+// for its address, a module whose address moved anyway is relocated from its maps (relocateMoved)
 void allocateArena(const Directory& dir) {
-    if (arena) {
+    if (arena || !heapBlockSize() || (heapBlockSize() < heapNeed(dir))) {
         return;
     }
 
-    uint32_t need = 0;
-    for (size_t index = 0; index < dir.count; ++index) {
-        const auto& entry = dir.entries[index];
-        if (entry.ram_size && !(entry.flags & EntryUnplaced)) {
-            need = std::max<uint32_t>(need, entry.ram_offset + entry.ram_size);
-        }
-    }
-
-    need = std::min<uint32_t>(roundUp(need, 256), MODULES_RAM_ARENA);
-    if (need) {
-        arena = static_cast<uint8_t*>(heap_caps_aligned_alloc(16, need, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        arena_size = arena ? need : 0;
-    }
+    arena = reinterpret_cast<uint8_t*>(heapBlockBase());
+    arena_size = heapBlockSize();
 }
 
 // every module of this head whose bases moved: relocated in place, the directory updated. Then the maps again, so
@@ -415,7 +404,12 @@ const char* prepare(PackageReader& reader) {
     }
 
     const uint32_t ram_size = roundUp(header.ram_size, 8);
-    if (ram_size) {
+    if (ram_size && up.planned) {
+        if (up.planned_ram & RamSecondArena) {
+            return PSTR("no fixed RAM pool on the ESP32");
+        }
+        up.ram_offset = up.planned_ram;
+    } else if (ram_size) {
         if (!space.ram.place(ram_size, false, up.ram_offset)) {
             return PSTR("not enough RAM in the arena");
         }
@@ -429,11 +423,13 @@ const char* prepare(PackageReader& reader) {
         return PSTR("flash erase");
     }
 
-    // in this boot's arena when it fits there, else for base 0: the next boot sizes the arena and relocates it
+    // the Apply: for the heap block the next boot takes (its address now, the boot relocates when it moved). Else in
+    // this boot's arena when it fits there, else for base 0: the next boot sizes the arena and relocates it
     const bool in_arena = arena && ((up.ram_offset + ram_size) <= arena_size);
     up.bases[0] = dromOf(up.slot);
     up.bases[1] = iromOf(up.slot);
-    up.bases[2] = (in_arena ? reinterpret_cast<uint32_t>(arena) : 0) + up.ram_offset;
+    up.bases[2] = (up.planned ? heapBlockBase() : (in_arena ? reinterpret_cast<uint32_t>(arena) : 0))
+        + up.ram_offset;
     up.delta[0] = 0;
     up.delta[1] = up.bases[0] - header.link_flash;
     up.delta[2] = up.bases[2] - header.link_ram;
@@ -630,8 +626,18 @@ const char* uploadFinish(PackageReader& reader, Entry& out) {
     return nullptr;
 }
 
-uint32_t ramArena() {
-    return MODULES_RAM_ARENA;
+uint32_t slotFor(uint32_t image) {
+    return slotSize(image);
+}
+
+// heap only: RTC FAST is reachable from the PRO CPU alone (the loop runs on the APP CPU), the IRAM tail takes 32-bit
+// access only and holds no IRAM_ATTR code of modules here
+void pools(Pools& out) {
+    const uint32_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    out.heap = heapBlockSize() + ((largest > MODULES_HEAP_KEEP) ? (largest - MODULES_HEAP_KEEP) : 0);
+    out.fixed = 0;
+    out.fixed_words = false;
+    out.code_in_fixed = false;
 }
 
 void statusJson(String& out) {

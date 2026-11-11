@@ -23,8 +23,9 @@ on:
         default: ''
         type: string
 
+# read-only for every job; the two jobs that publish a release ask for write themselves (B6)
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   # a promote neither cancels the build of the branch nor is cancelled by it
@@ -55,6 +56,10 @@ jobs:
       working-directory: code
       run: |
         python scripts/ci_ini_lint.py platformio_esp8266.ini platformio_esp32.ini platformio_beken.ini
+    - name: Check generated files
+      # espurna/config/arduino.h is generated (scripts/generate_arduino_h.py): the copy in git is up to date
+      run: |
+        ./ci_script.sh generated
 
   # unit tests of code/test/unit (host compiler, esp8266 mock framework), same as upstream's push.yml
   host-tests:
@@ -137,8 +142,9 @@ jobs:
         # LDF deep+ evaluates preprocessor expressions with python eval, and '\e' (ESC)
         # in some framework header spams SyntaxWarning on python >= 3.12
         PYTHONWARNINGS: ignore::SyntaxWarning
-        # Beken: scripts/beken_matter_lib.py asks the GitHub API for the latest Matter library release, authenticated
-        GITHUB_TOKEN: ${{ github.token }}
+        # Beken only: scripts/beken_matter_lib.py reads the Matter library release from the GitHub API,
+        # authenticated (the job token is read-only, see `permissions`); the other chips get no token
+        GITHUB_TOKEN: ${{ matrix.arch == 'beken' && github.token || '' }}
       run: |
         # pio libs sometimes use raw hash instead of version, avoid useless warnings
         git config --global advice.detachedHead false
@@ -166,13 +172,15 @@ jobs:
           cp ${build}/${name}.bin dist/${name}.bin
           # every module package (WebUI MODULES panel), and the full image (the merged one with every module in app0,
           # switched off: serial flash at 0x0)
-          cp ${build}/${name}-modules.bin ${build}/${name}-full.bin dist/
+          cp ${build}/${name}.ota dist/
           ;;
         beken)
           build=code/.pio/build_beken/${env}
-          # the head (Tuya layout): first flash over UART1 with ltchiptool, and OTA from the WebUI
-          cp ${build}/${name}.uf2 dist/
-          cp ${build}/${name}-modules.bin dist/
+          # the two initial images of the head, one per bootloader (Tuya, Quectel): first flash over UART1 with
+          # ltchiptool, and OTA from the WebUI
+          cp ${build}/${name}-tuya.uf2 ${build}/${name}-quectel.uf2 dist/
+          # every module package (WebUI MODULES panel), and the full image (Tuya layout, flash from 0x11000)
+          cp ${build}/${name}.ota dist/
           # LibreTiny links raw_firmware.elf
           cp ${build}/raw_firmware.elf ${build}/firmware.elf
           ;;
@@ -188,7 +196,7 @@ jobs:
           cp ${build}/${name}.bin dist/${name}.bin
           # every module package (WebUI MODULES panel, the head's page), and the full flash image (head + every
           # module placed + the modules file at 1 MB, serial flash from 0x0)
-          cp ${build}/${name}-modules.bin ${build}/${name}-full.bin dist/
+          cp ${build}/${name}.ota dist/
           ;;
         esac
         cp ${build}/firmware.elf dist/${name}.elf
@@ -209,6 +217,8 @@ jobs:
     needs: [ini-lint, host-tests, webui-tests, build]
     if: ${{ github.event_name != 'pull_request' && !inputs.promote }}
     runs-on: ubuntu-26.04
+    permissions:
+      contents: write
     steps:
     - uses: actions/download-artifact@v8
       with:
@@ -233,29 +243,29 @@ jobs:
         body: |
           Preview: automatic build of ${{ github.ref_name }} @ ${{ github.sha }}, not tested on hardware. Boards list it only from the preview release list (WebUI, ADMIN, *Release list*: `https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/firmware-preview.json`); the default list has the stable releases only. A preview tested on hardware becomes stable by a manual run of the *Firmware Build* workflow with `promote` = this tag.
 
-          One head image per chip, the board is picked after flashing: WebUI, ADMIN, *Device Template* (Tasmota templates, OpenBeken devices and the boards of this firmware) or *Tasmota Profile Import*. The features are modules, installed and switched in the WebUI, *MODULES* (from the `-modules.bin` of the same release, see `docs/modules.md`).
+          One head image per chip, the board is picked after flashing: WebUI, ADMIN, *Device Template* (Tasmota templates, OpenBeken devices and the boards of this firmware) or *Tasmota Profile Import*. The features are modules: tick them in the WebUI, *MODULES*, and *Apply* (the board writes the ticked ones anew from the `.ota` of the same release, see `docs/modules.md`).
 
           ESP8266, core 3.1.2 + SDK 3.0.5, the 1 MB flash layout on every chip size:
           - `espurna-esp8266.bin` - the head: serial flash at 0x0 or OTA (the WebUI takes the compressed copy from the release list by itself)
-          - `espurna-esp8266-modules.bin` - the modules: sensors, scheduler, alexa, mdns, mqtt, homeassistant, domoticz, thingspeak, light, rf (+ the WebUI)
-          - `espurna-esp8266-full.bin` - serial flash from 0x0: the head with every module in flash, all switched off, and the modules file at 1 MB
+          - `espurna-esp8266.ota` - the install image: the head and every module (sensors, scheduler, alexa, mdns, mqtt, homeassistant, domoticz, thingspeak, light, rf, captive, the WebUI); not for a serial flash tool
           - `espurna-esp8266-1m-mini` - first step of the two-step update for 1 MB boards on a full image of an older release
           Boards installed with the 4 MB layout (`espurna-esp8266-4m`) keep their settings elsewhere: back them up and restore them after the update.
 
           ESP32, Arduino-ESP32 core 3 (ESP-IDF 5), safeboot flash layout (ESPurna at 0xE0000, 2880 KB):
           - `espurna-esp32.bin` - the head, any ESP32 with 4 MB flash (the NSPanel too: the `nspanel` module): serial flash at 0x0, and the same file for updates (WebUI: ADMIN, the release list, or the `/safeboot` page; the safeboot writes only the ESPurna part of it)
-          - `espurna-esp32-modules.bin` - the modules: sensors, scheduler, alexa, homeassistant, domoticz, thingspeak, matter, nspanel
-          - `espurna-esp32-full.bin` - serial flash at 0x0: the head with every module in flash, switched off (on from the WebUI, MODULES)
+          - `espurna-esp32.ota` - the install image: the head and every module (sensors, scheduler, alexa, mdns, mqtt, homeassistant, domoticz, thingspeak, light, rf, matter, nspanel, captive); not for a serial flash tool
 
-          Beken BK7231N, Tuya bootloader (see `beken/README.md`):
-          - `espurna-beken.uf2` - the head: first flash over UART1 with `ltchiptool` (CB2S, CB3S, CBU ...), and OTA from the WebUI
-          - `espurna-beken-modules.bin` - the modules: thingspeak, domoticz, matter
+          Beken BK7231N (see `beken/README.md`): one head, an initial image per bootloader
+          - `espurna-beken-tuya.uf2` - the head, Tuya bootloader (CB2S, CB3S, CBU ...): first flash over UART1 with `ltchiptool`, and OTA from the WebUI
+          - `espurna-beken-quectel.uf2` - the same head, Quectel bootloader (XH-CB2S / BK7231M, 4 MB): first flash over UART1, and OTA from the WebUI
+          - `espurna-beken.ota` - the install image: both heads (the board takes the one of its bootloader) and every module (sensors, scheduler, alexa, mdns, mqtt, homeassistant, domoticz, thingspeak, light, rf, matter, captive); not for a serial flash tool
         prerelease: true
         make_latest: false
         files: |
           dist/*.bin
           dist/*.bin.gz
           dist/*.uf2
+          dist/*.ota
     # keep only the newest automatic previews (pre-releases tagged esp32-YYMMDD-sha). Never deleted: stable releases
     # (not pre-release; promoted ones are tagged esp32-stable-*), releases of hand-made esp32-* tags
     - name: Prune old previews
@@ -277,6 +287,8 @@ jobs:
   promote:
     if: ${{ inputs.promote }}
     runs-on: ubuntu-26.04
+    permissions:
+      contents: write
     steps:
     - name: Make the preview a stable release
       env:
@@ -449,17 +461,18 @@ jobs:
         # older releases), <image> = the dist name of the build matrix and the ESPURNA_IMAGE of the firmware (WebUI
         # picks the files of the running image)
         SUFFIXES = (
+            (".ota", "install"),          # the install image: head(s) + every module package (WebUI: MODULES, Apply)
             ("-modules.bin", "modules"),  # every module package of the head (WebUI MODULES panel, the head's page)
             ("-ota.bin", "ota"),          # ESP32 application of the older releases, through safeboot
             ("-full.bin", "serial"),      # ESP8266: kind "full", head + modules from 0x0 (the MODULES panel takes the
                                           # modules file at 1 MB out of it); ESP32 merged image of the older releases
             ("-safeboot.bin", "safeboot"),  # ESP32 safeboot cut out of the image's merged .bin (Pages only)
             ("-app.bin", "app"),          # ESP32 ESPurna alone, for Tasmota's safeboot (Pages only)
-            ("-matter-tail.bin", "ota"),  # Beken Matter code of the older releases, uploaded after the image
             (".bin.gz", "ota"),           # ESP8266 compressed OTA (Pages only since one file per image)
             (".bin", "ota"),              # ESP32 merged image (safeboot takes its ESPurna part), ESP8266 (also serial
                                           # at 0x0), Beken OTA image
-            (".uf2", "ota"),              # Beken, older releases
+            (".uf2", "ota"),              # Beken: espurna-beken-tuya.uf2 (Tuya bootloader), espurna-beken-quectel.uf2
+                                          # (image beken-quectel: the WebUI of a Quectel board asks for that one)
         )
 
         # (image, kind); image "<chip>-*" - every image of that chip in the release
@@ -476,6 +489,9 @@ jobs:
                     initial = re.fullmatch(r"(.+)-initial-[0-9a-z]+", image)
                     if initial:
                         return [(initial.group(1) + "-*", "serial")]
+                    # one install image per chip: every image of the chip (beken-tuya and beken-quectel take beken.ota)
+                    if kind == "install":
+                        return [(image + "-*", "install")]
                     if suffix == "-full.bin" and image.startswith("esp8266"):
                         kind = "full"
                     return [(image, kind)]
@@ -488,7 +504,7 @@ jobs:
                     digest.update(chunk)
             return digest.hexdigest()
 
-        KIND_ORDER = {"ota": 0, "serial": 1, "safeboot": 2, "app": 3, "modules": 4, "full": 5}
+        KIND_ORDER = {"ota": 0, "serial": 1, "safeboot": 2, "app": 3, "modules": 4, "full": 5, "install": 6}
 
         # image of an older release -> the head of the same chip (one env per chip since 2026-11)
         LEGACY = {
@@ -497,6 +513,11 @@ jobs:
             "esp8266-1m-sensor": "esp8266",
             "esp32-matter": "esp32",
             "esp32-matter-nspanel": "esp32",
+            # the older Beken image with one OTA file for both bootloaders: a Tuya board takes the plain .uf2, a
+            # Quectel one refuses it (the older firmware checks the download partition) and is updated by wire
+            "beken-matter": "beken-tuya",
+            # the head before the initial image of each bootloader had its own name (fwImage "beken")
+            "beken": "beken-tuya",
         }
 
         releases = []
@@ -534,7 +555,7 @@ jobs:
 
             # the images of the older releases a board may still run: their WebUI looks for its own image name, it
             # gets the files of the chip's head. Not esp8266-4m (its settings are not where the head keeps them, the
-            # board moves them first) and not beken-matter (its OTA file format for both bootloaders)
+            # board moves them first)
             for old, new in LEGACY.items():
                 if old not in images and new in images:
                     images[old] = [dict(entry) for entry in images[new] if entry["kind"] in ("ota", "safeboot", "app")]

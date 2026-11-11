@@ -204,7 +204,13 @@ extern char __mod_init_end[];
 #define MODULES_CORE 0
 #endif
 
+// the module of that name is installed and switched on (the directory), whether or not it started yet. In the head;
+// declared for the module objects too (MODULE_BUILD has MODULES_SUPPORT 0), they call it through the head's exports
+bool modulesEnabled(const char* name);
+
 #if MODULES_SUPPORT
+// first thing after the settings storage: the heap block of the modules' statics, before ESPurna allocates much
+void modulesRamSetup();
 void modulesBootSetup();
 void modulesSetup();
 bool modulesRunning();

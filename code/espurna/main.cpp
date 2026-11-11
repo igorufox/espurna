@@ -268,6 +268,12 @@ void setup() {
     eepromSetup();
     SETUP_HEAP_PROBE("eeprom");
 
+    // the modules' statics in the heap: one block, taken this early so that its address stays the same every boot
+    #if MODULES_SUPPORT
+        modulesRamSetup();
+        SETUP_HEAP_PROBE("modulesRam");
+    #endif
+
     // Init persistance
     settingsSetup();
     SETUP_HEAP_PROBE("settings");

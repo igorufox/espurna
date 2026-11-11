@@ -1,12 +1,12 @@
 # PROTOTYPE (docs/modules.md, "Beken"): the `full` image of the Beken build (the shared part: module_full_image.py).
 #
-#   initial  espurna-beken.uf2: the head (LibreTiny's UF2), first flash over UART and OTA
+#   initial  espurna-beken-tuya.uf2: the head (LibreTiny's UF2), first flash over UART and OTA
 #   full     espurna-beken-full.bin: flash from 0x11000 (the app partition, then the OTA 'download' partition up to its
 #            last sector), for the serial flash only:
 #                ltchiptool flash write -f BK7231N -s 0x11000 espurna-beken-full.bin
 #            The app partition: LibreTiny's encrypted + CRC'd app (image_<mcu>_app.0x011000.crc) and its RBL header; the
 #            download partition: its first sector empty (no OTA to install), every module in its slot from the top down,
-#            encrypted + CRC'd like the code the flash mapping runs, the module directory (EDB2) in the last sector.
+#            encrypted + CRC'd like the code the flash mapping runs, the module directory (EDB3) in the last sector.
 #
 # The flash format (modules_beken.cpp): logical address L in flash at L / 32 * 34, each 32 byte block XORed with a pad
 # of its address and the chip's key (the key of the board, build.bkcrypt_coeffs: the Tuya one, the same LibreTiny
@@ -31,7 +31,7 @@ import zlib
 
 # loaded by beken_module_link.py or run alone: the shared scripts sit next to this file
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from module_full_image import ENTRY, ENTRY_DISABLED, ENTRY_UNPLACED, DIRECTORY_ENTRIES, OFF_REASON, SECTOR, Space, \
+from module_full_image import directory_bytes, ENTRY, ENTRY_DISABLED, ENTRY_UNPLACED, DIRECTORY_ENTRIES, OFF_REASON, SECTOR, Space, \
     read_container  # noqa: E402
 from module_link import CHUNK, HEADER_ID, HEADER_MAGIC, MAP_SIZE, PACKAGE, PACKAGE_MAGIC, module_name, \
     round_up  # noqa: E402
@@ -40,7 +40,7 @@ from release_image import listing, path, write  # noqa: E402
 BLOCK = 32
 BLOCK_RAW = 34
 PACKAGE_VERSION = 3
-DIRECTORY_MAGIC = 0x32424445  # "EDB2", modules_beken.cpp
+DIRECTORY_MAGIC = 0x33424445  # "EDB3", modules_beken.cpp
 BRANCH_THUMB = 1
 BRANCH_ARM = 2
 
@@ -297,7 +297,7 @@ class BekenFullImage:
         full[self.rblh_at - base: self.rblh_at - base + len(rblh)] = rblh
 
         directory_offset = self.end - SECTOR
-        flash = Space(self.download_offset + SECTOR, directory_offset)
+        flash = Space(self.download_offset + SECTOR, directory_offset - SECTOR)
 
         modules = []
         for name, package in sorted(read_container(self.modules_file), key=lambda item: item[0] not in self.on):
@@ -317,7 +317,7 @@ class BekenFullImage:
         # ones can when the user removes another). The biggest first, from the top down
         on = [module for module in modules if module[0] in self.on]
         rest = [module for module in modules if module[0] not in self.on and module[5] <= self.arena_size]
-        room = (directory_offset - (self.download_offset + SECTOR)) - sum(slot_size(len(m[2])) for m in on)
+        room = (directory_offset - SECTOR - (self.download_offset + SECTOR)) - sum(slot_size(len(m[2])) for m in on)
         best = (-1, -1, ())
         for mask in range(1 << len(rest)):
             chosen = tuple(m for index, m in enumerate(rest) if mask & (1 << index))
@@ -365,8 +365,7 @@ class BekenFullImage:
             print(f"  full: WARNING on by default, but no such module: {' '.join(sorted(missing))}")
         if len(entries) > DIRECTORY_ENTRIES:
             raise ValueError("more modules than directory entries")
-        directory = struct.pack("<II", DIRECTORY_MAGIC, len(entries)) + b"".join(entries)
-        directory += b"\0" * (ENTRY.size * (DIRECTORY_ENTRIES - len(entries)) + OFF_REASON)
+        directory = directory_bytes(DIRECTORY_MAGIC, entries)
         at = directory_offset - base
         full[at: at + len(directory)] = directory
 

@@ -39,6 +39,9 @@ extern "C" void port_enable_interrupts_flag(int);
 // LibreTiny posix/itoa.c has it, ArduinoCore-API itoa.h is not included by Arduino.h
 extern "C" char* ultoa(unsigned long value, char* string, int radix);
 
+// LibreTiny builds avr-libc's dtostrf (cores/common/arduino/src/common/dtostrf.c), no header declares it
+extern "C" char* dtostrf(double val, signed char width, unsigned char prec, char* sout);
+
 // Preemptive scheduler, the loop task does not starve anything else
 inline void optimistic_yield(uint32_t) {}
 

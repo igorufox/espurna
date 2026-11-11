@@ -13,10 +13,11 @@ module in that format itself: the words are encrypted with the key found at boot
 the CRC of every 32 bytes follows them. A module starts on a 32 byte boundary of the logical space, inside its sectors
 (Entry::arch[0]: that logical address).
 
-A module is relocated on install for the address it will have: its flash (kind 1), the RAM arena (kind 2), and every
+A module is relocated on install for the address it will have: its flash (kind 1), its RAM (kind 2), and every
 BL / BLX from it into the head is moved by the flash delta (the branch list of the package, read by the core's package
-reader). The RAM arena is a static block of the head (in the data TCM with scripts/beken_tcm.py), so its address is
-fixed for the build and a module never needs relocating again.
+reader). Module RAM, placed by the Apply largest first: the data TCM the head leaves free (from _tcmbss_end, the TCM is
+not heap), the rest in the core's heap block. Nothing kept in reserve. The block is taken early at every boot at the
+same address; when it moved anyway, the modules in it stay off (Apply again: the image would need rewriting).
 
 */
 
@@ -34,13 +35,19 @@ fixed for the build and a module never needs relocating again.
 #include <timers.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
-#ifndef MODULES_RAM_ARENA
-#define MODULES_RAM_ARENA 16384
+// heap the head keeps for itself (Wi-Fi, the web server) when the Apply sizes the modules' heap block
+#ifndef MODULES_HEAP_KEEP
+#define MODULES_HEAP_KEEP 8192
 #endif
 
 extern "C" {
+// the data TCM: the head's .bss there ends here (the SDK's linker script), the TCM ends at the other (scripts/beken_tcm.py)
+extern uint8_t _tcmbss_end[];
+extern uint8_t _espurna_tcm_end[];
+
 // GNU build id of the head link (scripts/beken_modules_head.py): note header (16 bytes), then the id
 extern const uint8_t __build_id_start[];
 }
@@ -51,16 +58,31 @@ namespace {
 
 constexpr uint32_t BlockData { 32 };
 constexpr uint32_t BlockSize { 34 };
-constexpr uint32_t DirectoryMagic { 0x32424445 }; // "EDB2": Beken, the Entry of modules_core.h
+constexpr uint32_t DirectoryMagic { 0x33424445 }; // "EDB3": Beken, the Entry of modules_core.h, 16 entries
 constexpr uint32_t PackageVersion { 3 };          // Beken: kinds 1 flash, 2 RAM; branch list per chunk
 constexpr size_t Logical { 0 };                   // Entry::arch[Logical]: where the module runs
+constexpr size_t RamAddress { 1 };                // Entry::arch[RamAddress]: the address its RAM words were relocated for
 
 // branch list entries: offset in the chunk | kind << 16
 constexpr uint32_t BranchThumb { 1 };   // Thumb BL / BLX pair (two half words)
 constexpr uint32_t BranchArm { 2 };     // ARM BL / BLX
 constexpr size_t BranchesMax { 1024 };  // per 4 KiB chunk
 
-uint8_t arena[MODULES_RAM_ARENA] __attribute__((aligned(8)));
+// the fixed pool: the free data TCM
+uint32_t tcmStart() {
+    return roundUp(reinterpret_cast<uint32_t>(_tcmbss_end), 8);
+}
+
+uint32_t tcmSize() {
+    const uint32_t end = reinterpret_cast<uint32_t>(_espurna_tcm_end) & ~7u;
+    return (end > tcmStart()) ? (end - tcmStart()) : 0;
+}
+
+// where the RAM of the module is this boot: the TCM, or the core's heap block
+uint32_t ramAddress(uint32_t ram_offset) {
+    const uint32_t offset = ram_offset & ~RamSecondArena;
+    return ((ram_offset & RamSecondArena) ? tcmStart() : heapBlockBase()) + offset;
+}
 
 // --- the flash format ----------------------------------------------------------------------------
 
@@ -424,9 +446,7 @@ void guardMark() {
     // full: the sector again without the marks (the directory kept)
     if (index == Marks) {
         Directory dir;
-        if ((lt_flash_read(region.hi, reinterpret_cast<uint8_t*>(&dir), sizeof(dir)) != sizeof(dir))
-            || !writeDirectory(dir))
-        {
+        if (!readDirectory(dir) || !writeDirectoryPrimary(dir)) {
             return;
         }
         index = 0;
@@ -500,11 +520,17 @@ const char* prepare(PackageReader& reader) {
         return PSTR("not enough flash");
     }
 
+    // where the Apply placed it; else (an old single upload) into what the TCM has left: the heap block of this boot was
+    // sized before, it has no room for more
     const uint32_t ram_size = roundUp(header.ram_size, 8);
-    if (ram_size) {
-        if (!space.ram.place(ram_size, false, up.ram_offset)) {
-            return PSTR("not enough RAM in the arena");
+    if (ram_size && up.planned) {
+        up.ram_offset = up.planned_ram;
+    } else if (ram_size) {
+        uint32_t offset;
+        if (!space.ram_second.place(ram_size, false, offset)) {
+            return PSTR("no room in the TCM for its RAM: Apply in the MODULES panel");
         }
+        up.ram_offset = offset | RamSecondArena;
     } else {
         up.ram_offset = 0;
     }
@@ -525,7 +551,7 @@ const char* prepare(PackageReader& reader) {
     up.erased = up.slot;
     up.delta[0] = 0;
     up.delta[1] = up.address - header.link_flash;
-    up.delta[2] = (reinterpret_cast<uint32_t>(arena) + up.ram_offset) - header.link_ram;
+    up.delta[2] = ramAddress(up.ram_offset) - header.link_ram;
 
     return nullptr;
 }
@@ -700,7 +726,7 @@ int testCallback(int value) {
 }
 
 #if TERMINAL_SUPPORT
-// one block of code in the second last sector of the module area: written, read back raw and mapped, called; then
+// one block of code in the free sector under the directory's two copies: written, read back raw and mapped, called; then
 // written again with another constant at the same address (stale reads?), called again; the sector erased after
 void commandXipTest(::terminal::CommandContext&& ctx) {
     if (!region.valid) {
@@ -718,7 +744,18 @@ void commandXipTest(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    const uint32_t sector = region.hi - SectorSize;
+    // the last sector is the directory, the one under it its second copy (DirectorySectors)
+    const uint32_t sector = region.hi - (DirectorySectors * SectorSize);
+    Directory dir;
+    if (readDirectory(dir)) {
+        for (size_t index = 0; index < dir.count; ++index) {
+            const auto& entry = dir.entries[index];
+            if ((entry.offset < (sector + SectorSize)) && (sector < (entry.offset + entry.slot))) {
+                terminalError(ctx, F("a module takes the test sector (MODULES.REMOVE it first)"));
+                return;
+            }
+        }
+    }
     const uint32_t address = logicalFrom(sector);
     ctx.output.printf_P(PSTR("key %s, sector 0x%06x, logical 0x%06x (flash 0x%06x)\n"),
         key_name, sector, address, physical(address));
@@ -825,7 +862,8 @@ uint32_t directoryMagic() {
 
 // Flash = the OTA partition, its first sector shown as the "head"
 Area area() {
-    if (!region.valid) {
+    // modulesRamSetup() reads the directory before setup() runs
+    if (!region.valid && !findArea()) {
         return Area{0, 0, 0};
     }
 
@@ -879,14 +917,23 @@ bool headId(uint8_t out[16]) {
     return true;
 }
 
-// from the mapping (code, header, the .data image), RAM in the static arena; no IRAM
+// from the mapping (code, header, the .data image), RAM in the TCM or the heap block; no IRAM
 const char* runs(const Entry& entry, const Header&, Runs& out) {
+    if (entry.ram_size && (ramAddress(entry.ram_offset) != entry.arch[RamAddress])) {
+        return PSTR("the heap block moved since the Apply: Apply again");
+    }
+    if (entry.ram_size && !(entry.ram_offset & RamSecondArena)
+        && ((entry.ram_offset + entry.ram_size) > heapBlockSize()))
+    {
+        return PSTR("not in this boot's heap block: Apply again");
+    }
+
     const uint32_t address = entry.arch[Logical];
     out.flash_lo = address;
     out.flash_hi = address + entry.size;
     out.entry_lo = out.flash_lo;
     out.entry_hi = out.flash_hi;
-    out.ram_lo = reinterpret_cast<uint32_t>(arena) + entry.ram_offset;
+    out.ram_lo = ramAddress(entry.ram_offset);
     out.ram_hi = out.ram_lo + entry.ram_size;
     out.iram_lo = 0;
     out.iram_hi = 0;
@@ -904,8 +951,8 @@ const char* place(const Directory& dir, Entry& entry) {
         return PSTR("not in the module area");
     }
 
-    if ((entry.ram_offset + entry.ram_size) > MODULES_RAM_ARENA) {
-        return PSTR("RAM outside the arena");
+    if (!(entry.ram_offset & RamSecondArena) || (((entry.ram_offset & ~RamSecondArena) + entry.ram_size) > tcmSize())) {
+        return PSTR("RAM outside the TCM: Apply in the MODULES panel");
     }
 
     const uint32_t lo = entry.ram_offset;
@@ -974,14 +1021,42 @@ const char* uploadFinish(PackageReader& reader, Entry& out) {
     out.ram_offset = up.ram_offset;
     out.ram_size = roundUp(up.header.ram_size, 8);
     out.arch[Logical] = up.address;
+    out.arch[RamAddress] = ramAddress(up.ram_offset);
     return nullptr;
 }
 
-uint32_t ramArena() {
-    return MODULES_RAM_ARENA;
+uint32_t slotFor(uint32_t image) {
+    return slotSize(image);
+}
+
+// the free data TCM is the fixed pool, the rest of the RAM in the heap block
+void pools(Pools& out) {
+    // lt_heap_get_max_alloc() is a stub on the Beken (0), heap_4 keeps its free list to itself: the largest block that
+    // malloc() gives now, found by halving (freed at once, heap_4 joins it back)
+    uint32_t largest = 0;
+    uint32_t step = 0x10000;
+    while (step >= 256) {
+        void* probe = std::malloc(largest + step);
+        if (probe) {
+            std::free(probe);
+            largest += step;
+        } else {
+            step /= 2;
+        }
+    }
+    out.heap = heapBlockSize() + ((largest > MODULES_HEAP_KEEP) ? (largest - MODULES_HEAP_KEEP) : 0);
+    out.fixed = tcmSize();
+    out.fixed_words = false;
+    out.code_in_fixed = false;
+}
+
+void arenas(const Directory&, bool, Spaces& out, const char*) {
+    out.ram_second.lo = 0;
+    out.ram_second.hi = tcmSize();
 }
 
 void statusJson(String& out) {
+    out += F(",\"pool\":\"TCM\"");
     jsonField(out, F("chip"), lt_flash_get_size());
 }
 
@@ -990,8 +1065,8 @@ void entryJson(String& out, const Entry& entry) {
 }
 
 void listHead(Print& out) {
-    out.printf_P(PSTR("loader beken rev 3 (core), key %s, RAM arena %u bytes at %p\n"),
-        key_name, MODULES_RAM_ARENA, arena);
+    out.printf_P(PSTR("loader beken rev 4 (core), key %s, TCM pool %u bytes at %08x, heap block %u bytes at %08x\n"),
+        key_name, tcmSize(), tcmStart(), heapBlockSize(), heapBlockBase());
 
     uint32_t marks[Marks * 2];
     if (region.valid && readMarks(marks)) {

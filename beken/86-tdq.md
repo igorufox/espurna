@@ -18,7 +18,7 @@ with the mains disconnected, from 5 V. Never connect the USB-UART adapter while 
 
 ## Image and pins
 
-`beken-matter`. Pins from the stock config (`user_param_key` of the dump, [bk7231tools](https://github.com/tuya-cloudcutter/bk7231tools) `dissect_dump`):
+The Beken head (`espurna-beken-tuya.uf2`, Tuya bootloader). Pins from the stock config (`user_param_key` of the dump, [bk7231tools](https://github.com/tuya-cloudcutter/bk7231tools) `dissect_dump`):
 
 | Function | Pin | Keys |
 |----------|-----|------|
@@ -42,11 +42,11 @@ the log, no `uartRx0` key needed.
 
 ```
 ltchiptool flash read -d COM3 -t 60 bk7231n stock.bin
-ltchiptool flash write -d COM3 -b 921600 -t 60 espurna-beken-initial-tuya.uf2
+ltchiptool flash write -d COM3 -b 921600 -t 60 espurna-beken-tuya.uf2
 ```
 
-Then upload `espurna-beken-matter.bin` once over Wi-Fi for the Matter code (the board, already on that build, takes
-the Matter code out of it), or let *ADMIN → From GitHub* do both uploads.
+Matter, like every module, comes from the MODULES panel afterwards; updates are `espurna-beken-tuya.uf2` over Wi-Fi
+(*ADMIN → From GitHub* or *Upgrade*).
 
 ## Tested
 
@@ -91,8 +91,8 @@ adapter off.
 | button K1 (active low) | P23 | `btnGpio0 23`, `btnMode0 pushbutton`, `btnPinMode0 pull-up`, `btnDefVal0 high`, `btnRelay0 0` |
 | wall switch | P6 | `btnGpio1 6`, `btnMode1 switch`, `btnPinMode1 pull-up`, `btnDefVal1 initial`, `btnRelay1 0`, `btnPress1 relay-toggle`, `btnRlse1 relay-toggle` |
 
-Flashing as above: read the stock flash first, then `espurna-beken-initial-tuya.uf2` over UART1 (CEN to GND at
-"Connecting"), then `espurna-beken-matter.bin` over Wi-Fi.
+Flashing as above: read the stock flash first, then `espurna-beken-tuya.uf2` over UART1 (CEN to GND at
+"Connecting"), then the modules from the MODULES panel.
 
 Tested: stock backup, UART flash of the release image, Wi-Fi, the relay from the terminal, the Matter code over Wi-Fi
 (`MATTER.TAIL`: ready). Not tested yet: the button and the wall switch, Matter pairing.

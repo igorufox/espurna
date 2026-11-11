@@ -914,20 +914,24 @@ void web() {
 } // namespace
 
 extern "C" void app_main() {
-    auto result = nvs_flash_init();
-    if ((result == ESP_ERR_NVS_NO_FREE_PAGES) || (result == ESP_ERR_NVS_NEW_VERSION_FOUND)) {
-        // never erase here: the partition holds the ESPurna settings
-        esp_restart();
-    }
-
-    // Next boot goes back to ESPurna whenever app0 holds a valid image: a crash, a power cut or a reset here must
-    // never leave the board in safeboot for good. A finished upload / download sets app0 again anyway
+    // Next boot goes back to ESPurna whenever app0 holds a valid image: a crash, a power cut, a reset or a broken NVS
+    // here must never leave the board in safeboot for good. Before anything else: the boot partition lives in otadata,
+    // not in NVS. A finished upload / download sets app0 again anyway
     {
         std::string error;
         bootApp(error);
     }
 
-    readSettings();
+    // never erase here: the partition holds the ESPurna settings. Without NVS: no settings, the access point
+    const auto nvs = nvs_flash_init();
+    const bool nvs_ok = (nvs == ESP_OK);
+
+    if (nvs_ok) {
+        readSettings();
+    }
+
+    // taken once, before the network: a request that finds no network must not fire at a later visit here
+    const auto request = nvs_ok ? takeRequest() : Request{};
 
     events = xEventGroupCreate();
     esp_netif_init();
@@ -936,13 +940,15 @@ extern "C" void app_main() {
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, onWifi, nullptr);
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+    if (!nvs_ok) {
+        init.nvs_enable = 0;
+    }
     esp_wifi_init(&init);
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
 
-    if (connect()) {
+    if (nvs_ok && connect()) {
         // picked in the ESPurna WebUI: a few attempts (Wi-Fi, the server), then the result for ESPurna. A failure
         // before the first written byte leaves ESPurna in app0, it starts again; otherwise the web UI here waits
-        const auto request = takeRequest();
         if (!request.url.empty()) {
             bool ok = false;
             for (int attempt = 1; !ok && (attempt <= DownloadAttempts); ++attempt) {
@@ -960,6 +966,9 @@ extern "C" void app_main() {
             }
         }
     } else {
+        if (!request.url.empty()) {
+            storeResult("failed: no network");
+        }
         accessPoint();
     }
 

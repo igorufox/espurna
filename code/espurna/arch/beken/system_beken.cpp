@@ -260,22 +260,25 @@ bool copy_calibration(uint32_t from) {
 }
 
 enum class Calibration {
+    Unchecked,
     InPlace,
     Copied,
     Failed,
 };
 
-Calibration calibration { Calibration::InPlace };
+Calibration calibration { Calibration::Unchecked };
 uint32_t calibration_from { 0 };
 
 // before the SDK reads the block (the first WiFi.mode() of pre_setup()) and before the MAC below
 void ensure_calibration() {
+    calibration = Calibration::InPlace;
     if (::espurna::beken::flashLayout().layout != ::espurna::beken::Layout::Tuya) {
         return;
     }
 
     uint8_t header[sizeof(Block)];
     if (lt_flash_read(FLASH_CALIBRATION_OFFSET, header, sizeof(header)) != sizeof(header)) {
+        calibration = Calibration::Failed;
         return;
     }
 
@@ -303,6 +306,7 @@ void ensure_calibration() {
 
 void report_calibration() {
     switch (calibration) {
+    case Calibration::Unchecked:
     case Calibration::InPlace:
         break;
     case Calibration::Copied:
@@ -390,6 +394,20 @@ void report() {
 
 } // namespace mac
 } // namespace
+
+// the settings slots (storage_eeprom_beken.cpp) cover the other calibration sectors: until the block is known to be
+// where the SDK reads it, none of them is erased. Tells the storage which flash sector to keep, 0 - none
+uint32_t bekenCalibrationKeep() {
+    if (mac::calibration == mac::Calibration::Unchecked) {
+        mac::ensure_unique();
+    }
+
+    if (mac::calibration != mac::Calibration::Failed) {
+        return 0;
+    }
+
+    return mac::calibration_from ? mac::calibration_from : mac::OtherCalibrationOffsets[0];
+}
 
 uint32_t espurna::system::RandomDevice::operator()() const {
     uint32_t out;

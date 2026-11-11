@@ -244,8 +244,6 @@ def app_patch_cachedir(env):
 #   as it changes eboot blob as well as crc location and .ld script(s)
 def app_patch_elf2bin(env):
     KNOWN_VERSIONS = (
-        # framework-arduinoespressif8266 @ 3.20704.0 (2.7.4)
-        "3_20704_0",
         # framework-arduinoespressif8266 @ 3.30102.0 (3.1.2)
         "3_30102_0",
     )

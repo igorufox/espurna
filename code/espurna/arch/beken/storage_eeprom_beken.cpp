@@ -23,6 +23,9 @@ The buffer is the .bss of this object: platformio_beken.ini (custom_tcm_main_ram
 #include <algorithm>
 #include <cstring>
 
+// system_beken.cpp: a vendor RF calibration block in a slot that was not copied yet, 0 - none
+uint32_t bekenCalibrationKeep();
+
 namespace {
 
 constexpr uint32_t SlotsOffset { 0x1DB000 };
@@ -120,9 +123,22 @@ bool _eepromLoad() {
     return false;
 }
 
-// Never overwrites the currently loaded slot, it stays valid until the new one is complete
+bool _eepromSlotKept(size_t slot, uint32_t keep) {
+    const auto address = _eepromSlotAddress(slot);
+    return keep && (keep < (address + SlotSize)) && (address < (keep + FLASH_SECTOR_SIZE));
+}
+
+// Never overwrites the currently loaded slot, it stays valid until the new one is complete; never the slot over an
+// RF calibration block the SDK does not have yet
 bool _eepromWrite() {
-    const auto slot = (_eeprom_slot + 1) % Slots;
+    const auto keep = bekenCalibrationKeep();
+    auto slot = (_eeprom_slot + 1) % Slots;
+    if (_eepromSlotKept(slot, keep)) {
+        slot = (slot + 1) % Slots;
+    }
+    if (slot == _eeprom_slot) {
+        return false;
+    }
     const auto address = _eepromSlotAddress(slot);
 
     if (!lt_flash_erase(address, SlotSize)) {

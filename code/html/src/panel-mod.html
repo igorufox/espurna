@@ -3,7 +3,7 @@
     <div class="header">
         <h1>MODULES</h1>
         <h2>
-            Parts of the firmware that live in the free flash behind the head: switch them on while there is room.
+            Parts of the firmware that live in the free flash behind the head: tick the ones you want, then Apply.
             <span class="mod-version"></span>
         </h2>
     </div>
@@ -23,6 +23,9 @@
             <legend>Memory</legend>
             <div class="mod-meters"></div>
             <span class="pure-form-message">
+                Dark blue: the statics of the modules (their .data and .bss, known exactly). Light blue: the heap they took
+                when they started (measured then; what they allocate later is not counted). The statics go into the
+                fixed pool first, the largest first, the rest into one heap block; nothing is kept in reserve.
                 Yellow: almost everything is taken, the board still runs. Point at a module that is off to see what it
                 would take (striped).
             </span>
@@ -35,12 +38,12 @@
 
             <div class="mod-restart">
                 <span class="mod-restart-text"></span>
-                <button type="button" class="pure-button button-mod-restart">Restart now</button>
+                <button type="button" class="pure-button button-mod-restart">Apply</button>
             </div>
 
             <div class="mod-source">
                 <label>Modules file</label>
-                <input type="file" class="mod-file" accept=".bin">
+                <input type="file" class="mod-file" accept=".ota,.bin">
                 <button type="button" class="pure-button button-mod-github">From GitHub</button>
                 <button type="button" class="pure-button button-mod-refresh">Refresh</button>
             </div>

@@ -77,7 +77,7 @@ bool installed { false };
 // 'in progress' and every following upload fails with 400 until the reboot
 AsyncWebServerRequest* owner { nullptr };
 
-// Some uploads are written by the chip code itself instead of Update (ref. own_...() in ota_driver.h)
+// the chip's part: whether it takes an upload (ref. upload_check() in ota_driver.h)
 namespace driver = ::espurna::ota::driver;
 
 void onDisconnect(AsyncWebServerRequest* request) {
@@ -86,13 +86,6 @@ void onDisconnect(AsyncWebServerRequest* request) {
     }
 
     owner = nullptr;
-    if (driver::own_running()) {
-        driver::own_abort();
-        pending = false;
-        DEBUG_MSG_P(PSTR("[UPGRADE] Connection closed before the upload finished, aborted\n"));
-        return;
-    }
-
     if (Update.isRunning()) {
         pending = false;
         Update.end();
@@ -124,30 +117,12 @@ void onUpgrade(AsyncWebServerRequest *request) {
     }
 
     if (request->_tempObject) {
-        driver::upload_blocked_done();
         return;
     }
 
     if (pending) {
         pending = false;
         owner = nullptr;
-
-        if (driver::own_running()) {
-            bool again { false };
-            const auto* error = driver::own_finish(complete(request), again);
-            if (error) {
-                sendResponse(request, 400, String(FPSTR(error)));
-                return;
-            }
-
-            // e.g. the image is in, the rest of it comes with the same file after the reboot
-            sendResponse(request, 200, again ? F("OK, again") : F("OK"));
-            installed = true;
-            systemRunInLoop([]() {
-                prepareReset(CustomResetReason::Ota);
-            });
-            return;
-        }
 
         if (!complete(request)) {
             DEBUG_MSG_P(PSTR("[UPGRADE] Incomplete upload, received %u of %s bytes\n"),
@@ -224,51 +199,12 @@ void onFile(AsyncWebServerRequest *request, String filename, size_t index, uint8
             return;
         }
 
-        // the board has to reboot first, the reboot waits for the end of the request (ref. onUpgrade())
-        const auto* blocked = driver::upload_blocked();
-        if (blocked) {
-            setStatus(request, 409, String(FPSTR(blocked)));
-            request->onDisconnect([]() {
-                driver::upload_blocked_done();
-            });
+        // the chip's word on this file (Beken: the bootloader it is for), before anything is written
+        const auto* refused = driver::upload_check(data, len);
+        if (refused) {
+            setStatus(request, 400, String(FPSTR(refused)));
             return;
         }
-
-        const auto own = driver::own_begin(data, len);
-        if (own.error) {
-            setStatus(request, own.code, String(FPSTR(own.error)));
-            return;
-        }
-
-        if (own.own) {
-            DEBUG_MSG_P(PSTR("[UPGRADE] Start (%s): %s\n"), driver::own_name(), filename.c_str());
-            owner = request;
-            uploadRxTimeout(request);
-            request->onDisconnect([request]() {
-                onDisconnect(request);
-            });
-        }
-    }
-
-    if (driver::own_running()) {
-        if (request->_tempObject) {
-            return;
-        }
-
-        const auto* error = driver::own_write(data, len);
-        if (error) {
-            setStatus(request, 500, String(FPSTR(error)));
-            return;
-        }
-
-        if (final) {
-            pending_size = index + len;
-            pending = true;
-        } else {
-            otaProgress(index + len);
-        }
-
-        return;
     }
 
     if (!index) {

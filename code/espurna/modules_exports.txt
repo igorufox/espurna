@@ -123,3 +123,4 @@ _Z13wifiApCaptivev
 _ZN7WiFiUDP4stopEv
 _ZN7WiFiUDP5beginEt
 _ZN6String9setCharAtEjc
+_Z10hasSettingRK6String

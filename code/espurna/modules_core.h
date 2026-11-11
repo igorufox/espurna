@@ -33,7 +33,8 @@ class Print;
 namespace espurna {
 namespace modules {
 
-constexpr size_t DirectoryEntries { 12 };
+// 16: every module of a chip in its full image (ESP32 has 14). A change of it is a new directory format: new magic
+constexpr size_t DirectoryEntries { 16 };
 constexpr uint32_t SectorSize { 4096 };
 
 // one installed module: the common part, then the backend's own words
@@ -70,7 +71,14 @@ struct Directory {
     // the guard: not empty - the modules stay off, why. Here and not in the settings: EEPROM_Rotate went back to an
     // older copy of the settings after the crashes and the unstable mode, and the modules started again
     char off[96];
+    // two copies, in the last sector of the area and the one under it: a write goes into the older one, a read takes
+    // the newest whole one. A power cut during a write loses only that write
+    uint32_t generation;
+    uint32_t crc;           // CRC-32 of everything before it
 };
+
+// the sector under the directory holds its second copy: no module slot there
+constexpr uint32_t DirectorySectors { 2 };
 
 static_assert(sizeof(Directory) <= 2048, "the Beken directory sector keeps its boot marks in the second half");
 
@@ -107,7 +115,14 @@ bool insideRange(uint32_t start, uint32_t end, uint32_t lo, uint32_t hi);
 void jsonField(String& out, const __FlashStringHelper* name, uint32_t value);
 
 bool readDirectory(Directory& out);
+
+// the heap block of the modules' statics this boot (modulesRamSetup): its address (also with nothing in it: where it
+// would be, the Apply places for it), its size; what the directory's modules need of it
+uint32_t heapBlockBase();
+uint32_t heapBlockSize();
+uint32_t heapNeed(const Directory& dir);
 bool writeDirectory(const Directory& dir);
+bool writeDirectoryPrimary(const Directory& dir);
 String offReason();
 
 // writes into the module area and its directory sector only (arch::area()), erases in whole sectors
@@ -190,6 +205,11 @@ struct PackageReader {
     size_t chunk_left { 0 };    // image bytes of the current chunk still to come
     uint8_t part { 0 };
     bool replace { false };     // ?replace=1
+    // placed by the Apply (arch::pools, largest first): RAM offset (RamSecondArena: in the chip's fixed pool), IRAM code
+    // offset (ESP8266); the backend's prepare takes them instead of placing itself
+    bool planned { false };
+    uint32_t planned_ram { 0 };
+    uint32_t planned_iram { 0 };
     const char* error { nullptr };
 };
 
@@ -318,13 +338,27 @@ const char* place(const Directory& dir, Entry& entry);
 // back. Default: no
 bool placeable(const Entry& entry);
 
+// flash a module with this image takes in the area, whole sectors (ESP32: the relocation maps behind it, Beken: the
+// flash format with a CRC per 32 bytes)
+uint32_t slotFor(uint32_t image);
+
 // an upload: its reader with the hooks set (the backend reads its own parameters, ram=iram); the core sets `replace`,
 // feeds it, deletes it. uploadFinish: the image written and checked, the entry filled but its name
 PackageReader* uploadNew(AsyncWebServerRequest* request);
 const char* uploadFinish(PackageReader& upload, Entry& out);
 
-// RAM arena bytes (the most the modules take together)
-uint32_t ramArena();
+// where the statics (.data + .bss) of the modules go, sized at each Apply, no reserve kept: first the chip's pool at a
+// fixed address (Beken: the free data TCM; ESP8266: the IRAM after the head's code, module code first, 32-bit access
+// only), largest module first; the rest in one heap block that the next boot takes before the modules start, as big
+// as they need (heap: how big it may get, the free heap minus what the head keeps for itself)
+struct Pools {
+    uint32_t heap;          // bytes the heap block may have
+    uint32_t fixed;         // bytes of the fixed pool (RamSecondArena), 0 - none
+    bool fixed_words;       // the fixed pool takes 32-bit access only: no module with ModuleByteRam there
+    bool code_in_fixed;     // module IRAM code takes the fixed pool from its start (ESP8266)
+};
+
+void pools(Pools& out);
 
 // the chip's other arenas (ESP8266: the IRAM arena, the RAM in IRAM) with what the counted modules take. Default: none
 void arenas(const Directory& dir, bool valid, Spaces& out, const char* except);

@@ -77,17 +77,4 @@ size_t heap_min();
 void matterSetup();
 
 bool matterStarted();
-void matterRebootForUpload();
 
-#if MATTER_TAIL_SUPPORT
-// Matter code in its own flash region (Beken, scripts/beken_matter_tail.py), written from the web OTA form.
-// Functions return nullptr on success or a PSTR() error message
-bool matterTailIsUpload(const uint8_t* data, size_t length);
-bool matterTailBlocksOta();
-const char* matterTailBegin();
-const char* matterTailWrite(const uint8_t* data, size_t length);
-const char* matterTailEnd();
-void matterTailAbort();
-// nullptr when the Matter code is in place, otherwise its state ("missing", "from another build", ...)
-const char* matterTailProblem();
-#endif

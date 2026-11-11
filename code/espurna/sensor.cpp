@@ -22,6 +22,7 @@ Copyright (C) 2020-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "terminal.h"
 #include "thingspeak.h"
 #include "rtcmem.h"
+#include "espurna_chip.h"
 #include "ws.h"
 
 #include <cfloat>
@@ -2528,7 +2529,7 @@ void load() {
 #if !defined(PZEM004T_ADDRESSES)
         for (size_t index = 0; index < PZEM004TSensor::DevicesMax; ++index) {
             auto address = getSetting({"pzemAddr", index}, PZEM004TSensor::defaultAddress(index));
-            if (!address.isSet()) {
+            if (!espurna::chip::address_set(address)) {
                 break;
             }
 

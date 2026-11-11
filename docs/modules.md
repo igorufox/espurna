@@ -273,7 +273,7 @@ What it is for: Matter as a module. The Matter code (~490 KB) does not fit next 
   `espurna-beken-modules.bin`; an install takes under a second. The WebUI panel on the Beken is not tested yet.
 - **Head update:** `/upgrade` answers 409 while modules run; `MODULES.OFF`, upload the new head's `.uf2`, switch the
   modules of the new build on again. The head update goes into the space the modules had.
-- **Build:** `pio run -c platformio_beken.ini -e beken` (the head `espurna-beken.uf2`, every module and the modules
+- **Build:** `pio run -c platformio_beken.ini -e beken` (the head `espurna-beken-tuya.uf2`, every module and the modules
   file; output in `.pio/build_beken/beken/`).
 
 Tested on the bench board: install over `/modules/upload`, both modules running after the restart (their WebUI keys,
@@ -299,12 +299,14 @@ the `MODULES*` commands) with a backend per chip (`modules_esp8266.cpp`, `arch/e
     0x000000  head (eboot + the image)                       grows up
     ...       free
     ...       modules, 4 KB aligned, best fit                grows down
-    0x0F9000  module list (one sector)
+    0x0F8000  module list, second copy
+    0x0F9000  module list
     0x0FA000  settings (EEPROM_Rotate pool), RF cal, SDK Wi-Fi
 
 The module list is the sector under the settings' rotation pool, computed at runtime (`base() - size()` of
 EEPROM_Rotate): inside the pool a settings write erased it. It also holds the guard's reason, so the decision
-survives crashes and an older settings copy.
+survives crashes and an older settings copy. Since 2026-11-09 evening it is written twice with a checksum, the second
+copy in the sector under it (not tested on a board yet).
 
 ### Build: the head links alone, each module links against it
 

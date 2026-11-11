@@ -77,7 +77,7 @@ cd code
 pio run -c platformio_esp8266.ini -e esp8266         # ESP8266: espurna-esp8266.bin (.gz), -modules.bin, -full.bin
 pio run -d safeboot-app                              # ESP32: the safeboot first (ESP-IDF project), then
 pio run -c platformio_esp32.ini -e esp32             #   espurna-esp32.bin (merged), -modules.bin
-py -3 -m platformio run -c platformio_beken.ini -e beken   # Beken: espurna-beken.uf2, -modules.bin
+py -3 -m platformio run -c platformio_beken.ini -e beken   # Beken: espurna-beken-tuya.uf2, -modules.bin
 pio run -d mini-app                                  # the mini, for 1 MB boards on a full image of an older release
 ```
 

@@ -16,15 +16,15 @@ wall-switch cable S1 to S4 + COM.
 
 ## Build
 
-`beken-matter`, the image of every BK7231N board (it maps all GPIOs, P9, P15, P17 and P28 included):
-`espurna-beken-initial-tuya.uf2` of the [release](https://github.com/igorufox/espurna/releases/latest) for the first flash,
-`espurna-beken-matter.bin` for updates. Or built from `code/`:
+The Beken head of every BK7231N board (it maps all GPIOs, P9, P15, P17 and P28 included):
+`espurna-beken-tuya.uf2` of the [release](https://github.com/igorufox/espurna/releases/latest) for the first flash and for
+updates. Or built from `code/`:
 
 ```
 py -3 -m platformio run -c platformio_beken.ini -e beken
 ```
 
-(newer releases: `espurna-beken.uf2`, the head, and the modules file `espurna-beken-modules.bin`)
+(newer releases: `espurna-beken-tuya.uf2`, the head, and the modules file `espurna-beken-modules.bin`)
 
 ## Wiring
 

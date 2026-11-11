@@ -657,16 +657,17 @@ LightProviderType convert(const String& value) {
 #if LIGHT_PROVIDER_MY92XX_SUPPORT
 template <>
 my92xx_model_t convert(const String& value) {
-    PROGMEM_STRING(MY9291, "9291");
-    PROGMEM_STRING(MY9231, "9231");
+    // compared by hand, not through settings::options::Enumeration: the library's plain enum is one byte with
+    // -fshort-enums (LibreTiny), and Enumeration takes 4 byte wide values only
+    if (value.equals(F("9291"))) {
+        return MY92XX_MODEL_MY9291;
+    }
 
-    using Options = std::array<espurna::settings::options::Enumeration<my92xx_model_t>, 2>;
-    static constexpr Options options {
-        {{MY92XX_MODEL_MY9291, MY9291},
-         {MY92XX_MODEL_MY9231, MY9231}}
-    };
+    if (value.equals(F("9231"))) {
+        return MY92XX_MODEL_MY9231;
+    }
 
-    return convert(options, value, espurna::light::build::my92xxModel());
+    return espurna::light::build::my92xxModel();
 }
 #endif
 

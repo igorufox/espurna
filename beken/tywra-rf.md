@@ -12,10 +12,9 @@ to the board.
 
 ## Image
 
-`beken-matter`, the image of every BK7231N board, with the *Tuya TYWRA-RF* device template (*ADMIN → Device Template*,
+The Beken head of every BK7231N board, with the *Tuya TYWRA-RF* device template (*ADMIN → Device Template*,
 `tywra` finds it): relay P24, buttons P14 and P6, LED P8 (inverse), 433 MHz receiver P26. First flash:
-`espurna-beken-initial-tuya.uf2`; updates: `espurna-beken-matter.bin` (on this 2 MiB layout the Matter code goes up with
-a second upload of the same file, the WebUI does it by itself).
+`espurna-beken-tuya.uf2`, the same file for updates; Matter from the MODULES panel.
 
 ## Wiring
 

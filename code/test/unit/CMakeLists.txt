@@ -234,6 +234,7 @@ build_tests(
     embedis
     filters
     led
+    modules
     mqtt
     scheduler
     sensor

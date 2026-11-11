@@ -37,6 +37,10 @@ bool netstat(Print& out);
 // false when the common fixed layout (app, OTA, settings, SDK) describes the flash. `mode` is the flash mode name
 bool storage(Print& out, const char* mode);
 
+// The release image this board takes (WebUI release list, its files): ESPURNA_IMAGE ("" - local build). Beken: the
+// image of the bootloader the board has, "beken-tuya" or "beken-quectel"
+String image();
+
 // Framework release and its revision (INFO, build info of the WebUI / MQTT / API)
 String core_version();
 String core_revision();

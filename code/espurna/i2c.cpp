@@ -10,7 +10,15 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #if I2C_SUPPORT
 
+// the framework's Wire where it has one; LibreTiny on the BK7231N has none, the software master there
+#if __has_include(<Wire.h>)
 #include <Wire.h>
+#else
+#include "libs/SoftWire.h"
+namespace {
+espurna::i2c::SoftWire Wire;
+} // namespace
+#endif
 
 #include "compat.h"
 #include "i2c.h"

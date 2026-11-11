@@ -80,5 +80,9 @@ class Esp8266Linker(module_link.Linker):
         on = module_full_image.modules_on(self.env.subst("$PROJECT_DIR"))
         esp8266_full_image.build(ctx["head_bin"], container, ctx["build_dir"], in_iram, on)
 
+    def ota_heads(self, ctx):
+        """the head of the install image: the initial image (head + the modules on by default in its tail)"""
+        return [("esp8266", os.path.join(ctx["build_dir"], "espurna-esp8266.bin"))]
+
 
 Esp8266Linker(env, globals()["projenv"]).install()

@@ -9,15 +9,15 @@
 //   and it restarts for it; 'mini' - 1 MB boards: /ota/fetch only stores the request, the browser uploads the minimal
 //   image (espurna-esp8266-1m-mini.bin.gz) to /upgrade, the minimal image downloads the full one and boots it;
 //   'upload' - the file fits the free space, the browser uploads it (also older firmware without /ota/status)
-// - Beken (and ESP8266 'upload'): POST /upgrade. HTTP 409 - Matter was running from the OTA partition, the board
-//   reboots without it and the same file goes up once more; "OK, again" - Beken with the Tuya bootloader, the same
-//   file once more after the reboot
+// - Beken (and ESP8266 'upload'): POST /upgrade of the .uf2 of the board's bootloader (`fwImage` "beken-tuya" - Tuya,
+//   "beken-quectel" - Quectel), the board checks it is that one
 // - ESP32: the board downloads the image itself (the merged .bin, -ota.bin of older releases), through its safeboot
 //   image (https, SHA-256 of firmware.json), which writes the ESPurna part of it.
 //   The browser only brings the safeboot image of the release when the installed one differs (/safeboot/install),
 //   or, on the old two-slot layout, for the migration to the safeboot layout (/safeboot/migrate with the image URL).
 //   Every ESP32 image, the NSPanel one (esp32-matter-nspanel) as well: one safeboot file per release for all of them
 
+import { safeHref, sha256Hex, wait } from './net.mjs';
 import { notifyError } from './notify.mjs';
 import { listenAppConnected } from './connection.mjs';
 import { variableListeners } from './settings.mjs';
@@ -64,8 +64,6 @@ function startsWithText(buffer, text) {
  * - 'esp' - ESP8266 / ESP32 application (magic 0xE9), buffer[2] is the flash mode
  * - 'gzip' - compressed ESP8266 image
  * - 'uf2' - LibreTiny UF2 (Beken)
- * - 'beken' - ESPBEKEN, Beken OTA image of this firmware
- * - 'matter-tail' - ESPMTAIL, Beken Matter code of the Tuya layout
  * @param {Uint8Array} buffer first 8 bytes (or more) of the file
  * @returns {string | null}
  */
@@ -80,14 +78,6 @@ export function firmwareHeader(buffer) {
 
     if (startsWithText(buffer, 'UF2\n')) {
         return 'uf2';
-    }
-
-    if (startsWithText(buffer, 'ESPBEKEN')) {
-        return 'beken';
-    }
-
-    if (startsWithText(buffer, 'ESPMTAIL')) {
-        return 'matter-tail';
     }
 
     return null;
@@ -202,6 +192,41 @@ export function firmwareRows(manifest, {image, arch, version}) {
             choices,
         };
     });
+}
+
+/**
+ * The modules file of one build in the release list (else its full image: it carries the same file behind 1 MB),
+ * the one place that reads the list for the modules panel too
+ * @param {FirmwareManifest} manifest
+ * @param {{image: string, commit: string, base: string}} board
+ * @returns {string | null} absolute http(s) URL
+ */
+export function modulesFileUrl(manifest, {image, commit, base}) {
+    if (!manifest || !Array.isArray(manifest.releases)) {
+        throw new Error('not a firmware.json (no releases)');
+    }
+
+    // the install image (.ota) of the release, else the modules file, else the full image of the older releases
+    const rank = {install: 3, modules: 2, full: 1};
+    /** @type {string | null} */
+    let found = null;
+    let best = 0;
+    for (const release of manifest.releases) {
+        if (commit && !String(release.commit ?? '').startsWith(commit)) {
+            continue;
+        }
+
+        for (const file of (release.images ?? {})[image] ?? []) {
+            const score = rank[/** @type {keyof typeof rank} */(file.kind)] ?? 0;
+            const href = (score > best) ? safeHref(file.url, base) : '';
+            if (href) {
+                found = href;
+                best = score;
+            }
+        }
+    }
+
+    return found;
 }
 
 /**
@@ -321,30 +346,13 @@ export function fetchOutcome(status) {
 /**
  * What the board answered to the upload
  * - 'done' - written, the board reboots into it
- * - 'again' - written, the same file once more after the reboot (Beken, Tuya bootloader)
- * - 'matter' - nothing written, Matter runs from the OTA partition, the board reboots without it
  * - 'error'
  * @param {number} status
  * @param {string} text
  * @returns {string}
  */
 export function uploadOutcome(status, text) {
-    if (status === 409) {
-        return 'matter';
-    }
-
-    if (status === 200) {
-        const trimmed = text.trim();
-        if (trimmed === 'OK, again') {
-            return 'again';
-        }
-
-        if (trimmed === 'OK') {
-            return 'done';
-        }
-    }
-
-    return 'error';
+    return ((status === 200) && (text.trim() === 'OK')) ? 'done' : 'error';
 }
 
 /**
@@ -353,33 +361,15 @@ export function uploadOutcome(status, text) {
 
 /**
  * Steps of an install by upload (Beken, ESP8266 'upload'), shown ahead as a numbered list
- * - Tuya bootloader with Matter running: Matter runs from the space the update goes to, the board restarts without it
- * - Tuya bootloader, another build: the file goes up twice, the firmware first, its Matter code after the restart
- * @param {{name: string, layout: string, matter: boolean, sameBuild: boolean}} board
+ * @param {{name: string}} board
  * @returns {InstallStep[]}
  */
-export function uploadSteps({name, layout, matter, sameBuild}) {
-    const tuya = (layout === 'Tuya');
-
-    /** @type {InstallStep[]} */
-    const steps = [{key: 'download', text: `Download ${name} from GitHub into this browser`}];
-    if (tuya && matter) {
-        steps.push(
-            {key: 'matter-upload', text: 'Upload: Matter runs from the update space, so the board answers that it restarts without Matter'},
-            {key: 'matter-restart', text: 'The board restarts without Matter'});
-    }
-
-    if (tuya && !sameBuild) {
-        steps.push(
-            {key: 'upload', text: `Upload ${name}: the new firmware`},
-            {key: 'again-restart', text: 'The board restarts into the new firmware, its Matter code is not there yet'},
-            {key: 'again-upload', text: `Upload ${name} once more: the Matter code`});
-    } else {
-        steps.push({key: 'upload', text: `Upload ${name}`});
-    }
-
-    steps.push({key: 'restart', text: 'The board restarts and comes back'});
-    return steps;
+export function uploadSteps({name}) {
+    return [
+        {key: 'download', text: `Download ${name} from GitHub into this browser`},
+        {key: 'upload', text: `Upload ${name}`},
+        {key: 'restart', text: 'The board restarts and comes back'},
+    ];
 }
 
 /**
@@ -416,9 +406,6 @@ const state = {
     busy: false,
     /** @type {import('./connection.mjs').ConnectionUrls | null} */
     urls: null,
-    // Beken bootloader, 'Tuya' or 'Quectel'
-    layout: '',
-    matter: false,
 };
 
 /** steps of the running install, current - the one in progress (-1 before the first) */
@@ -430,7 +417,7 @@ const progress = {
 
 /** Lists the steps under the status line: done, in progress, still to come */
 function showSteps() {
-    for (const id of ['firmware-steps', 'matter-code-steps']) {
+    for (const id of ['firmware-steps']) {
         const list = document.getElementById(id);
         if (!list) {
             continue;
@@ -494,11 +481,6 @@ function manifestUrl() {
     return state.url.trim() || FIRMWARE_URL;
 }
 
-/** @param {number} ms */
-function wait(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
  * @param {string | URL} url
  * @param {RequestInit} [options]
@@ -520,9 +502,9 @@ async function fetchTimeout(url, options = {}, timeout = 4000) {
  * @param {string} [className]
  */
 function setStatus(text, className = '') {
-    // ADMIN release list, and the MATTER panel when it installs the Matter code
+    // ADMIN release list
     const line = stepText(text);
-    for (const id of ['firmware-status', 'matter-code-status']) {
+    for (const id of ['firmware-status']) {
         const status = document.getElementById(id);
         if (status) {
             status.textContent = line;
@@ -609,63 +591,15 @@ function upload(url, blob, name, form) {
  * @param {string} name
  */
 async function installUpgrade(urls, blob, name) {
-    let matter = 1;
-    let again = 1;
-
-    // the steps were planned ahead (uploadSteps()), what the board answers decides which of them happen
-    let next = progress.steps[progress.current + 1] || {key: 'upload', text: `Upload ${name}`};
-    for (;;) {
-        stepNow(next);
-        /** @type {number} */
-        let status;
-        let text = '';
-        try {
-            ({status, text} = await upload(urls.upgrade, blob, name, true));
-        } catch (e) {
-            // Matter running: firmware before 2026-11-07 answers 409 on the first chunk and reboots right away, the
-            // browser sees the connection drop while it still sends. The board does restart without Matter
-            if ((progress.steps[progress.current]?.key !== 'matter-upload') || (matter <= 0)) {
-                throw e;
-            }
-
-            status = 409;
-        }
-
-        const outcome = uploadOutcome(status, text);
-
-        // Matter was not running after all: that upload was the update itself
-        if ((outcome !== 'matter') && (progress.steps[progress.current]?.key === 'matter-upload')) {
-            progress.steps[progress.current] = {key: 'upload', text: `Upload ${name}`};
-        }
-
-        if ((outcome === 'matter') && (matter-- > 0)) {
-            stepNow({key: 'matter-restart', text: 'The board restarts without Matter'});
-            await waitForBoard(urls.auth, 'Waiting for the board');
-            next = {key: 'upload', text: `Upload ${name}`};
-            continue;
-        }
-
-        if ((outcome === 'again') && (again-- > 0)) {
-            stepNow({key: 'again-restart', text: 'The board restarts into the new firmware, its Matter code is not there yet'});
-            await waitForBoard(urls.auth, 'Waiting for the board');
-            next = {key: 'again-upload', text: `Upload ${name} once more: the Matter code`};
-            continue;
-        }
-
-        if (outcome === 'done') {
-            stepNow({key: 'restart', text: 'The board restarts and comes back'});
-            // Beken, Tuya layout: the boot right after the Matter code was written sometimes stays deaf, and the network
-            // watchdog restarts the board after about 2.5 minutes, twice in a row seen (docs/updates.md)
-            const matterCode = (progress.steps[progress.current - 1]?.key === 'again-upload');
-            await waitForBoard(urls.auth,
-                matterCode ? 'Waiting for the board, it may restart by itself once or twice' : 'Waiting for the board',
-                matterCode ? 600000 : 240000);
-            stepsEnd();
-            return;
-        }
-
+    stepNow({key: 'upload', text: `Upload ${name}`});
+    const {status, text} = await upload(urls.upgrade, blob, name, true);
+    if (uploadOutcome(status, text) !== 'done') {
         throw new Error(`the board answered ${status}: ${text.trim() || '(nothing)'}`);
     }
+
+    stepNow({key: 'restart', text: 'The board restarts and comes back'});
+    await waitForBoard(urls.auth, 'Waiting for the board');
+    stepsEnd();
 }
 
 /**
@@ -823,6 +757,15 @@ async function downloadFile(file) {
         throw new Error(`download of ${file.name}: ${blob.size} bytes instead of ${file.size}`);
     }
 
+    // the release list names the SHA-256 of every file: a different file never reaches the board (B4)
+    if (file.sha256) {
+        setStatus(`Checking ${file.name}...`);
+        const actual = sha256Hex(new Uint8Array(await blob.arrayBuffer()));
+        if (actual !== file.sha256.toLowerCase()) {
+            throw new Error(`download of ${file.name}: SHA-256 ${actual} instead of ${file.sha256}`);
+        }
+    }
+
     return blob;
 }
 
@@ -931,6 +874,15 @@ async function installEsp32(urls, row, choice) {
             throw new Error(`release ${releaseName(row)} has no safeboot image, the two-slot layout needs it for the migration`);
         }
 
+        // A9: between the erase and the write of the partition table nothing can step in, a power cut there needs
+        // the wire. Asked once, before anything is written
+        if (!window.confirm('The flash layout of this board is rewritten now (the partition table, a few seconds).\n\n'
+            + 'A power cut during that step leaves the board without firmware until it is flashed by wire. '
+            + 'Make sure the power is stable.\n\nContinue?'))
+        {
+            throw new Error('the layout change was cancelled, nothing was changed');
+        }
+
         const blob = await downloadFile(safebootFile);
         const result = await post(new URL('safeboot/migrate', base), {url: imageUrl, sha256}, {blob, name: safebootFile.name});
         if (result.status !== 200) {
@@ -975,6 +927,50 @@ async function installEsp32(urls, row, choice) {
 }
 
 /**
+ * Every chip: the file uploaded to the board's /upgrade
+ * @param {import('./connection.mjs').ConnectionUrls} urls
+ * @param {FirmwareRow} row
+ * @param {FirmwareChoice} choice
+ */
+async function installByUpload(urls, row, choice) {
+    const {file} = choice;
+    stepsBegin(uploadSteps({name: file.name}));
+    stepNow(progress.steps[0]);
+    const blob = await downloadFile(file);
+    const header = firmwareHeader(new Uint8Array(await blob.slice(0, 8).arrayBuffer()));
+    if (!header) {
+        throw new Error(`${file.name} does not look like a firmware image`);
+    }
+
+    await installUpgrade(urls, blob, file.name);
+}
+
+/**
+ * ESP8266: the board downloads the file itself when it can (fetch, or the minimal image first), else the upload
+ * @param {import('./connection.mjs').ConnectionUrls} urls
+ * @param {FirmwareRow} row
+ * @param {FirmwareChoice} choice
+ */
+async function installOnEsp8266(urls, row, choice) {
+    const route = esp8266Route(row, choice, {freeSize: state.freeSize, status: state.otaStatus});
+    if ((route === 'fetch') || (route === 'mini')) {
+        await installEsp8266(urls, row, choice, route);
+        return;
+    }
+
+    await installByUpload(urls, row, choice);
+}
+
+/**
+ * How each chip installs a release file; a chip not listed uploads it (Beken)
+ * @type {{[arch: string]: (urls: import('./connection.mjs').ConnectionUrls, row: FirmwareRow, choice: FirmwareChoice) => Promise<void>}}
+ */
+const INSTALL_STRATEGIES = {
+    esp8266: installOnEsp8266,
+    esp32: installEsp32,
+};
+
+/**
  * @param {FirmwareRow} row
  * @param {FirmwareChoice} choice
  */
@@ -1004,26 +1000,12 @@ async function install(row, choice) {
     }
 
     try {
-        const route = (state.arch === 'esp8266')
-            ? esp8266Route(row, choice, {freeSize: state.freeSize, status: state.otaStatus}) : null;
-        if (state.arch === 'esp32') {
-            await installEsp32(urls, row, choice);
-        } else if ((route === 'fetch') || (route === 'mini')) {
-            await installEsp8266(urls, row, choice, route);
-        } else {
-            stepsBegin(uploadSteps({
-                name: file.name, layout: state.layout, matter: state.matter, sameBuild: row.running}));
-            stepNow(progress.steps[0]);
-            const blob = await downloadFile(file);
-            const header = firmwareHeader(new Uint8Array(await blob.slice(0, 8).arrayBuffer()));
-            if (!header) {
-                throw new Error(`${file.name} does not look like a firmware image`);
-            }
+        const strategy = INSTALL_STRATEGIES[state.arch] ?? installByUpload;
+        await strategy(urls, row, choice);
 
-            await installUpgrade(urls, blob, file.name);
-        }
-
-        setStatus(`${file.name} installed, the board is back. Reloading the page...`, 'firmware-ok');
+        // "installed" only once the page sees the build it asked for (installCheck)
+        expectBuild(String(row.commit || '').slice(0, 7), file.name);
+        setStatus(`${file.name} written, the board is back. Reloading the page to check its version...`);
         pageReloadIn(2000);
     } catch (e) {
         setStatus(`Install stopped: ${/** @type {Error} */(e).message}`, 'firmware-error');
@@ -1032,6 +1014,55 @@ async function install(row, choice) {
         for (const button of document.querySelectorAll('#firmware-releases button')) {
             /** @type {HTMLButtonElement} */(button).disabled = false;
         }
+    }
+}
+
+const EXPECT_KEY = 'fwinstall.expect';
+
+/**
+ * @param {string} commit
+ * @param {string} name
+ */
+function expectBuild(commit, name) {
+    try {
+        sessionStorage.setItem(EXPECT_KEY, JSON.stringify({commit, name}));
+    } catch {
+        // no storage: no check after the reload
+    }
+}
+
+/**
+ * The version after the reload against the build the install asked for
+ * @param {string} version
+ * @param {{commit: string}} expect
+ * @returns {'installed' | 'other' | null}
+ */
+export function installOutcome(version, {commit}) {
+    if (!commit) {
+        return null;
+    }
+
+    return version.includes(commit) ? 'installed' : 'other';
+}
+
+/** @param {string} version */
+function installCheck(version) {
+    let expect;
+    try {
+        expect = JSON.parse(sessionStorage.getItem(EXPECT_KEY) || 'null');
+        sessionStorage.removeItem(EXPECT_KEY);
+    } catch {
+        return;
+    }
+    if (!expect) {
+        return;
+    }
+
+    const outcome = installOutcome(version, expect);
+    if (outcome === 'installed') {
+        setStatus(`${expect.name} installed, the board runs ${version}`, 'firmware-ok');
+    } else if (outcome === 'other') {
+        setStatus(`${expect.name} was written, but the board runs ${version}, not build ${expect.commit}`, 'firmware-error');
     }
 }
 
@@ -1090,10 +1121,13 @@ function choiceItem(row, choice) {
         });
         item.appendChild(button);
     } else {
-        const link = document.createElement('a');
-        link.href = new URL(file.url, manifestUrl()).href;
-        link.textContent = 'download';
-        item.appendChild(link);
+        const href = safeHref(file.url, manifestUrl());
+        if (href) {
+            const link = document.createElement('a');
+            link.href = href;
+            link.textContent = 'download';
+            item.appendChild(link);
+        }
     }
 
     return item;
@@ -1128,9 +1162,10 @@ function showRows(list, rows) {
         if (row.commit) {
             item.appendChild(document.createTextNode(', commit '));
             const short = row.commit.slice(0, 7);
-            if (row.release) {
+            const release = safeHref(row.release);
+            if (release) {
                 const link = document.createElement('a');
-                link.href = row.release;
+                link.href = release;
                 link.target = '_blank';
                 link.rel = 'noopener';
                 link.textContent = short;
@@ -1153,51 +1188,6 @@ function showRows(list, rows) {
         item.appendChild(files);
         list.appendChild(item);
     }
-}
-
-/**
- * MATTER panel, Beken with the Tuya bootloader: the Matter code is missing (the second upload of the image did
- * not happen). Installs the newest release of the running image: the same build only adds its Matter code, a newer
- * one updates the firmware first and its Matter code goes up after the reboot by itself ('again')
- */
-export async function installMatterCode() {
-    if (state.busy) {
-        return;
-    }
-
-    if (!state.imageKnown) {
-        setStatus('This build does not say which image it is (local build): upload its espurna-beken-matter.bin in ADMIN, Upgrade.', 'firmware-error');
-        return;
-    }
-
-    const url = manifestUrl();
-    setStatus(`Downloading ${url}...`);
-
-    /** @type {FirmwareRow[]} */
-    let rows;
-    try {
-        const response = await fetch(url, {cache: 'no-store'});
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        rows = firmwareRows(await response.json(), {
-            image: state.image, arch: state.arch, version: state.version})
-            .filter((row) => row.choices.some((choice) => installable(choice.file)));
-    } catch (e) {
-        setStatus(`Could not load ${url}: ${/** @type {Error} */(e).message}`, 'firmware-error');
-        return;
-    }
-
-    const row = rows[0];
-    const choice = row ? row.choices.find((other) => installable(other.file)) : undefined;
-    if (!row || !choice) {
-        setStatus(`No release has files of the ${state.image} image.`, 'firmware-error');
-        return;
-    }
-
-    setStatus('');
-    await install(row, choice);
 }
 
 /** @param {HTMLElement} list */
@@ -1262,18 +1252,13 @@ export function init() {
         },
         'app_version': (_, value) => {
             state.version = String(value);
+            installCheck(state.version);
         },
         'free_size': (_, value) => {
             state.freeSize = parseInt(String(value), 10) || 0;
         },
         'webFwUrl': (_, value) => {
             state.url = String(value);
-        },
-        'fwLayout': (_, value) => {
-            state.layout = String(value);
-        },
-        'matterStarted': (_, value) => {
-            state.matter = (value === true) || (value === 'yes');
         },
     });
 

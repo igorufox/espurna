@@ -12,6 +12,7 @@ Copyright (C) 2020-2023 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include <Arduino.h>
 
 #include <memory>
+#include <type_traits>
 #include <utility>
 
 #include "types.h"
@@ -231,7 +232,11 @@ struct alignas(8) Enumeration {
 
     using ValueType = Value;
     using UnderlyingType = typename std::underlying_type<Value>::type;
-    static_assert((alignof(UnderlyingType) % 4) == 0, "");
+
+    // the tables of options live in PROGMEM, which the ESP8266 reads in 4 byte words only: the value is kept in at
+    // least 32 bits, also for an enum of one byte (-fshort-enums of the ARM toolchain, LibreTiny)
+    using StorageType = typename std::conditional<(sizeof(UnderlyingType) < 4), int32_t, UnderlyingType>::type;
+    static_assert((alignof(StorageType) % 4) == 0, "");
 
     struct Numeric {
         using Convert = UnderlyingType(*)(const String&);
@@ -263,12 +268,12 @@ struct alignas(8) Enumeration {
 
     Enumeration() = delete;
     constexpr Enumeration(ValueType value, StringView string) noexcept :
-        _value(value),
+        _value(static_cast<StorageType>(value)),
         _string(string)
     {}
 
     constexpr ValueType value() const {
-        return _value;
+        return static_cast<ValueType>(_value);
     }
 
     constexpr UnderlyingType numeric() const {
@@ -284,7 +289,7 @@ struct alignas(8) Enumeration {
     }
 
 private:
-    ValueType _value;
+    StorageType _value;
     StringView _string;
 };
 

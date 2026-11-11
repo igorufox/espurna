@@ -94,9 +94,6 @@ function onButtonClick(event) {
                 const outcome = uploadOutcome(xhr.status, xhr.responseText);
                 if ("done" === outcome) {
                     alert("Firmware image uploaded, board rebooting. This page will be refreshed in 5 seconds");
-                } else if ("again" === outcome) {
-                    // Beken with the Tuya bootloader: the second part goes up after the reboot
-                    alert("First part written, board rebooting. Upload the same file once more when the board is back");
                 } else {
                     alert(`ERROR while attempting OTA upgrade - ${xhr.status.toString()} ${xhr.statusText}, ${xhr.responseText}`);
                 }

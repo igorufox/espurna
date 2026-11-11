@@ -178,4 +178,53 @@ bool EspCompat::flashRead(uint32_t addr, uint32_t* data, size_t size) {
     return lt_flash_read(addr, reinterpret_cast<uint8_t*>(data), size) == size;
 }
 
+// LibreTiny's ArduinoFamily.h makes noInterrupts() / interrupts() of these two, and ArduinoCore-API declares
+// pulseIn(), none of them has a body on the BK72xx. The modules use them (OneWire, HLW8012): here, kept in the head
+// by espurna/modules_exports_beken.txt
+extern "C" {
+
+uint32_t ulPortSetInterruptMask(void) {
+    return static_cast<uint32_t>(port_disable_interrupts_flag());
+}
+
+// interrupts() passes 0: enabled, the state the flag of an unmasked CPU holds
+void vPortClearInterruptMask(uint32_t mask) {
+    port_enable_interrupts_flag(static_cast<int>(mask));
+}
+
+// length of the next pulse at `state`, microseconds; 0 when it did not start or end within the timeout
+unsigned long pulseIn(pin_size_t pin, uint8_t state, unsigned long timeout) {
+    const auto level = [&]() {
+        return (digitalRead(pin) == HIGH) ? HIGH : LOW;
+    };
+    const auto start = micros();
+    const auto expired = [&]() {
+        return (micros() - start) >= timeout;
+    };
+
+    // the pulse running now does not count
+    while (level() == state) {
+        if (expired()) {
+            return 0;
+        }
+    }
+
+    while (level() != state) {
+        if (expired()) {
+            return 0;
+        }
+    }
+
+    const auto begin = micros();
+    while (level() == state) {
+        if (expired()) {
+            return 0;
+        }
+    }
+
+    return micros() - begin;
+}
+
+} // extern "C"
+
 #endif

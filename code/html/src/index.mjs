@@ -42,7 +42,7 @@ import { init as initLed } from './led.mjs';
 import { init as initLight } from './light.mjs';
 import { init as initLightfox } from './lightfox.mjs';
 import { init as initMatter } from './matter.mjs';
-import { init as initModules } from './modules.mjs';
+import { init as initModules, modulesApplyRunning } from './modules.mjs';
 import { init as initNspanel } from './nspanel.mjs';
 import { init as initNtp } from './ntp.mjs';
 import { init as initOta } from './ota.mjs';
@@ -300,6 +300,11 @@ function listeners() {
 function onConnectionClose(event) {
     // firmware install from GitHub waits for the reboots itself and reloads the page when done
     if (firmwareInstallRunning()) {
+        return;
+    }
+
+    // the MODULES Apply restarts the board twice and waits for it itself: a confirm() here would block that page
+    if (modulesApplyRunning()) {
         return;
     }
 

@@ -14,13 +14,15 @@
 # 16 bytes of the head's GNU build id (scripts/module_head.py, custom_head_build_id = yes).
 #
 # Output next to raw_firmware.elf: module-<name>.module (the package for /modules/upload), module-<name>.elf / .map,
-# espurna-beken-modules.bin (EMC2, every package: the file of the WebUI MODULES panel), espurna-beken.uf2 (the head:
-# LibreTiny's firmware.uf2 under its release name, first flash over UART and OTA), espurna-beken-full.bin (the head and
-# every module in flash, switched off: scripts/beken_full_image.py).
+# espurna-beken-modules.bin (EMC2, every package: the file of the WebUI MODULES panel), the two initial images of the
+# head - espurna-beken-tuya.uf2 (LibreTiny's firmware.uf2 under its release name: Tuya bootloader) and
+# espurna-beken-quectel.uf2 (scripts/beken_quectel_image.py: Quectel bootloader), first flash over UART and OTA - and
+# the install image espurna-beken.ota (both heads and every package, scripts/module_ota.py). No full image.
 
 import os
 import re
 import struct
+import subprocess
 import sys
 
 from SCons.Script import Import
@@ -31,8 +33,6 @@ env = globals()["env"]
 sys.path.insert(0, os.path.join(env.subst("$PROJECT_DIR"), "scripts"))
 import module_link  # noqa: E402
 from release_image import copy, listing, name as release_name, path as release_path  # noqa: E402
-import beken_full_image  # noqa: E402
-from module_full_image import modules_on  # noqa: E402
 
 FLASH_A = 0x00200000
 
@@ -166,17 +166,20 @@ class BekenLinker(module_link.Linker):
         return extra
 
     def after(self, ctx, container):
-        """the head under its release name: LibreTiny's firmware.uf2 (Tuya layout), first flash and OTA; the full image
-        (scripts/beken_full_image.py) with the module arena of the head's ELF"""
+        """the head under its release name: LibreTiny's firmware.uf2 (Tuya layout), first flash and OTA; the Quectel one"""
         folder = ctx["build_dir"]
-        listing([copy(os.path.join(folder, "firmware.uf2"), release_path(folder, "beken", ext=".uf2")), container])
-        syms = ctx["head_syms"]
-        arena = [name for name in syms if name.startswith("_ZN7espurna7modules") and name.endswith("5arenaE")]
-        if len(arena) != 1:
-            raise RuntimeError(f"full image: the module arena of the head: {arena}")
-        address, size = syms[arena[0]]
-        beken_full_image.build(folder, container, ctx["head_id"], address, size,
-                               modules_on(self.env.subst("$PROJECT_DIR")))
+        listing([copy(os.path.join(folder, "firmware.uf2"), release_path(folder, "beken", "tuya", ext=".uf2")), container])
+        # the second initial image, same head, Quectel bootloader: ltchiptool's python (LibreTiny's venv)
+        project = self.env.subst("$PROJECT_DIR")
+        quectel = os.path.join(project, self.env.GetProjectOption("custom_quectel_board", "boards_beken/xh-cb2s-bk7231m.json"))
+        subprocess.run([self.env.subst("$LTPYTHONEXE"), os.path.join(project, "scripts", "beken_quectel_image.py"),
+                        folder, os.path.join(folder, "board.json"), quectel], check=True)
+
+    def ota_heads(self, ctx):
+        """both heads in the install image, the board takes the one of its bootloader"""
+        folder = ctx["build_dir"]
+        return [("tuya", release_path(folder, "beken", "tuya", ext=".uf2")),
+                ("quectel", release_path(folder, "beken", "quectel", ext=".uf2"))]
 
 
 BekenLinker(env, globals()["projenv"]).install()

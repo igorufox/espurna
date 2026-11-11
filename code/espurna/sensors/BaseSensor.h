@@ -9,6 +9,7 @@
 #include "../config/types.h"
 #include "../sensor.h"
 #include "../gpio.h"
+#include "../espurna_isr.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -104,7 +105,7 @@ public:
                 }
 
                 detach();
-                ::attachInterruptArg(_pin, callback, instance, mode);
+                espurna::isr::attach(_pin, callback, instance, mode);
 
                 _current = _pin;
             }

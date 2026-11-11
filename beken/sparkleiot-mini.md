@@ -4,8 +4,9 @@ An in-wall 1-channel relay for AC 100-240 V, 16 A, with an S1 / S2 wall-switch i
 `STL2022E0929107C-YA`, board "MINI 通断器 V1.3", sparkleiot.com). The stock firmware is a Quectel **Matter** firmware. The
 Wi-Fi module is an **XH-CB2S** (a CB2S-sized clone) with a chip marked **BK7231M**. ltchiptool talks to it as a BK7231N, but
 it is not a Tuya chip: the flash is **not encrypted** (the eFuse key is all zeros) and the bootloader has its own 4 MiB layout.
-It runs the same `beken-matter` image as the Tuya boards: the firmware tells the bootloaders apart at boot (by the CRC32
-of the bootloader) and uses the Quectel layout here, with the Matter factory data of the switch.
+It runs the same head as the Tuya boards, its initial image for the Quectel bootloader (`espurna-beken-quectel.uf2`): the
+firmware tells the bootloaders apart at boot (by the CRC32 of the bootloader) and uses the Quectel layout here, with the
+Matter factory data of the switch.
 
 <p>
   <img src="img/sparkleiot-mini-case.webp" width="32%" alt="Sparkleiot Mini Smart Switch, case and terminals S1 S2 N N L_IN L_OUT">
@@ -18,11 +19,11 @@ the mains disconnected, from 5 V. Never connect the USB-UART adapter while it is
 
 ## Image
 
-`beken-matter`, the image of every BK7231N board ([beken/README.md](README.md#1-image)). On this board it uses the layout of
+The Beken head, `espurna-beken-quectel.uf2` ([beken/README.md](README.md#1-image)). On this board it uses the layout of
 the Quectel bootloader: app partition `0x11000` + `0x1A9000`, OTA (`download`) partition at `0x286000`, 4 MiB flash (from
 the partition table in the stock bootloader, also in
 [`code/boards_beken/xh-cb2s-bk7231m.json`](../code/boards_beken/xh-cb2s-bk7231m.json)). The first flash over UART takes
-`espurna-beken-initial-quectel.uf2` of the [release](https://github.com/igorufox/espurna/releases/latest), or
+`espurna-beken-quectel.uf2` of the [release](https://github.com/igorufox/espurna/releases/latest), or
 built from `code/` by the `beken-bk7231n` build of the older releases. The one build of the Beken now
 (`py -3 -m platformio run -c platformio_beken.ini -e beken`: the head and its modules) makes the Tuya-layout head only;
 a Quectel-layout head image is not built yet.
@@ -85,7 +86,7 @@ below were found by testing.
 ## Flash ESPurna
 
 ```
-ltchiptool flash write -d COM3 -t 120 espurna-beken-initial-quectel.uf2
+ltchiptool flash write -d COM3 -t 120 espurna-beken-quectel.uf2
 ```
 
 It is one piece (the app, padding and the RBL header the bootloader checks) and takes about 3.5 minutes. With the older
@@ -163,8 +164,8 @@ entry of the [own device list](../README.md#picking-the-board) (*ADMIN → Devic
 Backup, flash, boot, access point, home Wi-Fi, MQTT, the relay, K1, S1 / S2, the LED and the second switch on P21, on the
 desk from 5 V; two units.
 
-**OTA over Wi-Fi works**: `espurna-beken-matter.bin` from the WebUI release list or uploaded on *ADMIN → Upgrade*
-(about 30 s), the board writes the Quectel part of it into the `download` partition at `0x286000`, the stock bootloader
+**OTA over Wi-Fi works**: `espurna-beken-quectel.uf2` from the WebUI release list or uploaded on *ADMIN → Upgrade*
+(about 30 s), the board writes it into the `download` partition at `0x286000` (the Tuya `.uf2` is refused), the stock bootloader
 copies it into the app and the board is back after about 20 s with `Reboot after a successful OTA update` and the new
-build date. One upload: on this layout the Matter code is inside the app. Settings, the MAC, the IP and the Matter
+build date. One upload. Settings, the MAC, the IP and the Matter
 controllers stay. Only the first flash has to go over the wires.

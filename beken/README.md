@@ -24,30 +24,27 @@ ESPurna but gets no updates over Wi-Fi.
 
 ## 1. Image
 
-One image, `beken-matter` (build `beken-bk7231n`), for every BK7231N board: every GPIO of the chip, no relays, buttons or
-LEDs pre-assigned (device template or web UI). The firmware finds out at boot which bootloader the chip has, from the
-CRC32 of its first `0x11000` bytes (Tuya `f684a1dc` and `6802f257`, Quectel `64b02979`; Tuya `39afde9f` is the bootloader
-3.00 of Tuya's Matter firmware, which does not install our updates, ref. [moes-ms-104b-matter.md](moes-ms-104b-matter.md#bootloader-300);
-`info` in the terminal shows it), and works with
-its flash layout. On an unknown bootloader it runs, but writes nothing to the bootloader's partitions: no OTA, no Matter
-code. The image is linked for 4 MiB of flash (`code/boards_beken/bk7231n-any.json`), so the partitions of the Quectel
-layout are reachable; on a 2 MiB chip only the Tuya ones are used.
+One head image (env `beken` of `code/platformio_beken.ini`) for every BK7231N board: every GPIO of the chip, no relays,
+buttons or LEDs pre-assigned (device template or web UI); the features are modules (MODULES panel), Matter among them.
+The firmware finds out at boot which bootloader the chip has, from the CRC32 of its first `0x11000` bytes (Tuya
+`f684a1dc` and `6802f257`, Quectel `64b02979`; Tuya `39afde9f` is the bootloader 3.00 of Tuya's Matter firmware, which
+does not install our updates, ref. [moes-ms-104b-matter.md](moes-ms-104b-matter.md#bootloader-300); `info` in the
+terminal shows it), and works with its flash layout. On an unknown bootloader it runs, but writes nothing to the
+bootloader's partitions: no OTA.
 
 | File | What for |
 |------|----------|
-| `espurna-beken-initial-tuya.uf2` | first flash over UART, Tuya bootloader (CB1S, CB2S, CB3S, CBU, CB2L ...: 2 MiB, encrypted flash) |
-| `espurna-beken-initial-quectel.uf2` | first flash over UART, Quectel bootloader without flash encryption (4 MiB), e.g. the XH-CB2S / BK7231M of the [Sparkleiot Mini](sparkleiot-mini.md) |
-| `espurna-beken-matter.bin` | every update over Wi-Fi, on both: the board writes the part made for its bootloader |
+| `espurna-beken-tuya.uf2` | the head, Tuya bootloader (CB1S, CB2S, CB3S, CBU, CB2L ...: 2 MiB, encrypted flash): first flash over UART and every update over Wi-Fi |
+| `espurna-beken-quectel.uf2` | the same head, Quectel bootloader without flash encryption (4 MiB), e.g. the XH-CB2S / BK7231M of the [Sparkleiot Mini](sparkleiot-mini.md): first flash over UART and every update over Wi-Fi |
+| `espurna-beken-modules.bin` | every module (WebUI MODULES panel), both bootloaders |
+| `espurna-beken-full.bin` | Tuya bootloader, flash from `0x11000`: the head with every module in flash, switched off |
 
-`espurna-beken-matter.bin` is a container (`ESPBEKEN` header with the build id and a table of parts, made by
-[`code/scripts/beken_link_tail.py`](../code/scripts/beken_link_tail.py)): the RBL for the Tuya bootloader (the image
-without its Matter code), the RBL for the Quectel bootloader (the whole image) and the Matter code. Each part has a CRC32.
-How the WebUI installs it: [section 6](#6-updates-over-wi-fi) and [docs/updates.md](../docs/updates.md#beken-the-browser-uploads-the-board-picks-its-part).
+Each `.uf2` carries the partition table of its bootloader; the board checks that its `download` partition is the one
+of its own bootloader before anything is written and refuses the other file
+([`code/espurna/arch/beken/ota_beken.cpp`](../code/espurna/arch/beken/ota_beken.cpp)). The WebUI release list offers
+the file of the board's bootloader (the board names its image `beken-tuya` or `beken-quectel`).
 
-Enabled modules: web UI, API, MQTT, terminal, Home Assistant, Alexa, Domoticz, Thingspeak, scheduler, the RF bridge
-(rc-switch, unused until `rfbRX` is set) and Matter (off until `matterAuto 1` or MATTER.START; with `matterAuto 1` it
-starts with a delay, see [Matter](#2-matter)). ESPurna's own mDNS responder is off in this image: the Matter stack answers mDNS itself. Boards have no builds of their own: `beken-matter`
-with the device template of the board. The firmware version carries the git revision (`26.11.0-git<sha>`, `scripts/beken_version.py`), the WebUI release list finds the running release by it.
+Boards have no builds of their own: the head with the device template of the board. The firmware version carries the git revision (`26.11.0-git<sha>`, `scripts/beken_version.py`), the WebUI release list finds the running release by it.
 
 Pin numbers are GPIO numbers (`P24` is GPIO 24, set it as `24` in the web UI). Only the pins that the module brings out
 can be used.
@@ -69,21 +66,17 @@ filled the 16 KiB lwIP heap and the board stopped receiving. After a restart by 
 least 5 minutes. It also waits while a firmware upload runs or a restart is due. `MATTER.START` starts it at once;
 `set matterDelay 0` gives the old start at boot.
 
-Matter on the 2 MiB Tuya layout: the Matter code does not fit next to the rest of the image (the app partition is
-1124 KiB, ESPurna with Matter about 1.5 MiB), it lives in a region of the 664 KiB `download` partition of its own. So the
-same file goes up twice: the first upload brings the image (the bootloader installs it as usual, the form answers
-"OK, again"), the second one, after the reboot, the Matter code. On the Quectel layout one upload does both.
-How the code is split and checked, the flash map and the TCM: [docs/updates.md](../docs/updates.md#2-mib-tuya-boards-where-matter-lives).
-`MATTER.TAIL` in the terminal tells whether the Matter code is there and matches the image; the MATTER page says it too
-and has *Install the Matter code*. While Matter runs, a firmware upload is refused once (HTTP 409) with a reboot without
-Matter: upload again after it. Boards with Quectel Matter factory data (`0x3E0000`) use it: the certificates and the
+Matter is a module like the others: installed from the MODULES panel into the module area (the `download` partition,
+which an update of the head takes back: switch the modules off with MODULES.OFF first, the update refuses otherwise).
+Boards with Quectel Matter factory data (`0x3E0000`) use it: the certificates and the
 setup code printed on the box. Boards without make their own identity at the first start (development DAC, VID 0xFFF1 /
 PID 0x8000, random setup code): controllers that accept SDK example devices, such as the speaker hub and
 python-matter-server, accept it.
 
-The Matter library (`libMatterApp.a`, connectedhomeip 1.5 for the BK7231N) is not built here: `custom_matter_lib = latest`
-takes the newest `libmatter-*` release of [igorufox/matter-bk7231n](https://github.com/igorufox/matter-bk7231n) (built by
-its GitHub Actions with the gcc 10.3.1 of LibreTiny) and checks it against the `.sha256` asset of that release, ref.
+The Matter library (`libMatterApp.a`, connectedhomeip 1.5 for the BK7231N) is not built here: `custom_matter_lib` in
+`code/platformio_beken.ini` names one `libmatter-*` release of [igorufox/matter-bk7231n](https://github.com/igorufox/matter-bk7231n)
+(built by its GitHub Actions with the gcc 10.3.1 of LibreTiny) and `custom_matter_lib_sha256` its zip: a new release of the
+library goes into the firmware when those two lines are changed, ref.
 [`code/scripts/beken_matter_lib.py`](../code/scripts/beken_matter_lib.py) and [docs/updates.md](../docs/updates.md#beken-matter-library).
 
 Static data of ESPurna and of the Matter library lives in the data TCM of the chip (about 37 KiB more heap), see `heap`
@@ -128,7 +121,7 @@ bk7231tools dissect_dump -e --storage stock.bin
 `user_param_key.json` in the output lists the pins (Tuya stock firmware). `rl1_pin` is relay 1, `bt1_pin` is button 1, `netled1_pin` is the
 Wi-Fi LED, `remote_io` is the 433 MHz receiver. The `_lv` fields give the active level (`1` = active high).
 
-**Flash ESPurna.** Take `espurna-beken-initial-tuya.uf2` (or `-initial-quectel.uf2` on a Quectel bootloader, see
+**Flash ESPurna.** Take `espurna-beken-tuya.uf2` (or `espurna-beken-quectel.uf2` on a Quectel bootloader, see
 [section 1](#1-image)) from the [release](https://github.com/igorufox/espurna/releases/latest), or build it from `code/`:
 
 ```
@@ -136,12 +129,12 @@ py -3 -m platformio run -c platformio_beken.ini -e beken
 ```
 
 One env, `beken`: the head, every module (thingspeak, domoticz, matter) and the release files in one build
-([docs/modules.md](../docs/modules.md#beken)), in `code/.pio/build_beken/beken/`: `espurna-beken.uf2` (the head, Tuya
-layout; LibreTiny's `firmware.uf2` under the release name) and `espurna-beken-modules.bin`. The Quectel-layout image
-(`-initial-quectel.uf2`) is not made by this build yet. Then flash it:
+([docs/modules.md](../docs/modules.md#beken)), in `code/.pio/build_beken/beken/`: `espurna-beken-tuya.uf2` (the head, Tuya
+layout; LibreTiny's `firmware.uf2` under the release name), `espurna-beken-quectel.uf2` (the same head for the Quectel
+layout, `code/scripts/beken_quectel_image.py`), `espurna-beken-modules.bin` and `espurna-beken-full.bin`. Then flash it:
 
 ```
-ltchiptool flash write -d COM3 -b 921600 -t 45 code/.pio/build_beken/beken/espurna-beken.uf2
+ltchiptool flash write -d COM3 -b 921600 -t 45 code/.pio/build_beken/beken/espurna-beken-tuya.uf2
 ```
 
 `-b 921600` writes in about 30 s; at the default 115200 one board lost the link at the same point (about 1 min 50 s,
@@ -154,9 +147,7 @@ setup below, pick the board on *ADMIN → Device Template* and reboot.
 Only the `app` partition (`0x11000`) is written. The bootloader stays; on Tuya modules the Tuya config at `0x1EE000` stays
 too, so the stock pin map is still on the chip.
 
-The Tuya UART image has no Matter code (it does not fit the app partition). Before Matter can start, upload
-`espurna-beken-matter.bin` of the same release once over Wi-Fi: the board, already running that build, takes only the
-Matter code out of it. *Install the Matter code* on the MATTER page does the same. The Quectel UART image has it.
+Matter, like every module, is installed afterwards from the MODULES panel (`espurna-beken-modules.bin`).
 
 **A board that already runs ESPurna needs no CEN wire.** The bootloader answers the link check of ltchiptool for a short
 moment after every reboot, and the ESPurna terminal is on the same UART1 at 115200: send `reset` on the port right before
@@ -201,24 +192,14 @@ There is no `ESPURNA-XXXXXX.local` name: ESPurna's mDNS responder is off in the 
 
 ## 6. Updates over Wi-Fi
 
-**From GitHub.** *ADMIN*, OTA, *From GitHub*, *Show releases*, *Install*: the browser downloads `espurna-beken-matter.bin`
-of the release (from GitHub Pages: the board itself cannot download from GitHub, its mbedTLS has no ECDHE) and uploads
-it; the WebUI lists the steps ahead and goes through them by itself:
+**From GitHub.** *ADMIN*, OTA, *From GitHub*, *Show releases*, *Install*: the browser downloads the `.uf2` of the
+board's bootloader (`espurna-beken-tuya.uf2` or `espurna-beken-quectel.uf2`, from GitHub Pages: the board itself cannot
+download from GitHub, its mbedTLS has no ECDHE), checks its SHA-256 and uploads it: one upload, the board restarts into
+the new firmware. Installed modules take the space the update goes to: MODULES.OFF first, the update refuses otherwise.
 
-- Quectel bootloader: one upload, the board restarts into the new firmware.
-- Tuya bootloader: the upload, the board restarts without Matter code, the same file once more for the Matter code, a
-  restart.
-- Tuya bootloader with Matter running: one more upload and restart first, Matter cannot run while its code is replaced.
-
-Up to seven steps and three restarts. Keep the board powered until the last step; when an install stops half-way the
-board keeps its firmware (at worst without Matter) and *Install* can be started again.
-
-**By hand.** Upload `espurna-beken-matter.bin` on **ADMIN → Upgrade**. It takes about 30 s, plus about 20 s while the
-bootloader installs it, and keeps the settings. On the Tuya bootloader upload the same file once more when the form says
-"OK, again" (the Matter code, see above), and once more first when it answers that Matter is running. A plain LibreTiny
-`.uf2` is still accepted when it was built for the bootloader of the board. Either way the board writes only the part of
-the file made for its bootloader, and the first bytes of it last: an interrupted upload leaves nothing for the
-bootloader to install.
+**By hand.** Upload the `.uf2` of the board's bootloader on **ADMIN → Upgrade**. It takes about 30 s, plus about 20 s
+while the bootloader installs it, and keeps the settings. The file of the other bootloader is refused before anything is
+written (the board compares the `download` partition of the file with its own).
 
 ![Admin tab, OTA: Browse and Upgrade](img/webui-ota.webp)
 

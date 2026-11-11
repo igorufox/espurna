@@ -31,10 +31,6 @@ case "$1" in
     # simply build the given environment
     pio run -c platformio_esp8266.ini -e $2
     ;;
-("test")
-    # run generic build test with the specified environment as base
-    scripts/test_build.py -e $2
-    ;;
 (*)
     echo -e "\e[1;33mUnknown stage name, exiting!\e[0m"
     exit 1

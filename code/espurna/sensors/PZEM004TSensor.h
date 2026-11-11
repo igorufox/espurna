@@ -502,14 +502,14 @@ public:
 
         out += description();
         out += F(" @ ");
-        out += _address.toString();
+        out += ipToString(_address);
 
         return out;
     }
 
     // Address of the sensor (it could be the GPIO or I2C address)
     String address(unsigned char) const override {
-        return _address.toString();
+        return ipToString(_address);
     }
 
     // Type for slot # index
@@ -605,7 +605,7 @@ PROGMEM_STRING(PzemDevices, "PZ.DEVICES");
 
 void PZEM004TSensor::command_devices(::terminal::CommandContext&& ctx) {
     foreach([&](const PZEM004TSensor&, const IPAddress& address) {
-        ctx.output.printf("%s\n", address.toString().c_str());
+        ctx.output.printf("%s\n", ipToString(address).c_str());
     });
     terminalOK(ctx);
 }
@@ -681,7 +681,7 @@ void PZEM004TSensor::command_address(::terminal::CommandContext&& ctx) {
     IPAddress addr;
     addr.fromString(ctx.argv[2]);
 
-    if (!addr.isSet()) {
+    if (!espurna::chip::address_set(addr)) {
         terminalError(ctx, F("Invalid address"));
         return;
     }

@@ -84,8 +84,13 @@ void DNSServer::_handleUDP(EspurnaUdpPacket &pkt) {
       // Each label contains a byte to describe its length and the label itself. The list of
       // labels terminates with a zero-valued byte. In "github.com", we have two labels "github" & "com"
 */
-    const char *enoflbls = strchr(reinterpret_cast<const char *>(pkt.data()) + DNS_HEADER_SIZE, 0);  // find end_of_label marker
-    ++enoflbls;                                                                                      // advance after null terminator
+    // the end of label marker, looked for inside the packet only: a packet without one is never read past its end
+    const char *enoflbls = static_cast<const char *>(
+      memchr(reinterpret_cast<const char *>(pkt.data()) + DNS_HEADER_SIZE, 0, pkt.length() - DNS_HEADER_SIZE));
+    if (!enoflbls) {
+      return;  // malformed packet
+    }
+    ++enoflbls;  // advance after null terminator
     dnsQuestion.QName = pkt.data() + DNS_HEADER_SIZE;                                                // we can reference labels from the request
     dnsQuestion.QNameLength = enoflbls - (char *)pkt.data() - DNS_HEADER_SIZE;
     /*

@@ -27,6 +27,7 @@
 
 */
 
+#include <cstring>
 #include <functional>
 #include <memory>
 
@@ -118,15 +119,28 @@ types::Event EventEmitter::loop() {
         // least 80% of the samples. Sampling only at both ends lets noise through (e.g. mains
         // pickup on a long switch wire) when it happens to read the same level twice, while
         // requiring a perfectly clean window blocks real changes on such a wire.
+        // Pins whose read is slow (analogRead of an analog button, SPI of the MCP23S08) are read twice, at both ends of
+        // the window, as upstream (D7): a read every millisecond would keep the ADC / the SPI bus busy
+        const char* kind = _pin->id();
+        const bool slow = kind && ((std::strcmp(kind, "AnalogPin") == 0) || (std::strcmp(kind, "McpGpioPin") == 0));
+
         unsigned long samples = 0;
         unsigned long changed = 0;
         auto start = millis();
         while (millis() - start < _delay) {
             delay(1);
+            if (slow) {
+                continue;
+            }
             ++samples;
             if ((_pin->digitalRead() == (HIGH)) != _value) {
                 ++changed;
             }
+        }
+
+        if (slow) {
+            samples = 1;
+            changed = ((_pin->digitalRead() == (HIGH)) != _value) ? 1 : 0;
         }
 
         if (!samples || ((changed * 100) >= (samples * 80))) {

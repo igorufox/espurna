@@ -44,6 +44,9 @@ import struct
 import subprocess
 import zlib
 
+# loaded with this file: the folder of the scripts is on sys.path only while the env's scripts run
+import module_ota  # noqa: E402  pylint: disable=wrong-import-position
+
 HEADER_MAGIC = 0x31444D45   # "EMD1"
 PACKAGE_MAGIC = 0x31504D45  # "EMP1"
 # magic, version, name, head id, image size, RAM, IRAM, the link A bases of kind 1, 2, 3, crc32 of the body, branches
@@ -54,7 +57,10 @@ RENAMED = "espmod_"
 
 # the modules file: name, offset, package bytes, image bytes, RAM, second arena, the modules it needs (EMC2)
 CONTAINER_MAGIC = 0x32434D45  # "EMC2"
-CONTAINER_ENTRY = struct.Struct("<16sIIIII32s4x")
+CONTAINER_ENTRY = struct.Struct("<16sIIIII32sI")
+# flags of a container entry: its RAM takes byte access from interrupts (custom_module_byte_ram), not into a pool that
+# takes 32-bit access only (ESP8266: the IRAM tail)
+CONTAINER_BYTE_RAM = 1
 
 # the module header (modules.h): the head id at 24, `needs` after the 96 bytes of the first version
 HEADER = struct.Struct("<II16s16s14I32s")
@@ -260,6 +266,10 @@ class Linker:
     def after(self, ctx, container):
         """after the modules file (images, reports)"""
 
+    def ota_heads(self, ctx):
+        """[(name, path)] of the heads in the install image espurna-<chip>.ota (scripts/module_ota.py)"""
+        return []
+
     def arenas(self, ctx):
         """names and sizes of the head's arenas: RAM first"""
         return [("RAM", self.arena())]
@@ -280,11 +290,8 @@ class Linker:
         return os.path.join(self.env.subst("$PROJECT_DIR"), "scripts", name)
 
     def arena(self):
-        """MODULES_RAM_ARENA of the head"""
-        for flag in self.env.get("CPPDEFINES", []):
-            if isinstance(flag, (list, tuple)) and flag[0] == "MODULES_RAM_ARENA":
-                return int(flag[1])
-        return 16384
+        """RAM of the modules: no fixed arena on any chip (the Apply sizes it, a heap block and the chip's pool), 0"""
+        return 0
 
     @staticmethod
     def run(args):
@@ -636,7 +643,7 @@ class Linker:
         if round_up(syms["__mod_flash_end"] - flash, self.image_align) != len(image_a):
             raise RuntimeError(f"module {name}: image is {len(image_a)} bytes, flash range "
                                f"{syms['__mod_flash_end'] - flash}")
-        if self.ram_in_arena and ram_size > arenas[0][1]:
+        if self.ram_in_arena and arenas[0][1] and ram_size > arenas[0][1]:
             raise RuntimeError(f"module {name}: RAM {ram_size} bytes, the arena of the head has {arenas[0][1]}")
         self.check(name, syms)
 
@@ -651,9 +658,9 @@ class Linker:
             f.write(data)
 
         memory = f"RAM {ram_size} (data {syms['__mod_data_end'] - syms['__mod_data_start']}, bss " \
-                 f"{syms['__mod_bss_end'] - syms['__mod_bss_start']}) of {arenas[0][1]}"
+                 f"{syms['__mod_bss_end'] - syms['__mod_bss_start']})"
         if self.has_iram:
-            memory += f", IRAM {iram_size} of {arenas[1][1]}"
+            memory += f", IRAM {iram_size}"
         moved = ", ".join(f"{label} {counts[kind]}" for kind, (_, _, _, label) in enumerate(self.bases, 1))
         if branches:
             moved += f", branches into the head {len(branches)} ({len(branches) - linked} in veneers)"
@@ -745,12 +752,14 @@ class Linker:
             with open(path, "rb") as f:
                 packages.append(f.read())
 
+        byte_ram = set(self.option("byte_ram").split())
         offset = 8 + (CONTAINER_ENTRY.size * len(packages))
         table = b""
         for data in packages:
             name, image, ram, iram = struct.unpack_from("<8x16s16xIII", data, 0)
             requires = self.requires_bytes(name.rstrip(b"\0").decode())
-            table += CONTAINER_ENTRY.pack(name, offset, len(data), image, ram, iram, requires)
+            flags = CONTAINER_BYTE_RAM if name.rstrip(b"\0").decode() in byte_ram else 0
+            table += CONTAINER_ENTRY.pack(name, offset, len(data), image, ram, iram, requires, flags)
             offset += len(data)
 
         out = os.path.join(build_dir, self.container_name)
@@ -929,10 +938,14 @@ class Linker:
                                    f"{len(set(absent_all))} symbols the head does not have")
             self.relink_head()
 
-        print("All modules: " + ", ".join(f"{label} {total} of {size}"
+        print("All modules: " + ", ".join(f"{label} {total}" + (f" of {size}" if size else "")
                                           for (label, size), total in zip(self.arenas(ctx), totals)))
         container = self.write_container(ctx, [module["name"] for module in self.parse_modules()])
         self.after(ctx, container)
+        heads = self.ota_heads(ctx)
+        if heads:
+            image = self.env.subst("$PIOENV")
+            module_ota.build(os.path.join(ctx["build_dir"], f"espurna-{image}.ota"), heads, container)
 
     def install(self):
         """the module objects and the modules link: a default target of the env, after the head's outputs"""

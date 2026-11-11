@@ -31,7 +31,7 @@ a daughterboard (REV2.0) over it.
 
 ## Image and pins
 
-`beken-matter`, after the bootloader is replaced (below). Pins from the stock config, the button checked on the board:
+The Beken head (`espurna-beken-tuya.uf2`), after the bootloader is replaced (below). Pins from the stock config, the button checked on the board:
 
 | Function | Pin | Keys |
 |----------|-----|------|

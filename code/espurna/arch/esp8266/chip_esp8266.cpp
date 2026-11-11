@@ -77,6 +77,10 @@ bool storage(Print&, const char*) {
     return false;
 }
 
+String image() {
+    return F(ESPURNA_IMAGE);
+}
+
 String core_version() {
     String out;
 #ifdef ARDUINO_ESP8266_RELEASE

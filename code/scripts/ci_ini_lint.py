@@ -13,6 +13,8 @@ Run from code/ (extra_configs are relative to it, same as for `pio run -c ...`).
 - envs: exactly one per chip, named after it (platformio_<chip>.ini has env:<chip> and nothing else, its extra
   configs included): the head, every module and the release images are one build
 - custom_module_flags (the macros of the module objects, scripts/module_link.py): -U or two values for one macro
+- a library in the lib_deps of two chips with two different versions (the same code on every chip; the Beken ini
+  can not take a shared section through extra_configs, so the versions are compared here)
 
 Values are resolved with PlatformIO's ProjectConfig when it can be imported (same resolution as the build: extends,
 [env], ${section.option}, extra_configs), otherwise with configparser and the same rules re-implemented here.
@@ -248,6 +250,43 @@ def check_build_dir(config, path):
     return value, problems
 
 
+LIB_GIT_RE = re.compile(r"(?:https?://|git@)[^/]+[/:](?:[^/]+)/([^/#@]+?)(?:\.git)?(?:#(.+))?$")
+
+
+def library(dep):
+    """(name, version) of a lib_deps entry: owner/Name@spec, Name@spec, a git URL#ref; None for a bare name"""
+    dep = dep.strip()
+    match = LIB_GIT_RE.match(dep)
+    if match:
+        return match.group(1).lower(), match.group(2) or "(default branch)"
+    name, sep, spec = dep.partition("@")
+    if not sep:
+        return None
+    return name.split("/")[-1].strip().lower(), spec.strip()
+
+
+def check_lib_versions(configs):
+    """[problem] for every library two chips take in different versions"""
+    seen = {}
+    for path, config in configs:
+        lists = [config.get("env:" + env, "lib_deps", []) for env in config.envs()]
+        # ESP8266: [common] shared_lib_deps, installed once by scripts/pio_pre.py
+        lists.append(config.get("common", "shared_lib_deps", []))
+        for deps in lists:
+            if isinstance(deps, str):
+                deps = parse_multi_values(deps)
+            for dep in deps or []:
+                item = library(dep)
+                if item:
+                    seen.setdefault(item[0], {})[path] = item[1]
+
+    problems = []
+    for name, versions in sorted(seen.items()):
+        if len(set(versions.values())) > 1:
+            problems.append(f"lib {name}: " + ", ".join(f"{v} ({p})" for p, v in sorted(versions.items())))
+    return problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("configs", nargs="+", help="platformio_<chip>.ini, relative to the current directory")
@@ -256,8 +295,10 @@ def main(argv=None):
 
     failed = 0
     used_dirs = {}
+    loaded = []
     for path in args.configs:
         config, how = load_config(path, args.fallback)
+        loaded.append((path, config))
         build_dir, problems = check_build_dir(config, path)
         print(f"== {path} (resolved with {how}), build_dir {build_dir}")
         for problem in problems:
@@ -280,6 +321,12 @@ def main(argv=None):
             for problem in env_problems:
                 print(f"        {problem}")
             failed += len(env_problems)
+
+    lib_problems = check_lib_versions(loaded)
+    print(f"== libraries of {len(loaded)} configs")
+    for problem in lib_problems:
+        print(f"   FAIL {problem}")
+    failed += len(lib_problems)
 
     if failed:
         print(f"{failed} problem(s)")

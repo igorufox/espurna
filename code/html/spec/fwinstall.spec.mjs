@@ -28,9 +28,9 @@ test('image headers of every chip are recognised', () => {
     expect(firmwareHeader(new Uint8Array([0xe9, 0x03, 0x03, 0x20]))).toBe('esp');
     expect(firmwareHeader(new Uint8Array([0x1f, 0x8b, 0x08, 0x00]))).toBe('gzip');
     expect(firmwareHeader(bytes('UF2\nWQ]\x9e'))).toBe('uf2');
-    expect(firmwareHeader(bytes('ESPBEKEN'))).toBe('beken');
-    expect(firmwareHeader(bytes('ESPMTAIL'))).toBe('matter-tail');
-    expect(firmwareHeader(bytes('ESPBEK'))).toBe(null);
+    // the container of both Beken bootloaders and the Matter code of the Tuya layout are gone: two .uf2 instead
+    expect(firmwareHeader(bytes('ESPBEKEN'))).toBe(null);
+    expect(firmwareHeader(bytes('ESPMTAIL'))).toBe(null);
     expect(firmwareHeader(bytes('<!DOCTYP'))).toBe(null);
     expect(firmwareHeader(new Uint8Array([]))).toBe(null);
 });
@@ -56,9 +56,8 @@ test('OTA size is counted in whole sectors', () => {
 
 test('board answers to the upload', () => {
     expect(uploadOutcome(200, 'OK')).toBe('done');
-    expect(uploadOutcome(200, 'OK, again')).toBe('again');
-    expect(uploadOutcome(200, 'OK, again\n')).toBe('again');
-    expect(uploadOutcome(409, 'ERROR: Matter is running from the OTA partition')).toBe('matter');
+    expect(uploadOutcome(200, 'OK\n')).toBe('done');
+    expect(uploadOutcome(409, 'ERROR: modules installed, MODULES.OFF first')).toBe('error');
     expect(uploadOutcome(400, 'ERROR: No magic byte / invalid flash config')).toBe('error');
     expect(uploadOutcome(200, 'ERROR: something')).toBe('error');
 });
@@ -299,36 +298,24 @@ test('result of the download as /ota/status shows it', () => {
     expect(fetchOutcome({image: 'esp8266-4m', result: 'failed: no Wi-Fi connection'})).toBe('failed');
 });
 
-test('install steps ahead of a Beken upload', () => {
-    const keys = (steps) => steps.map((step) => step.key);
-    const name = 'espurna-beken-matter.bin';
-
-    expect(keys(uploadSteps({name, layout: 'Quectel', matter: true, sameBuild: false})))
-        .toEqual(['download', 'upload', 'restart']);
-    expect(keys(uploadSteps({name, layout: 'Tuya', matter: false, sameBuild: true})))
-        .toEqual(['download', 'upload', 'restart']);
-    expect(keys(uploadSteps({name, layout: 'Tuya', matter: false, sameBuild: false})))
-        .toEqual(['download', 'upload', 'again-restart', 'again-upload', 'restart']);
-    expect(keys(uploadSteps({name, layout: 'Tuya', matter: true, sameBuild: false})))
-        .toEqual(['download', 'matter-upload', 'matter-restart', 'upload', 'again-restart', 'again-upload', 'restart']);
+test('install steps of an upload: one upload on every board', () => {
+    const steps = uploadSteps({name: 'espurna-beken-quectel.uf2'});
+    expect(steps.map((step) => step.key)).toEqual(['download', 'upload', 'restart']);
+    expect(steps[1].text).toContain('espurna-beken-quectel.uf2');
 });
 
 test('install steps follow what the board answers', () => {
-    const steps = uploadSteps({name: 'x.bin', layout: 'Tuya', matter: true, sameBuild: false});
+    const steps = uploadSteps({name: 'x.bin'});
 
-    // Matter was not running after all: its two steps are dropped
     let current = stepTo(steps, 0, {key: 'upload', text: ''});
     expect(current).toBe(1);
-    expect(steps.map((step) => step.key)).toEqual(['download', 'upload', 'again-restart', 'again-upload', 'restart']);
-
-    // the same build after all: done at once, the second upload is dropped
     current = stepTo(steps, current, {key: 'restart', text: ''});
     expect(current).toBe(2);
     expect(steps.map((step) => step.key)).toEqual(['download', 'upload', 'restart']);
 
     // an answer that was not planned is added after the current step
-    const other = uploadSteps({name: 'x.bin', layout: 'Quectel', matter: false, sameBuild: false});
-    current = stepTo(other, 1, {key: 'matter-restart', text: 'restart without Matter'});
+    const other = uploadSteps({name: 'x.bin'});
+    current = stepTo(other, 1, {key: 'wait', text: 'waiting'});
     expect(current).toBe(2);
-    expect(other.map((step) => step.key)).toEqual(['download', 'upload', 'matter-restart', 'restart']);
+    expect(other.map((step) => step.key)).toEqual(['download', 'upload', 'wait', 'restart']);
 });

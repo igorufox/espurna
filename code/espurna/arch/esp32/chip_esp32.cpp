@@ -61,6 +61,10 @@ bool storage(Print& out, const char* mode) {
     return true;
 }
 
+String image() {
+    return F(ESPURNA_IMAGE);
+}
+
 String core_version() {
     return ESP_ARDUINO_VERSION_STR;
 }

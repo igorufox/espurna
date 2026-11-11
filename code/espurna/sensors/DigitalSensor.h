@@ -362,7 +362,20 @@ private:
     std::vector<BaseSensor*> _sensors;
 };
 
+// D4: the first sensor's keys had no index (`digitalPin`, the way upstream reads them for every sensor). Kept for the
+// first one, once: `digitalPin0` when it is not set yet
+inline void migrate() {
+    for (const auto& key : {settings::keys::Pin, settings::keys::Mode, settings::keys::State}) {
+        const auto plain = key.toString();
+        const auto indexed = plain + '0';
+        if (hasSetting(plain) && !hasSetting(indexed)) {
+            moveSetting(plain, indexed);
+        }
+    }
+}
+
 inline void load() {
+    migrate();
     settings::query::setup();
     sensor::add_preinit(std::make_unique<Init>());
 }

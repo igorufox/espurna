@@ -14,15 +14,15 @@ releases are kept, older ones are deleted with their tags; releases of hand-made
 |----------------|---------------|------------------------------|
 | `esp8266` of `platformio_esp8266.ini` | `espurna-esp8266.bin` (the head), `espurna-esp8266-modules.bin`, `espurna-esp8266-full.bin` | `esp8266` |
 | `esp32` of `platformio_esp32.ini` | `espurna-esp32.bin` (merged, the head), `espurna-esp32-modules.bin` | `esp32` |
-| `beken` of `platformio_beken.ini` | `espurna-beken.uf2` (the head), `espurna-beken-modules.bin` | `beken` |
+| `beken` of `platformio_beken.ini` | `espurna-beken-tuya.uf2` (the head), `espurna-beken-modules.bin` | `beken` |
 | `code/mini-app` | `espurna-esp8266-1m-mini.bin` | `esp8266-1m-mini` |
 
 One env per chip: the head, every module and these files are one build ([modules.md](modules.md#building)).
 `firmware.json` lists the files of a release per image name, kinds `ota`, `serial`, `safeboot`, `app`, `modules`
 (the modules file) and `full` (ESP8266 head + modules from `0x0`). Boards still on an image of the older releases
-(`esp8266-1m`, `esp8266-1m-light`, `esp8266-1m-sensor`, `esp32-matter`, `esp32-matter-nspanel`) find the head of their
-chip under their own image name; `esp8266-4m` (settings at the end of 4 MB) and `beken-matter` (its own OTA format)
-do not.
+(`esp8266-1m`, `esp8266-1m-light`, `esp8266-1m-sensor`, `esp32-matter`, `esp32-matter-nspanel`, `beken-matter`) find
+the head of their chip under their own image name (`beken-matter`: the Tuya `.uf2`, a Quectel board refuses it and is
+updated by wire once); `esp8266-4m` (settings at the end of 4 MB) does not.
 
 **One file per image.** The ESP32 `.bin` is the merged image (bootloader, partition table, safeboot, ESPurna): serial
 flash at `0x0`, and the same file for every update, the safeboot writes only its ESPurna part (the `ota_0` entry of the
@@ -119,28 +119,24 @@ NSPanel: the same module and the same steps as every ESP32 (its safeboot comes o
   upload an NSPanel image without Matter (1.91 MB, `MATTER_SUPPORT=0`) with *Upgrade*, twice when the panel runs from
   its first slot, then the release list migrates it.
 
-### Beken: the browser uploads, the board picks its part
+### Beken: the browser uploads the .uf2 of the board's bootloader
 
-The board cannot download from GitHub (no ECDHE in its mbedTLS), so the browser downloads `espurna-beken-matter.bin` from
-Pages and uploads it to `/upgrade`, the same as *Upgrade* with a file.
+The board cannot download from GitHub (no ECDHE in its mbedTLS), so the browser downloads the `.uf2` of the board's
+bootloader from Pages, checks its SHA-256 and uploads it to `/upgrade`, the same as *Upgrade* with a file. One head, two
+initial images of it: `espurna-beken-tuya.uf2` (Tuya bootloader) and `espurna-beken-quectel.uf2` (Quectel bootloader,
+`code/scripts/beken_quectel_image.py`). The board knows its bootloader from the CRC32 of the first `0x11000` bytes of
+flash (Tuya `f684a1dc`, Quectel `64b02979`) and names its image after it (`fwImage`: `beken-tuya` / `beken-quectel`), so the
+release list offers the right file.
 
-That file is a container (`ESPBEKEN`, 64-byte header with the build id, a table of parts): the RBL for the Tuya bootloader
-(the image without its Matter code), the RBL for the Quectel bootloader (the whole image) and the Matter code. The board
-knows its bootloader from the CRC32 of the first `0x11000` bytes of flash (Tuya `f684a1dc`, Quectel `64b02979`), writes
-only the part for it into that bootloader's `download` partition, and the bootloader installs it at the next boot. An
-unknown bootloader gets no OTA at all. The first bytes of the RBL are written last, so an interrupted upload leaves nothing
-for the bootloader to install.
+Each UF2 carries the partition table of its bootloader (tag `FAL_PTABLE`) and LibreTiny's Update writes the `download`
+partition of that table, not of the one the firmware was built with. Before anything is written the board compares the
+`download` partition of the file with its own bootloader's and refuses the other file
+(`code/espurna/arch/beken/ota_beken.cpp`). An unknown bootloader gets no OTA at all. One upload, one restart, on both.
 
-- **Quectel bootloader, 4 MiB**: one upload, one restart.
-- **Tuya bootloader, 2 MiB** (CB2S, CB3S, CBU ...): 1124 KiB for the firmware, 664 KiB for an update, ESPurna with Matter
-  is about 1.4 MiB. The Matter code lives in the update space. So the first upload writes the image, the board answers
-  `OK, again` and restarts without Matter; the WebUI uploads the same file once more and the board, now running that build,
-  writes its Matter code.
-- **Matter running on the Tuya layout**: its code sits where the update goes. The board answers HTTP 409, restarts without
-  Matter for one boot (`matterSkip`), and the WebUI uploads again. The board reads the whole upload before it answers and
-  restarts only after the request ended, so the browser always gets the 409. Firmware older than db3cd5b8 restarted on
-  the first chunk and the browser saw the connection drop (*connection error while uploading*); the WebUI takes such a
-  drop on that step as the 409 and goes on.
+Matter is a module, in the module area of the `download` partition like every other module: an update of the head takes
+that space back, so it is refused while modules are installed (MODULES.OFF first). Releases before the modules had the
+Matter code in a "tail" of the `download` partition and one file for both bootloaders (`espurna-beken-matter.bin`, two
+uploads on the Tuya layout); that is gone, the history is below.
 
 **Network watchdog (Beken).** On the Tuya layout a board sometimes stopped receiving right after its Matter code was
 written: on Wi-Fi, address from DHCP, but no ping, no ARP, and the loop kept feeding the watchdog (seen twice on a CB3S,
@@ -155,7 +151,7 @@ after the board got its address (75 by default, 0 on ESP32), and at least 5 minu
 ([beken/README.md](../beken/README.md#2-matter)). After the Matter code the WebUI waits up to 10 minutes for the board (instead of 4) and says it may
 restart by itself: in the tests the deaf boot came twice in a row, about 2.7 minutes each.
 
-#### 2 MiB Tuya boards: where Matter lives
+#### History: 2 MiB Tuya boards, where Matter lived before the modules
 
 ESPurna with Matter is about 1.5 MiB of code. The Tuya 2 MiB flash has no room for that in one piece:
 
@@ -277,10 +273,12 @@ BDK packages, after every push to `main` that changes `gn/`, `lwip-override/`, `
 release `libmatter-<yyyymmdd>-<sha7>` with `matter-bk7231n-lib.zip` (`lib/libMatterApp.a` + `include/lwipopts.h`) and its
 `.sha256`; the newest 5 are kept.
 
-`custom_matter_lib = latest` in `platformio_beken.ini` ([`scripts/beken_matter_lib.py`](../code/scripts/beken_matter_lib.py))
-takes the newest of them through the GitHub API (`GITHUB_TOKEN` when set), checks the zip against the `.sha256` asset and
-unpacks it into `.pio/matter-lib/<hash>`; without network the last one is used again. A fixed library:
-`custom_matter_lib = <zip URL>` with `custom_matter_lib_sha256`; a local build: `ESPURNA_MATTER_LIB_DIR=<folder>`.
+`platformio_beken.ini` pins one of them (since 2026-11-10): `custom_matter_lib = <zip URL>` with
+`custom_matter_lib_sha256` ([`scripts/beken_matter_lib.py`](../code/scripts/beken_matter_lib.py) checks the zip and unpacks
+it into `.pio/matter-lib/<hash>`). A new library release reaches the firmware when those two lines are changed in a
+commit of espurna, so the order is: release the library, then change the two lines. `custom_matter_lib = latest` (the
+newest release through the GitHub API) is still understood, for trying a release out; a local build:
+`ESPURNA_MATTER_LIB_DIR=<folder>`.
 lwIP of the firmware is built with the library's `lwipopts.h`.
 
 ## Known limits

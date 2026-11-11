@@ -2,8 +2,8 @@
 
 OTA MODULE, esp8266 part (ref. ota_driver.h)
 
-Updater takes .bin and .bin.gz images, written right after the running one. Nothing else
-writes an upload, every one of the own_...() functions is a constant.
+Updater takes .bin and .bin.gz images, written right after the running one, every upload it
+takes is fine (upload_check() of ota_driver_plain.h).
 
 */
 

@@ -526,10 +526,19 @@ bool _rfbCompare(const char* lhs, const char* rhs, size_t length) {
 
 #if RFB_PROVIDER_RCSWITCH_SUPPORT
     // protocol is [2:4), bit length is [8:10), actual payload is [10:)
-    // protocol is not compared: rc-switch tries every protocol in order and takes the first one
-    // that fits, a jittery sync pulse of the same remote sometimes fits a later one better
-    // (e.g. Princeton 01 received as 17, same bits, same payload) and the press was lost
-    return (length >= 8) && (0 == std::memcmp((lhs + 8), (rhs + 8), length - 8));
+    // as upstream, the protocol and the payload are compared (D8). `set rfbAnyProto 1`: the protocol is not -
+    // rc-switch tries every protocol in order and takes the first one that fits, a jittery sync pulse of the same
+    // remote sometimes fits a later one better (e.g. Princeton 01 received as 17, same bits, same payload)
+    if (length < 10) {
+        return false;
+    }
+
+    if (getSetting(F("rfbAnyProto"), false)) {
+        return 0 == std::memcmp((lhs + 8), (rhs + 8), length - 8);
+    }
+
+    return (0 == std::memcmp((lhs + 2), (rhs + 2), 2))
+        && (0 == std::memcmp((lhs + 10), (rhs + 10), length - 10));
 #else
     return false;
 #endif

@@ -3,10 +3,12 @@
 PROTOTYPE: the ESP8266 backend of the module loader (modules_core.h; the core is modules.cpp; docs/modules.md)
 
 Flash: modules lie under the directory sector (the sector under the settings), placed from the top down; the head
-grows from 0x0 up. A module runs from the flash mapped at 0x40200000; its RAM in the RAM arena or, chosen at the
-install, in the IRAM after the head's code (the second RAM arena); its IRAM functions in the IRAM arena. The relocation
-is done as the package arrives (the core's word writer): every word gets the delta of its kind (flash, RAM, IRAM) from
-the map before its chunk.
+grows from 0x0 up. A module runs from the flash mapped at 0x40200000. The IRAM after the head's code (48 KB IRAM, 16 KB
+flash cache) is the fixed pool: the Apply puts the IRAM functions of the modules at its start, then their RAM, largest
+first (32-bit access only: the core's non32xfer handler emulates bytes, not from an interrupt, so a module whose RAM
+takes byte access from an interrupt goes to the heap block); the rest of the RAM in the core's heap block. Nothing kept
+in reserve. The relocation is done as the package arrives (the core's word writer): every word gets the delta of its
+kind (flash, RAM, IRAM) from the map before its chunk.
 
 */
 
@@ -26,54 +28,46 @@ the map before its chunk.
 
 #include <cstring>
 
-#ifndef MODULES_RAM_ARENA
-#define MODULES_RAM_ARENA 5120
+// heap the head keeps for itself (Wi-Fi, the web server) when the Apply sizes the modules' heap block
+#ifndef MODULES_HEAP_KEEP
+#define MODULES_HEAP_KEEP 4096
 #endif
-
-#ifndef MODULES_IRAM_ARENA
-#define MODULES_IRAM_ARENA 2048
-#endif
-
-extern "C" {
-
-// the module link reads the size of both from the head ELF (nm -S)
-__attribute__((used, aligned(4)))
-uint8_t espurna_modules_ram_arena[MODULES_RAM_ARENA];
-
-// writable code memory: only 32 bit stores. Zero filled in the image (part of the .text1 segment)
-__attribute__((used, aligned(4), section(".iram.text.espurna_modules_iram_arena")))
-uint32_t espurna_modules_iram_arena[MODULES_IRAM_ARENA / 4] = {};
-
-} // extern "C"
 
 namespace espurna {
 namespace modules {
 namespace {
 
 constexpr uint32_t FlashMapped { 0x40200000 };
-constexpr uint32_t DirectoryMagic { 0x34524445 }; // "EDR4": the shared entry (slot, 4 backend words)
+constexpr uint32_t DirectoryMagic { 0x35524445 }; // "EDR5": the shared entry, 16 entries, two copies with a CRC
 constexpr uint32_t PackageVersion { 1 };          // kinds 1 flash, 2 RAM, 3 IRAM
 
 // Entry::arch on the ESP8266
-constexpr size_t IramOffset { 0 };
+constexpr size_t IramOffset { 0 };  // its IRAM code in the IRAM tail
 constexpr size_t IramSize { 1 };
+constexpr size_t RamAddress { 2 };  // the address its RAM words were relocated for
 
-// RAM of a module in IRAM (per module, chosen at the install; RamSecondArena): the IRAM after the head's code, with
-// the 48 KB IRAM layout (flash cache 16 KB). 32-bit access only in hardware: the core's non32xfer handler emulates
-// byte and half word access (slow, and not from an interrupt)
+// the IRAM after the head's code, with the 48 KB IRAM layout (flash cache 16 KB): module IRAM code and module RAM
+// (RamSecondArena). 32-bit access only in hardware: the core's non32xfer handler emulates byte and half word access
+// (slow, and not from an interrupt)
 extern "C" void _text_end(void);
 
-uint32_t iramDataStart() {
-    return (reinterpret_cast<uint32_t>(&_text_end) + 32 + 3) & ~3u;
+uint32_t iramTailStart() {
+    return (reinterpret_cast<uint32_t>(&_text_end) + 32 + 7) & ~7u;
 }
 
-uint32_t iramDataSize() {
+uint32_t iramTailSize() {
 #if defined(MMU_IRAM_SIZE) && (MMU_IRAM_SIZE > 0x8000) && defined(NON32XFER_HANDLER)
     const uint32_t end = 0x40100000 + MMU_IRAM_SIZE;
-    return (end > iramDataStart()) ? (end - iramDataStart()) : 0;
+    return (end > iramTailStart()) ? (end - iramTailStart()) : 0;
 #else
     return 0;
 #endif
+}
+
+// where the RAM of the module is this boot: the IRAM tail, or the core's heap block
+uint32_t ramAddress(const Entry& entry) {
+    const uint32_t offset = entry.ram_offset & ~RamSecondArena;
+    return ((entry.ram_offset & RamSecondArena) ? iramTailStart() : heapBlockBase()) + offset;
 }
 
 // the sector under the settings: EEPROM_Rotate keeps them in its base sector and the pool under it (251 and 250 on a
@@ -306,38 +300,39 @@ struct Upload : WordUpload {
     const Entry* local_entry { nullptr };
 };
 
-// the RAM (where up.ram_in_iram asks; `iram_falls_back`: RAM wanted in IRAM goes to the DRAM arena when the IRAM is
-// full - never the other way: a module with interrupt code keeps its RAM in DRAM) and the IRAM code, the deltas
-const char* arenas(Upload& up, Spaces& space, bool iram_falls_back) {
+// the RAM and the IRAM code where the Apply placed them; else (a module the head's image brings, an old single upload)
+// into what the IRAM tail has left: the heap block of this boot was sized before, it has no room for more. The deltas
+const char* arenas(Upload& up, Spaces& space, bool) {
     const auto& header = up.header;
-    const uint32_t ram_size = roundUp(header.ram_size, 4);
-    if (ram_size) {
-        auto& target = up.ram_in_iram ? space.ram_second : space.ram;
-        if (!target.place(ram_size, false, up.ram_offset)) {
-            if (!(up.ram_in_iram && iram_falls_back && space.ram.place(ram_size, false, up.ram_offset))) {
-                return up.ram_in_iram ? PSTR("not enough IRAM for its RAM") : PSTR("not enough RAM in the arena");
-            }
-            up.ram_in_iram = false;
+    const uint32_t ram_size = roundUp(header.ram_size, 8);
+    if (up.planned) {
+        up.ram_in_iram = (up.planned_ram & RamSecondArena) != 0;
+        up.ram_offset = ram_size ? (up.planned_ram & ~RamSecondArena) : 0;
+        up.iram_offset = up.planned_iram;
+    } else if (ram_size) {
+        if (!space.ram_second.place(ram_size, false, up.ram_offset)) {
+            return PSTR("no room in the IRAM tail for its RAM: Apply in the MODULES panel");
         }
+        up.ram_in_iram = true;
     } else {
         up.ram_offset = 0;
         up.ram_in_iram = false;
     }
 
     const uint32_t iram_size = roundUp(header.iram_size, 4);
-    if (iram_size) {
+    if (!up.planned && iram_size) {
         if (!space.iram.place(iram_size, false, up.iram_offset)) {
-            return PSTR("not enough IRAM in the arena");
+            return PSTR("not enough IRAM in the tail");
         }
-    } else {
+    } else if (!up.planned) {
         up.iram_offset = 0;
     }
 
     up.delta[0] = 0;
     up.delta[1] = (FlashMapped + up.slot) - header.link_flash;
-    const uint32_t ram_base = up.ram_in_iram ? iramDataStart() : reinterpret_cast<uint32_t>(&espurna_modules_ram_arena[0]);
+    const uint32_t ram_base = up.ram_in_iram ? iramTailStart() : heapBlockBase();
     up.delta[2] = (ram_base + up.ram_offset) - header.link_ram;
-    up.delta[3] = (reinterpret_cast<uint32_t>(&espurna_modules_iram_arena[0]) + up.iram_offset) - header.link_iram;
+    up.delta[3] = (iramTailStart() + up.iram_offset) - header.link_iram;
 
     return nullptr;
 }
@@ -397,9 +392,10 @@ constexpr PackageHooks LocalHooks { prepareLocal, wordBytes };
 // the RAM and IRAM fields of the entry, from where the upload placed it
 void placed(const Upload& up, Entry& out) {
     out.ram_offset = up.ram_offset | (up.ram_in_iram ? RamSecondArena : 0);
-    out.ram_size = roundUp(up.header.ram_size, 4);
+    out.ram_size = roundUp(up.header.ram_size, 8);
     out.arch[IramOffset] = up.iram_offset;
     out.arch[IramSize] = roundUp(up.header.iram_size, 4);
+    out.arch[RamAddress] = ramAddress(out);
 }
 
 // --- the modules page ------------------------------------------------------------------------------
@@ -426,7 +422,7 @@ button{font-size:14px;padding:6px 12px;margin:4px 4px 4px 0}input[type=checkbox]
 <table><thead><tr><th></th><th>Module</th><th class=r>Flash</th><th class=r>RAM</th><th class=r>IRAM</th>
 <th>RAM in</th><th>State</th></tr></thead><tbody id=list></tbody></table>
 <p>Modules file or full image: <input type=file id=file accept=.bin> <button id=gh>From GitHub</button></p>
-<p><button id=rs>Restart</button> <a href="/">WebUI</a></p><div id=msg></div>
+<p><button id=rs>Restart</button> <a href="./">WebUI</a></p><div id=msg></div>
 <script>
 var S,A={},W={},$=function(i){return document.getElementById(i)};
 function kb(v){return (v/1024).toFixed(1)+' KB'}
@@ -437,8 +433,8 @@ function bar(t,total,parts,lg){var taken=0,h,y;parts.forEach(function(p){if(p[0]
 h='<b>'+t+'</b>'+(y?' <span class=tight>almost full</span>':'')+'<div class=bar>';parts.forEach(function(p){if(p[1]>0)
 h+='<i class='+(y&&p[0]=='m'?'y':p[0])+' title="'+p[2]+'" style="width:'+(100*p[1]/total)+'%"></i>'});
 return h+'</div><div class=lg>'+lg+'</div>'}
-function load(){return fetch('/modules',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){S=j;draw();
-if(S.file&&!Object.keys(A).length)return fetch('/modules/file').then(function(r){if(!r.ok)throw r.status;return r.arrayBuffer()})
+function load(){return fetch('modules',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){S=j;draw();
+if(S.file&&!Object.keys(A).length)return fetch('modules/file').then(function(r){if(!r.ok)throw r.status;return r.arrayBuffer()})
 .then(function(b){parse(b);msg('modules file: from this board ('+Object.keys(A).join(', ')+')')})})}
 function find(n){return S.modules.filter(function(x){return x.name==n})[0]}
 function draw(){var used=0,rf=S.ram_arena-S.ram_used,irf=S.iram_arena-S.iram_used,names={},h='';
@@ -469,7 +465,7 @@ h+='<tr><td><input type=checkbox data-n="'+n+'"'+(on?' checked':'')+(fit?'':' di
 $('list').innerHTML=h;Array.prototype.forEach.call(document.querySelectorAll('input[data-n]'),function(e){
 e.onchange=function(){toggle(e)}});Array.prototype.forEach.call(document.querySelectorAll('button[data-x]'),function(e){
 e.onclick=function(){var n=e.getAttribute('data-x'),d=new FormData();d.append('name',n);msg(n+': removing...');
-post('/modules/remove',d).then(function(t){msg(n+': '+t)},function(x){msg(n+': '+x)}).then(load)}});
+post('modules/remove',d).then(function(t){msg(n+': '+t)},function(x){msg(n+': '+x)}).then(load)}});
 Array.prototype.forEach.call(document.querySelectorAll('select[data-r]'),function(e){
 e.onchange=function(){var n=e.getAttribute('data-r');if(e.getAttribute('data-m'))move(n,e.value);else{W[n]=e.value;draw()}}})}
 function canMove(m,a){var to=m.ram_in=='iram'?'dram':'iram';return (m.state=='running'||m.state=='not started')&&
@@ -478,14 +474,14 @@ function cell(n,m,a){var w=m?(m.ram_in||'dram'):(W[n]=='iram'?'iram':'dram');if(
 return w.toUpperCase();return '<select data-r="'+n+'"'+(m?' data-m=1':'')+'><option value=dram'+(w=='dram'?' selected':'')+
 '>DRAM<option value=iram'+(w=='iram'?' selected':'')+'>IRAM</select>'}
 function move(n,v){var u=new FormData();u.append('module',new Blob([A[n].data]),n+'.module');
-msg(n+': moving its RAM to '+v.toUpperCase()+'...');post('/modules/upload?replace=1'+(v=='iram'?'&ram=iram':''),u).then(function(t){
+msg(n+': moving its RAM to '+v.toUpperCase()+'...');post('modules/upload?replace=1'+(v=='iram'?'&ram=iram':''),u).then(function(t){
 msg(n+': '+t);$('rs').style.background='#f0ad4e'},function(x){msg(n+': '+x)}).then(load)}
 function post(u,d){return fetch(u,{method:'POST',body:d}).then(function(r){return r.text().then(function(t){
 if(!r.ok)throw t||r.status;return t})})}
 function toggle(e){var n=e.getAttribute('data-n'),d=new FormData(),m=find(n),u;e.disabled=true;
-if(m){d.append('name',n);d.append('on',e.checked?'1':'0');msg(n+': switching '+(e.checked?'on':'off')+'...');u='/modules/enable'}
+if(m){d.append('name',n);d.append('on',e.checked?'1':'0');msg(n+': switching '+(e.checked?'on':'off')+'...');u='modules/enable'}
 else{if(!A[n]){msg(n+': not in the modules file');return load()}
-d.append('module',new Blob([A[n].data]),n+'.module');msg(n+': uploading...');u='/modules/upload'+(W[n]=='iram'?'?ram=iram':'')}
+d.append('module',new Blob([A[n].data]),n+'.module');msg(n+': uploading...');u='modules/upload'+(W[n]=='iram'?'?ram=iram':'')}
 post(u,d).then(function(t){msg(n+': '+t)},function(x){msg(n+': '+x)}).then(function(){
 return new Promise(function(r){setTimeout(r,1500)})}).then(load)}
 function parse(b){var v=new DataView(b),o={},c,i,k,j,nm,ch,z=0;if(b.byteLength>0x100008&&v.getUint8(0)==0xE9&&
@@ -502,9 +498,9 @@ var u=null;(j.releases||[]).forEach(function(r){if(String(r.commit||'').indexOf(
 .forEach(function(f){if(f.kind=='modules'||(f.kind=='full'&&!u))u=f.url})});if(!u)throw 'no modules file of '+rev+
 ' in the release list, pick the file from the disk';return fetch(u).then(function(r){return r.arrayBuffer()}).then(parse)})
 .catch(function(x){msg(''+x)})};
-$('on').onclick=function(){post('/modules/on',new FormData()).then(function(t){msg(t);
+$('on').onclick=function(){post('modules/on',new FormData()).then(function(t){msg(t);
 setTimeout(function(){location.reload()},15000)})};
-$('rs').onclick=function(){post('/modules/restart',new FormData()).then(function(){msg('restarting...');
+$('rs').onclick=function(){post('modules/restart',new FormData()).then(function(){msg('restarting...');
 setTimeout(function(){location.reload()},15000)})};
 load().catch(function(x){msg(''+x)});
 </script>
@@ -554,19 +550,28 @@ bool headId(uint8_t out[16]) {
     return hexId(ESP.getSketchMD5(), out);
 }
 
-// from the mapped flash, RAM in the arena or the IRAM tail, IRAM code copied into its arena; word access only
+// from the mapped flash, RAM in the IRAM tail or the heap block, IRAM code copied into the IRAM tail; word access only
 const char* runs(const Entry& entry, const Header&, Runs& out) {
+    // relocated for another address of the heap block (the boot before the Apply took it elsewhere)
+    if (entry.ram_size && (ramAddress(entry) != entry.arch[RamAddress])) {
+        return PSTR("the heap block moved since the Apply: Apply again");
+    }
+    if (entry.ram_size && !(entry.ram_offset & RamSecondArena)
+        && ((entry.ram_offset + entry.ram_size) > heapBlockSize()))
+    {
+        return PSTR("not in this boot's heap block: Apply again");
+    }
+
     out.flash_lo = FlashMapped + entry.offset;
     out.flash_hi = out.flash_lo + entry.size;
     out.entry_lo = out.flash_lo;
     out.entry_hi = out.flash_hi;
 
-    const bool in_iram = (entry.ram_offset & RamSecondArena) != 0;
-    out.ram_lo = in_iram ? iramDataStart() : reinterpret_cast<uint32_t>(&espurna_modules_ram_arena[0]);
-    out.ram_hi = out.ram_lo + (in_iram ? iramDataSize() : sizeof(espurna_modules_ram_arena));
+    out.ram_lo = ramAddress(entry);
+    out.ram_hi = out.ram_lo + entry.ram_size;
 
-    out.iram_lo = reinterpret_cast<uint32_t>(&espurna_modules_iram_arena[0]);
-    out.iram_hi = out.iram_lo + sizeof(espurna_modules_iram_arena);
+    out.iram_lo = iramTailStart() + entry.arch[IramOffset];
+    out.iram_hi = out.iram_lo + entry.arch[IramSize];
     out.iram_copy = true;
     out.words = true;
     return nullptr;
@@ -695,7 +700,8 @@ void imageModules(Directory& dir, bool& valid) {
 
     Space flash;
     flash.lo = base + roundUp(tail_end, SectorSize);
-    flash.hi = directoryOffset();
+    // the directory's second copy under it (DirectorySectors)
+    flash.hi = directoryOffset() - SectorSize;
 
     for (uint32_t index = 0; (index < count) && (fresh.count < DirectoryEntries); ++index) {
         uint32_t entry[ContainerEntry / 4];
@@ -732,25 +738,42 @@ void imageModules(Directory& dir, bool& valid) {
     }
 }
 
-uint32_t ramArena() {
-    return sizeof(espurna_modules_ram_arena);
+uint32_t slotFor(uint32_t image) {
+    return roundUp(image, SectorSize);
 }
 
-// the IRAM arena for module code, the IRAM tail for module RAM (RamSecondArena)
+// the IRAM tail is the fixed pool (module code first, then module RAM), the rest of the RAM in the heap block
+void pools(Pools& out) {
+    // the free heap the loop sees (not inside this request, whose buffers take a part of it): the block comes out of
+    // it at the next boot, the head keeps MODULES_HEAP_KEEP of it
+    const uint32_t free = modulesHeapLoop();
+    out.heap = heapBlockSize() + ((free > MODULES_HEAP_KEEP) ? (free - MODULES_HEAP_KEEP) : 0);
+    out.fixed = iramTailSize();
+    out.fixed_words = true;
+    out.code_in_fixed = true;
+}
+
+// one IRAM tail for the code (iram) and the RAM in it (ram_second): both spaces span it, each counts both
 void arenas(const Directory& dir, bool valid, Spaces& out, const char* except) {
     out.iram.lo = 0;
-    out.iram.hi = sizeof(espurna_modules_iram_arena);
+    out.iram.hi = iramTailSize();
     out.ram_second.lo = 0;
-    out.ram_second.hi = iramDataSize();
+    out.ram_second.hi = iramTailSize();
     for (size_t index = 0; valid && (index < dir.count); ++index) {
         const auto& entry = dir.entries[index];
-        if (counted(entry, except)) {
-            out.iram.add(entry.arch[IramOffset], entry.arch[IramSize]);
+        if (!counted(entry, except)) {
+            continue;
+        }
+        out.iram.add(entry.arch[IramOffset], entry.arch[IramSize]);
+        out.ram_second.add(entry.arch[IramOffset], entry.arch[IramSize]);
+        if (entry.ram_offset & RamSecondArena) {
+            out.iram.add(entry.ram_offset & ~RamSecondArena, entry.ram_size);
         }
     }
 }
 
 void statusJson(String& out) {
+    out += F(",\"pool\":\"IRAM\"");
     jsonField(out, F("reserve"), modulesHeapReserve());
     jsonField(out, F("reserve_used"), modulesHeapReserveUsed());
     jsonField(out, F("refused"), modulesAcceptRefused());

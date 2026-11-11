@@ -2,9 +2,8 @@
 
 OTA MODULE, LibreTiny part (ref. ota_driver.h)
 
-LibreTiny Update takes the .uf2 package (firmware.uf2). ESPurna writes its own image for every
-bootloader (espurna-beken-matter.bin) and the Matter code of the Tuya layout (matter-tail.bin)
-itself, ref. arch/beken/ota_beken.cpp
+LibreTiny Update takes the .uf2 package: espurna-beken-tuya.uf2 (Tuya bootloader) or espurna-beken-quectel.uf2
+(Quectel bootloader). Which of the two the board takes, ref. arch/beken/ota_beken.cpp
 
 */
 
@@ -57,15 +56,7 @@ inline void arduino_ota_started() {
 inline void arduino_ota_progress() {
 }
 
-const char* upload_blocked();
-void upload_blocked_done();
-
-OwnUpload own_begin(const uint8_t* data, size_t len);
-bool own_running();
-const char* own_name();
-const char* own_write(const uint8_t* data, size_t len);
-const char* own_finish(bool complete, bool& again);
-void own_abort();
+const char* upload_check(const uint8_t* data, size_t len);
 
 } // namespace driver
 } // namespace ota

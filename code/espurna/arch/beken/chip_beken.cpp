@@ -25,7 +25,7 @@ void ws_connected(JsonObject& root) {
     root[F("arch")] = F("beken");
     root[F("mcu")] = lt_cpu_get_model_name();
 
-    // Beken bootloader ("Tuya" takes an update in two uploads), the WebUI lists the install steps ahead with it
+    // Beken bootloader (Tuya / Quectel), shown in the WebUI
     root[F("fwLayout")] = espurna::beken::layoutName(espurna::beken::flashLayout().layout);
 }
 
@@ -83,6 +83,25 @@ bool storage(Print&, const char*) {
 }
 
 // SDK version is the LibreTiny one (ref. system_get_sdk_version()), core is the Beken BDK under it
+// one head, two initial images: espurna-beken-tuya.uf2 (Tuya bootloader), espurna-beken-quectel.uf2 (Quectel)
+String image() {
+    String out(F(ESPURNA_IMAGE));
+    if (out.length()) {
+        switch (espurna::beken::flashLayout().layout) {
+        case espurna::beken::Layout::Tuya:
+            out += F("-tuya");
+            break;
+        case espurna::beken::Layout::Quectel:
+            out += F("-quectel");
+            break;
+        case espurna::beken::Layout::Unknown:
+            break;
+        }
+    }
+
+    return out;
+}
+
 String core_version() {
     String out;
 #if defined(CFG_BDK_VERSION)

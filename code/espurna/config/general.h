@@ -791,11 +791,11 @@
 //   and received frames)
 // - CONNS: connections to the server's port, the new one and web sockets included
 #if defined(ESP8266)
-// the 1 MB head with modules runs at 4-9 KB free, one request takes several KB (two WebUI tabs aborted it at 4 / 3 KB)
-#define WEB_GUARD_HEAP_DEFAULT      5120
+// off, as upstream: no limit of connections or heap for new requests (owner, 2026-11-10). The settings turn it on
+#define WEB_GUARD_HEAP_DEFAULT      0
 #define WEB_GUARD_BLOCK_DEFAULT     0
 #define WEB_GUARD_LWIP_DEFAULT      0
-#define WEB_GUARD_CONNS_DEFAULT     3
+#define WEB_GUARD_CONNS_DEFAULT     0
 #elif defined(ESP32)
 #define WEB_GUARD_HEAP_DEFAULT      16384
 #define WEB_GUARD_BLOCK_DEFAULT     4096

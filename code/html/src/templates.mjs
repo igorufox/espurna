@@ -1,4 +1,6 @@
-import { listenAppConnected, send, sendAction } from './connection.mjs';
+import { safeHref } from './net.mjs';
+import { listenAppConnected } from './connection.mjs';
+import { applyHardware, HARDWARE_KEYS, PIN_KEYS } from './applyHardware.mjs';
 import { notifyError } from './notify.mjs';
 import { variableListeners } from './settings.mjs';
 import { templateChip, tasmotaToEspurna } from './tasmota.mjs';
@@ -260,7 +262,7 @@ export function tasmotaTemplates(entries, arch) {
             name: entry.name,
             model: entry.model ?? '',
             category: entry.category ?? '',
-            link: TASMOTA_LINK + (entry.link ?? ''),
+            link: entry.link ? safeHref(String(entry.link), TASMOTA_LINK) : TASMOTA_LINK,
             settings: tasmotaToEspurna(entry.template),
             // no vendor field, names start with it (Sonoff Basic R2, Shelly 1PM, Moes ...)
             names: names(String(entry.name).split(' ')[0],
@@ -382,44 +384,6 @@ export function openbekenTemplates(data, mcu) {
  * Keys of a pin number. An entry is listed when it sets at least one of them to a pin
  * (153 is GPIO_NONE, e.g. uartTx0 of an RX-only meter)
  */
-const PIN_KEYS = new Set([
-    'relayGpio', 'relayResetGpio', 'btnGpio', 'ledGpio', 'ltDimmerGPIO', 'ltEnableGPIO',
-    'uartTx', 'uartRx', 'rfbRX', 'rfbTX', 'irRx', 'irTx', 'i2cSDA', 'i2cSCL',
-    // sensor.cpp load(), hlw8012CF also stands for hlw8012CF1
-    'hlw8012SEL', 'hlw8012CF', 'ech1560CLK', 'ech1560MISO', 'dhtPin', 'dallasPin', 'digitalPin',
-    'eventsPin', 'pulsemeterPin', 'geigerPin', 'analogPin', 'ntcPin', 'ldrPin',
-]);
-
-/**
- * Settings describing the board: pins and their modes, button actions, drivers and their
- * calibration, and the board names. Indexed keys are listed without the trailing index
- * (ntcR is ntcR0). Network, passwords, MQTT, topics, sync and the rest are never exported
- * and never applied from a downloaded list
- */
-const HARDWARE_KEYS = new Set([
-    ...PIN_KEYS,
-    'relayGpioType', 'relayType', 'relayProv', 'relayDummy',
-    'btnGpioType', 'btnProv', 'btnMode', 'btnPinMode', 'btnDefVal', 'btnRelay', 'btnLevel',
-    'btnPress', 'btnRlse', 'btnClick', 'btnDclk', 'btnTclk', 'btnLclk', 'btnLLclk',
-    'btnLclkDel', 'btnLLclkDel', 'btnDebDel', 'btnRepDel',
-    'btnFreq', 'btnMinPulses', 'btnMinDuty', 'btnAcConfirm', 'btnAcFreq',
-    'ledInv', 'ledMode', 'ledRelay',
-    'ltInv',
-    'uartBaud', 'uartDataBits', 'uartParity', 'uartStopBits', 'uartInv',
-    'rfbProv',
-    'irRxPullup', 'irTxInv', 'irRxPreset',
-    // sensor.cpp load(): pin options, ADC parameters, I2C addresses, UART port numbers
-    'hlw8012SelCurr', 'hlw8012IntMode', 'ech1560Inv', 'dhtType', 'digitalPinMode', 'digitalDefState',
-    'eventsPullUp', 'eventsIntMode', 'eventsDebounce', 'pulsemeterIntMode', 'pulsemeterDebounce',
-    'ntcBeta', 'ntcRUp', 'ntcRDown', 'ntcR', 'ldrType', 'ldrOnGround', 'ldrResistor',
-    'ade7953Addr', 'bmx280Number', 'bmx280Address',
-    'cse7766Port', 'v9261fPort', 'pzemPort', 'pzemv30Port', 'mhz19Port', 'pmsPort', 'pm1006Port',
-    'sds011Port', 'senseairPort', 'sm300d2Port', 't6613Port', 'ezophPort', 'a02yyuPort',
-    // energy meter calibration of the board
-    'currRatio', 'voltRatio', 'pwrPRatio',
-    'sysManufacturer', 'sysDevice',
-]);
-
 // in case the list above ever gets a key it should not have
 const NEVER_KEYS = /pass|key|secret|token|ssid|wifi|mqtt|api|host|topic/i;
 
@@ -745,22 +709,7 @@ function applySettings(template) {
         ? `\n\nThis board ${imageText(template)}, make sure the device runs it.`
         : '';
     const notes = template.notes ? `\n\n${template.notes}` : '';
-    if (!window.confirm(`Apply "${template.name}"?\n\n${summary}${image}${notes}\n\nNote: existing relay/button/LED settings will be overwritten.`)) {
-        return;
-    }
-
-    send(JSON.stringify({
-        settings: {
-            set: {...template.settings, ...template.names},
-            del: [],
-        }
-    }));
-
-    setTimeout(() => {
-        if (window.confirm('Settings have been sent to the device!\n\nReboot now to apply?')) {
-            sendAction('reboot');
-        }
-    }, 500);
+    applyHardware({...template.settings, ...template.names}, `Apply "${template.name}"?\n\n${summary}${image}${notes}`);
 }
 
 /**
@@ -794,9 +743,10 @@ function resultRow(template) {
     }
     row.appendChild(text);
 
-    if (template.link) {
+    const href = safeHref(template.link);
+    if (href) {
         const link = document.createElement('a');
-        link.href = template.link;
+        link.href = href;
         link.target = '_blank';
         link.rel = 'noopener';
         link.textContent = ` [${template.source}]`;

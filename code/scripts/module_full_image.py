@@ -32,11 +32,20 @@ from release_image import listing, path, write  # noqa: E402
 
 SECTOR = 4096
 
-DIRECTORY_MAGIC = 0x34524445  # "EDR4": modules_core.h Directory
-DIRECTORY_ENTRIES = 12
+DIRECTORY_MAGIC = 0x35524445  # "EDR5": modules_core.h Directory
+DIRECTORY_ENTRIES = 16
 # name, offset, slot, size, crc32, ram_offset, ram_size, arch[3], flags (modules_core.h Entry)
 ENTRY = struct.Struct("<16sIIIIII3II")
 OFF_REASON = 96
+
+
+def directory_bytes(magic, entries):
+    """modules_core.h Directory: magic, count, the entries, the guard's reason, generation 1 and the CRC-32 of all
+    before it. The sector under it is its second copy (DirectorySectors): no slot there"""
+    out = struct.pack("<II", magic, len(entries)) + b"".join(entries)
+    out += b"\0" * (ENTRY.size * (DIRECTORY_ENTRIES - len(entries)) + OFF_REASON)
+    out += struct.pack("<I", 1)
+    return out + struct.pack("<I", zlib.crc32(out) & 0xFFFFFFFF)
 
 # modules_core.h: EntryDisabled, EntryUnplaced
 ENTRY_DISABLED = 1
@@ -96,7 +105,7 @@ def read_container(data, at=0):
         raise ValueError("not a modules file (EMC2)")
     out = []
     for index in range(count):
-        name, offset, size, _, _, _, _ = CONTAINER_ENTRY.unpack_from(data, at + 8 + CONTAINER_ENTRY.size * index)
+        name, offset, size, *_ = CONTAINER_ENTRY.unpack_from(data, at + 8 + CONTAINER_ENTRY.size * index)
         out.append((name.rstrip(b"\0").decode(), data[at + offset: at + offset + size]))
     return out
 
@@ -182,14 +191,13 @@ class FullImage:
     @staticmethod
     def directory(entries):
         """modules_core.h Directory with these entries"""
-        out = struct.pack("<II", DIRECTORY_MAGIC, len(entries)) + b"".join(entries)
-        return out + b"\0" * (ENTRY.size * (DIRECTORY_ENTRIES - len(entries)) + OFF_REASON)
+        return directory_bytes(DIRECTORY_MAGIC, entries)
 
     def build(self):
         initial, base, size, lo, directory_offset = self.layout()
         full = bytearray(b"\xff" * size)
         full[: len(initial)] = initial
-        flash = Space(lo, directory_offset)
+        flash = Space(lo, directory_offset - SECTOR)
 
         entries = []
         on_entries = []

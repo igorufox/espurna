@@ -7,6 +7,7 @@ RTMEM MODULE FOR BEKEN (LibreTiny)
 #include "espurna.h"
 #include "arch/beken/rtcmem_beken.h"
 #include "build.h"
+#include "layout_beken.h"
 
 #if MQTT_SUPPORT
 #include "mqtt.h"
@@ -69,9 +70,11 @@ const uint32_t _rtcmem_retention_at_boot = retention();
 
 // RAM does not survive the reset either, so the crash handlers below also write the registers and the top of the stack
 // into the flash sector right above the settings slots (storage_eeprom_beken.cpp) and below the Tuya config, blank
-// on every stock dump seen. The record stays until the next crash, 'pending' goes from all ones to zero (no erase
-// needed) once the boot has reported it
-constexpr uint32_t CrashRecordOffset { 0x1EB000 };
+// on every stock dump seen. Its place comes from the layout of the bootloader (layout_beken.cpp): an unknown one,
+// or one whose dumps were not checked, gets no crash record. Picked in rtcmemSetup(), before that nothing is
+// written. The record stays until the next crash, 'pending' goes from all ones to zero (no erase needed) once the
+// boot has reported it
+uint32_t CrashRecordOffset { 0 };
 constexpr uint32_t CrashRecordMagic { 0x32535243 }; // CRS2, CRSH kept the exception mode sp lr
 constexpr uint32_t CrashRecordPending { 0xffffffff };
 
@@ -182,6 +185,9 @@ bool crash_readable(uint32_t address, size_t size) {
 }
 
 void crash_flash_write(size_t offset, const void* data, size_t size) {
+    if (!CrashRecordOffset) {
+        return;
+    }
     lt_flash_write(CrashRecordOffset + offset, static_cast<const uint8_t*>(data), size);
 }
 
@@ -222,6 +228,9 @@ void crash_record_write(const uint32_t* frame, RtcmemCrash kind) {
     static_assert(offsetof(CrashRecord, magic) == 0, "");
     static_assert(offsetof(CrashRecord, uptime) == sizeof(head) - sizeof(uint32_t), "");
 
+    if (!CrashRecordOffset) {
+        return;
+    }
     lt_flash_erase(CrashRecordOffset, FLASH_SECTOR_SIZE);
     crash_flash_write(offsetof(CrashRecord, magic), head, sizeof(head));
     crash_flash_write(offsetof(CrashRecord, regs), regs, sizeof(regs));
@@ -238,7 +247,7 @@ void crash_record_write(const uint32_t* frame, RtcmemCrash kind) {
 }
 
 bool crash_record_read(CrashRecord& out) {
-    return (lt_flash_read(CrashRecordOffset, reinterpret_cast<uint8_t*>(&out), sizeof(out)) == sizeof(out))
+    return CrashRecordOffset && (lt_flash_read(CrashRecordOffset, reinterpret_cast<uint8_t*>(&out), sizeof(out)) == sizeof(out))
         && (out.magic == CrashRecordMagic);
 }
 
@@ -431,6 +440,9 @@ void write() {
     char task[sizeof(CrashRecord::task)] {};
     std::strncpy(task, "stall", sizeof(task) - 1);
 
+    if (!CrashRecordOffset) {
+        return;
+    }
     lt_flash_erase(CrashRecordOffset, FLASH_SECTOR_SIZE);
     crash_flash_write(offsetof(CrashRecord, magic), head, sizeof(head));
     crash_flash_write(offsetof(CrashRecord, regs), regs, sizeof(regs));
@@ -555,6 +567,8 @@ uint32_t rtcmemRetention() {
 }
 
 void rtcmemSetup() {
+    CrashRecordOffset = ::espurna::beken::flashLayout().crash_offset;
+
     memset((void*)Rtcmem, 0, sizeof(RtcmemData));
     Rtcmem->magic = RTCMEM_MAGIC;
 
@@ -578,7 +592,7 @@ void rtcmemCrashSetup() {
     DEBUG_MSG_P(PSTR("[MAIN] Last crash: %s (CRASH shows the registers)\n"), summary.c_str());
 
     const uint32_t reported { 0 };
-    lt_flash_write(CrashRecordOffset + offsetof(CrashRecord, pending),
+    crash_flash_write(offsetof(CrashRecord, pending),
         reinterpret_cast<const uint8_t*>(&reported), sizeof(reported));
 
 #if MQTT_SUPPORT
