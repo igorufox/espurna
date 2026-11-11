@@ -17,7 +17,7 @@
 //   or, on the old two-slot layout, for the migration to the safeboot layout (/safeboot/migrate with the image URL).
 //   Every ESP32 image, the NSPanel one (esp32-matter-nspanel) as well: one safeboot file per release for all of them
 
-import { safeHref, sha256Hex, wait } from './net.mjs';
+import { modulesBlockUpdate, modulesOffForUpdate, safeHref, sha256Hex, wait } from './net.mjs';
 import { notifyError } from './notify.mjs';
 import { listenAppConnected } from './connection.mjs';
 import { variableListeners } from './settings.mjs';
@@ -592,7 +592,13 @@ function upload(url, blob, name, form) {
  */
 async function installUpgrade(urls, blob, name) {
     stepNow({key: 'upload', text: `Upload ${name}`});
-    const {status, text} = await upload(urls.upgrade, blob, name, true);
+    let {status, text} = await upload(urls.upgrade, blob, name, true);
+    if (modulesBlockUpdate(status, text)) {
+        // module code runs where the update goes: restart without it, the modules stay off until an Apply
+        setStatus('Modules run from the area of the update: restarting without them...');
+        await modulesOffForUpdate(urls.upgrade);
+        ({status, text} = await upload(urls.upgrade, blob, name, true));
+    }
     if (uploadOutcome(status, text) !== 'done') {
         throw new Error(`the board answered ${status}: ${text.trim() || '(nothing)'}`);
     }

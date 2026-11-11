@@ -100,8 +100,7 @@ class Esp8266FullImage(FullImage):
 
     def outputs(self, initial, full):
         out = write(path(self.out_dir, self.image), initial)
-        print(f"  full: modules file at 0x{MiB:X}")
-        return [out, write_gz(out, initial), write(path(self.out_dir, self.image, "full"), full, self.modules_file)]
+        return [out, write_gz(out, initial)]
 
 
 def build(head_bin, container, out_dir, ram_in_iram=(), on=()):

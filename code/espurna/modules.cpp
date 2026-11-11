@@ -386,7 +386,11 @@ const __FlashStringHelper* stateName(const Status& status) {
 
 // the guard's decision is in the directory sector (written at once, outside the settings' rotation)
 String offReason() {
-    Directory dir;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box) {
+        return String();
+    }
+    auto& dir = *dir_box;
     if (!readDirectory(dir)) {
         return String();
     }
@@ -431,7 +435,11 @@ namespace {
 
 
 void offWrite(const char* reason) {
-    Directory dir;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box) {
+        return;
+    }
+    auto& dir = *dir_box;
     if (!readDirectory(dir)) {
         return;
     }
@@ -447,7 +455,11 @@ void modulesOff(const String& reason) {
 }
 
 void modulesOffClear() {
-    Directory dir;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box) {
+        return;
+    }
+    auto& dir = *dir_box;
     if (readDirectory(dir) && dir.off[0]) {
         dir.off[0] = '\0';
         writeDirectory(dir);
@@ -634,7 +646,11 @@ const Entry* neededBy(const Directory& dir, const char* name, bool only_on) {
 }
 
 bool removeEntry(const String& name, const char*& error) {
-    Directory dir;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box) {
+        error = PSTR("no memory"); return false;
+    }
+    auto& dir = *dir_box;
     if (!readDirectory(dir)) {
         error = PSTR("no modules");
         return false;
@@ -970,7 +986,9 @@ const char* packageAccept(const PackageReader& reader, uint32_t version, Directo
         return error;
     }
 
-    if (!readDirectory(dir)) {
+    if (reader.apply_dir) {
+        std::memcpy(&dir, reader.apply_dir, sizeof(dir));
+    } else if (!readDirectory(dir)) {
         std::memset(&dir, 0, sizeof(dir));
     }
 
@@ -1467,7 +1485,11 @@ const char* enableTree(Directory& dir, const char* name, size_t depth, bool& cha
 // on: the flag off for it and what it needs, they start now (unless a copy runs: then at the restart). off: refused
 // while a switched-on module needs it; its code keeps running until the restart, its flash stays
 const char* setEnabled(const String& name, bool on, String& text) {
-    Directory dir;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box) {
+        return PSTR("no memory");
+    }
+    auto& dir = *dir_box;
     if (!readDirectory(dir)) {
         return PSTR("no modules");
     }
@@ -1534,7 +1556,11 @@ bool authenticated(AsyncWebServerRequest* request) {
 // the directory gets the entry once the backend wrote and checked the module: a new one at the end, a new copy of an
 // installed one (replace) in its place
 const char* addEntry(const Entry& entry) {
-    Directory dir;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box) {
+        return PSTR("no memory");
+    }
+    auto& dir = *dir_box;
     if (!readDirectory(dir)) {
         std::memset(&dir, 0, sizeof(dir));
         dir.magic = arch::directoryMagic();
@@ -1651,6 +1677,9 @@ constexpr size_t ModulesFileMax { 32 };
 constexpr uint32_t ModuleByteRam { 1 };     // its RAM takes byte access from interrupts: never in a 32-bit only pool
 
 struct Apply {
+    // the new directory, built here as the packages are written and put into flash once, at the end: an Apply that
+    // breaks off leaves the old one (with the off mark of /modules/off), never an empty area
+    Directory fresh {};
     uint32_t plan_ram[ModulesFileMax] {};   // RAM offset (RamSecondArena: in the fixed pool) per package of the table
     uint32_t plan_iram[ModulesFileMax] {};  // IRAM code offset in the fixed pool (ESP8266)
     char names[DirectoryEntries][16] {};
@@ -1795,7 +1824,12 @@ void applyFinish() {
     if (!error) {
         std::memcpy(entry.name, upload->header.name, sizeof(entry.name));
         entry.name[sizeof(entry.name) - 1] = '\0';
-        error = addEntry(entry);
+        auto& fresh = applying->fresh;
+        if (fresh.count < DirectoryEntries) {
+            fresh.entries[fresh.count++] = entry;
+        } else {
+            error = PSTR("directory full");
+        }
     }
 
     if (error) {
@@ -1844,9 +1878,8 @@ void applyData(AsyncWebServerRequest* request, const uint8_t* data, size_t len) 
             // the area anew: the old directory goes, the packages are placed into an empty area
             if ((at + part) == table) {
                 state.error = applyPlan();
-                if (!state.error && !eraseDirectory()) {
-                    state.error = PSTR("directory erase");
-                }
+                state.fresh.magic = arch::directoryMagic();
+                state.fresh.count = 0;
             }
             continue;
         }
@@ -1882,6 +1915,7 @@ void applyData(AsyncWebServerRequest* request, const uint8_t* data, size_t len) 
                         break;
                     }
                     upload->planned = true;
+                    upload->apply_dir = &state.fresh;
                     upload->planned_ram = state.plan_ram[inside];
                     upload->planned_iram = state.plan_iram[inside];
                     state.current = inside;
@@ -1986,6 +2020,8 @@ void onApplyDone(AsyncWebServerRequest* request) {
         answer(request, conflict ? 409 : 400, String(F("ERROR: ")) + FPSTR(error));
     } else if (missing.length()) {
         answer(request, 400, String(F("ERROR: not in the modules file or not written: ")) + missing);
+    } else if (!writeDirectory(applying->fresh)) {
+        answer(request, 500, F("ERROR: directory write"));
     } else {
         answer(request, 200, String(F("OK, applied: ")) + (applying->done.length() ? applying->done : String(F("no modules")))
             + F(", restarting"));
@@ -1996,16 +2032,15 @@ void onApplyDone(AsyncWebServerRequest* request) {
     applyRelease();
 }
 
-// the first step of an apply: no module code at the next boot, the area free to be rewritten
+// the first step of an apply: no module code at the next boot (the off mark of the guard, the directory stays), the
+// area free to be rewritten. The Apply writes a new directory without the mark; one that breaks off leaves the old
+// modules off, MODULES.ON (the panel's "Start the modules again") brings them back
 void onModulesOff(AsyncWebServerRequest* request) {
     if (!authenticated(request)) {
         return;
     }
 
-    if (!eraseDirectory()) {
-        answer(request, 500, F("ERROR: directory erase"));
-        return;
-    }
+    offWrite("restarted for an Apply");
 
     answer(request, 200, F("OK, modules off, restarting"));
     prepareReset(CustomResetReason::Web);
@@ -2018,7 +2053,11 @@ void onStatus(AsyncWebServerRequest* request) {
         return;
     }
 
-    Directory dir;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box) {
+        request->send(503, String(F("text/plain")), String(F("ERROR: no memory"))); return;
+    }
+    auto& dir = *dir_box;
     const bool valid = readDirectory(dir);
 
     String out;
@@ -2069,7 +2108,11 @@ void onStatus(AsyncWebServerRequest* request) {
     out += ']';
 
     // the meters: Flash from the area's start (the head) to the directory, the arenas
-    Spaces space;
+    auto space_box = boxed<Spaces>();
+    if (!space_box) {
+        request->send(503, String(F("text/plain")), String(F("ERROR: no memory"))); return;
+    }
+    auto& space = *space_box;
     spaces(dir, valid, space);
     const auto area = arch::area();
     jsonField(out, F("area"), area.hi - area.start);
@@ -2549,7 +2592,8 @@ bool modulesRunning() {
 bool modulesEnabled(const char* name) {
     using namespace espurna::modules;
     std::unique_ptr<Directory> dir(new (std::nothrow) Directory);
-    if (!dir || !readDirectory(*dir)) {
+    // the modules off (the guard, an Apply that broke off): none of them starts this boot
+    if (!dir || !readDirectory(*dir) || dir->off[0]) {
         return false;
     }
 

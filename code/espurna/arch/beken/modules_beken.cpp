@@ -1031,20 +1031,12 @@ uint32_t slotFor(uint32_t image) {
 
 // the free data TCM is the fixed pool, the rest of the RAM in the heap block
 void pools(Pools& out) {
-    // lt_heap_get_max_alloc() is a stub on the Beken (0), heap_4 keeps its free list to itself: the largest block that
-    // malloc() gives now, found by halving (freed at once, heap_4 joins it back)
-    uint32_t largest = 0;
-    uint32_t step = 0x10000;
-    while (step >= 256) {
-        void* probe = std::malloc(largest + step);
-        if (probe) {
-            std::free(probe);
-            largest += step;
-        } else {
-            step /= 2;
-        }
-    }
-    out.heap = heapBlockSize() + ((largest > MODULES_HEAP_KEEP) ? (largest - MODULES_HEAP_KEEP) : 0);
+    // the free heap (lt_heap_get_max_alloc() is a stub here, 0; heap_4 keeps its free list to itself). Never probed by
+    // malloc(): every refused malloc() runs the failed hook, which leaves a crash record and restarts the board (the
+    // "malloc failed ... async_tcp" records after each Apply, 11-11). The block is taken at the next boot, before the
+    // heap is cut up, so the free heap of now is a fair measure of what it can get then
+    const uint32_t free = lt_heap_get_free();
+    out.heap = heapBlockSize() + ((free > MODULES_HEAP_KEEP) ? (free - MODULES_HEAP_KEEP) : 0);
     out.fixed = tcmSize();
     out.fixed_words = false;
     out.code_in_fixed = false;

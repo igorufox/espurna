@@ -1,4 +1,5 @@
 import { notifyMessage } from './notify.mjs';
+import { modulesBlockUpdate, modulesOffForUpdate } from './net.mjs';
 import { listenAppConnected } from './connection.mjs';
 import { variableListeners } from './settings.mjs';
 import {
@@ -81,41 +82,58 @@ function onButtonClick(event) {
             return;
         }
 
-        const data = new FormData();
-        data.append("upgrade", files[0], files[0].name);
+        const file = files[0];
+        /** @param {boolean} again */
+        const send = (again) => {
+            const data = new FormData();
+            data.append("upgrade", file, file.name);
 
-        const xhr = new XMLHttpRequest();
+            const xhr = new XMLHttpRequest();
 
-        xhr.addEventListener("error", notifyValueError, false);
-        xhr.addEventListener("abort", notifyValueError, false);
+            xhr.addEventListener("error", notifyValueError, false);
+            xhr.addEventListener("abort", notifyValueError, false);
 
-        xhr.addEventListener("load",
-            () => {
-                const outcome = uploadOutcome(xhr.status, xhr.responseText);
-                if ("done" === outcome) {
-                    alert("Firmware image uploaded, board rebooting. This page will be refreshed in 5 seconds");
-                } else {
-                    alert(`ERROR while attempting OTA upgrade - ${xhr.status.toString()} ${xhr.statusText}, ${xhr.responseText}`);
-                }
-            }, false);
-
-        withProgress((progress) => {
             xhr.addEventListener("load",
                 () => {
-                    progress.style.display = "none";
-                });
-            xhr.upload.addEventListener("progress",
-                (event) => {
-                    progress.style.display = "inherit";
-                    if (event.lengthComputable) {
-                        progress.value = event.loaded;
-                        progress.max = event.total;
+                    // module code runs where the update goes: restart without it (the modules stay off until an
+                    // Apply with the new install image), then the same file again
+                    if (!again && modulesBlockUpdate(xhr.status, xhr.responseText)) {
+                        notifyMessage("Modules run from the area of the update: restarting without them, then uploading again...");
+                        modulesOffForUpdate(new URL(url, window.location.href))
+                            .then(() => send(true))
+                            .catch((error) => alert(`ERROR while attempting OTA upgrade - ${error.message ?? error}`));
+                        return;
+                    }
+
+                    const outcome = uploadOutcome(xhr.status, xhr.responseText);
+                    if ("done" === outcome) {
+                        alert("Firmware image uploaded, board rebooting. This page will be refreshed in 5 seconds"
+                            + (again ? ". The modules stay off: Apply them in MODULES with the new install image (.ota)" : ""));
+                    } else {
+                        alert(`ERROR while attempting OTA upgrade - ${xhr.status.toString()} ${xhr.statusText}, ${xhr.responseText}`);
                     }
                 }, false);
-        });
 
-        xhr.open("POST", url);
-        xhr.send(data);
+            withProgress((progress) => {
+                xhr.addEventListener("load",
+                    () => {
+                        progress.style.display = "none";
+                    });
+                xhr.upload.addEventListener("progress",
+                    (event) => {
+                        progress.style.display = "inherit";
+                        if (event.lengthComputable) {
+                            progress.value = event.loaded;
+                            progress.max = event.total;
+                        }
+                    }, false);
+            });
+
+            xhr.open("POST", url);
+            xhr.send(data);
+        };
+
+        send(false);
     });
 }
 

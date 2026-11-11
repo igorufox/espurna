@@ -37,7 +37,7 @@ namespace {
 bool started { false };
 bool connected { false };
 
-// The automatic start (`matterAuto`) waits `matterDelay` seconds after the station got its address, by default the
+// The automatic start (`matterAuto`, on by default) waits `matterDelay` seconds after the station got its address, by default the
 // backend's start_delay(). After a restart by the network watchdog the start waits at least 5 minutes.
 constexpr uint32_t NetworkResetStartDelay { 300 };
 
@@ -263,9 +263,9 @@ void wifi_event(espurna::wifi::Event event) {
     case espurna::wifi::Event::StationConnected:
         connected = true;
         backend::network(true);
-        // Bring-up: a crash in Matter must not put the board into a boot loop, so it only starts on
-        // MATTER.START until `matterAuto 1` is set
-        if (getSetting("matterAuto", false) && !started && !start_at) {
+        // the matter module switched on = Matter runs; `matterAuto 0` keeps it for MATTER.START. A crash loop is the
+        // module guard's (the modules go off with a reason)
+        if (getSetting("matterAuto", true) && !started && !start_at) {
             auto delay = getSetting("matterDelay", backend::start_delay());
             if (customResetReason() == CustomResetReason::Network) {
                 delay = std::max(delay, NetworkResetStartDelay);
@@ -468,7 +468,7 @@ void onData(JsonObject& root) {
 }
 
 void onConnected(JsonObject& root) {
-    root["matterAuto"] = getSetting("matterAuto", false);
+    root["matterAuto"] = getSetting("matterAuto", true);
     onData(root);
 }
 

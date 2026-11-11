@@ -11,6 +11,15 @@ import { pageReloadIn, styleInject } from './core.mjs';
 
 // <link> stylesheets are not stripped per-module by the build, keep the rules here
 const STYLE = [
+    ".mod-overlay { position: fixed; inset: 0; z-index: 10000; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }",
+    ".mod-dialog { background: #fff; border-radius: 6px; padding: 1.2em 1.5em; width: min(28em, 90vw); box-shadow: 0 4px 24px rgba(0,0,0,.3); }",
+    ".mod-dialog strong { display: block; font-size: 115%; margin-bottom: .6em; }",
+    ".mod-dialog .mod-dialog-step { margin-bottom: .6em; min-height: 1.4em; }",
+    ".mod-dialog .mod-dialog-bar { height: .8em; border-radius: 4px; background: #e8f4e8; overflow: hidden; }",
+    ".mod-dialog .mod-dialog-bar i { display: block; height: 100%; background: #1f8dd6; transition: width .3s; }",
+    ".mod-dialog .mod-dialog-bar.mod-busy i { width: 30% !important; animation: mod-busy 1.2s ease-in-out infinite alternate; }",
+    "@keyframes mod-busy { from { margin-left: 0; } to { margin-left: 70%; } }",
+    ".mod-dialog .mod-dialog-note { margin-top: .8em; font-size: 85%; color: #777; }",
     "#panel-mod .mod-off { background: #fde2e1; border: 1px solid #d9534f; border-radius: 4px; padding: .8em 1em; margin-bottom: 1.5em; }",
     "#panel-mod .mod-meter { margin: 0 0 1.2em; }",
     "#panel-mod .mod-meter-title { display: flex; justify-content: space-between; align-items: baseline; gap: 1em; }",
@@ -27,7 +36,9 @@ const STYLE = [
     "#panel-mod .mod-seg-new { background: repeating-linear-gradient(45deg, #1f8dd6 0 6px, #7fbfea 6px 12px); }",
     "#panel-mod .mod-seg-new.mod-tight { background: repeating-linear-gradient(45deg, #f0b429 0 6px, #f7d891 6px 12px); }",
     "#panel-mod .mod-seg-new.mod-over { background: repeating-linear-gradient(45deg, #c00000 0 6px, #e88 6px 12px); }",
-    "#panel-mod .mod-meter-legend { font-size: 85%; color: #666; display: flex; flex-wrap: wrap; gap: .2em 1.2em; }",
+    "#panel-mod .mod-meter-legend { font-size: 85%; color: #666; }",
+    "#panel-mod .mod-meter-legend strong { display: block; font-size: 115%; color: #333; margin-bottom: .15em; }",
+    "#panel-mod .mod-meter-legend div { line-height: 1.4; }",
     "#panel-mod .mod-meter-legend b { display: inline-block; width: .8em; height: .8em; border-radius: 2px; margin-right: .35em; vertical-align: -.05em; }",
     "#panel-mod .mod-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(17em, 1fr)); gap: .8em; }",
     "#panel-mod .mod-card { border: 1px solid #ddd; border-left: 4px solid #ccc; border-radius: 4px; padding: .6em .8em; background: #fff; transition: box-shadow .2s; }",
@@ -538,7 +549,7 @@ export function moduleRows(status, packages, ramIn) {
 }
 
 /**
- * @typedef {{title: string, total: number, head: number, used: number, dynamic?: number, added: number, legend: string}} Meter
+ * @typedef {{title: string, total: number, head: number, used: number, dynamic?: number, added: number, free: string, legend: string[]}} Meter
  */
 
 /**
@@ -559,12 +570,20 @@ export function meters(status, preview) {
         {
             title: "Flash", total: status.area, head: status.head, used,
             added: add ? sectors(add.flash) : 0,
-            legend: `head ${sizeText(status.head)}, modules ${sizeText(used)}, free ${sizeText(status.free)} of ${sizeText(status.area)}`,
+            free: `free ${sizeText(status.free)} of ${sizeText(status.area)}`,
+            legend: [`head ${sizeText(status.head)}`, `modules ${sizeText(used)}`],
         },
         {
             title: "RAM", total: status.ram_used + dynamic + status.heap, head: 0, used: status.ram_used, dynamic,
             added: (add && add.ramIn === "dram") ? add.ram : 0,
-            legend: `module statics ${sizeText(status.ram_used)}, heap the modules took when they started ${sizeText(dynamic)}, free heap ${sizeText(status.heap)} (${sizeText(status.heap_boot)} after boot); what a module allocates later is not counted`,
+            free: `free ${sizeText(status.heap)} of ${sizeText(status.ram_used + dynamic + status.heap)}`,
+            legend: [
+                `module statics ${sizeText(status.ram_used)}`
+                    + (status.iram_data ? ` (the ones not in the ${(status.pool === "TCM") ? "TCM" : "IRAM tail"})` : ""),
+                `heap the modules took when they started ${sizeText(dynamic)}`,
+                `free heap after boot ${sizeText(status.heap_boot)}`,
+                "what a module allocates later is not counted",
+            ],
         },
     ];
 
@@ -575,9 +594,11 @@ export function meters(status, preview) {
         out.push({
             title: (pool === "TCM") ? "TCM" : "IRAM tail", total: status.iram_data, head: 0, used: status.iram_data_used,
             added: add ? ((add.ramIn === "iram") ? add.ram : 0) + add.iram : 0,
+            free: `free ${sizeText(status.iram_data - status.iram_data_used)} of ${sizeText(status.iram_data)}`,
             legend: (pool === "TCM")
-                ? `module statics ${sizeText(status.iram_data_used)} of ${sizeText(status.iram_data)}; the modules' RAM goes here first, the largest first`
-                : `module code ${sizeText(code)} and statics ${sizeText(status.iram_data_used - code)} of ${sizeText(status.iram_data)}; 32-bit memory, byte access is emulated and slower`,
+                ? [`module statics ${sizeText(status.iram_data_used)}`, "the modules' RAM goes here first, the largest first"]
+                : [`module code ${sizeText(code)}`, `module statics ${sizeText(status.iram_data_used - code)}`,
+                    "32-bit memory, byte access is emulated and slower"],
         });
     }
 
@@ -648,6 +669,7 @@ function element(selector) {
  * @param {boolean} error
  */
 function message(text, error = false) {
+    dialogStep(text);
     const elem = element(".mod-message");
     if (elem) {
         elem.textContent = text;
@@ -776,7 +798,14 @@ function meterElement(meter) {
 
     const legend = document.createElement("div");
     legend.classList.add("mod-meter-legend");
-    legend.textContent = meter.legend;
+    const free = document.createElement("strong");
+    free.textContent = meter.free;
+    legend.appendChild(free);
+    for (const line of meter.legend) {
+        const item = document.createElement("div");
+        item.textContent = line;
+        legend.appendChild(item);
+    }
 
     out.append(title, bar, legend);
     return out;
@@ -1004,8 +1033,15 @@ function draw() {
         restart.classList.toggle("mod-show", pending.length > 0);
         const text = element(".mod-restart-text");
         if (text) {
-            text.textContent = `${pending.join(", ")}: Apply writes the ticked modules anew and restarts the board`
-                + " (twice: without modules, then with them).";
+            const adds = pending.some((x) => x.startsWith("+"));
+            const keeps = selection(status).size > 0;
+            text.textContent = (state.file || !keeps)
+                ? `${pending.join(", ")}: Apply writes the ticked modules anew, packed, and restarts the board`
+                    + " (twice: without modules, then with them). This frees the flash of the modules switched off."
+                : adds
+                    ? `${pending.join(", ")}: adding a module needs the install image (.ota): pick it below.`
+                    : `${pending.join(", ")}: Apply switches them off and restarts the board, no file needed.`
+                        + " Their flash stays taken: an Apply with the install image (.ota) frees it.";
         }
     }
 }
@@ -1069,6 +1105,89 @@ async function waitBoard(timeout = 90000) {
 
 let applying = false;
 
+/** @type {{root: HTMLElement | null, step: HTMLElement | null, bar: HTMLElement | null}} */
+const dialog = {root: null, step: null, bar: null};
+
+/** @param {BeforeUnloadEvent} event */
+function holdPage(event) {
+    event.preventDefault();
+    event.returnValue = "";
+}
+
+/**
+ * The Apply dialog over the whole page: the step, its progress, nothing to click; leaving the page asks first
+ * @param {string} title
+ */
+function dialogShow(title) {
+    const root = document.createElement("div");
+    root.classList.add("mod-overlay");
+    const box = document.createElement("div");
+    box.classList.add("mod-dialog");
+    const head = document.createElement("strong");
+    head.textContent = title;
+    const step = document.createElement("div");
+    step.classList.add("mod-dialog-step");
+    const bar = document.createElement("div");
+    bar.classList.add("mod-dialog-bar", "mod-busy");
+    bar.appendChild(document.createElement("i"));
+    const note = document.createElement("div");
+    note.classList.add("mod-dialog-note");
+    note.textContent = "Keep this page open and the board powered until it is done.";
+    box.append(head, step, bar, note);
+    root.appendChild(box);
+    document.body.appendChild(root);
+    Object.assign(dialog, {root, step, bar});
+    window.addEventListener("beforeunload", holdPage);
+}
+
+/**
+ * @param {string} text
+ * @param {number | null} fraction 0..1, null - no measure (a restart)
+ */
+function dialogStep(text, fraction = null) {
+    if (!dialog.root || !dialog.step || !dialog.bar) {
+        return;
+    }
+    dialog.step.textContent = text;
+    dialog.bar.classList.toggle("mod-busy", fraction === null);
+    const fill = /** @type {HTMLElement} */(dialog.bar.firstChild);
+    fill.style.width = `${Math.round(100 * (fraction ?? 0))}%`;
+}
+
+function dialogHide() {
+    window.removeEventListener("beforeunload", holdPage);
+    dialog.root?.remove();
+    Object.assign(dialog, {root: null, step: null, bar: null});
+}
+
+/**
+ * A form POST with the upload progress (fetch has none)
+ * @param {string} path
+ * @param {FormData} body
+ * @param {(fraction: number) => void} progress
+ * @returns {Promise<string>}
+ */
+function postWithProgress(path, body, progress) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", path);
+        xhr.upload.addEventListener("progress", (event) => {
+            if (event.lengthComputable) {
+                progress(event.loaded / event.total);
+            }
+        });
+        xhr.addEventListener("load", () => {
+            if ((xhr.status >= 200) && (xhr.status < 300)) {
+                resolve(xhr.responseText);
+            } else {
+                reject(new Error(xhr.responseText || `${xhr.status}`));
+            }
+        });
+        xhr.addEventListener("error", () => reject(new Error("the upload broke off")));
+        xhr.send(body);
+    });
+}
+
 /**
  * An Apply runs: the page waits for the restarts itself (index.mjs: no reload question on the closed socket)
  * @returns {boolean}
@@ -1083,10 +1202,12 @@ export function modulesApplyRunning() {
  */
 async function applyNow() {
     applying = true;
+    dialogShow("Applying the modules");
     try {
         await applySteps();
     } finally {
         applying = false;
+        dialogHide();
     }
 
     // the socket closed with the restarts: a fresh page connects again
@@ -1100,6 +1221,29 @@ async function applySteps() {
     }
 
     const names = [...selection(status)];
+
+    // only switched off, no file: out of the directory, one restart. The others stay where they are, the flash of the
+    // ones switched off is freed by the next Apply with the install image (it writes the area anew)
+    const running = runningSet(status);
+    const removed = [...running].filter((name) => !selection(status).has(name));
+    const added = names.filter((name) => !running.has(name));
+    if (!state.file && names.length && !added.length && removed.length) {
+        state.busy = true;
+        draw();
+        for (const name of removed) {
+            const form = new FormData();
+            form.append("name", name);
+            message(`${name}: switching off...`);
+            await post("modules/remove", form);
+        }
+        message("Restarting...");
+        await post("modules/restart", new FormData());
+        await waitBoard();
+        state.selected = null;
+        message(`Switched off: ${removed.join(", ")}. Their flash stays taken until an Apply with the install image (.ota)`);
+        return;
+    }
+
     if (names.length && !state.file) {
         throw new Error("pick the install image (.ota) or the modules file first, or take it From GitHub");
     }
@@ -1117,8 +1261,11 @@ async function applySteps() {
         const form = new FormData();
         form.append("names", names.join(","));
         form.append("modules", new Blob([state.file]), "modules.bin");
-        const text = await post("modules/apply", form);
-        message(text);
+        const size = sizeText(state.file.byteLength);
+        const text = await postWithProgress(url("modules/apply").href, form, (fraction) => {
+            dialogStep(`Writing ${names.join(", ")}: ${Math.round(100 * fraction)} % of ${size}`, fraction);
+        });
+        message(`${text}...`);
         await waitBoard();
     }
 

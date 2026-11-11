@@ -341,7 +341,11 @@ const char* prepare(PackageReader& reader) {
     auto& up = static_cast<Upload&>(reader);
     const auto& header = up.header;
 
-    Directory dir;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box) {
+        return PSTR("no memory");
+    }
+    auto& dir = *dir_box;
     bool installed = false;
     const auto* error = packageAccept(up, PackageVersion, dir, installed);
     if (error) {
@@ -350,7 +354,11 @@ const char* prepare(PackageReader& reader) {
 
     // a new copy of an installed module: the arenas are filled at boot, so the old copy's RAM and IRAM are free for
     // it; its flash is not (running code, or the copy that stays when this upload fails)
-    Spaces space;
+    auto space_box = boxed<Spaces>();
+    if (!space_box) {
+        return PSTR("no memory");
+    }
+    auto& space = *space_box;
     spaces(dir, true, space, installed ? header.name : nullptr);
 
     if (!space.flash.place(roundUp(header.image_size, SectorSize), true, up.slot)) {
@@ -380,7 +388,11 @@ const char* prepareLocal(PackageReader& reader) {
     }
 
     // the arenas the placed modules leave (this one is not counted: it is EntryUnplaced)
-    Spaces space;
+    auto space_box = boxed<Spaces>();
+    if (!space_box) {
+        return PSTR("no memory");
+    }
+    auto& space = *space_box;
     spaces(*up.local_dir, true, space);
     up.slot = entry.offset;
     up.ram_in_iram = (entry.ram_offset & RamSecondArena) != 0;

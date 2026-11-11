@@ -64,6 +64,41 @@ export async function post(url, body) {
     return text;
 }
 
+/**
+ * The board refuses a firmware update while module code runs from the area the update is written into (409
+ * "MODULES.OFF first", ESP8266): restart it without the modules (POST modules/off, they stay installed but off) and
+ * wait until it answers again
+ * @param {URL} upgrade the /upgrade URL of the board
+ * @param {number} timeout ms
+ */
+export async function modulesOffForUpdate(upgrade, timeout = 90000) {
+    await post(new URL("modules/off", upgrade), new FormData());
+    const start = Date.now();
+    await wait(4000);
+    while ((Date.now() - start) < timeout) {
+        try {
+            const response = await fetch(new URL("modules", upgrade), {cache: "no-store", credentials: "same-origin"});
+            if (response.ok) {
+                return;
+            }
+        } catch {
+            // restarting
+        }
+        await wait(2000);
+    }
+
+    throw new Error(`the board did not come back in ${Math.round(timeout / 1000)} s`);
+}
+
+/**
+ * @param {number} status
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function modulesBlockUpdate(status, text) {
+    return (status === 409) && text.includes("MODULES.OFF");
+}
+
 const SHA256_K = new Uint32Array([
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,

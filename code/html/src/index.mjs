@@ -131,9 +131,38 @@ function onMessage(value) {
 }
 
 /**
+ * While the page has no data from the board yet (the layout stays hidden until then): what is going on, and a way out
+ * when the web socket never comes
+ */
+function connectingShow() {
+    const box = document.createElement("div");
+    box.id = "connecting";
+    box.style.cssText = "font: 120% sans-serif; color: #555; text-align: center; margin-top: 30vh;";
+    box.textContent = "Connecting to the board...";
+    document.body.appendChild(box);
+    window.setTimeout(() => connectingFailed("No answer from the board yet."), 15000);
+}
+
+/** @param {string} text */
+function connectingFailed(text) {
+    const box = document.getElementById("connecting");
+    if (!box) {
+        return;
+    }
+    box.textContent = text;
+    const retry = document.createElement("button");
+    retry.className = "pure-button";
+    retry.style.cssText = "display: block; margin: 1em auto;";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => window.location.reload());
+    box.appendChild(retry);
+}
+
+/**
  * @param {number} value
  */
 function initWebMode(value) {
+    document.getElementById("connecting")?.remove();
     const layout = /** @type {!HTMLElement} */
         (document.getElementById("layout"));
     layout.style.display = "inherit";
@@ -308,6 +337,12 @@ function onConnectionClose(event) {
         return;
     }
 
+    // never got any data: no question, the Retry button
+    if (document.getElementById("connecting")) {
+        connectingFailed("The connection to the board closed.");
+        return;
+    }
+
     askAndCall([askReload(event)], () => {
         pageReloadIn(1000);
     });
@@ -339,6 +374,8 @@ function onJsonPayload(event) {
 }
 
 async function init() {
+    connectingShow();
+
     // Sidebar menu & buttons
     document.querySelector(".menu-link")
         ?.addEventListener("click", onMenuLinkClick);

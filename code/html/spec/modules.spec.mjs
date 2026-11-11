@@ -144,9 +144,9 @@ test('meters: flash counts the head and whole sectors, the preview adds the modu
     expect(meters(status({iram_data: 0}), null)).toHaveLength(2);
     expect(meters(status({pool: 'TCM'}), null)[2]).toMatchObject({title: 'TCM'});
 
-    expect(meterLevel({title: '', total: 100, head: 0, used: 50, added: 0, legend: ''})).toBe('');
-    expect(meterLevel({title: '', total: 100, head: 0, used: 85, added: 0, legend: ''})).toBe('mod-tight');
-    expect(meterLevel({title: '', total: 100, head: 0, used: 90, added: 20, legend: ''})).toBe('mod-over');
+    expect(meterLevel({title: '', total: 100, head: 0, used: 50, added: 0, free: '', legend: []})).toBe('');
+    expect(meterLevel({title: '', total: 100, head: 0, used: 85, added: 0, free: '', legend: []})).toBe('mod-tight');
+    expect(meterLevel({title: '', total: 100, head: 0, used: 90, added: 20, free: '', legend: []})).toBe('mod-over');
 });
 
 test('switching on takes what a module needs first, the deepest first; others that need it go off with it', () => {

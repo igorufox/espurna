@@ -176,8 +176,9 @@ class FullImage:
         raise NotImplementedError
 
     def outputs(self, initial, full):
-        """write the images, return their paths"""
-        return [write(path(self.out_dir, self.image), initial), write(path(self.out_dir, self.image, "full"), full)]
+        """write the initial image, return its path. No full image any more (decision 11-10: the install image .ota
+        and the Apply replace it); `full` is still built, it checks that every module fits the area"""
+        return [write(path(self.out_dir, self.image), initial)]
 
     # --- the image -------------------------------------------------------------------------------------------------
 

@@ -26,6 +26,8 @@ A chip uses the core once its backend implements the contract: MODULES_CORE is 1
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <new>
 
 class AsyncWebServerRequest;
 class Print;
@@ -36,6 +38,13 @@ namespace modules {
 // 16: every module of a chip in its full image (ESP32 has 14). A change of it is a new directory format: new magic
 constexpr size_t DirectoryEntries { 16 };
 constexpr uint32_t SectorSize { 4096 };
+
+// a big temporary (Directory ~1.2 KB, Spaces ~1 KB) on the heap: the ESP8266 web callbacks run on the 4 KB system
+// stack, onStatus held a Directory, Spaces and offReason()'s Directory at once (Exception 29 in onStatus, 11-11)
+template <typename T>
+std::unique_ptr<T> boxed() {
+    return std::unique_ptr<T>(new (std::nothrow) T());
+}
 
 // one installed module: the common part, then the backend's own words
 struct Entry {
@@ -208,6 +217,8 @@ struct PackageReader {
     // placed by the Apply (arch::pools, largest first): RAM offset (RamSecondArena: in the chip's fixed pool), IRAM code
     // offset (ESP8266); the backend's prepare takes them instead of placing itself
     bool planned { false };
+    // the Apply's directory in memory (written once at its end): placing goes by it, not by the one in flash
+    const Directory* apply_dir { nullptr };
     uint32_t planned_ram { 0 };
     uint32_t planned_iram { 0 };
     const char* error { nullptr };
