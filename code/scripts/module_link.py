@@ -77,6 +77,10 @@ HEADER_ID = 24
 HEADER_REQUIRES = 96
 REQUIRES_SIZE = 32
 
+# the modules a data module needs (it has no line in ESPURNA_MODULES): the WebUI talks to the board over the
+# WebSocket of the ws module
+DATA_MODULE_REQUIRES = {"webui": ["ws"]}
+
 # head links in one build when the modules need head exports it does not have yet
 RELINKS = 3
 
@@ -134,7 +138,7 @@ def package_bytes(name, head_id, image, kinds, ram, iram, bases, branches=None):
     return header + body
 
 
-def data_package(name, data, head_id, bases, align=4):
+def data_package(name, data, head_id, bases, align=4, requires=b""):
     """a data module (no code, entry 0, e.g. the WebUI page): the header + the data, padded to the chip's image
     alignment; only flash_start / flash_end hold addresses, they are its two flash relocations (words 10 and 11, kind
     1). bases: the chip's link A bases (the first one, flash, is the data module's link address)"""
@@ -144,7 +148,7 @@ def data_package(name, data, head_id, bases, align=4):
     fields[0] = link_flash         # flash_start
     fields[1] = link_flash + size  # flash_end
     fields[4] = len(data)          # data_end: the data size
-    image = HEADER.pack(HEADER_MAGIC, 1, module_name(name), head_id, *fields, b"") + data
+    image = HEADER.pack(HEADER_MAGIC, 1, module_name(name), head_id, *fields, requires) + data
     image += b"\0" * (size - len(image))
     kinds = [0] * (size // 4)
     kinds[10] = kinds[11] = 1
@@ -259,9 +263,20 @@ class Linker:
     # --- chip hooks ------------------------------------------------------------------------------------------------
 
     def head_id(self, ctx):
-        """the id the modules carry of the head they are linked against: the MD5 of firmware.bin"""
-        with open(ctx["head_bin"], "rb") as f:
-            return hashlib.md5(f.read()).digest()
+        """the id the modules carry of the head they are linked against: the first 16 bytes of the GNU build id the
+        head keeps in its flash at __build_id_start (scripts/module_head.py), every chip"""
+        elf = ctx["head_elf"]
+        at = self.symbols(elf)["__build_id_start"]
+        dump = self.run([self.tool("objdump"), "-s", f"--start-address=0x{at:x}", f"--stop-address=0x{at + 36:x}", elf])
+        data = b""
+        for line in dump.splitlines():
+            match = re.match(r"^\s*([0-9a-f]{4,8})\s+((?:[0-9a-f]{2,8}\s){1,4})", line)
+            if match and int(match.group(1), 16) >= at:
+                data += bytes.fromhex("".join(match.group(2).split()))
+        namesz, descsz, kind = struct.unpack_from("<III", data, 0)
+        if namesz != 4 or kind != 3 or data[12:16] != b"GNU\0" or descsz < 16:
+            raise RuntimeError("no GNU build id in the head (scripts/module_head.py)")
+        return data[16:32]
 
     def head_symbols(self, build_dir, head_elf):
         """the head's symbols in a module link"""
@@ -301,7 +316,8 @@ class Linker:
         if not page:
             return []
         with open(page, "rb") as f:
-            data = data_package("webui", f.read(), ctx["head_id"], [base[1] for base in self.bases], self.image_align)
+            data = data_package("webui", f.read(), ctx["head_id"], [base[1] for base in self.bases], self.image_align,
+                                self.requires_bytes("webui"))
         out = os.path.join(ctx["build_dir"], "module-webui.module")
         with open(out, "wb") as f:
             f.write(data)
@@ -772,7 +788,7 @@ class Linker:
         for module in self.parse_modules():
             if module["name"] == name:
                 return module["requires"]
-        return []
+        return DATA_MODULE_REQUIRES.get(name, [])
 
     def requires_bytes(self, name):
         text = ",".join(self.requires_of(name)).encode()

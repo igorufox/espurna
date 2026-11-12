@@ -9,7 +9,8 @@ publishes them ([docs/updates.md](updates.md)).
 
 Every board runs the **head**, one image per chip with what every board needs: Wi-Fi, relays, buttons, LEDs, the web
 server with a small page of its own, the API, the terminal and telnet, NTP, OTA, the module loader, and the forwarders
-of the MQTT API (relays, buttons ... call MQTT as always, the `mqtt` module takes over when it is on). Everything else
+of the MQTT and WebSocket APIs (relays, buttons ... call MQTT and the WebUI as always, the `mqtt` and `ws` modules take
+over when they are on). Everything else
 is a **module**: a separate piece of code, or data such as the WebUI, that the board writes into the free flash of its
 module area and starts at boot. You pick the modules on the board's MODULES page; nothing has to be built for a board.
 
@@ -27,7 +28,8 @@ leaves out only what cannot exist on it.
 
 | Module | What it brings | Chips |
 |--------|----------------|-------|
-| `webui` | the full WebUI (data, no code: `code/html/build/index.html.gz` of `npx gulp build`); without it the head shows its own page | all |
+| `webui` | the full WebUI (data, no code: `code/html/build/index.html.gz` of `npx gulp build`); without it the head shows its own page; needs `ws` | all |
+| `ws` | the WebSocket of the WebUI (`/ws`, `/auth`): the live state, settings, actions, the debug log; the head keeps the callbacks and forwards `wsPost`/`wsSend` to it (`modules_ws.h`) | all |
 | `captive` | the captive portal of the board's access point; **on out of the box** | all |
 | `mqtt` | MQTT | all |
 | `homeassistant` | Home Assistant MQTT discovery (needs `mqtt`) | all |
@@ -111,7 +113,7 @@ of the same build. The WebUI does it from the `.ota`; only how the head reaches 
 | Beken | `POST /modules/off` | `/upgrade`, the head of the board's bootloader; written into the bootloader's `download` partition, which is the module area |
 | ESP32 | `POST /safeboot/switch`, the board restarts into its safeboot | the safeboot's `/upload`; it writes app0 and boots ESPurna |
 
-How each chip's update works below that (the safeboot, the bootloaders, the mini for older ESP8266 images):
+How each chip's update works below that (the safeboot, the bootloaders, the migration image for older ESP8266 images):
 [docs/updates.md](updates.md).
 
 ## When a module goes wrong

@@ -35,7 +35,7 @@ concurrency:
 jobs:
   # first: the PlatformIO configs (scripts/ci_ini_lint.py): -U in build flags, a macro with two values in one env,
   # build dirs other than the three of the chips, one ESPURNA_IMAGE form, library versions and lib_ignore of the
-  # module libraries equal on every chip, pinned platforms (safeboot-app and mini-app on the platform of their chip)
+  # module libraries equal on every chip, pinned platforms (safeboot-app and migration-app on the platform of their chip)
   ini-lint:
     if: ${{ !inputs.promote }}
     runs-on: ubuntu-26.04
@@ -57,7 +57,7 @@ jobs:
       working-directory: code
       run: |
         python scripts/ci_ini_lint.py platformio_esp8266.ini platformio_esp32.ini platformio_beken.ini \
-          safeboot-app/platformio.ini mini-app/platformio.ini
+          safeboot-app/platformio.ini migration-app/platformio.ini
     - name: Check generated files
       # espurna/config/arduino.h is generated (scripts/generate_arduino_h.py): the copy in git is up to date
       working-directory: code
@@ -132,10 +132,10 @@ jobs:
         - { arch: esp8266, config: platformio_esp8266.ini, env: esp8266, name: esp8266 }
         - { arch: esp32, config: platformio_esp32.ini, env: esp32, name: esp32 }
         - { arch: beken, config: platformio_beken.ini, env: beken, name: beken }
-        # not an env of the chip inis: the separate project code/mini-app, the first step of the two-step update of
+        # not an env of the chip inis: the separate project code/migration-app, the first step of the two-step update of
         # 1 MB boards that still run a full image of the older releases (their free space does not take the head);
-        # the WebUI of those images looks for espurna-esp8266-1m-mini in the same release
-        - { arch: esp8266-mini, config: mini-app/platformio.ini, env: esp8266-1m-mini, name: esp8266-1m-mini }
+        # the WebUI of those images looks for espurna-esp8266-1m-migration in the same release
+        - { arch: esp8266-migration, config: migration-app/platformio.ini, env: esp8266-1m-migration, name: esp8266-1m-migration }
     steps:
     - uses: actions/checkout@v7
     - uses: actions/setup-python@v7
@@ -176,8 +176,8 @@ jobs:
         if [ "${{ matrix.arch }}" = esp32 ]; then
           pio run -d safeboot-app
         fi
-        if [ "${{ matrix.arch }}" = esp8266-mini ]; then
-          pio run -d mini-app
+        if [ "${{ matrix.arch }}" = esp8266-migration ]; then
+          pio run -d migration-app
         else
           pio run -c ${{ matrix.config }} -e ${{ matrix.env }}
         fi
@@ -206,8 +206,8 @@ jobs:
           # LibreTiny links raw_firmware.elf
           cp ${build}/raw_firmware.elf ${build}/firmware.elf
           ;;
-        esp8266-mini)
-          build=code/mini-app/.pio/build/${env}
+        esp8266-migration)
+          build=code/migration-app/.pio/build/${env}
           # the .bin.gz for OTA on 1 MB boards is made for GitHub Pages (pages job), not a release file
           cp ${build}/firmware.bin dist/${name}.bin
           ;;
@@ -269,7 +269,7 @@ jobs:
           ESP8266, core 3.1.2 + SDK 3.0.5, the 1 MB flash layout on every chip size:
           - `espurna-esp8266.bin` - the head: serial flash at 0x0 or OTA (the WebUI takes the compressed copy from the release list by itself)
           - `espurna-esp8266.ota` - the install image: the head and every module (sensors, scheduler, alexa, mdns, mqtt, homeassistant, domoticz, thingspeak, light, rf, captive, the WebUI); not for a serial flash tool
-          - `espurna-esp8266-1m-mini` - first step of the two-step update for 1 MB boards on a full image of an older release
+          - `espurna-esp8266-1m-migration` - first step of the two-step update for 1 MB boards on a full image of an older release
           Boards installed with the 4 MB layout (`espurna-esp8266-4m`) keep their settings elsewhere: back them up and restore them after the update.
 
           ESP32, Arduino-ESP32 core 3 (ESP-IDF 5), safeboot flash layout (ESPurna at 0xE0000, 2880 KB):
@@ -362,8 +362,8 @@ jobs:
   # GitHub Pages copy of the kept releases + firmware.json, for the WebUI (ADMIN, OTA, *Install from GitHub*):
   # release files themselves come from release-assets.githubusercontent.com without CORS (the browser cannot
   # download them) and need ECDHE (the Beken mbedTLS has none); Pages serves them with Access-Control-Allow-Origin: *.
-  # Two lists: firmware.json - the stable releases only (the default list of the WebUI, the minimal 1 MB image, the
-  # safeboot and the mini image: what boards offer by default), firmware-preview.json - stable and preview releases
+  # Two lists: firmware.json - the stable releases only (the default list of the WebUI, the migration 1 MB image, the
+  # safeboot and the migration image: what boards offer by default), firmware-preview.json - stable and preview releases
   # (set as *Release list*, webFwUrl, to get previews). Every release entry has "channel": "stable" / "preview".
   # Settings -> Pages -> Source: GitHub Actions. Nothing is committed to the repository
   pages:
@@ -409,7 +409,7 @@ jobs:
             > "site/${tag}/release.json"
         done < site/tags.txt
     # A release has one file per image; the board-side copies the WebUI needs are made here, for Pages only:
-    # - ESP8266 .bin.gz: OTA (eboot unpacks it), the mini one with zopfli (pigz -11, ~4 KB smaller than gzip -9: it has
+    # - ESP8266 .bin.gz: OTA (eboot unpacks it), the migration image one with zopfli (pigz -11, ~4 KB smaller than gzip -9: it has
     #   to fit behind the biggest 1 MB image); none of the modules file and the full image (no OTA files)
     # - ESP32 -safeboot.bin: the factory partition of the image's merged .bin (each ESP32 build has its own safeboot
     #   build), installed by the WebUI when the board's one differs
@@ -421,7 +421,7 @@ jobs:
           [ -e "${bin}.gz" ] && continue
           case "${bin}" in
           *-modules.bin|*-full.bin) ;;
-          *-mini.bin) pigz -11 -n -c "${bin}" > "${bin}.gz" ;;
+          *-migration.bin) pigz -11 -n -c "${bin}" > "${bin}.gz" ;;
           *) gzip -9 -n -c "${bin}" > "${bin}.gz" ;;
           esac
         done

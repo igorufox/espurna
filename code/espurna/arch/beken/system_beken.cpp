@@ -492,7 +492,7 @@ namespace chip {
 void pre_setup() {
     loopTaskHandle = xTaskGetCurrentTaskHandle();
 
-    // AsyncTCP servers are started before WiFi is, make sure the TCP/IP stack is up.
+    // The TCP servers (libs/tcp.h: web, telnet) are started before WiFi is, make sure the TCP/IP stack is up.
     // LibreTiny only initializes the SDK (lwip tcpip thread included) on the first WiFi.mode()
     // change, until then any tcpip_api_call() waits forever. Station is not connected here,
     // WiFi module sets the mode it needs later on

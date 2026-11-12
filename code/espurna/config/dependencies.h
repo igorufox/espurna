@@ -137,20 +137,7 @@
 #define PWM_SUPPORT                 1           // Need PWM to update channel values
 #endif
 
-//------------------------------------------------------------------------------
-// Hint about ESPAsyncTCP options and our internal one
-// TODO: clean-up SSL_ENABLED and USE_SSL settings for 1.15.0
 
-#if ASYNC_TCP_SSL_ENABLED && SECURE_CLIENT == SECURE_CLIENT_NONE
-#undef SECURE_CLIENT
-#define SECURE_CLIENT               SECURE_CLIENT_AXTLS
-#endif
-
-#if WEB_SUPPORT && WEB_SSL_ENABLED && (!ASYNC_TCP_SSL_ENABLED)
-#warning "WEB_SUPPORT with SSL requires a globally defined ASYNC_TCP_SSL_ENABLED=1"
-#undef WEB_SSL_ENABLED
-#define WEB_SSL_ENABLED          0               // WEB_SUPPORT mode th SSL requires ASYNC_TCP_SSL_ENABLED
-#endif
 
 #if !DEBUG_SUPPORT
 #undef DEBUG_LOG_BUFFER_SUPPORT
@@ -185,15 +172,6 @@
 #define BUTTON1_CLICK           BUTTON_ACTION_DISPLAY_ON
 #undef BUTTON1_LNGCLICK
 #define BUTTON1_LNGCLICK        BUTTON_ACTION_TOGGLE
-#endif
-
-//------------------------------------------------------------------------------
-// We should always set MQTT_MAX_PACKET_SIZE
-
-#if MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
-#if not defined(MQTT_MAX_PACKET_SIZE)
-#warning "MQTT_MAX_PACKET_SIZE should be set in `build_flags = ...` of the environment! Default value is used instead."
-#endif
 #endif
 
 //------------------------------------------------------------------------------

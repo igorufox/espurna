@@ -10,8 +10,8 @@
 #
 # The package is the format of every chip (module_link.py): its branch list per chunk holds these branches (offset in
 # the chunk | kind << 16, 1 Thumb BL / BLX pair, 2 ARM BL / BLX). The image is padded to 32 bytes (the block of the
-# flash format). The head identity is the first 16 bytes of the head's GNU build id (scripts/module_head.py,
-# custom_head_build_id = yes).
+# flash format). The head identity is the first 16 bytes of the head's GNU build id (scripts/module_head.py), as on
+# every chip.
 #
 # The initial images: espurna-beken-tuya.uf2 (Tuya bootloader: LibreTiny's UF2 inputs of the build, written again
 # here) and espurna-beken-quectel.uf2 (scripts/beken_quectel_image.py: Quectel bootloader), first flash over UART and
@@ -91,21 +91,6 @@ class BekenLinker(module_link.Linker):
         out = self.framework_archives()
         out.update(module_link.Linker.archives_in(build_dir))
         return out
-
-    def head_id(self, ctx):
-        """first 16 bytes of the GNU build id the head has in .rodata (scripts/module_head.py)"""
-        elf = ctx["head_elf"]
-        at = self.symbols(elf)["__build_id_start"]
-        dump = self.run([self.tool("objdump"), "-s", f"--start-address=0x{at:x}", f"--stop-address=0x{at + 36:x}", elf])
-        data = b""
-        for line in dump.splitlines():
-            match = re.match(r"^\s*([0-9a-f]{4,8})\s+((?:[0-9a-f]{2,8}\s){1,4})", line)
-            if match and int(match.group(1), 16) >= at:
-                data += bytes.fromhex("".join(match.group(2).split()))
-        namesz, descsz, kind = struct.unpack_from("<III", data, 0)
-        if namesz != 4 or kind != 3 or data[12:16] != b"GNU\0":
-            raise RuntimeError("no GNU build id in the head (custom_head_build_id = yes, scripts/module_head.py)")
-        return data[16:32]
 
     def branch_sites(self, elf, base):
         """(offset in the image, relocation type) of every relocation record of the code left by -q"""

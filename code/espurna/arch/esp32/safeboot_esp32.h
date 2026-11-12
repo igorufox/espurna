@@ -21,5 +21,12 @@ void safebootSetup();
 // The URL (and the SHA-256, may be empty) for safeboot, the next boot goes there (ota_fetch.cpp). The caller restarts
 bool safebootUpdateFromUrl(const String& url, const String& sha256, String& error);
 
+// What safeboot did with the last URL ("downloaded ...", "failed: ..."): NVS "safeboot"/"result", which safeboot
+// writes. The one result of an update by an URL on the ESP32 (/ota/status, /safeboot/status, `ota`)
+String safebootResult();
+
+// the URL safeboot was given last (NVS "safeboot"/"url"), "" when none
+String safebootUrl();
+
 // The /safeboot page (flash layout migration, update from an URL) and the /upgrade guard, after webSetup()
 void safebootWebSetup();

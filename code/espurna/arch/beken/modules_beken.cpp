@@ -40,8 +40,6 @@ extern "C" {
 extern uint8_t _tcmbss_end[];
 extern uint8_t _espurna_tcm_end[];
 
-// GNU build id of the head link (scripts/beken_modules_head.py): note header (16 bytes), then the id
-extern const uint8_t __build_id_start[];
 }
 
 namespace espurna {
@@ -331,10 +329,6 @@ bool findArea() {
 }
 
 void commandsSetup();
-
-const uint8_t* buildId() {
-    return __build_id_start + 16;
-}
 
 // --- the image written: a whole chunk at a time (relocated by the core), the branches moved, encrypted ------------
 
@@ -734,12 +728,6 @@ void imageDone(uint32_t, uint32_t) {
 // 34 byte blocks across the sectors: no rewrite in place
 bool rewritable() {
     return false;
-}
-
-// the first 16 bytes of the head's GNU build id (the module header's head_md5 field)
-bool headId(uint8_t out[16]) {
-    std::memcpy(out, buildId(), 16);
-    return true;
 }
 
 // the free data TCM is the fixed pool, the rest in the heap block

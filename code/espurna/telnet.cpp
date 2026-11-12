@@ -11,15 +11,10 @@ we don't implement IAC, there is no special byte escape happening and no bufferi
 Parts of the code have been borrowed from Thomas Sarlandie's NetServer
 - https://github.com/sarfata/kbox-firmware/tree/master/src/esp
 
-Buffered client class based on ESPAsyncTCPbuffer, distributed with the ESPAsyncTCP
-- https://github.com/me-no-dev/ESPAsyncTCP/blob/master/src/ESPAsyncTCPbuffer.cpp
-
 Updated to use WiFiServer and support reverse connections by Niek van der Maas <mail at niekvandermaas dot nl>
 - https://github.com/xoseperez/espurna/pull/1920
 
-One transport for every chip, AsyncClient / AsyncServer of the chip's async TCP library.
-Where network callbacks run differs (ref. ParallelTasks in espurna_tasks.h), the transport
-follows the loop lock rules and works the same in both models, see the Client class below.
+One transport for every chip: the TCP connection and listener of libs/tcp.h (lwIP raw API), everything in loop().
 Settings, password prompt, line parsing, terminal commands and the WebUI part are in the Session.
 
 */
@@ -28,11 +23,7 @@ Settings, password prompt, line parsing, terminal commands and the WebUI part ar
 
 #if TELNET_SUPPORT
 
-// the async TCP library of the chip, same AsyncClient / AsyncServer API
-#include "espurna_asynctcp.h"
-#if !defined(ESP8266)
-#include <lwip/opt.h>
-#endif
+#include "libs/tcp.h"
 
 #if WEB_SUPPORT
 #include "ws.h"
@@ -293,274 +284,61 @@ protected:
 #endif
 };
 
-// One transport for every chip, on top of the AsyncClient / AsyncServer API
-// (ESPAsyncTCP on esp8266, AsyncTCP on ESP32 and LibreTiny)
-//
-// Network callbacks either never overlap with loop() (esp8266) or run in the async_tcp task in parallel
-// with it (ESP32, LibreTiny), ref. ParallelTasks in espurna_tasks.h. The rules below are written for the
-// second model, on esp8266 every guard is always locked and nothing is ever deferred.
-// - clients list and Client state are only touched with the loop lock held, i.e. from loop()
-//   or from a callback that got the lock in time. Otherwise the event (with a copy of its data)
-//   is handed over to loop(), and every following one is too until those are handled, so
-//   everything is still processed in order (ref. Deferred in espurna_tasks.h)
-// - AsyncClient is only ever closed from the network side (poll / ack timeout callbacks),
-//   the library may be inside one of its handlers for the same client when loop() would close it.
-//   loop() only requests it, see Client::request_close()
-// - AsyncClient is deleted after its discard (onDisconnect) callback, loop() erases the Client
-//   once the handle is gone. Nothing is called for the AsyncClient after discard, so `Client*`
-//   given to the library as the callback arg outlives all of the callbacks and deferred events
-// - loop() sleeping inside of a blocking delay lets the network side run (esp8266 SYS tasks,
-//   ESP32 / LibreTiny loop lock is released). Client object stays valid, its handle may go away
-::espurna::system::Deferred deferred;
+// One transport for every chip: the TCP connection and listener of libs/tcp.h (lwIP raw API, the same code on
+// ESP8266, ESP32 and Beken). lwIP's callbacks only fill the connection's receive ring; accepting, reading, writing
+// and closing all happen in loop(), so nothing here is ever touched from another task.
 
-// Generic TCP interface assumes we only have the network buffer available to us.
-// Since we can't chain-in additional backing storage through the provided API,
-// force every write to either go through the usual means or cache it using extra N
-// u8 arrays that are created when writing data and then destroyed when it is sent
-struct ClientWriter {
-    size_t write(AsyncClient* handle, const uint8_t* data, size_t size) {
-        if (!size || !handle->connected()) {
-            return 0;
-        }
-
-        // first, trying to write directly into the network stack buffers
-        size_t written = 0;
-        if (_list.empty()) {
-            const size_t available = handle->space();
-            written = std::min(available, size);
-
-            if (written) {
-                const auto added = handle->add(
-                    reinterpret_cast<const char*>(data), written, ASYNC_WRITE_FLAG_COPY);
-                if (added != written) {
-                    return 0;
-                }
-            }
-
-            if (written == size) {
-                return size;
-            }
-        }
-
-        // second, cache the data on the app level
-        size_t left { size - written };
-        const auto* ptr = data + written;
-
-        while (left) {
-            if (_list.empty() && !make_buffer()) {
-                break;
-            }
-
-            auto& current = _list.back();
-            const auto have = current.capacity() - current.size();
-            if (have < left) {
-                current.insert(current.end(), ptr, ptr + have);
-                if (!make_buffer()) {
-                    break;
-                }
-
-                ptr += have;
-                written += have;
-                left -= have;
-            } else {
-                current.insert(current.end(), ptr, ptr + left);
-                written = size;
-                break;
-            }
-        }
-
-        // to avoid dumping sources like printf("%02X ") in a loop immediately,
-        // stall the output until there's a large chunk of data available
-        // plus, lwip loop & poll will dump things periodically
-        if (!_list.empty()) {
-            handle->send();
-        }
-
-        return written;
-    }
-
-    size_t write(AsyncClient* handle, StringView data) {
-        return write(handle, reinterpret_cast<const uint8_t*>(data.c_str()), data.length());
-    }
-
-    void flush(AsyncClient* handle) {
-        if (!handle->connected()) {
-            return;
-        }
-
-        bool wrote { false };
-        while (!_list.empty()) {
-            auto& chunk = _list.front();
-
-            const size_t available = handle->space();
-            if (available < chunk.size()) {
-                break;
-            }
-
-            const auto added = handle->add(
-                reinterpret_cast<const char*>(chunk.data()), chunk.size(), ASYNC_WRITE_FLAG_COPY);
-            if (added != chunk.size()) {
-                break;
-            }
-
-            wrote = true;
-            _list.pop_front();
-        }
-
-        if (wrote) {
-            handle->send();
-        }
-    }
-
-    bool empty() const {
-        return _list.empty();
-    }
-
-    bool writable(AsyncClient* handle) const {
-        return _list.empty() && (handle->space() > 0);
-    }
-
-    void reset() {
-        _list.clear();
-    }
-
-private:
-    using Buffer = std::vector<uint8_t>;
-    using List = std::list<Buffer>;
-
-    constexpr static size_t BufferSize = TCP_MSS;
-    constexpr static size_t BuffersMax =
-        (BufferSize >= 1024)
-            ? 2  // e.g. MSS is 1460 bytes, additional 2920 bytes
-            : 5; // e.g. MSS is 536 bytes, additional 2680 bytes
-
-    bool make_buffer() {
-        if (_list.size() < BuffersMax) {
-            Buffer buffer;
-            buffer.reserve(BufferSize);
-            _list.push_back(std::move(buffer));
-            return true;
-        }
-
-        return false;
-    }
-
-    List _list;
-};
-
-// Terminal output works through Arduino `Print` interface, and everything there uses basic `write`.
-// Really really flush both network and internal buffer(s), or we stall our `loop` with the arbitrary
-// timeout option it selects for us. (ref. Core files for more)
-// Plus, we don't force either `Print` or `Stream` class inheritance for the `T`.
-template <typename T>
-struct ExhaustingPrint : public Print {
-    ExhaustingPrint() = delete;
-    explicit ExhaustingPrint(T* client) :
-        _client(client)
-    {}
-
-    size_t write(const uint8_t* ptr, size_t length) override {
-        flush();
-        return _client->write(ptr, length);
-    }
-
-    size_t write(uint8_t c) override {
-        return write(&c, 1);
-    }
-
-    // while in the main loop, attempt to flush everything gathered so far as soon as possible
-    // currently, neither client state or flush result are checked by the caller
-    // (gives up after 3s of not being able to send)
-    void flush() override {
-        auto flag = PolledFlag<time::CoreClock>();
-
-        while (!flag.wait(duration::Seconds(3))
-            && _client->connected()
-            && !_client->writable())
-        {
-            _client->flush();
-            time::blockingDelay(
-                duration::Milliseconds(10));
-        }
-    }
-
-private:
-    T* _client;
-};
+// Output waiting for the connection's send buffer (the terminal prints faster than TCP takes it)
+constexpr size_t OutputMax { 4096 };
 
 struct Address {
     IPAddress ip;
-    uint16_t port;
 };
 
 [[gnu::unused]]
 String address_string(Address address) {
-    return ipToString(address.ip) + ':' + String(address.port, 10);
+    return ipToString(address.ip);
 }
 
 class Client : public Session {
 public:
-    // Only installs the callbacks, start() / connect() or request_close() decide what happens next
-    Client(AsyncClient* handle, Address remote) :
-        _handle(handle),
-        _remote(remote)
-    {
-        _handle->onConnect(on_connect_async, this);
-        _handle->onData(on_data_async, this);
-        _handle->onAck(on_ack_async, this);
-        _handle->onError(on_error_async, this);
-        _handle->onDisconnect(on_disconnect_async, this);
-        _handle->onPoll(on_poll_async, this);
-        _handle->onTimeout(
-            [](void* arg, AsyncClient* ptr, uint32_t) {
-                on_poll_async(arg, ptr);
-            }, this);
-    }
-
-    // Accepted by the server, remote is already known
-    explicit Client(AsyncClient* handle) :
-        Client(handle, Address{
-            .ip = handle->remoteIP(),
-            .port = handle->remotePort(),
+    // accepted by the listener
+    explicit Client(std::unique_ptr<tcp::Connection> connection) :
+        _conn(std::move(connection)),
+        _remote(Address{
+            .ip = IPAddress(_conn ? _conn->remoteIp() : 0),
         })
+    {}
+
+    // an outgoing connection (TELNET.REVERSE, MQTT): connect() resolves the name itself
+    Client(String host, uint16_t port) :
+        _conn(new (std::nothrow) tcp::Connection()),
+        _host(std::move(host)),
+        _port(port)
     {}
 
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
 
-    Client(Client&&) = delete;
-    Client& operator=(Client&&) = delete;
-
-    // Loop lock held. Accepted connection
-    void start(bool auth) {
-        _request_auth = auth;
-        if (connected()) {
-            _state = _request_auth
-                ? State::Authenticating
-                : State::Active;
-            DEBUG_MSG_P(PSTR("[TELNET] Connected %s\n"),
-                address_string(_remote).c_str());
-            maybe_ask_auth();
-        }
-    }
-
-    // Loop lock held. Outgoing connection, see on_connected()
-    // Handle is gone when this fails, loop() erases the Client
     bool connect() {
         _state = State::Connecting;
-        if (_handle->connect(_remote.ip, _remote.port)) {
+        if (_conn && _conn->connect(_host.c_str(), _port)) {
             return true;
         }
 
+        DEBUG_MSG_P(PSTR("[TELNET] Cannot connect to %s:%hu\n"), _host.c_str(), _port);
         _state = State::Idle;
-        release(_handle);
-        _handle = nullptr;
-
+        _conn.reset();
         return false;
     }
 
-    AsyncClient* handle() const {
-        return _handle;
+    void start(bool auth) {
+        _request_auth = auth;
+        activate();
+    }
+
+    tcp::Connection* connection() const {
+        return _conn.get();
     }
 
     Address remote() const {
@@ -568,10 +346,9 @@ public:
     }
 
     bool connected() const {
-        return _handle && !_close_requested && _handle->connected();
+        return _conn && _conn->connected() && !_conn->closed() && !_close_requested;
     }
 
-    // Actual close() happens on the network side, see on_poll_async()
     void request_close() {
         _close_requested = true;
     }
@@ -580,77 +357,164 @@ public:
         return _close_requested;
     }
 
-    // Handle was disconnected and deleted
+    // nothing more will happen on this connection
     bool closed() const {
-        return _handle == nullptr;
+        return !_conn;
     }
 
     size_t write(const uint8_t* data, size_t size) {
-        if (connected() && (_state == State::Active)) {
-            return _writer.write(_handle, data, size);
+        if (!connected() || (_state != State::Active)) {
+            return 0;
         }
 
-        return 0;
+        return append(data, size);
     }
 
     void flush() {
-        if (connected()) {
-            _writer.flush(_handle);
+        if (!_conn || _output.empty()) {
+            return;
+        }
+
+        const auto sent = _conn->write(_output.data(), _output.size());
+        if (sent) {
+            _output.erase(_output.begin(), _output.begin() + sent);
         }
     }
 
-    // our network & internal buffers are free
-    bool writable() const {
-        return connected() && _writer.writable(_handle);
+    // our buffer is empty and the connection takes more
+    bool writable() {
+        return connected() && _output.empty() && (_conn->writable() > 0);
     }
 
-    // Loop lock held. Something was not sent out or acknowledged yet
+    // something was not handed to TCP yet
     bool pending_output() {
-        if (!connected()) {
-            return false;
+        flush();
+        return connected() && !_output.empty();
+    }
+
+    void loop() {
+        if (!_conn) {
+            return;
+        }
+
+        if (_state == State::Connecting) {
+            if (_conn->connected()) {
+                _remote.ip = IPAddress(_conn->remoteIp());
+                activate();
+            } else if (_conn->closed()) {
+                DEBUG_MSG_P(PSTR("[TELNET] Cannot connect to %s:%hu\n"), _host.c_str(), _port);
+                drop();
+                return;
+            }
+            return;
+        }
+
+        uint8_t buffer[128];
+        for (;;) {
+            const auto got = _conn->read(buffer, sizeof(buffer));
+            if (!got) {
+                break;
+            }
+
+            on_data(buffer, got);
         }
 
         flush();
-        if (!_writer.empty()) {
-            return true;
+        if (!_close_requested) {
+            process();
         }
 
-        // space only goes back to its initial size once all of the sent data is acked
-        if (_handle->space() < TCP_SND_BUF) {
-            if (_handle->canSend()) {
-                _handle->send();
-            }
-
-            return true;
+        // after the last of the output went out (the password error, the overflow message)
+        if (_close_requested && _output.empty()) {
+            drop();
+            return;
         }
 
-        return false;
-    }
-
-    void maybe_ask_auth() {
-        if (_request_auth) {
-            write_message(message::PasswordRequest);
+        if (_conn->closed() && !_conn->available()) {
+            drop();
         }
     }
 
     void process() {
 #if TERMINAL_SUPPORT
-        ExhaustingPrint<Client> print(this);
+        ExhaustingPrint print(this);
         Session::process(print);
 #endif
     }
 
 private:
-    // can't use an arbitrary pointer with the network buffer, since this may
-    // be a flash string and without `memcpy_P` we can't read it.
-    // messages are rare (prompt, password result, errors), sent right away
-    void write_message(StringView message) {
-        if (connected()) {
-            const auto blob = String(message);
-            _writer.write(_handle, blob);
-            if (_handle->connected()) {
-                _handle->send();
+    // Terminal output works through Arduino `Print`: wait (up to 3 s) for the connection to take what was printed
+    // before taking more, the loop sleeps in between and lwIP sends meanwhile
+    struct ExhaustingPrint : public Print {
+        explicit ExhaustingPrint(Client* client) :
+            _client(client)
+        {}
+
+        size_t write(const uint8_t* ptr, size_t length) override {
+            flush();
+            return _client->write(ptr, length);
+        }
+
+        size_t write(uint8_t c) override {
+            return write(&c, 1);
+        }
+
+        void flush() override {
+            auto flag = PolledFlag<time::CoreClock>();
+            while (!flag.wait(duration::Seconds(3))
+                && _client->connected()
+                && !_client->writable())
+            {
+                _client->flush();
+                time::blockingDelay(duration::Milliseconds(10));
             }
+        }
+
+    private:
+        Client* _client;
+    };
+
+    void activate() {
+        if (!connected()) {
+            return;
+        }
+
+        _state = _request_auth
+            ? State::Authenticating
+            : State::Active;
+        DEBUG_MSG_P(PSTR("[TELNET] Connected %s\n"), address_string(_remote).c_str());
+        if (_request_auth) {
+            write_message(message::PasswordRequest);
+        }
+    }
+
+    void drop() {
+        if (_state != State::Idle) {
+            DEBUG_MSG_P(PSTR("[TELNET] Disconnected %s\n"), address_string(_remote).c_str());
+        }
+
+        _state = State::Idle;
+        _output.clear();
+        reset_session();
+        _conn.reset();
+    }
+
+    size_t append(const uint8_t* data, size_t size) {
+        const auto room = (_output.size() < OutputMax) ? (OutputMax - _output.size()) : 0;
+        const auto take = std::min(room, size);
+        if (take) {
+            _output.insert(_output.end(), data, data + take);
+            flush();
+        }
+
+        return take;
+    }
+
+    // a flash string is copied out first (String), messages are rare: the prompt, the password result, errors
+    void write_message(StringView message) {
+        if (_conn) {
+            const auto blob = String(message);
+            append(reinterpret_cast<const uint8_t*>(blob.c_str()), blob.length());
         }
     }
 
@@ -668,9 +532,6 @@ private:
         return true;
     }
 
-    // Closing right here would delete AsyncClient while the library is still inside its
-    // recv handler, it is closed later from the poll callback (see request_close())
-    // Loop lock held, called either from the network side or from loop()
     void on_data(const uint8_t* data, size_t len) {
         if (_close_requested) {
             return;
@@ -682,7 +543,7 @@ private:
             return;
         }
 
-        // We always attempt to parse the network buffer directly first,
+        // We always attempt to parse the received data directly first,
         // socat, netcat, etc. usually send a single packet per line.
         // Otherwise (and char-by-char from an actual telnet client), buffer it
         const auto* begin = reinterpret_cast<const char*>(data);
@@ -724,144 +585,19 @@ private:
         }
     }
 
-    // Loop lock held
-    void on_connected() {
-        if (_close_requested) {
-            return;
-        }
+    std::unique_ptr<tcp::Connection> _conn;
+    Address _remote {};
+    String _host;
+    uint16_t _port { 0 };
 
-        _state = _request_auth
-            ? State::Authenticating
-            : State::Active;
-        DEBUG_MSG_P(PSTR("[TELNET] Connected %s\n"),
-            address_string(_remote).c_str());
-        maybe_ask_auth();
-    }
-
-    // Loop lock held. AsyncClient is disconnected, nothing else is called for it after this
-    void on_disconnect(AsyncClient* ptr) {
-        if (_handle == ptr) {
-            _handle = nullptr;
-        }
-
-        release(ptr);
-
-        _state = State::Idle;
-        _writer.reset();
-        reset_session();
-
-        DEBUG_MSG_P(PSTR("[TELNET] Disconnected %s\n"),
-            address_string(_remote).c_str());
-    }
-
-    // ~AsyncClient() would call discard once again if it still had a pcb
-    static void release(AsyncClient* ptr) {
-        ptr->onConnect(nullptr, nullptr);
-        ptr->onData(nullptr, nullptr);
-        ptr->onAck(nullptr, nullptr);
-        ptr->onError(nullptr, nullptr);
-        ptr->onDisconnect(nullptr, nullptr);
-        ptr->onPoll(nullptr, nullptr);
-        ptr->onTimeout(nullptr, nullptr);
-        delete ptr;
-    }
-
-    static void on_connect_async(void* arg, AsyncClient*) {
-        auto* client = static_cast<Client*>(arg);
-
-        ::espurna::system::AsyncGuard guard;
-        if (deferred.defer(guard)) {
-            deferred.run([client]() {
-                client->on_connected();
-            });
-            return;
-        }
-
-        client->on_connected();
-    }
-
-    static void on_data_async(void* arg, AsyncClient*, void* data, size_t len) {
-        auto* client = static_cast<Client*>(arg);
-
-        ::espurna::system::AsyncGuard guard;
-        if (deferred.defer(guard)) {
-            // data is only valid during this call
-            const auto* ptr = static_cast<const uint8_t*>(data);
-            std::vector<uint8_t> copy(ptr, ptr + len);
-            deferred.run([client, copy]() {
-                client->on_data(copy.data(), copy.size());
-            });
-            return;
-        }
-
-        client->on_data(static_cast<const uint8_t*>(data), len);
-    }
-
-    // Without parallel tasks, push the cached output as soon as the network buffer frees up.
-    // Otherwise loop() does that on every iteration, waiting for the lock here is not worth it
-    static void on_ack_async(void* arg, AsyncClient*, size_t, uint32_t) {
-        if (!::espurna::system::ParallelTasks) {
-            static_cast<Client*>(arg)->flush();
-        }
-    }
-
-    // Only reads the address, which never changes. Discard callback follows
-    static void on_error_async(void* arg, AsyncClient*, err_t err) {
-        auto* client = static_cast<Client*>(arg);
-        DEBUG_MSG_P(PSTR("[TELNET] %s ERROR %d\n"),
-            address_string(client->_remote).c_str(), int(err));
-    }
-
-    // Loop may still write into the AsyncClient, delete it only with the lock held
-    static void on_disconnect_async(void* arg, AsyncClient* ptr) {
-        auto* client = static_cast<Client*>(arg);
-
-        ::espurna::system::AsyncGuard guard;
-        if (deferred.defer(guard)) {
-            deferred.run([client, ptr]() {
-                client->on_disconnect(ptr);
-            });
-            return;
-        }
-
-        client->on_disconnect(ptr);
-    }
-
-    // Periodic (and ack timeout) callback, the only place AsyncClient gets closed from.
-    // Discard callback is called right from close(), neither `client` nor `ptr` may be
-    // touched after it. Without the lock, retry on the next poll.
-    static void on_poll_async(void* arg, AsyncClient* ptr) {
-        auto* client = static_cast<Client*>(arg);
-        if (!client->close_requested()) {
-            // same as on_ack_async()
-            if (!::espurna::system::ParallelTasks) {
-                client->flush();
-            }
-            return;
-        }
-
-        ::espurna::system::AsyncGuard guard;
-        if (!guard.locked()) {
-            return;
-        }
-
-        if (client->_handle == ptr) {
-            ptr->close(true);
-        }
-    }
-
-    AsyncClient* _handle;
-    Address _remote;
-
-    ::espurna::system::Shared<bool> _close_requested { false };
-
-    ClientWriter _writer;
+    bool _close_requested { false };
+    std::vector<uint8_t> _output;
 };
 
 std::list<std::unique_ptr<Client>> clients;
-AsyncServer* server { nullptr };
+tcp::Listener server;
 
-// Loop lock held. Closing ones are not counted
+// closing ones are not counted
 size_t active() {
     size_t out = 0;
     for (const auto& client : clients) {
@@ -873,51 +609,31 @@ size_t active() {
     return out;
 }
 
-// Loop lock held. Connections through STA are only allowed when telnetSTA is set
-bool accepted(const Client& client) {
-    auto* handle = client.handle();
-    if (!handle || !client.connected()) {
+// Connections through STA are only allowed when telnetSTA is set
+bool accepted(Client& client) {
+    auto* conn = client.connection();
+    if (!conn || !client.connected()) {
         return false;
     }
 
-    if (!settings::station() && wifiConnected() && (handle->localIP() == wifiStaIp())) {
+    if (!settings::station() && wifiConnected() && (IPAddress(conn->localIp()) == wifiStaIp())) {
         return false;
     }
 
     return active() < build::ClientsMax;
 }
 
-// Loop lock held. Rejected client stays in the list until it is closed
 void attach(std::unique_ptr<Client> client) {
     if (accepted(*client)) {
         client->start(settings::authentication());
     } else {
-        DEBUG_MSG_P(PSTR("[TELNET] Rejecting %s\n"),
-            address_string(client->remote()).c_str());
+        DEBUG_MSG_P(PSTR("[TELNET] Rejecting %s\n"), address_string(client->remote()).c_str());
         client->request_close();
     }
 
     clients.push_back(std::move(client));
 }
 
-// AsyncServer allocates accepted clients and never frees them, Client callbacks do.
-// Client only installs its callbacks here, events arriving before attach() are deferred as well
-void add(AsyncClient* handle) {
-    auto client = std::make_unique<Client>(handle);
-
-    ::espurna::system::AsyncGuard guard;
-    if (deferred.defer(guard)) {
-        auto* ptr = client.release();
-        deferred.run([ptr]() {
-            attach(std::unique_ptr<Client>(ptr));
-        });
-        return;
-    }
-
-    attach(std::move(client));
-}
-
-// Closing clients are counted as well, until the library is done with them
 bool connected() {
     return !clients.empty();
 }
@@ -932,17 +648,22 @@ bool write(const char* data, size_t len) {
 }
 
 void loop() {
+    for (;;) {
+        auto conn = server.accept();
+        if (!conn) {
+            break;
+        }
+
+        auto client = std::make_unique<Client>(std::move(conn));
+        attach(std::move(client));
+    }
+
     auto it = clients.begin();
     while (it != clients.end()) {
+        (*it)->loop();
         if ((*it)->closed()) {
             it = clients.erase(it);
             continue;
-        }
-
-        // closing ones are left to the network side, see Client::on_poll_async()
-        if (!(*it)->close_requested()) {
-            (*it)->flush();
-            (*it)->process();
         }
 
         ++it;
@@ -950,15 +671,13 @@ void loop() {
 }
 
 bool listen() {
-    if (server) {
-        delete server;
-    }
+    server.end();
 
     const auto port = settings::port();
-
-    server = new AsyncServer(port);
-    server->onClient([](void*, AsyncClient* client) { add(client); }, nullptr);
-    server->begin();
+    if (!server.begin(port, build::ClientsMax)) {
+        DEBUG_MSG_P(PSTR("[TELNET] Cannot listen on port %hu\n"), port);
+        return false;
+    }
 
     DEBUG_MSG_P(PSTR("[TELNET] Listening on port %hu\n"), port);
 
@@ -977,20 +696,19 @@ bool listen() {
 #if TELNET_REVERSE_SUPPORT
 namespace reverse {
 
-// Loop lock held. Outgoing connections share the client limit with the accepted ones
-bool connect(Address address) {
+// Outgoing connections share the client limit with the accepted ones; the connection resolves the name itself
+bool connect(String host, uint16_t port) {
     if (active() >= build::ClientsMax) {
         return false;
     }
 
-    auto* handle = new (std::nothrow) AsyncClient();
-    if (!handle) {
+    auto client = std::make_unique<Client>(std::move(host), port);
+    if (!client->connect()) {
         return false;
     }
 
-    // keep it in the list before connecting, callbacks may arrive right away
-    clients.push_back(std::make_unique<Client>(handle, address));
-    return clients.back()->connect();
+    clients.push_back(std::move(client));
+    return true;
 }
 
 #if TERMINAL_SUPPORT
@@ -1005,12 +723,6 @@ void reverse(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    const auto ip = network::dns::gethostbyname(ctx.argv[1]);
-    if (!ip.isSet()) {
-        terminalError(ctx, F("Host not found"));
-        return;
-    }
-
     const auto convert_port = espurna::settings::internal::convert<uint16_t>;
     auto port = convert_port(ctx.argv[2]);
     if (!port) {
@@ -1018,12 +730,7 @@ void reverse(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    const auto address = Address{
-        .ip = ip,
-        .port = port,
-    };
-
-    if (connect(address)) {
+    if (connect(ctx.argv[1], port)) {
         terminalOK(ctx);
         return;
     }
@@ -1047,22 +754,6 @@ void setup() {
 #if MQTT_SUPPORT
 namespace mqtt {
 
-void connect_host(network::dns::HostPtr host, uint16_t port) {
-    if (host->err == ERR_OK) {
-        const auto addr = Address{
-            .ip = host->addr,
-            .port = port,
-        };
-
-        if (connect(addr)) {
-            return;
-        }
-    }
-
-    DEBUG_MSG_P(PSTR("[TELNET] Cannot connect to %s:%hu\n"),
-        host->name.c_str(), port);
-}
-
 void connect_url(String url) {
     URL parsed(std::move(url));
     if (!parsed.host.length() || !parsed.port) {
@@ -1070,20 +761,7 @@ void connect_url(String url) {
         return;
     }
 
-    // DNS callback may come from the network task, clients list belongs to loop()
-    const auto port = parsed.port;
-    network::dns::resolve(
-        std::move(parsed.host),
-        [port](network::dns::HostPtr host) {
-            if (::espurna::system::loopTask()) {
-                connect_host(host, port);
-                return;
-            }
-
-            ::espurna::system::runInLoop([host, port]() {
-                connect_host(host, port);
-            });
-        });
+    connect(std::move(parsed.host), parsed.port);
 }
 
 void setup() {

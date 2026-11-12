@@ -69,9 +69,12 @@ h+='<tr><td><input type=checkbox data-n="'+n+'"'+(T[n]?' checked':'')+(can&&!bus
 '</td><td class=r>'+kb(m?m.size:a.image)+'</td><td class=r>'+(m?m.ram:a.ram)+'</td><td class=st>'+
 (m?(m.enabled!==0?m.state:'off'):'in the file')+'</td></tr>'});
 $('list').innerHTML=h;Array.prototype.forEach.call(document.querySelectorAll('input[data-n]'),function(e){
-e.onchange=function(){T[e.getAttribute('data-n')]=e.checked;draw()}});
+e.onchange=function(){tick(e.getAttribute('data-n'),e.checked,0);draw()}});
 $('ap').disabled=busy||!ch.length;if(ch.length&&!busy)msg(ch.join(', ')+': Apply'+(F&&S.md5&&headId()&&headId()!=S.md5?
 (H?' - the head of the file goes on first':' - the file is for another head build and has no head for this board'):''))}
+function req(n){var a=A[n],m=find(n);if(a&&a.req)return a.req;return m&&m.requires?m.requires.split(','):[]}
+function tick(n,on,d){if(d>4)return;T[n]=on;if(on)req(n).forEach(function(x){if(!T[x])tick(x,true,d+1)});
+else Object.keys(T).forEach(function(o){if(T[o]&&req(o).indexOf(n)>=0)tick(o,false,d+1)})}
 function post(u,d){return fetch(u,{method:'POST',body:d}).then(function(r){return r.text().then(function(t){
 if(!r.ok)throw t||r.status;return t})})}
 function back(c){var t0=Date.now();c=c||200;return new Promise(function(ok,no){function poll(){
@@ -95,7 +98,7 @@ msg('restarting for the new head ('+n+')...');return post(sb?'safeboot/switch':'
 return back(sb?404:200)}).then(function(){if(sb)d=new Blob([H]);else{d=new FormData();d.append('upgrade',new Blob([H]),'espurna-'+n)}
 msg('writing the head ('+n+')...');return post(sb?'upload':'upgrade',d)}).then(function(){msg('restarting with the new head...');
 return back()})}
-function parse(b){var v=new DataView(b),c,i,k,j,nm,ch,o={},z=0,h=null,m=null,n=hn();
+function parse(b){var v=new DataView(b),c,i,k,j,nm,nr,ch,o={},z=0,h=null,m=null,n=hn();
 if(b.byteLength>8&&v.getUint32(0,true)==0x31544f45){c=v.getUint32(4,true);for(i=0;i<c;i++){k=8+32*i;nm='';
 for(j=0;j<16;j++){ch=v.getUint8(k+4+j);if(!ch)break;nm+=String.fromCharCode(ch)}z=v.getUint32(k+20,true);
 if(v.getUint32(k,true)==1&&nm==n)h=b.slice(z,z+v.getUint32(k+24,true));
@@ -103,7 +106,8 @@ if(v.getUint32(k,true)==2)m=b.slice(z,z+v.getUint32(k+24,true))}if(!m)throw 'the
 b=m;v=new DataView(b)}
 if(b.byteLength<8||v.getUint32(0,true)!=0x32434d45)throw 'not an install image (.ota) nor a modules file';
 c=v.getUint32(4,true);for(i=0;i<c;i++){k=8+72*i;nm='';for(j=0;j<16;j++){ch=v.getUint8(k+j);if(!ch)break;
-nm+=String.fromCharCode(ch)}o[nm]={image:v.getUint32(k+24,true),ram:v.getUint32(k+28,true),
+nm+=String.fromCharCode(ch)}nr='';for(j=0;j<32;j++){ch=v.getUint8(k+36+j);if(!ch)break;nr+=String.fromCharCode(ch)}
+o[nm]={image:v.getUint32(k+24,true),ram:v.getUint32(k+28,true),req:nr?nr.split(','):[],
 data:new Uint8Array(b,v.getUint32(k+16,true),v.getUint32(k+20,true))}}
 A=o;F=b;H=h;Object.keys(o).forEach(function(n){if(!(n in T))T[n]=false});msg('modules: '+Object.keys(o).join(', '));draw()}
 $('file').onchange=function(){var f=this.files[0];if(f)f.arrayBuffer().then(parse).catch(function(x){msg(''+x)})};

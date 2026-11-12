@@ -140,33 +140,21 @@ bool imageCrc(uint32_t at, uint32_t size, uint32_t& out) {
 
 // --- the head ------------------------------------------------------------------------------------------------------
 
-bool hexId(const String& hex, uint8_t out[16]) {
-    if (hex.length() != 32) {
-        return false;
-    }
+} // namespace modules
+} // namespace espurna
 
-    for (size_t index = 0; index < 16; ++index) {
-        char pair[3] { hex[index * 2], hex[index * 2 + 1], '\0' };
-        out[index] = static_cast<uint8_t>(strtoul(pair, nullptr, 16));
-    }
+// The identity of the head, every chip alike: the GNU build id of its link, kept in its flash by the linker
+// (scripts/module_head.py): the note header (16 bytes), then the id. Modules carry its first 16 bytes (head_md5 of
+// the header, the name stayed). Nothing is hashed at run time (the MD5 of the image used to be read from the flash)
+extern "C" const uint8_t __build_id_start[];
 
-    return true;
-}
-
+namespace espurna {
+namespace modules {
 namespace {
 
 bool headBytes(uint8_t out[16]) {
-    static uint8_t cached[16];
-    static bool done { false };
-    if (!done) {
-        done = arch::headId(cached);
-    }
-
-    if (done) {
-        std::memcpy(out, cached, 16);
-    }
-
-    return done;
+    memcpy_P(out, __build_id_start + 16, 16);
+    return true;
 }
 
 String headText() {
@@ -2751,6 +2739,10 @@ void modulesSetup() {
             DEBUG_MSG_P(PSTR("[MODULES] %s not started: needs a module that is not running\n"), entry.name);
         }
     }
+}
+
+String modulesHeadId() {
+    return espurna::modules::headText();
 }
 
 bool modulesRunning() {

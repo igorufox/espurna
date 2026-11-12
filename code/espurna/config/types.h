@@ -187,10 +187,6 @@
 #define MQTT_DISCONNECT_EVENT       1
 #define MQTT_MESSAGE_EVENT          2
 
-// MQTT_LIBRARY
-#define MQTT_LIBRARY_ASYNCMQTTCLIENT        0
-#define MQTT_LIBRARY_ARDUINOMQTT            1
-#define MQTT_LIBRARY_PUBSUBCLIENT           2
 
 
 //------------------------------------------------------------------------------
@@ -418,9 +414,6 @@
 // Secure Client
 //------------------------------------------------------------------------------
 
-#define SECURE_CLIENT_NONE                0
-#define SECURE_CLIENT_AXTLS               1
-#define SECURE_CLIENT_BEARSSL             2
 
 #define SECURE_CLIENT_CHECK_NONE          0 // !!! INSECURE CONNECTION !!!
 #define SECURE_CLIENT_CHECK_FINGERPRINT   1 // legacy fingerprint validation

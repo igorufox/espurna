@@ -57,9 +57,6 @@ uint32_t EspCompat::getSketchSize() {
     return static_cast<EspClass&>(*this).getSketchSize();
 }
 
-String EspCompat::getSketchMD5() {
-    return static_cast<EspClass&>(*this).getSketchMD5();
-}
 
 uint32_t EspCompat::getMaxAllocHeap() {
     return static_cast<EspClass&>(*this).getMaxAllocHeap();

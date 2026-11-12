@@ -72,6 +72,27 @@
                     </span>
                 </div>
 
+                <div class="pure-control-group module module-mqttssl">
+                    <label>Server check</label>
+                    <select name="mqttScCheck">
+                        <option value="0">None (insecure)</option>
+                        <option value="1">Fingerprint</option>
+                        <option value="2">CA certificate</option>
+                    </select>
+                    <span class="pure-form-message-inline">
+                        CA certificate needs the <strong>tls</strong> module and the time (NTP).
+                    </span>
+                </div>
+
+                <div class="pure-control-group module module-mqttssl">
+                    <label>CA certificate</label>
+                    <input name="mqttCA" type="text" maxlength="4096" placeholder="built-in: ISRG Root X1 (Let's Encrypt)">
+                    <span class="pure-form-message-inline">
+                        PEM of the CA that signed the broker certificate (-----BEGIN CERTIFICATE----- ... -----END CERTIFICATE-----).
+                        Empty: the built-in root of Let's Encrypt.
+                    </span>
+                </div>
+
             </fieldset>
 
             <fieldset>

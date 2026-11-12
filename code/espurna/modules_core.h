@@ -141,8 +141,7 @@ bool imageCrc(uint32_t at, uint32_t size, uint32_t& out);
 bool readHeader(const Entry& entry, Header& out);
 const char* checkImage(const Entry& entry, Header& out);
 
-// the 16 bytes of an MD5 in hex (ESP.getSketchMD5()); the head that runs; is it this one
-bool hexId(const String& hex, uint8_t out[16]);
+// the head that runs (its build id, modules.cpp): is it this one
 bool sameHead(const uint8_t id[16]);
 
 // the space of one kind (flash between the head and the directory, a pool) with the modules' pieces in it
@@ -276,9 +275,6 @@ void imageDone(uint32_t slot, uint32_t size);
 // the image can be rewritten in its slot at boot when its bases moved. Beken: no (its 34 byte blocks cross the
 // sectors, a rewrite needs the whole image in RAM): the module stays off, Apply again. Default: yes
 bool rewritable();
-
-// the head image the modules are linked against: the MD5 of its image (ESP8266, ESP32), its GNU build id (Beken)
-bool headId(uint8_t out[16]);
 
 // the statics (.data + .bss) and IRAM code of the modules, placed at each Apply, no reserve kept: first the chip's pool
 // at a fixed address (Beken: the free data TCM; ESP8266: the IRAM after the head's code, module code first, 32-bit

@@ -2,8 +2,9 @@
 
 EXECUTION MODEL
 
-Common code is written for the esp8266 cooperative model, where network callbacks (lwIP, AsyncTCP,
-SDK events, SNTP, Matter) never overlap with loop(). Chips running those in tasks of their own provide the
+Common code is written for the esp8266 cooperative model, where network callbacks (lwIP, SDK events, SNTP,
+Matter) never overlap with loop(). ESPurna's own network code (libs/tcp.h and everything on it) runs in loop() on
+every chip, lwIP's callbacks only fill its buffers. Chips running those in tasks of their own provide the
 synchronization through the same few names, and on esp8266 every one of them is a direct call or nothing:
 
 - ParallelTasks          true when network callbacks run in parallel with loop()
@@ -14,14 +15,6 @@ synchronization through the same few names, and on esp8266 every one of them is 
                          buffer filled from SYS). T is copied byte-wise, the full queue drops and counts
 - runInLoop()            any callable for loop(), in order, at most RunInLoopMax of them and RunInLoopBytesMax of their
                          copied data (drops and counts the rest)
-- Deferred               ordered hand-over of network events to loop(), when the loop lock could not
-                         be taken in time (ref. AsyncGuard in system.h). Once anything was deferred,
-                         every following event is deferred too until loop() catches up, so a later
-                         event handled right away never overtakes an earlier deferred one:
-                             AsyncGuard guard;
-                             if (deferred.defer(guard)) { deferred.run(callback); return; }
-                         Handlers that only learn the guard state from their caller use
-                         `auto scope = deferred.scope(guard);` around the call and `defer()` inside.
 - registerPendingOutput  restart() waits for the output some module did not send out yet
 - TaskQueue<T, Max>      items from other tasks for loop(), at most Max bytes of them
 
@@ -47,8 +40,8 @@ arch/rtos/system_rtos.cpp
 namespace espurna {
 namespace system {
 
-// Run the callback from loop(), in the order of calls. Safe to call from any task, e.g. from network handlers on
-// ESP32 / Beken when the loop lock could not be taken in time (ref. AsyncGuard). `bytes` is the data the callback
+// Run the callback from loop(), in the order of calls. Safe to call from any task (Wi-Fi events, SNTP, Matter on
+// ESP32 / Beken). `bytes` is the data the callback
 // carries (a copied message): when loop() falls behind, callbacks are dropped instead of running out of heap (the
 // first one queued always goes in). false when dropped, which is counted and reported once per burst
 constexpr size_t RunInLoopMax { 64 };
@@ -199,30 +192,6 @@ private:
     size_t _dropped { 0 };
 };
 
-struct Deferred {
-    struct Scope {
-        ~Scope() {
-        }
-    };
-
-    Scope scope(const AsyncGuard&) {
-        return Scope{};
-    }
-
-    constexpr bool defer() const {
-        return false;
-    }
-
-    constexpr bool defer(const AsyncGuard&) const {
-        return false;
-    }
-
-    template <typename T>
-    void run(T&& callback, size_t bytes = 0) {
-        runInLoop(std::forward<T>(callback), bytes);
-    }
-};
-
 // ESP.restart() only happens once the SDK gets to run again, the output is sent out by then
 using PendingOutput = bool (*)();
 
@@ -249,10 +218,9 @@ struct TaskQueue {
 
 #elif defined(ESP32) || defined(LIBRETINY)
 
-// AsyncTCP, WiFi events, SNTP and Matter run in tasks of their own, in parallel with loop() and
-// on ESP32 possibly on the other core. The loop task holds the loop lock for the whole
-// iteration (ref. LoopGuard), network handlers take it with AsyncGuard, everything they
-// could not handle in time is handed over to loop().
+// WiFi events, SNTP and Matter run in tasks of their own, in parallel with loop() and on ESP32 possibly on the
+// other core; what they have for loop() goes through runInLoop() / EventQueue. The loop task holds the loop lock for
+// the whole iteration (ref. LoopGuard) and lets it go only while sleeping (delay_unlocked()).
 
 #include <Arduino.h>
 
@@ -497,69 +465,6 @@ private:
 
     QueueHandle_t _handle { nullptr };
     Shared<size_t> _dropped { 0 };
-};
-
-// Pending counter is only checked either unlocked, which always defers, or under the loop lock,
-// which loop() also holds while running the deferred callbacks
-class Deferred {
-public:
-    class Scope {
-    public:
-        Scope(Deferred& deferred, bool locked) :
-            _deferred(deferred)
-        {
-            _deferred._unlocked = !locked;
-        }
-
-        ~Scope() {
-            _deferred._unlocked = false;
-        }
-
-        Scope(const Scope&) = delete;
-        Scope& operator=(const Scope&) = delete;
-
-    private:
-        Deferred& _deferred;
-    };
-
-    // Flag is only ever touched by the network task, while inside of its handler
-    Scope scope(const AsyncGuard& guard) {
-        return Scope(*this, guard.locked());
-    }
-
-    bool defer() const {
-        return _unlocked || (_pending.load() > 0);
-    }
-
-    bool defer(const AsyncGuard& guard) const {
-        return !guard.locked() || (_pending.load() > 0);
-    }
-
-    // a callback runInLoop() dropped is gone, later events are not held back by it
-    template <typename T>
-    void run(T&& callback, size_t bytes = 0) {
-        _pending.fetch_add(1);
-        if (!runInLoop(Callback<typename std::decay<T>::type>{
-                this, std::forward<T>(callback) }, bytes))
-        {
-            _pending.fetch_sub(1);
-        }
-    }
-
-private:
-    template <typename T>
-    struct Callback {
-        void operator()() {
-            callback();
-            deferred->_pending.fetch_sub(1);
-        }
-
-        Deferred* deferred;
-        T callback;
-    };
-
-    Shared<size_t> _pending { 0 };
-    bool _unlocked { false };
 };
 
 template <typename T, size_t BytesMax>

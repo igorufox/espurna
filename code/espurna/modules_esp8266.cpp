@@ -198,11 +198,6 @@ bool rawWrite(uint32_t offset, const void* data, size_t size) {
     return ESP.flashWrite(offset, static_cast<const uint32_t*>(data), size);
 }
 
-// MD5 of the running sketch, as the module link took it from the head .bin
-bool headId(uint8_t out[16]) {
-    return hexId(ESP.getSketchMD5(), out);
-}
-
 uint32_t flashView(uint32_t slot) {
     return FlashMapped + slot;
 }

@@ -29,6 +29,10 @@ Copyright (C) 2020-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "utils.h"
 #include "espurna_wifi.h"
 
+#if MODULES_SUPPORT
+#include "modules.h"
+#endif
+
 #include "libs/PrintString.h"
 #include "libs/Delimiter.h"
 
@@ -201,7 +205,10 @@ void info(CommandContext&& ctx) {
     const auto sdk = buildSdk();
     ctx.output.printf_P(PSTR("sdk: %s core: %s\n"),
             sdk.base.c_str(), sdk.version.c_str());
-    ctx.output.printf_P(PSTR("md5: %s\n"), ESP.getSketchMD5().c_str());
+#if MODULES_SUPPORT
+    // the head's identity (its build id), under the name the tools read (scripts/bench_regress.py)
+    ctx.output.printf_P(PSTR("md5: %s\n"), modulesHeadId().c_str());
+#endif
 
     const auto modules = buildModules();
     ctx.output.printf_P(PSTR("support: %.*s\n"),

@@ -3,16 +3,15 @@
 HTTP CLIENT
 
 The one http:// and https:// client of everything ESPurna runs: the head of every chip (ESP8266, ESP32, Beken), the
-ESP32 safeboot (code/safeboot-app, plain ESP-IDF) and code/mini-app. One build of it, no variants, no Arduino:
+ESP32 safeboot (code/safeboot-app, plain ESP-IDF) and code/migration-app. One build of it, no variants, no Arduino:
 - ESPurna: the head (net.cpp, libs/net_impl.h); the modules call the head's
-- code/mini-app, code/safeboot-app: their main.cpp includes the same implementation (libs/http_client_impl.h)
+- code/migration-app, code/safeboot-app: their main.cpp includes the same implementation (libs/http_client_impl.h)
 
-Users: the update by an URL (ota_fetch.cpp: /ota/fetch, the `ota <url>` command, MQTT ota; the safeboot; the mini),
+Users: the update by an URL (ota_fetch.cpp: /ota/fetch, the `ota <url>` command, MQTT ota; the safeboot; the migration image),
 the NSPanel (weather, the URL requests of its screens, the TFT upload), ThingSpeak and InfluxDB (POST).
 
-- the connection is lwIP's raw TCP API, which every one of them has (ESPAsyncTCP / AsyncTCP are a layer over the same
-  calls). The lwIP callbacks only copy what arrived into a ring buffer, the TCP window stays closed until the loop took
-  the bytes (no tcp_recved() before); a segment that does not fit is refused, lwIP gives it again. Nothing else runs
+- the connection is lwIP's raw TCP API, which every one of them has (libs/tcp.h, under it libs/tls.h). The lwIP
+  callbacks only copy what arrived into a ring buffer, the TCP window stays closed until the loop took the bytes (no tcp_recved() before); a segment that does not fit is refused, lwIP gives it again. Nothing else runs
   there. The pcb is touched only in lwIP's context: directly without an OS (ESP8266 NONOS, NO_SYS), else through
   tcpip_api_call()
 - the loop drives everything else in small steps (`loop()`): TLS, the request, the response head, the body into the
@@ -24,7 +23,8 @@ the NSPanel (weather, the URL requests of its screens, the TFT upload), ThingSpe
   taken from its certificate
 - ESPurna's tls module (module_tls.cpp) adds the rest for any server: ECDHE with RSA and ECDSA certificates,
   ChaCha20-Poly1305, the X.509 decoder of BearSSL for the server key. Installed (Apply + reboot as every module), every
-  connection of the head's client offers its suites. The hooks: tls::extend() and tls::key() below
+  connection of the head's client offers its suites. The TLS itself is libs/tls.h (shared with MQTT), the hooks
+  are espurna::tls::extend() and espurna::tls::key() there
 - what differs per chip is only what the chip forces: the entropy for TLS, and on the ESP8266 the second stack for
   the RSA, EC and record crypto steps (its loop stack is 4 KB, RSA i15 alone takes ~4.5 KB)
 
@@ -35,7 +35,7 @@ body when one is given. The sink gets the head first and decides (a download tak
 
     struct Sink : espurna::http::Sink { ... };
     espurna::http::Client client;
-    client.start(url, sha256 /* or nullptr */, sink, [](const espurna::http::Result& result) { ... });
+    client.start(url, sha256 (or nullptr), sink, [](const espurna::http::Result& result) { ... });
     ... client.loop() from the loop ...
 
 */
@@ -47,17 +47,13 @@ body when one is given. The sink gets the head first and decides (a download tak
 #include <functional>
 #include <memory>
 
-// BearSSL: the ESP8266 core's; elsewhere the library of the same sources
-#if __has_include(<bearssl/bearssl.h>)
-#include <bearssl/bearssl.h>
-#else
-#include <bearssl.h>
-#endif
+// the stream under it: TCP, and TLS for https (BearSSL)
+#include "tls.h"
 
 namespace espurna {
 namespace http {
 
-// --- small things, also of code/mini-app ---------------------------------------------------------------------------
+// --- small things, also of code/migration-app ---------------------------------------------------------------------------
 
 // decimal, after spaces (atoi of newlib links strtol and errno)
 inline long number(const char* text) {
@@ -175,19 +171,6 @@ public:
 private:
     std::unique_ptr<Impl> _impl;
 };
-
-// --- the TLS extension (ESPurna's tls module) ----------------------------------------------------------------------
-
-namespace tls {
-
-// after the base setup of every https connection: the extension's suites and algorithms. false - none installed
-bool extend(br_ssl_client_context* sc);
-
-// the server key from its certificate (DER) by the X.509 decoder: `out` points into the returned block (free() it
-// after the connection). nullptr - none installed or not decoded
-void* key(const uint8_t* der, size_t len, br_x509_pkey* out);
-
-} // namespace tls
 
 } // namespace http
 } // namespace espurna

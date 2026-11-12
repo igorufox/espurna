@@ -248,7 +248,7 @@ void sdk::enable_loop_wdt() {
 namespace chip {
 
 void pre_setup() {
-    // AsyncTCP servers are started before WiFi is, make sure the TCP/IP stack is up
+    // The TCP servers (libs/tcp.h: web, telnet) are started before WiFi is, make sure the TCP/IP stack is up
     esp_netif_init();
 
     // Same range as esp8266 ADC (0...1023), analog buttons and sensors expect it

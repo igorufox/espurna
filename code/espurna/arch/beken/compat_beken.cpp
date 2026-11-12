@@ -162,9 +162,6 @@ uint32_t EspCompat::getSketchSize() {
     return reinterpret_cast<uint32_t>(&_data_flash_begin) + data - FlashOrigin;
 }
 
-String EspCompat::getSketchMD5() {
-    return String();
-}
 
 // EspClass::getMaxFreeBlockSize() of LibreTiny is 16bit
 uint32_t EspCompat::getMaxAllocHeap() {

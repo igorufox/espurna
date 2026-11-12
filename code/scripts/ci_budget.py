@@ -47,7 +47,7 @@ ARCHS = {
         "ram": r"^(?:\.vectors|\.data|\.bss)\s+([0-9]+).*",
     },
 }
-ARCHS["esp8266-mini"] = ARCHS["esp8266"]
+ARCHS["esp8266-migration"] = ARCHS["esp8266"]
 
 
 def find_tool(prefixes, tool):

@@ -1,6 +1,6 @@
 /*
 
-TCP - the one TCP connection of everything ESPurna builds (the head of every chip, code/safeboot-app, code/mini-app),
+TCP - the one TCP connection of everything ESPurna builds (the head of every chip, code/safeboot-app, code/migration-app),
 under the HTTP client, the HTTP server, telnet. No Arduino: lwIP's raw TCP API, the same on every chip.
 
 - lwIP's callbacks only copy what arrived into a ring buffer and note that the peer closed. The TCP window stays
@@ -64,7 +64,7 @@ private:
 // a TCP server port: connections are accepted in lwIP's context and wait for the loop
 class Listener {
 public:
-    Listener() = default;
+    Listener();
     ~Listener();
 
     Listener(const Listener&) = delete;

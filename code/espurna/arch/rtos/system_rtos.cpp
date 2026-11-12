@@ -489,8 +489,6 @@ namespace system {
 namespace {
 namespace lock_impl {
 
-constexpr auto AsyncTimeout = duration::Milliseconds{ 100 };
-
 Mutex mutex;
 
 } // namespace lock_impl
@@ -498,10 +496,6 @@ Mutex mutex;
 
 void lock() {
     lock_impl::mutex.lock();
-}
-
-bool lock(duration::Milliseconds timeout) {
-    return lock_impl::mutex.try_lock_for(timeout);
 }
 
 void unlock() {
@@ -552,26 +546,6 @@ void delay_unlocked(uint32_t ms) {
     // delay(0): give the other tasks the CPU, as before
     if (!ms) {
         sleep_unlocked(0);
-    }
-}
-
-AsyncGuard::AsyncGuard() :
-    AsyncGuard(lock_impl::AsyncTimeout)
-{}
-
-AsyncGuard::AsyncGuard(duration::Milliseconds timeout) :
-    _locked(lock(timeout))
-{
-    // Safe from any task, debug output coming from outside of the loop task is queued
-    // (ref. debug.cpp deferred::push()) and sent out by loop() later
-    if (!_locked) {
-        DEBUG_MSG_P(PSTR("[MAIN] Loop is busy, network handler could not take the lock\n"));
-    }
-}
-
-AsyncGuard::~AsyncGuard() {
-    if (_locked) {
-        unlock();
     }
 }
 

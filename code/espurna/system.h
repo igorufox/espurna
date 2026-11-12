@@ -43,15 +43,6 @@ struct LoopGuard {
     LoopGuard() {}
 };
 
-struct AsyncGuard {
-    AsyncGuard() {}
-    explicit AsyncGuard(duration::Milliseconds) {}
-
-    bool locked() const {
-        return true;
-    }
-};
-
 } // namespace system
 
 namespace timer {
@@ -148,7 +139,6 @@ namespace system {
 // whole iteration and releases it only while sleeping (see delay_unlocked()),
 // async entry points take it before touching any shared state.
 void lock();
-bool lock(duration::Milliseconds timeout);
 void unlock();
 
 // esp8266 ESP.restart() only happens once the SDK gets to run again, the reboot here is immediate.
@@ -165,29 +155,6 @@ struct LoopGuard {
 
     LoopGuard(const LoopGuard&) = delete;
     LoopGuard& operator=(const LoopGuard&) = delete;
-};
-
-// AsyncTCP side. Waiting is bounded: AsyncTCP task stalling for too long lets
-// its event queue fill up, which blocks the tcpip task and whoever is waiting
-// on it. On timeout, handler should hand the work over to loop() instead
-// (ref. runInLoop() in espurna_tasks.h), or reject it (e.g. HTTP 503). Proceeding unlocked
-// races with loop() and is only acceptable when nothing shared is touched.
-struct AsyncGuard {
-    AsyncGuard();
-
-    // waits longer than the default, e.g. for every chunk of a firmware upload, which cannot be dropped or deferred
-    explicit AsyncGuard(duration::Milliseconds timeout);
-    ~AsyncGuard();
-
-    AsyncGuard(const AsyncGuard&) = delete;
-    AsyncGuard& operator=(const AsyncGuard&) = delete;
-
-    bool locked() const {
-        return _locked;
-    }
-
-private:
-    bool _locked;
 };
 
 // Chip part, arch/<chip>/system_<chip>.cpp. Only the SDK calls, everything around them is in system_rtos.cpp

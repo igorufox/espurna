@@ -14,8 +14,8 @@
    "ram_max": null,
    "heap_min": null
   },
-  "esp8266-1m-mini": {
-   "env": "esp8266-1m-mini",
+  "esp8266-1m-migration": {
+   "env": "esp8266-1m-migration",
    "flash_max": null,
    "ram_max": null,
    "heap_min": null

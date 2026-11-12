@@ -17,7 +17,7 @@ run of the workflow with `promote` = its tag. Releases of hand-made `esp32-*` ta
 | `esp8266` of `platformio_esp8266.ini` | `espurna-esp8266.bin` (initial image), `espurna-esp8266.ota` | `esp8266` |
 | `esp32` of `platformio_esp32.ini` | `espurna-esp32.bin` (merged initial image), `espurna-esp32.ota` | `esp32` |
 | `beken` of `platformio_beken.ini` | `espurna-beken-tuya.uf2`, `espurna-beken-quectel.uf2` (initial images), `espurna-beken.ota` | `beken-tuya` / `beken-quectel` (by the bootloader found at boot) |
-| `code/mini-app` | `espurna-esp8266-1m-mini.bin` | `esp8266-1m-mini` |
+| `code/migration-app` | `espurna-esp8266-1m-migration.bin` | `esp8266-1m-migration` |
 
 One env per chip: the head, every module and these files are one build ([modules.md](modules.md#building)). What the
 initial image and the install image (`.ota`) are: [modules.md](modules.md#release-files).
@@ -42,7 +42,7 @@ cannot be used by the update code: GitHub serves them without CORS (the browser 
 ciphers (the Beken mbedTLS has none). Pages sends `Access-Control-Allow-Origin: *`.
 
 Another list: the `webFwUrl` setting (*ADMIN*, OTA, *Release list*), e.g. `firmware-preview.json` for previews; empty is
-the default URL above. The ESP32 safeboot and the ESP8266 mini read the same setting from the ESPurna settings.
+the default URL above. The ESP32 safeboot and the ESP8266 migration image read the same setting from the ESPurna settings.
 
 ### CI notes
 
@@ -51,7 +51,7 @@ the default URL above. The ESP32 safeboot and the ESP8266 mini read the same set
 - PlatformIO Core 6.2 or newer (pioarduino needs it).
 - ESP32: `pio run -d safeboot-app` runs first, `scripts/esp32_merge.py` puts the safeboot into the factory partition of the
   merged `.bin`.
-- The mini `.bin.gz` (made for Pages) is `pigz -11` (zopfli), about 4 KB smaller than `gzip -9`: it has to fit behind the
+- The migration image `.bin.gz` (made for Pages) is `pigz -11` (zopfli), about 4 KB smaller than `gzip -9`: it has to fit behind the
   biggest 1 MB image of the older releases. The other `.bin.gz` files are `gzip -9 -n`.
 - The Pages artifact is named per run attempt (`github-pages-<attempt>`): a re-run otherwise finds the artifact of the
   failed attempt as well and `deploy-pages` stops.
@@ -117,28 +117,28 @@ partition of that table, not of the one the firmware was built with. Before anyt
 (`code/espurna/arch/beken/ota_beken.cpp`). An unknown bootloader gets no OTA at all. The update lands in the `download`
 partition, the module area: one upload with the modules off, the bootloader installs it at the restart.
 
-### ESP8266: upload; the mini for older 1 MB images
+### ESP8266: upload; the migration image for older 1 MB images
 
 The ESP8266 writes an update behind the running image and copies it over at the next boot (eboot unpacks `.bin.gz`). The
-head is small enough for that with the modules off: one upload to `/upgrade`, no mini.
+head is small enough for that with the modules off: one upload to `/upgrade`, no migration image.
 
 Boards on a full image of the older releases (`esp8266-1m`, `-1m-light`, `-1m-sensor`) have about 200 KB free behind
-it, too little for the head. Their own WebUI goes through the mini ([`code/mini-app`](../code/mini-app)):
+it, too little for the head. Their own WebUI goes through the migration image ([`code/migration-app`](../code/migration-app)):
 
 1. `POST /ota/fetch` stores the URL and SHA-256 of the `.bin.gz` in the settings (`otaFetchUrl`, `otaFetchSha256`).
-2. The browser uploads `espurna-esp8266-1m-mini.bin.gz` to `/upgrade`, the board restarts into the mini.
-3. The mini reads the ESPurna settings in place (Wi-Fi, static IP, hostname, `adminPass`, `webFwUrl`), takes the stored
+2. The browser uploads `espurna-esp8266-1m-migration.bin.gz` to `/upgrade`, the board restarts into the migration image.
+3. The migration image reads the ESPurna settings in place (Wi-Fi, static IP, hostname, `adminPass`, `webFwUrl`), takes the stored
    request once, downloads the `.bin.gz` (https), checks the SHA-256, writes it and restarts into it.
 
-The mini keeps its own page on port 80 after a failure, or when it has no request: status, last result, the releases
-with the 1 MB images that fit, a file upload. Without Wi-Fi in 30 s it opens `<hostname>-MINI` (WPA2, admin password) at
+The migration image keeps its own page on port 80 after a failure, or when it has no request: status, last result, the releases
+with the 1 MB images that fit, a file upload. Without Wi-Fi in 30 s it opens `<hostname>-MIGRATION` (WPA2, admin password) at
 192.168.4.1, and tries the Wi-Fi again every 5 minutes. Its log is on the TX pin at 115200. The `.bin.gz` files are on
 GitHub Pages next to `firmware.json`, not in the release: `https://igorufox.github.io/espurna/<tag>/espurna-<image>.bin.gz`.
 
 **From ESPurna 1.15.** Old boards (1.15, core 2.7.4) usually have about 10 KB free: a web upload drops half-way, and 1.15
 then keeps the update 'in progress' until the next restart (`reset`). Its terminal takes commands as the WebSocket action
-`dbgcmd`, not `cmd`. What worked on a Sonoff Basic without a wire: back up the keys, `reset`, after 70 s put the mini on it
-with ArduinoOTA (`espota`), then the image on the mini page. The settings migrate at the first boot (Wi-Fi, hostname and
+`dbgcmd`, not `cmd`. What worked on a Sonoff Basic without a wire: back up the keys, `reset`, after 70 s put the migration image on it
+with ArduinoOTA (`espota`), then the image on the migration image page. The settings migrate at the first boot (Wi-Fi, hostname and
 password stay); apply the board template afterwards.
 
 **From a board build to a generic image.** The generic images take the pins from the settings. Apply the board's
@@ -164,7 +164,7 @@ server leave 10-20 KB:
 | Browser (all chips) | validated https to GitHub Pages | SHA-256 of `firmware.json`; the CRC32 of every part of the `.ota` |
 | The board, a module package | none, the browser uploads | CRC32 of the package and of what was written; the head id |
 | ESP32 safeboot (download from a URL) | ESP-IDF certificate bundle | SHA-256, checked before ESPurna boots it |
-| ESP8266 mini | BearSSL, TLS 1.2, RSA key exchange + AES-128-GCM, **no certificate check** (no CA store, no clock) | SHA-256 required, taken by the browser from `firmware.json` over validated https |
+| ESP8266 migration image | BearSSL, TLS 1.2, RSA key exchange + AES-128-GCM, **no certificate check** (no CA store, no clock) | SHA-256 required, taken by the browser from `firmware.json` over validated https |
 | Beken | none, the browser uploads | the UF2's partition table must be the board's |
 
 ## Beken Matter library
@@ -188,8 +188,8 @@ into the `matter` module only.
 
 - **First page load right after a restart**: once on a Sonoff Basic the page loaded but the *ADMIN* menu stayed hidden
   (WebSocket data incomplete); four minutes later the same took 2 s. Cause not found.
-- **Mini TLS** does not validate the certificate; the SHA-256 from `firmware.json` is what protects the image.
-- **Older ESP8266 `-1m-light` boards**: the mini does not fit behind the 810 KB light image (about 6 KB missing): put the
-  mini on it with ArduinoOTA or over serial.
+- **Migration image TLS** does not validate the certificate; the SHA-256 from `firmware.json` is what protects the image.
+- **Older ESP8266 `-1m-light` boards**: the migration image does not fit behind the 810 KB light image (about 6 KB missing): put the
+  migration image on it with ArduinoOTA or over serial.
 - **ESP32 boards with a foreign safeboot** (Tasmota's, on an NSPanel installed over Tasmota): the release list does not
   replace it; install ours from the `/safeboot` page of ESPurna.

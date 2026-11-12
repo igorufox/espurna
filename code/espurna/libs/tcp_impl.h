@@ -579,6 +579,8 @@ private:
     size_t _pending_max { 4 };
 };
 
+Listener::Listener() = default;
+
 Listener::~Listener() = default;
 
 bool Listener::begin(uint16_t port, size_t pending) {

@@ -7,6 +7,7 @@ OTA MODULE
 #pragma once
 
 #include "system.h"
+#include "libs/image_receiver.h"
 
 // Main entrypoint for basic OTA methods
 // (like clients, arduinoota and basic web)
@@ -14,6 +15,10 @@ void otaSetup();
 
 void otaWebSetup();
 void otaArduinoSetup();
+
+// The head's target of the one image receiver (libs/image_receiver.h): Arduino Update with the checks of the chip
+// (arch/<chip>/ota_driver_<chip>.h). /upgrade and the update by an URL write through it; one image at a time
+espurna::image::Target& otaUpdateTarget();
 
 // Helper methods from UpdaterClass that need to be called manually for async mode,
 // because we are not using Stream interface to feed it data.
@@ -32,26 +37,6 @@ String otaFetchResult();
 #if OTA_WEB_SUPPORT
 // An upload to /upgrade is being received, or went in and the board is about to restart into it
 bool otaWebUploading();
-
-// The POSTs that change the firmware (/upgrade, /ota/fetch) of both web servers: a browser sends Origin with them, a
-// page of another site must not make the board flash something (the browser keeps the credentials of the board). No
-// Origin at all is a client that is not a browser (curl, the release scripts), it passes; "null" does not. Behind a
-// reverse proxy the Host the board sees is its own address: the proxy has to pass the one of the browser, as Host or
-// as X-Forwarded-Host
-inline bool otaWebSameOrigin(const String& origin, const String& host, const String& forwarded_host) {
-    if (!origin.length()) {
-        return true;
-    }
-
-    const int scheme = origin.indexOf("://");
-    if (scheme < 0) {
-        return false;
-    }
-
-    const auto from = origin.substring(static_cast<unsigned int>(scheme + 3));
-    return (host.length() && from.equalsIgnoreCase(host))
-        || (forwarded_host.length() && from.equalsIgnoreCase(forwarded_host));
-}
 
 // systemHostname() inside a "..." string of a page script
 inline String otaWebJsString(const String& value) {

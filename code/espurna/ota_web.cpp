@@ -7,7 +7,7 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 /upgrade (an image uploaded by the browser, the file of a form or the raw body), /ota/fetch and /ota/status (the update by
 an URL, ota_fetch.cpp). On the one HTTP server of ESPurna (libs/http_server.h): the body comes a piece at a time into
-Update, the handlers run in the loop.
+the one image receiver (libs/image_receiver.h) and the head's target (Update, ota.cpp), the handlers run in the loop.
 
 */
 
@@ -36,45 +36,25 @@ void onVisible(JsonObject& root) {
     wsPayloadModule(root, Prefix);
 }
 
-String updateError() {
-    PrintString out(64);
-    Update.printError(out);
-    String result(out.c_str());
-    result.trim();
-    return result;
-}
-
 void sendResponse(WebRequest& request, int code, const String& payload) {
     webSecurityHeaders(request);
     webSend(request, code, "text/plain", payload);
 }
 
-// the chip's part: whether it takes an upload (ref. upload_check() in ota_driver.h)
-namespace driver = ::espurna::ota::driver;
-
-// The upload of one request, its context: freed with it
+// The upload of one request, its context (freed with it, an image not finished by then is aborted): the one image
+// receiver (libs/image_receiver.h) into the head's target (Update, ota.cpp)
 struct Upload {
-    int code { 0 };         // the answer of a refused or failed upload, 0 - fine so far
+    Upload() :
+        receiver(otaUpdateTarget())
+    {}
+
+    espurna::image::Receiver receiver;
+    int code { 0 };         // the answer of a refused upload, 0 - fine so far
     String error;
-    bool running { false }; // this request's Update
-    size_t size { 0 };
-    bool complete { false };
 };
 
 // An upload went in and the board restarts into it (the reset is requested from the loop a moment later)
 bool installed { false };
-
-// The request whose Update runs: one at a time
-Upload* running { nullptr };
-
-void abort(Upload& upload) {
-    if (upload.running) {
-        upload.running = false;
-        running = nullptr;
-        Update.end();
-        eepromRotate(true);
-    }
-}
 
 Upload* uploadOf(WebRequest& request) {
     auto* upload = static_cast<Upload*>(request.context());
@@ -82,10 +62,8 @@ Upload* uploadOf(WebRequest& request) {
         upload = new (std::nothrow) Upload();
         request.setContext(upload, [](void* ptr) {
             auto* upload = static_cast<Upload*>(ptr);
-            // gone before the end (the client went away): nothing else ends the Update
-            if (upload->running) {
+            if (!upload->receiver.done() && upload->receiver.received()) {
                 DEBUG_MSG_P(PSTR("[UPGRADE] Connection closed before the upload finished, aborted\n"));
-                abort(*upload);
             }
             delete upload;
         });
@@ -93,22 +71,19 @@ Upload* uploadOf(WebRequest& request) {
     return upload;
 }
 
-void fail(Upload& upload, int code, const String& error) {
-    abort(upload);
+void refuse(Upload& upload, int code, const String& error) {
     upload.code = code;
     upload.error = error;
 }
 
-// a page of another site (8.6), ref. otaWebSameOrigin()
+// a page of another site (8.6), ref. espurna::image::sameOrigin()
 bool sameOrigin(WebRequest& request) {
-    return otaWebSameOrigin(
-        webHeader(request, "Origin"),
-        webHeader(request, "Host"),
-        webHeader(request, "X-Forwarded-Host"));
+    return espurna::image::sameOrigin(
+        request.header("Origin"), request.header("Host"), request.header("X-Forwarded-Host"));
 }
 
-// a piece of the image: the first one decides, every one goes into Update
-void onFile(WebRequest& request, const char* filename, size_t index, const uint8_t* data, size_t len, bool final) {
+// a piece of the image: the first one decides, every one goes into the receiver
+void onFile(WebRequest& request, const char* filename, size_t index, const uint8_t* data, size_t len, bool) {
     auto* upload = uploadOf(request);
     if (!upload || upload->code) {
         return;
@@ -123,71 +98,26 @@ void onFile(WebRequest& request, const char* filename, size_t index, const uint8
 
         if (!sameOrigin(request)) {
             DEBUG_MSG_P(PSTR("[UPGRADE] Refused, Origin %s is not this board\n"), webHeader(request, "Origin").c_str());
-            fail(*upload, 403, F("ERROR: Origin"));
-            return;
-        }
-
-        if (running || Update.isRunning()) {
-            fail(*upload, 400, F("ERROR: Upgrade in progress"));
+            refuse(*upload, 403, F("ERROR: Origin"));
             return;
         }
 
 #if MODULES_SUPPORT
         // the update is written where the modules are, while their code runs
         if (modulesRunning()) {
-            fail(*upload, 409, F("ERROR: modules installed, MODULES.OFF first"));
+            refuse(*upload, 409, F("ERROR: modules installed, MODULES.OFF first"));
             return;
         }
 #endif
 
-        if (!len) {
-            fail(*upload, 400, F("ERROR: Invalid request"));
-            return;
-        }
-
-        // the chip's word on this file (Beken: the bootloader it is for), before anything is written
-        const auto* refused = driver::upload_check(data, len);
-        if (refused) {
-            fail(*upload, 400, String(FPSTR(refused)));
-            return;
-        }
-
-        if (!otaVerifyHeader(const_cast<uint8_t*>(data), len)) {
-            fail(*upload, 400, F("ERROR: No magic byte / invalid flash config"));
-            return;
-        }
-
-        // Disabling EEPROM rotation to prevent writing to EEPROM after the upgrade
-        eepromRotate(false);
-
-        DEBUG_MSG_P(PSTR("[UPGRADE] Start: %s\n"), (filename && filename[0]) ? filename : "(body)");
-        driver::update_prepare();
-
-        // the size of a form part is not known in advance
-        if (!Update.begin(driver::update_size())) {
-            eepromRotate(true);
-            fail(*upload, 500, updateError());
-            return;
-        }
-
-        upload->running = true;
-        running = upload;
+        DEBUG_MSG_P(PSTR("[UPGRADE] Start: %s, %u bytes\n"),
+            (filename && filename[0]) ? filename : "(body)", static_cast<unsigned>(request.fileSize()));
+        upload->receiver.expect(request.fileSize());
     }
 
-    if (!upload->running) {
-        return;
-    }
-
-    if (Update.write(const_cast<uint8_t*>(data), len) != len) {
-        fail(*upload, 500, updateError());
-        return;
-    }
-
-    upload->size = index + len;
-    if (final) {
-        upload->complete = true;
-    } else {
-        otaProgress(index + len);
+    const char* error = upload->receiver.push(data, len);
+    if (error) {
+        refuse(*upload, 400, String(F("ERROR: ")) + error);
     }
 }
 
@@ -208,18 +138,16 @@ void onUpgrade(WebRequest& request) {
         return;
     }
 
-    if (!upload->running || !upload->complete) {
-        DEBUG_MSG_P(PSTR("[UPGRADE] Incomplete upload, received %u of %u bytes\n"),
-            request.bodyReceived(), request.contentLength());
-        abort(*upload);
-        sendResponse(request, 400, F("ERROR: Incomplete upload"));
+    const char* error = upload->receiver.finish();
+    if (error) {
+        DEBUG_MSG_P(PSTR("[UPGRADE] %s\n"), error);
+        sendResponse(request, 400, String(F("ERROR: ")) + error);
         return;
     }
 
-    upload->running = false;
-    running = nullptr;
-    installed = otaFinalize(upload->size, CustomResetReason::Ota, true);
-    sendResponse(request, installed ? 200 : 500, installed ? String(F("OK")) : updateError());
+    installed = true;
+    prepareReset(CustomResetReason::Ota);
+    sendResponse(request, 200, F("OK"));
 }
 
 // Install from GitHub (fwinstall.mjs): the board downloads the file itself, ota_fetch.cpp
@@ -250,7 +178,7 @@ void onFetch(WebRequest& request) {
         return;
     }
 
-    if (running || Update.isRunning()) {
+    if (Update.isRunning()) {
         sendResponse(request, 409, F("ERROR: Upgrade in progress"));
         return;
     }
@@ -270,7 +198,7 @@ void onFetch(WebRequest& request) {
 } // namespace ota
 
 bool otaWebUploading() {
-    return (ota::web::running != nullptr) || ota::web::installed;
+    return Update.isRunning() || ota::web::installed;
 }
 
 void otaWebSetup() {

@@ -32,10 +32,8 @@ namespace nspanel {
 // Config upload hand-over (POST /nspanel.json)
 // -----------------------------------------------------------------------------
 
-// The async_tcp handlers only collect the body; validate + save + apply run in loop()
-// (ref. upload::process()) and the HTTP answer is sent from the client's poll callback
-// once the result is known (ref. onUploadPoll()). Job is shared by the async_tcp handlers
-// (under AsyncGuard) and loop(), which never run at the same time.
+// The body handler only collects the body; validate + save + apply run in loop() (ref. upload::process()) and the
+// HTTP answer goes out once the result is known. Everything runs in loop() (the web server of libs/http_server.h)
 namespace upload {
 namespace {
 

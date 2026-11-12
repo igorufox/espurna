@@ -474,11 +474,9 @@ uint16_t mqttSendRaw(const char* topic, const char* message, bool retain, int qo
     return mqtt_api ? mqtt_api->sendRaw4(topic, message, retain, qos) : 0;
 }
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
 uint16_t mqttSendRaw(const char* topic, const char* message, bool retain, int qos, MqttPidCallback on_publish) {
     return mqtt_api ? mqtt_api->sendRaw5(topic, message, retain, qos, std::move(on_publish)) : 0;
 }
-#endif
 
 uint16_t mqttSendRaw(const char* topic, const char* message, bool retain) {
     return mqtt_api ? mqtt_api->sendRaw3(topic, message, retain) : 0;

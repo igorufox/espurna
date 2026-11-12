@@ -112,8 +112,9 @@ enum class Api : size_t {
     UartOnClaim,
     UartOpen,
     UartBaud,
-    HttpTlsExtend,
-    HttpTlsKey,
+    TlsExtend,
+    TlsKey,
+    TlsCaCheck,
     Count,
 };
 
@@ -215,6 +216,10 @@ void modulesRamSetup();
 void modulesBootSetup();
 void modulesSetup();
 bool modulesRunning();
+
+// the identity of the head (its GNU build id, 32 hex digits): what /modules and `info` call "md5", what a module
+// carries of the head it is linked against
+String modulesHeadId();
 // the modules off at the next boot with this reason (the off mark of the directory; nothing when none is installed or
 // the mark is set already): leaving the unstable mode (system.cpp) must not start the modules that put it there
 bool modulesOffMark(const char* reason);

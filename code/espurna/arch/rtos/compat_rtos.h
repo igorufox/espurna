@@ -108,7 +108,6 @@ struct EspCompat {
 
     uint32_t getFreeSketchSpace();
     uint32_t getSketchSize();
-    String getSketchMD5();
 
     uint32_t getMaxAllocHeap();
 

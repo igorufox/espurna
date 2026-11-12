@@ -2,7 +2,8 @@
 
 THE HEAD AND THE MODULES (docs/modules.md): what the head image of every chip has, one list for ESP8266, ESP32 and Beken
 
-The head (MODULES_SUPPORT=1 from platformio_<chip>.ini): Wi-Fi, web + WebUI, API, terminal + telnet, NTP, OTA, relays,
+The head (MODULES_SUPPORT=1 from platformio_<chip>.ini): Wi-Fi, the web server (the WebSocket and the WebUI are
+modules: ws, webui), API, terminal + telnet, NTP, OTA, relays,
 buttons, LEDs, the module loader, and the forwarders of the MQTT API (modules_mqtt.h, MQTT_MODULE): its parts call MQTT
 as always, the mqtt module takes over when it is installed and switched on. Everything else is a module, switched off
 in the head here.
@@ -27,6 +28,7 @@ Included before hardware.h / general.h: their #ifndef defaults do not apply to w
    The chip's ini adds its own objects to a module (custom_modules: a line of the same name, its objects go first),
    its own modules (a line of a new name) and leaves out the modules it does not build (custom_modules_skip).
 
+ws | ws_server.cpp.o module_ws.cpp.o | | wsPost wsPostManual wsPostAll wsPostSequence wsSend wsClientInfo wsPause wsConnected wsDebugSend
 sensors | sensor.cpp.o module_sensors.cpp.o | i2c.cpp.o driver_onewire.cpp.o | magnitudeCount magnitudeInfo magnitudeTypeTopic magnitudeUnitsName sensorReady sensorWebSocketMagnitudes sensorOnMagnitudeRead sensorOnMagnitudeReport magnitudeValue magnitudeReportValue magnitudeReadValue magnitudeType magnitudeIndex magnitudeTopic
 scheduler | scheduler.cpp.o module_scheduler.cpp.o | |
 alexa | alexa.cpp.o module_alexa.cpp.o | | alexaPause
@@ -126,6 +128,7 @@ ESPURNA_MODULES */
 // UART: forwarders only, the ports are the uart module (the serial log, the relays of a UART board and the modules
 // that need it take the port when it starts)
 #define UART_SUPPORT                1
+#undef UART_MODULE
 #define UART_MODULE                 1
 
 // modules

@@ -1,11 +1,13 @@
 /*
 
-ESPurna mini (ESP8266, 1 MB boards)
+ESPurna migration (ESP8266, 1 MB boards)
 
-The first step of the two-step update of 1 MB boards. A full image (~800 KB) leaves ~200 KB of free space, too
-little for the next full image, so the full image takes this one (espurna-esp8266-1m-mini.bin.gz, uploaded by the
-WebUI to /upgrade), boots it, and this one downloads the full image (.bin.gz, 1 MB layout) and writes it. Same idea as
-code/safeboot-app of ESP32, but here the mini replaces the full image: there is no ESPurna to go back to until a
+The way over from the old ESPurna (1.15 ... 1.22, one image with everything in it) to the head + modules on 1 MB
+boards. An old image takes only a plain .bin / .bin.gz on its /upgrade (not the .ota), and its ~800 KB leave ~200 KB of
+free space, too little for the gzip of the head, so the old image takes this one (espurna-esp8266-1m-migration.bin.gz,
+uploaded to /upgrade), boots it, and this one downloads the head's image (.bin.gz, 1 MB layout) and writes it. The
+head itself updates with one /upgrade and never comes here. Same idea as
+code/safeboot-app of ESP32, but here the migration image replaces the full image: there is no ESPurna to go back to until a
 full image is written. Plain Arduino core (core 3.1.2 + NONOS SDK 3.0.5, the 1 MB layout of ESPurna), no ESPurna code,
 every byte counts (the gzip of this image has to fit next to the biggest full image):
 - the ESPurna settings are read in place: the EEPROM_Rotate pool of ESPurna (sectors 251 and 250, the copy with
@@ -24,7 +26,7 @@ every byte counts (the gzip of this image has to fit next to the biggest full im
   the browser, GitHub Pages sends CORS *) with the 1 MB images that fit, a click stores the request and reboots into
   it; a file upload to /upgrade (.bin or .bin.gz, raw body or multipart as ESPurna's /upgrade); GET /ota/status and
   POST /ota/fetch in the shape of the full image (fwinstall.mjs)
-- no Wi-Fi in 30 s: own access point <hostname>-MINI (WPA2, admin password), 192.168.4.1. Every 5 minutes without
+- no Wi-Fi in 30 s: own access point <hostname>-MIGRATION (WPA2, admin password), 192.168.4.1. Every 5 minutes without
   anybody on it, the board tries the Wi-Fi again (a router back after a power cut); 5 minutes without the Wi-Fi:
   the access point again
 - log on the serial TX pin (GPIO1, 115200), written to the UART registers (no Serial, no printf of newlib)
@@ -46,11 +48,11 @@ read with espurna/libs/embedis_records.h, the same as code/safeboot-app
 #include <spi_flash.h>
 #include <lwip/ip4_addr.h>
 
-#ifndef MINI_LOG
-#define MINI_LOG 1
+#ifndef MIGRATION_LOG
+#define MIGRATION_LOG 1
 #endif
 
-#include <bearssl/bearssl.h>
+#include <bearssl.h>
 
 #include <memory>
 
@@ -64,7 +66,7 @@ read with espurna/libs/embedis_records.h, the same as code/safeboot-app
 
 namespace {
 
-#if MINI_LOG
+#if MIGRATION_LOG
 void put(char c) {
     while (((USS(0) >> USTXC) & 0xff) >= 0x7f) {
     }
@@ -79,7 +81,7 @@ void logv(const char* fmt, va_list args) {
 
     char out[200];
     ets_vsnprintf(out, sizeof(out), format, args);
-    for (const char* ptr = "[MINI] "; *ptr; ++ptr) {
+    for (const char* ptr = "[MIGRATION] "; *ptr; ++ptr) {
         put(*ptr);
     }
     for (const char* ptr = out; *ptr; ++ptr) {
@@ -111,21 +113,21 @@ extern "C" int vsnprintf(char* buffer, size_t size, const char* fmt, va_list arg
 
 // the one http:// and https:// client of ESPurna (ota_fetch.cpp, nspanel), every chip: its one implementation. One
 // thread here, no lock
-namespace mini {
+namespace migration {
 struct NoLock {
     void lock() {}
     void unlock() {}
 };
-} // namespace mini
+} // namespace migration
 
-#define HTTP_CLIENT_AGENT "ESPurna-mini"
+#define HTTP_CLIENT_AGENT "ESPurna-migration"
 #define NET_LOG(fmt, ...) LOG(fmt, ##__VA_ARGS__)
-#define NET_LOCK ::mini::NoLock
+#define NET_LOCK ::migration::NoLock
 #include "../../espurna/libs/net_impl.h"
+#include "../../espurna/libs/image_receiver.h"
 
 // no modules here: the head's TLS of the client only (static RSA + AES-128-GCM, what GitHub Pages offers)
 namespace espurna {
-namespace http {
 namespace tls {
 
 bool extend(br_ssl_client_context*) {
@@ -136,13 +138,16 @@ void* key(const uint8_t*, size_t, br_x509_pkey*) {
     return nullptr;
 }
 
+const br_x509_class** caCheck(const char*, void**) {
+    return nullptr;
+}
+
 } // namespace tls
-} // namespace http
 } // namespace espurna
 
 namespace {
 
-constexpr char Image[] = "esp8266-1m-mini";
+constexpr char Image[] = "esp8266-1m-migration";
 constexpr char DefaultPassword[] = "fibonacci";
 constexpr char DefaultManifest[] = "https://igorufox.github.io/espurna/firmware.json";
 
@@ -344,39 +349,29 @@ extern "C" uint32_t _FS_start;
 
 namespace {
 
-// Instead of the Updater of the Core (~4 KB with its MD5, signature and LED code), the same placement and eboot
-// command: the file goes to the end of the free space (right below the EEPROM sector 251, over 250), sector by sector,
-// SHA-256 on the way. end() reads the written file back and compares its SHA-256 (a staged image with holes in flash
-// once bricked a 1 MB board, the stream checksum had said OK), only then eboot is told to copy it (gzip unpacked)
-class Writer : public espurna::http::Sink {
+// The migration image's target of the one image receiver (espurna/libs/image_receiver.h). Instead of the Updater of the Core
+// (~4 KB with its MD5, signature and LED code), the same placement and eboot command: the file goes to the end of the
+// free space (right below the EEPROM sector 251, over 250), sector by sector, SHA-256 on the way. end() reads the
+// written file back and compares its SHA-256 (a staged image with holes in flash once bricked a 1 MB board, the stream
+// checksum had said OK), only then eboot is told to copy it (gzip unpacked)
+class Writer final : public espurna::image::Target {
 public:
-    explicit Writer(const String& sha256) :
-        _sha256(sha256)
-    {}
-
-    // the head: 200 with its length, else the error
-    const char* begin(const espurna::http::Head& head) override {
-        if (head.status != 200) {
-            return "the server did not answer 200";
+    // the size has to be known: the file is placed at the end of the free space
+    const char* begin(const uint8_t* data, size_t len, size_t size) override {
+        // ESP8266 application or gzip (unpacked by eboot)
+        const bool gzip = (len > 1) && (data[0] == 0x1f) && (data[1] == 0x8b);
+        if (!gzip && ((len < 4) || (data[0] != 0xe9))) {
+            return "not an ESP8266 image (no 0xE9 or gzip magic)";
         }
 
-        if (head.length <= 0) {
-            return "no Content-Length in the response";
+        if (!size) {
+            return "the size of the image is not known";
         }
 
-        return start(static_cast<size_t>(head.length));
-    }
-
-    const char* end() override {
-        return finish(_sha256);
-    }
-
-    // nullptr or the error
-    const char* start(size_t size) {
         const uint32_t end = reinterpret_cast<uint32_t>(&_FS_start) - 0x40200000;
         const uint32_t used = (ESP.getSketchSize() + SPI_FLASH_SEC_SIZE - 1) & ~(SPI_FLASH_SEC_SIZE - 1);
         const uint32_t rounded = (size + SPI_FLASH_SEC_SIZE - 1) & ~(SPI_FLASH_SEC_SIZE - 1);
-        if (!size || (rounded > end - used)) {
+        if (rounded > end - used) {
             return "the file does not fit in the free space";
         }
 
@@ -387,7 +382,6 @@ public:
 
         _start = end - rounded;
         _size = size;
-        done = 0;
         _written = 0;
         _len = 0;
         br_sha256_init(&_sha);
@@ -395,12 +389,7 @@ public:
     }
 
     const char* write(const uint8_t* data, size_t len) override {
-        if (done + len > _size) {
-            return "more data than announced";
-        }
-
         br_sha256_update(&_sha, data, len);
-        done += len;
         while (len) {
             const size_t size = std::min(len, SPI_FLASH_SEC_SIZE - _len);
             memcpy(_buffer.get() + _len, data, size);
@@ -418,13 +407,10 @@ public:
         return nullptr;
     }
 
-    // the whole file arrived (and its SHA-256 is `sha256`, when given)
-    const char* finish(const String& sha256) {
+    // the whole file arrived (the receiver checked its size, the client its SHA-256): read back, then eboot
+    const char* end(size_t) override {
         uint8_t digest[br_sha256_SIZE];
         br_sha256_out(&_sha, digest);
-        if ((done != _size) || (sha256.length() && !sha256.equals(hex(digest, sizeof(digest))))) {
-            return "SHA-256 mismatch, not the file of the release list";
-        }
 
         br_sha256_init(&_sha);
         for (uint32_t offset = 0; offset < _size; offset += SPI_FLASH_SEC_SIZE) {
@@ -456,19 +442,17 @@ public:
         return nullptr;
     }
 
-    size_t done { 0 };
+    // nothing was told to eboot, the running image stays
+    void abort() override {
+        _buffer.reset();
+    }
 
 private:
     const char* flush() {
         const uint32_t address = _start + _written;
         if (!_written) {
-            // ESP8266 application or gzip (unpacked by eboot)
-            const bool gzip = (_len > 1) && (_buffer[0] == 0x1f) && (_buffer[1] == 0x8b);
-            if (!gzip && ((_len < 4) || (_buffer[0] != 0xe9))) {
-                return "not an ESP8266 image (no 0xE9 or gzip magic)";
-            }
-
             // a plain image gets the flash mode of the running one (as Updater); the hash is over the original byte
+            const bool gzip = (_buffer[0] == 0x1f) && (_buffer[1] == 0x8b);
             _mode = _buffer[2];
             if (!gzip) {
                 _buffer[2] = ESP.getFlashChipMode();
@@ -483,7 +467,6 @@ private:
         return ok ? nullptr : "flash write failed";
     }
 
-    String _sha256;
     std::unique_ptr<uint8_t[]> _buffer;
     br_sha256_context _sha;
     uint32_t _start { 0 };
@@ -493,14 +476,15 @@ private:
     uint8_t _mode { 0 };
 };
 
-// The download (espurna/libs/http_client.h) into the writer. The client is asynchronous; the mini does nothing else
+// The download (espurna/libs/http_client.h) into the writer. The client is asynchronous; the migration image does nothing else
 // meanwhile, so it drives it here until it is done
 bool download(const String& url, const String& sha256, String& result) {
-    Writer writer(sha256);
+    Writer writer;
+    espurna::image::Receiver receiver(writer);
     espurna::http::Client client;
     bool finished { false };
     bool ok { false };
-    client.start(url.c_str(), sha256.c_str(), writer, [&](const espurna::http::Result& out) {
+    client.start(url.c_str(), sha256.c_str(), receiver, [&](const espurna::http::Result& out) {
         finished = true;
         ok = out.ok;
         result = out.message;
@@ -596,7 +580,7 @@ bool join(unsigned long window) {
 
 void accessPoint() {
     // WPA2 needs 8..63 characters, ESPurna enforces the same for adminPass; SSID up to 32
-    const String ssid = config.hostname.substring(0, 27) + "-MINI";
+    const String ssid = config.hostname.substring(0, 22) + "-MIGRATION";
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ssid, (config.password.length() >= 8) ? config.password : String(DefaultPassword), 1, false, 2);
     ap_mode = true;
@@ -660,7 +644,7 @@ String status() {
 // file itself after a reboot (/ota/fetch), or takes an uploaded file (/upgrade, the file as the body)
 const char PageHead[] PROGMEM =
     "<!DOCTYPE html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">"
-    "<title>ESPurna mini</title><style>body{font-family:sans-serif;max-width:640px;margin:16px auto;padding:0 16px}"
+    "<title>ESPurna migration</title><style>body{font-family:sans-serif;max-width:640px;margin:16px auto;padding:0 16px}"
     "button{margin-top:8px}fieldset{margin-top:16px}</style></head><body><h2 id=h></h2><p id=st></p>"
     "<fieldset><legend>Releases</legend><div id=rel>Reading the release list...</div></fieldset>"
     "<fieldset><legend>Upload an image (.bin or .bin.gz)</legend><input type=file id=file accept=.bin,.gz><br>"
@@ -668,7 +652,7 @@ const char PageHead[] PROGMEM =
 
 const char PageScript[] PROGMEM =
     "const $=i=>document.getElementById(i),L=$('log'),I=S.image,F=S.free;"
-    "$('h').textContent=document.title=H+' - ESPurna mini';"
+    "$('h').textContent=document.title=H+' - ESPurna migration';"
     "$('st').textContent='Wi-Fi: '+W+'. Free: '+F+' bytes. Last update: '+(S.result||'none');"
     "function wait(){let away=0,t=0;const tick=async()=>{t+=3;"
     "try{const r=await fetch('/ota/status',{cache:'no-store'});"
@@ -724,6 +708,14 @@ void onFetch(WebRequest& request) {
         return;
     }
 
+    // a page of another site must not make the board flash something (espurna/libs/image_receiver.h)
+    if (!espurna::image::sameOrigin(request.header("Origin"), request.header("Host"),
+            request.header("X-Forwarded-Host")))
+    {
+        text(request, 403, "ERROR: Origin");
+        return;
+    }
+
     const char* url_param = request.param("url");
     const char* sha_param = request.param("sha256");
     const String url(url_param ? url_param : "");
@@ -747,16 +739,23 @@ void onFetch(WebRequest& request) {
     restart = true;
 }
 
-// .bin or .bin.gz: the file as the body (page of this image), or the file of a form as ESPurna's /upgrade
+// .bin or .bin.gz: the file as the body (page of this image), or the file of a form as ESPurna's /upgrade; the one
+// image receiver into the writer
 struct Upload {
     Upload() :
-        writer(String())
+        receiver(writer)
     {}
 
     Writer writer;
-    const char* error { nullptr };
-    size_t size { 0 };
+    espurna::image::Receiver receiver;
+    const char* refused { nullptr };
 };
+
+// a page of another site must not make the board flash something (espurna/libs/image_receiver.h sameOrigin())
+bool sameOrigin(WebRequest& request) {
+    return espurna::image::sameOrigin(
+        request.header("Origin"), request.header("Host"), request.header("X-Forwarded-Host"));
+}
 
 void onUpgradeBody(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool) {
     auto* upload = static_cast<Upload*>(request.context());
@@ -773,17 +772,21 @@ void onUpgradeBody(WebRequest& request, const char*, size_t index, const uint8_t
             delete static_cast<Upload*>(ptr);
         });
 
+        if (!sameOrigin(request)) {
+            upload->refused = "Origin";
+            return;
+        }
+
         // placed at the end of the free space: its size first
-        upload->size = request.fileSize();
-        LOG("Upload of %d bytes", upload->size);
-        upload->error = upload->size ? upload->writer.start(upload->size) : "invalid request";
+        LOG("Upload of %d bytes", request.fileSize());
+        upload->receiver.expect(request.fileSize());
     }
 
-    if (!upload || upload->error) {
+    if (!upload || upload->refused) {
         return;
     }
 
-    upload->error = upload->writer.write(data, len);
+    upload->receiver.push(data, len);
 }
 
 void onUpgrade(WebRequest& request) {
@@ -792,22 +795,15 @@ void onUpgrade(WebRequest& request) {
     }
 
     auto* upload = static_cast<Upload*>(request.context());
-    const char* error = upload ? upload->error : "invalid request";
-    if (!error && (upload->writer.done != upload->size)) {
-        error = "the upload is incomplete";
-    }
-    if (!error) {
-        error = upload->writer.finish(String());
-    }
-
+    const char* error = !upload ? "invalid request" : upload->refused ? upload->refused : upload->receiver.finish();
     if (error) {
         LOG("Upload failed: %s", error);
-        text(request, 400, String("ERROR: ") + error);
+        text(request, (upload && upload->refused) ? 403 : 400, String("ERROR: ") + error);
         return;
     }
 
     // the full image shows it in /ota/status instead of an earlier failure
-    storeResult(String("ok: uploaded ") + upload->size + " bytes");
+    storeResult(String("ok: uploaded ") + upload->receiver.received() + " bytes");
     text(request, 200, "OK");
     restart = true;
 }
@@ -823,7 +819,7 @@ void takeRequest() {
     const auto sha256 = storage.get(keys::Sha256);
     LOG("Request %s", url.c_str());
 
-    const Pair pair { keys::Result, "failed: the minimal image restarted during the download (power cut or crash)" };
+    const Pair pair { keys::Result, "failed: the migration image restarted during the download (power cut or crash)" };
     if (!storage.write(&pair, 1, keys::Url, keys::Sha256)) {
         // never retried over the next boots
         last_result = "failed: the request could not be erased from the settings";
@@ -850,10 +846,10 @@ void takeRequest() {
 } // namespace
 
 void setup() {
-#if MINI_LOG
+#if MIGRATION_LOG
     USD(0) = ESP8266_CLOCK / 115200;
 #endif
-    LOG("ESPurna mini, built " __DATE__ " " __TIME__ ", %d bytes free next to it", ESP.getFreeSketchSpace());
+    LOG("ESPurna migration, built " __DATE__ " " __TIME__ ", %d bytes free next to it", ESP.getFreeSketchSpace());
 
     storage.load();
     config.ssid[0] = storage.get("ssid0");

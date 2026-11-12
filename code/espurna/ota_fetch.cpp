@@ -79,99 +79,10 @@ using espurna::text::jsonString;
 // the download into Update (ESP8266, Beken)
 // -----------------------------------------------------------------------------
 
-String updateError() {
-    PrintString out(64);
-    Update.printError(out);
-    String result(out.c_str());
-    result.trim();
-    return result;
-}
-
-// Update is started for one byte more than the file: it is never 'finished' by itself, so a file with the wrong
-// SHA-256 (the client checks it before end()) is dropped by end(false) and never booted. The first bytes are checked
-// as /upgrade checks them (the image header; Beken: the bootloader the file is for)
-class UpdateSink : public http::Sink {
-public:
-    UpdateSink() = default;
-    UpdateSink(const UpdateSink&) = delete;
-    UpdateSink& operator=(const UpdateSink&) = delete;
-
-    ~UpdateSink() {
-        drop();
-    }
-
-    void drop() {
-        if (_running) {
-            _running = false;
-            Update.end(false);
-        }
-    }
-
-    const char* begin(const http::Head& head) override {
-        if (head.status != 200) {
-            _error = String(F("HTTP ")) + String(head.status, 10);
-            return _error.c_str();
-        }
-
-        if (head.length <= 0) {
-            _error = F("no Content-Length in the response");
-            return _error.c_str();
-        }
-
-        _length = static_cast<size_t>(head.length);
-        _first = true;
-        return nullptr;
-    }
-
-    const char* write(const uint8_t* data, size_t length) override {
-        if (_first) {
-            _first = false;
-            if (!driver::verify_header(data, length)) {
-                _error = F("not a firmware image for this chip");
-                return _error.c_str();
-            }
-
-            const auto* error = driver::upload_check(data, length);
-            if (error) {
-                _error = FPSTR(error);
-                return _error.c_str();
-            }
-
-            if (!Update.begin(_length + 1)) {
-                _error = String(F("the file (")) + String(_length, 10) + F(" bytes) does not fit: ") + updateError();
-                return _error.c_str();
-            }
-
-            _running = true;
-        }
-
-        if (Update.write(const_cast<uint8_t*>(data), length) != length) {
-            _error = String(F("write failed: ")) + updateError();
-            return _error.c_str();
-        }
-
-        return nullptr;
-    }
-
-    const char* end() override {
-        _running = false;
-        if (!Update.end(true)) {
-            _error = String(F("image check failed: ")) + updateError();
-            return _error.c_str();
-        }
-
-        return nullptr;
-    }
-
-private:
-    String _error;
-    size_t _length { 0 };
-    bool _first { true };
-    bool _running { false };
-};
-
+// the one image receiver (libs/image_receiver.h) into the head's target (Update, ota.cpp): the first bytes are
+// checked as /upgrade checks them, a file with the wrong SHA-256 (the client checks it before end()) is never booted
 http::Client client;
-UpdateSink sink;
+image::Receiver sink(otaUpdateTarget());
 
 // -----------------------------------------------------------------------------
 // at boot
@@ -249,7 +160,7 @@ void loop() {
     const bool started = client.start(pending.url.c_str(), pending.sha256.c_str(), sink,
         [](const http::Result& result) {
             if (!result.ok) {
-                sink.drop();
+                sink.abort();
             }
             finish(result.ok, result.message);
         });
@@ -265,7 +176,13 @@ void loop() {
 
 // The request is taken once, a broken URL never keeps the board busy over the next boots
 void setup() {
+#if SAFEBOOT_SUPPORT
+    // ESP32: safeboot downloads it and writes what happened into its NVS: that is the one result (/ota/status shows
+    // the same as /safeboot/status)
+    internal::result = safebootResult();
+#else
     internal::result = getSetting(FPSTR(keys::Result));
+#endif
 
 #if !SAFEBOOT_SUPPORT
     const auto url = getSetting(FPSTR(keys::Url));
@@ -386,7 +303,11 @@ String otaFetchStatus() {
     out += F("{\"image\":\"" ESPURNA_IMAGE "\",\"fetch\":1,\"free\":");
     out += String(espurna::ota::driver::update_size(), 10);
     out += F(",\"url\":");
+#if SAFEBOOT_SUPPORT
+    jsonString(out, safebootUrl());
+#else
     jsonString(out, getSetting(FPSTR(keys::Url)));
+#endif
     out += F(",\"result\":");
     jsonString(out, internal::result);
     out += '}';

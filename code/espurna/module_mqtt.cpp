@@ -30,11 +30,7 @@ const MqttModuleApi Table {
     .magnitude = mqttMagnitude,
 
     .sendRaw4 = static_cast<uint16_t(*)(const char*, const char*, bool, int)>(mqttSendRaw),
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
     .sendRaw5 = static_cast<uint16_t(*)(const char*, const char*, bool, int, MqttPidCallback)>(mqttSendRaw),
-#else
-    .sendRaw5 = nullptr,
-#endif
     .sendRaw3 = static_cast<uint16_t(*)(const char*, const char*, bool)>(mqttSendRaw),
     .sendRaw2 = static_cast<uint16_t(*)(const char*, const char*)>(mqttSendRaw),
 

@@ -15,9 +15,6 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 String prettyDuration(espurna::duration::Seconds);
 
-bool sslCheckFingerPrint(const char * fingerprint);
-bool sslFingerPrintArray(const char * fingerprint, unsigned char * bytearray);
-bool sslFingerPrintChar(const char * fingerprint, char * destination);
 
 char* strnstr(const char* buffer, const char* token, size_t n);
 bool isNumber(espurna::StringView);

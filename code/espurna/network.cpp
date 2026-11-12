@@ -182,38 +182,9 @@ void netstat(::terminal::CommandContext&& ctx) {
     }
 }
 
-#if SECURE_CLIENT == SECURE_CLIENT_BEARSSL
-PROGMEM_STRING(MflnProbe, "MFLN.PROBE");
-
-void mfln_probe(::terminal::CommandContext&& ctx) {
-    if (ctx.argv.size() != 3) {
-        terminalError(ctx, F("MFLN.PROBE <URL> <SIZE>"));
-        return;
-    }
-
-    URL parsed(std::move(ctx.argv[1]));
-
-    const auto parse_mfln = espurna::settings::internal::convert<uint16_t>;
-    uint16_t mfln = parse_mfln(ctx.argv[2]);
-
-    auto client = std::make_unique<BearSSL::WiFiClientSecure>();
-    client->setInsecure();
-
-    if (client->probeMaxFragmentLength(parsed.host.c_str(), parsed.port, mfln)) {
-        terminalOK(ctx);
-        return;
-    }
-
-    terminalError(ctx, F("Buffer size not supported"));
-}
-#endif
-
 static constexpr ::terminal::Command List[] PROGMEM {
     {Host, host},
     {Netstat, netstat},
-#if SECURE_CLIENT == SECURE_CLIENT_BEARSSL
-    {MflnProbe, mfln_probe},
-#endif
 };
 
 } // namespace commands

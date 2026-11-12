@@ -11,7 +11,7 @@ the single big OTA slot (app0) and cannot overwrite itself, so updates go throug
 - update from an URL without the web UI: ESPurna stores it in NVS "safeboot"/"url" (and its SHA-256 in "sha256")
   before switching here, the image is downloaded into app0 as soon as Wi-Fi is up and ESPurna boots. http:// and
   https:// through the one client of ESPurna (espurna/libs/http_client.h, BearSSL with the full TLS of
-  libs/http_client_tls.h; the file is checked against its SHA-256); the result goes to NVS "safeboot"/"result" for
+  libs/tls_full.h; the file is checked against its SHA-256); the result goes to NVS "safeboot"/"result" for
   ESPurna to show
 - no Wi-Fi in 30 s: own access point <hostname>-SAFEBOOT (WPA2, admin password) at 192.168.4.1
 - the next boot is set back to app0 right at start (when it holds a valid image): a crash or a power cut here always
@@ -42,14 +42,14 @@ the single big OTA slot (app0) and cannot overwrite itself, so updates go throug
 #include <string>
 #include <vector>
 
-// shared with ESPurna and code/mini-app: the settings records, the partition table, the checks of a request
+// shared with ESPurna and code/migration-app: the settings records, the partition table, the checks of a request
 #include "../../espurna/libs/embedis_records.h"
 #include "../../espurna/libs/esp32_partitions.h"
 #include "../../espurna/libs/fetch_check.h"
 #include "../../espurna/libs/text.h"
 
 // the one http:// and https:// client of ESPurna (libs/http_client.h): its one implementation, with the full TLS
-// (libs/http_client_tls.h) always. lwIP's callbacks run in the tcpip thread, the download in this task
+// (libs/tls_full.h) always. lwIP's callbacks run in the tcpip thread, the download in this task
 namespace safeboot {
 
 struct Lock {
@@ -78,10 +78,10 @@ struct Lock {
 #define NET_LOG(...) do {} while (false)
 #define NET_LOCK ::safeboot::Lock
 #include "../../espurna/libs/net_impl.h"
-#include "../../espurna/libs/http_client_tls.h"
+#include "../../espurna/libs/tls_full.h"
+#include "../../espurna/libs/image_receiver.h"
 
 namespace espurna {
-namespace http {
 namespace tls {
 
 bool extend(br_ssl_client_context* sc) {
@@ -92,8 +92,11 @@ void* key(const uint8_t* der, size_t len, br_x509_pkey* out) {
     return full::key(der, len, out);
 }
 
+const br_x509_class** caCheck(const char* pem, void** block) {
+    return full::caCheck(pem, block);
+}
+
 } // namespace tls
-} // namespace http
 } // namespace espurna
 
 namespace {
@@ -298,7 +301,7 @@ bool bootApp(std::string& error) {
 constexpr size_t MergedTableOffset { espurna::esp32_partitions::TableOffset };
 constexpr size_t MergedTableSize { espurna::esp32_partitions::TableSize };
 
-struct Writer {
+struct Writer final : public espurna::image::Target {
     esp_ota_handle_t handle { 0 };
     const esp_partition_t* part { nullptr };
     size_t written { 0 };    // into app0
@@ -441,43 +444,40 @@ struct Writer {
         return true;
     }
 
-    void abort() {
+    void abort() override {
         if (part) {
             esp_ota_abort(handle);
             part = nullptr;
         }
     }
-};
 
-std::string last_result;
-
-// The response into the writer: 200 with the file, the client checks its SHA-256 before end()
-struct DownloadSink : public espurna::http::Sink {
-    explicit DownloadSink(Writer& writer) :
-        writer(writer)
-    {}
-
-    const char* begin(const espurna::http::Head& head) override {
-        if (head.status != 200) {
-            snprintf(text, sizeof(text), "HTTP %d", head.status);
-            return text;
+    // --- the target of the image receiver (espurna/libs/image_receiver.h): the size is known (Content-Length of an
+    // upload or a download) or 0, the first byte is checked by write() (an application, or a merged image)
+    const char* begin(const uint8_t* data, size_t len, size_t size) override {
+        if (!len || ((data[0] != 0xE9) && (data[0] != 0xFF))) {
+            return "not an ESP32 image (no 0xE9 magic byte, no merged image)";
         }
 
-        writer.expected = (head.length > 0) ? static_cast<size_t>(head.length) : 0;
+        expected = size;
+        received = 0;
+        written = 0;
+        merged = false;
+        located = false;
+        head.clear();
+        error.clear();
         return nullptr;
     }
 
     const char* write(const uint8_t* data, size_t len) override {
-        return writer.write(reinterpret_cast<const char*>(data), len) ? nullptr : writer.error.c_str();
+        return write(reinterpret_cast<const char*>(data), len) ? nullptr : error.c_str();
     }
 
-    const char* end() override {
-        return writer.finish() ? nullptr : writer.error.c_str();
+    const char* end(size_t) override {
+        return finish() ? nullptr : error.c_str();
     }
-
-    Writer& writer;
-    char text[32];
 };
+
+std::string last_result;
 
 // http:// or https:// through the one client of ESPurna (the chain is not validated: a release file is checked
 // against the SHA-256 of the release list). sha256: hex, lower case, or empty. This task waits, the client steps
@@ -494,7 +494,7 @@ bool download(const std::string& url, const std::string& sha256) {
     }
 
     Writer writer;
-    DownloadSink sink(writer);
+    espurna::image::Receiver sink(writer);
     espurna::http::Client client;
 
     bool finished { false };
@@ -517,7 +517,7 @@ bool download(const std::string& url, const std::string& sha256) {
     }
 
     if (!ok) {
-        writer.abort();
+        sink.abort();
         last_result = message;
         return false;
     }
@@ -551,15 +551,15 @@ bool connect() {
 
     if (!settings.ip.empty()) {
         esp_netif_ip_info_t info {};
-        if (inet_pton(AF_INET, settings.ip.c_str(), &info.ip)
-            && inet_pton(AF_INET, settings.gw.c_str(), &info.gw)
-            && inet_pton(AF_INET, settings.mask.c_str(), &info.netmask))
+        if ((esp_netif_str_to_ip4(settings.ip.c_str(), &info.ip) == ESP_OK)
+            && (esp_netif_str_to_ip4(settings.gw.c_str(), &info.gw) == ESP_OK)
+            && (esp_netif_str_to_ip4(settings.mask.c_str(), &info.netmask) == ESP_OK))
         {
             esp_netif_dhcpc_stop(netif_sta);
             esp_netif_set_ip_info(netif_sta, &info);
             esp_netif_dns_info_t dns {};
             dns.ip.type = ESP_IPADDR_TYPE_V4;
-            if (!inet_pton(AF_INET, settings.dns.c_str(), &dns.ip.u_addr.ip4)) {
+            if (esp_netif_str_to_ip4(settings.dns.c_str(), &dns.ip.u_addr.ip4) != ESP_OK) {
                 dns.ip.u_addr.ip4.addr = info.gw.addr;
             }
             esp_netif_set_dns_info(netif_sta, ESP_NETIF_DNS_MAIN, &dns);
@@ -631,7 +631,8 @@ espurna::http::server::Server server;
 int64_t last_activity { 0 };
 bool restart { false };
 
-// Basic login: the /safeboot page of ESPurna tells safeboot by its Basic challenge
+// The login of every ESPurna page (the server's Digest, as the head and the migration image), realm "<hostname> safeboot": the
+// /safeboot page of ESPurna tells safeboot from the head by that realm
 bool authenticated(WebRequest& request) {
     last_activity = esp_timer_get_time();
 
@@ -640,9 +641,7 @@ bool authenticated(WebRequest& request) {
         return true;
     }
 
-    const std::string challenge = "Basic realm=\"" + realm + "\"";
-    request.addHeader("WWW-Authenticate", challenge.c_str());
-    request.send(401, "text/plain", "Authentication required");
+    request.requestAuthentication(realm.c_str());
     return false;
 }
 
@@ -722,8 +721,20 @@ void onRoot(WebRequest& request) {
     send(request, body);
 }
 
+// a page of another site must not make the board flash or boot something (espurna/libs/image_receiver.h)
+bool sameOrigin(WebRequest& request) {
+    if (espurna::image::sameOrigin(request.header("Origin"), request.header("Host"),
+            request.header("X-Forwarded-Host")))
+    {
+        return true;
+    }
+
+    request.send(403, "text/plain", "ERROR: Origin");
+    return false;
+}
+
 void onBoot(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!authenticated(request) || !sameOrigin(request)) {
         return;
     }
 
@@ -744,7 +755,7 @@ std::string formValue(WebRequest& request, const char* key) {
 
 // the download runs here, the loop waits for it (nothing else to serve meanwhile)
 void onUrl(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!authenticated(request) || !sameOrigin(request)) {
         return;
     }
 
@@ -759,10 +770,15 @@ void onUrl(WebRequest& request) {
     restart = true;
 }
 
-// the image of an upload, the request's context
+// the image of an upload, the request's context: the one image receiver into the writer
 struct Upload {
+    Upload() :
+        receiver(writer)
+    {}
+
     Writer writer;
-    bool ok { true };
+    espurna::image::Receiver receiver;
+    bool refused { false };
 };
 
 void onUploadBody(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool) {
@@ -777,18 +793,24 @@ void onUploadBody(WebRequest& request, const char*, size_t index, const uint8_t*
             return;
         }
         request.setContext(upload, [](void* ptr) {
-            auto* upload = static_cast<Upload*>(ptr);
-            upload->writer.abort();
-            delete upload;
+            delete static_cast<Upload*>(ptr);
         });
-        upload->writer.expected = request.contentLength();
+
+        if (!espurna::image::sameOrigin(request.header("Origin"), request.header("Host"),
+                request.header("X-Forwarded-Host")))
+        {
+            upload->refused = true;
+            return;
+        }
+
+        upload->receiver.expect(request.fileSize());
     }
 
-    if (!upload || !upload->ok) {
+    if (!upload || upload->refused) {
         return;
     }
 
-    upload->ok = upload->writer.write(reinterpret_cast<const char*>(data), len);
+    upload->receiver.push(data, len);
     last_activity = esp_timer_get_time();
 }
 
@@ -798,23 +820,17 @@ void onUpload(WebRequest& request) {
     }
 
     auto* upload = static_cast<Upload*>(request.context());
-    bool ok = upload && upload->ok && request.contentLength()
-        && (request.bodyReceived() == request.contentLength());
-    if (ok) {
-        ok = upload->writer.finish();
-    } else if (upload) {
-        upload->writer.abort();
-        if (upload->writer.error.empty()) {
-            upload->writer.error = "connection lost";
-        }
+    if (upload && upload->refused) {
+        request.send(403, "text/plain", "ERROR: Origin");
+        return;
     }
 
-    last_result = ok ? ("uploaded " + std::to_string(upload->writer.written) + " bytes")
-        : (upload ? upload->writer.error : std::string("no image"));
+    const char* error = upload ? upload->receiver.finish() : "no image";
+    last_result = !error ? ("uploaded " + std::to_string(upload->writer.written) + " bytes") : std::string(error);
     storeResult(last_result);
-    const std::string text = ok ? (last_result + ", booting ESPurna") : last_result;
-    request.send(ok ? 200 : 400, "text/plain", reinterpret_cast<const uint8_t*>(text.data()), text.size());
-    restart = ok;
+    const std::string text = !error ? (last_result + ", booting ESPurna") : last_result;
+    request.send(!error ? 200 : 400, "text/plain", reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    restart = !error;
 }
 
 void web() {

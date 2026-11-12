@@ -92,6 +92,10 @@ if ESP8266:
             env.VerboseAction(check_binsize, "Checking maximum upload size $TARGET"),
         )
 
+    # BearSSL: one version on every chip, our fork (code/libraries.ini `bearssl`, a lib_deps library): the prebuilt
+    # libbearssl.a of the core leaves the link (nothing of the core that is linked uses it: the TLS is libs/tls.h)
+    env.Replace(LIBS=[lib for lib in env["LIBS"] if str(lib) != "bearssl"])
+
     # disable postmortem printing to the uart. another one is in eboot, but this is what causes the most harm
     if "DISABLE_POSTMORTEM_STACKDUMP" in itertools.chain(env["CPPFLAGS"], projenv["CPPFLAGS"]):
         disable_postmortem_output(env)

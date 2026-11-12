@@ -67,8 +67,8 @@ boot.
 
 The same as on every chip ([docs/modules.md](../docs/modules.md#updating-the-head)): the board restarts without modules,
 the browser uploads the head to `/upgrade` (eboot copies it from behind the running image at the restart), then the
-modules are written again. Boards on a full image of the older releases go through the mini once, and ESPurna 1.15
-boards have their own way: [docs/updates.md](../docs/updates.md#esp8266-upload-the-mini-for-older-1-mb-images).
+modules are written again. Boards on a full image of the older releases go through the migration image once, and ESPurna 1.15
+boards have their own way: [docs/updates.md](../docs/updates.md#esp8266-upload-the-migration-image-for-older-1-mb-images).
 
 ## Nuances
 
@@ -111,7 +111,7 @@ instead, because a plain pin would read the pulses as constant presses and relea
 ```
 cd code
 pio run -c platformio_esp8266.ini -e esp8266   # the head, every module, the release files (docs/modules.md)
-pio run -d mini-app                   # the mini, code/mini-app/.pio/build/esp8266-1m-mini/firmware.bin
+pio run -d migration-app                   # the migration image, code/migration-app/.pio/build/esp8266-1m-migration/firmware.bin
 ```
 
 Files in `code/.pio/build_esp8266/esp8266/`: `espurna-esp8266.bin` (+ `.bin.gz`), `espurna-esp8266.ota`.

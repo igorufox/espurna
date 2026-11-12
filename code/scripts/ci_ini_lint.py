@@ -2,10 +2,10 @@
 """Lint of the PlatformIO configs of the CI (.github/workflows/esp32.yml, first job).
 
     python scripts/ci_ini_lint.py platformio_esp8266.ini platformio_esp32.ini platformio_beken.ini \
-        safeboot-app/platformio.ini mini-app/platformio.ini
+        safeboot-app/platformio.ini migration-app/platformio.ini
 
 Run from code/ (extra_configs are relative to it, same as for `pio run -c ...`). platformio_<chip>.ini are the chips,
-any other config (safeboot-app, mini-app: the separate projects of the release) takes part in the library, macro and
+any other config (safeboot-app, migration-app: the separate projects of the release) takes part in the library, macro and
 platform checks. Fails on:
 - `-U<NAME>` in the build_flags / build_src_flags of an env: PlatformIO puts every -U after every -D, so
   `-UX -DX=1` leaves X undefined (06.11: options silently off)
@@ -26,7 +26,7 @@ platform checks. Fails on:
   lib/ and is not in lib_ignore (scripts/module_link.py compiles it for the modules, the head's LDF must not); a
   lib_deps library that is a module library on one chip and not on another chip that has it (one lib_ignore)
 - a platform or a platform package not pinned to one version (a version range, a bare name, a branch); the
-  safeboot-app takes the platform of the ESP32, the mini-app the platform and toolchain of the ESP8266
+  safeboot-app takes the platform of the ESP32, the migration-app the platform and toolchain of the ESP8266
 
 Values are resolved with PlatformIO's ProjectConfig when it can be imported (same resolution as the build: extends,
 [env], ${section.option}, extra_configs), otherwise with configparser and the same rules re-implemented here.
@@ -47,7 +47,7 @@ FLAG_OPTIONS = ("build_flags", "build_src_flags")
 MODULE_FLAG_OPTIONS = ("custom_module_flags",)
 CHIP_RE = re.compile(r"platformio_([a-z0-9]+)\.ini$")
 # the separate projects of the release (the folder of their platformio.ini) and the chip whose platform they take
-PROJECT_CHIPS = {"safeboot-app": "esp32", "mini-app": "esp8266"}
+PROJECT_CHIPS = {"safeboot-app": "esp32", "migration-app": "esp8266"}
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ class FallbackConfig:
         with open(path, encoding="utf-8") as f:
             self.parser.read_file(f, path)
         if self.parser.has_option("platformio", "extra_configs"):
-            # relative to the project, as PlatformIO takes them (mini-app, safeboot-app: ../libraries.ini)
+            # relative to the project, as PlatformIO takes them (migration-app, safeboot-app: ../libraries.ini)
             base = os.path.dirname(path)
             for pattern in parse_multi_values(self.parser.get("platformio", "extra_configs")):
                 for item in sorted(glob.glob(os.path.join(base, os.path.expanduser(pattern)))):
@@ -152,7 +152,16 @@ def load_config(path, force_fallback):
         except ImportError:
             pass
         else:
-            return ProjectConfig(path, parse_extra=True, expand_interpolations=True), "ProjectConfig"
+            # extra_configs are relative to the project of the config (safeboot-app/, migration-app/: ../libraries.ini), as
+            # for `pio run` inside it: read it from its own folder
+            folder = os.path.dirname(os.path.abspath(path))
+            here = os.getcwd()
+            os.chdir(folder)
+            try:
+                config = ProjectConfig(os.path.basename(path), parse_extra=True, expand_interpolations=True)
+            finally:
+                os.chdir(here)
+            return config, "ProjectConfig"
     return FallbackConfig(path), "configparser"
 
 
@@ -494,7 +503,10 @@ def check_shared_versions(paths):
                 for name in parser.options(section):
                     value = parser.get(section, name)
                     if shared:
-                        if section in ("libraries", "platforms") and not (pinned(value) or GIT_TAG_RE.match(value)):
+                        # lwip, lwip_esp8266: the version the platform brings built in (MAJOR.MINOR.REVISION)
+                        bare = name.startswith("lwip") and re.match(r"^\d+\.\d+\.\d+$", value)
+                        if section in ("libraries", "platforms") and not (pinned(value) or GIT_TAG_RE.match(value)
+                                                                          or bare):
                             problems.append(f"{file}: [{section}] {name} = {value}: not one exact version")
                         continue
                     if name not in VERSIONED_OPTIONS:

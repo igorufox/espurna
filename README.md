@@ -40,7 +40,7 @@ template (*ADMIN → Device Template*) or the settings, the features from the mo
 
 | Architecture | Release files | Boards run on it | Page |
 |--------------|---------------|------------------|------|
-| **ESP8266 / ESP8285** | `espurna-esp8266.bin`, `.ota` (+ the mini for older images) | Sonoff Basic, Sonoff Mini R1/R2, Moes MS-104B, HW-622, LC-Tech ESP-12F relay x2 and x4 | [esp8266/README.md](esp8266/README.md) |
+| **ESP8266 / ESP8285** | `espurna-esp8266.bin`, `.ota` (+ the migration image for older images) | Sonoff Basic, Sonoff Mini R1/R2, Moes MS-104B, HW-622, LC-Tech ESP-12F relay x2 and x4 | [esp8266/README.md](esp8266/README.md) |
 | **ESP32** | `espurna-esp32.bin` (merged, with the safeboot), `.ota` | LC-Tech ESP32 relay x2, Sonoff MINIR4, Sonoff NSPanel | [esp32/README.md](esp32/README.md) |
 | **Beken BK7231N** | `espurna-beken-tuya.uf2`, `-quectel.uf2`, `.ota` | Tuya TYWRA-RF (CB3S), Tuya 4-gang (CBU), Sparkleiot Mini (XH-CB2S), in-wall relay 86-TDQ (CB2S) and its bare-chip variant (QFN32), MOES MS-104B Matter (CBU) | [beken/README.md](beken/README.md) |
 
@@ -74,7 +74,7 @@ pio run -c platformio_esp8266.ini -e esp8266         # ESP8266: espurna-esp8266.
 pio run -d safeboot-app                              # ESP32: the safeboot first (ESP-IDF project), then
 pio run -c platformio_esp32.ini -e esp32             #   espurna-esp32.bin (merged), .ota
 py -3 -m platformio run -c platformio_beken.ini -e beken   # Beken: espurna-beken-tuya.uf2, -quectel.uf2, .ota
-pio run -d mini-app                                  # the mini, for 1 MB boards on a full image of an older release
+pio run -d migration-app                                  # the migration image, for 1 MB boards on a full image of an older release
 ```
 
 The files are in `code/.pio/build_<chip>/<chip>/`.

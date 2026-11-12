@@ -19,11 +19,9 @@ HTTP SERVER - the implementation (libs/http_server.h), part of libs/net_impl.h. 
 #include <vector>
 
 // BearSSL: MD5 of the Digest login (the one hash library of ESPurna)
-#if __has_include(<bearssl/bearssl.h>)
-#include <bearssl/bearssl.h>
-#else
+// BearSSL: our fork (igorufox/bearssl-esp8266, code/libraries.ini `bearssl`) on every chip, the ESP8266 too (its
+// core's prebuilt libbearssl.a is taken out of the link, scripts/pio_main.py)
 #include <bearssl.h>
-#endif
 
 namespace espurna {
 namespace http {
@@ -117,7 +115,7 @@ const char* nonce() {
     static char value[33] {};
     if (!value[0]) {
         uint8_t random[16];
-        chip::random(random, sizeof(random));
+        ::espurna::tls::chip::random(random, sizeof(random));
         hex(random, sizeof(random), value);
     }
     return value;
@@ -335,7 +333,7 @@ public:
         }
 
         // the response is checked with the nonce the client used: right with another one (of another boot, of the
-        // full image before the mini) is stale, not a wrong password
+        // full image before the migration image) is stale, not a wrong password
         char client_nonce[48];
         if (!headerParam(auth, "nonce", client_nonce, sizeof(client_nonce))) {
             return false;
@@ -399,6 +397,10 @@ public:
         }
         _extra_len += snprintf(_extra + _extra_len, sizeof(_extra) - _extra_len, "%s: %s\r\n", name, value);
         return true;
+    }
+
+    void send(int code, const char* type, const char* body) {
+        send(code, type, reinterpret_cast<const uint8_t*>(body), body ? strlen(body) : 0);
     }
 
     void send(int code, const char* type, const uint8_t* body, size_t len) {

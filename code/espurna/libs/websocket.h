@@ -7,7 +7,7 @@ key, BearSSL) and takes the connection. The loop drives it, nothing waits:
 - messages in: masked frames, fragments joined, up to MessageMax bytes (longer ones are dropped), text or binary
 - ping answered with pong, close answered and the connection closed, idle clients pinged
 
-The implementation is libs/websocket_impl.h, part of libs/net_impl.h.
+The implementation is libs/websocket_impl.h, included by the one user, the ws module (ws_server.cpp).
 
 */
 

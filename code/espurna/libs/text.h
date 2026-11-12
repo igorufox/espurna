@@ -1,6 +1,6 @@
 /*
 
-TEXT - the one escaping and base64 of everything ESPurna builds (the head, code/mini-app, code/safeboot-app). No
+TEXT - the one escaping and base64 of everything ESPurna builds (the head, code/migration-app, code/safeboot-app). No
 Arduino: any string type that takes `+= char` and `+= const char*` (Arduino String, std::string), any byte container
 with push_back().
 
@@ -28,7 +28,7 @@ void jsonString(Out& out, const char* value, size_t len) {
             out += '\\';
             out += c;
         } else if ((static_cast<unsigned char>(c) < 0x20) || (c == '<') || (c == '>')) {
-            // by hand: the mini's formatter (the SDK's) has no field width
+            // by hand: the migration image's formatter (the SDK's) has no field width
             static const char Digits[] = "0123456789abcdef";
             const auto byte = static_cast<unsigned char>(c);
             const char code[7] { '\\', 'u', '0', '0', Digits[byte >> 4], Digits[byte & 15], '\0' };

@@ -15,11 +15,9 @@ WEBSOCKET - the implementation (libs/websocket.h), part of libs/net_impl.h. No A
 #include <new>
 #include <vector>
 
-#if __has_include(<bearssl/bearssl.h>)
-#include <bearssl/bearssl.h>
-#else
+// BearSSL: our fork (igorufox/bearssl-esp8266, code/libraries.ini `bearssl`) on every chip, the ESP8266 too (its
+// core's prebuilt libbearssl.a is taken out of the link, scripts/pio_main.py)
 #include <bearssl.h>
-#endif
 
 namespace espurna {
 namespace websocket {

@@ -44,7 +44,7 @@ in arch/<arch>/system_<arch>.cpp (ref. espurna::system::chip in system.h)
 // DEFERRED CALLBACKS (ref. espurna_tasks.h runInLoop())
 // -----------------------------------------------------------------------------
 
-// Network handlers that could not take the loop lock in time (ref. AsyncGuard) hand
+// Tasks of the SDKs (Wi-Fi events, SNTP, Matter on ESP32 / Beken) hand
 // their work over to the loop task. Queue is only ever touched under the mutex (no-op on esp8266,
 // where everything runs in the same context), callbacks themselves run outside of it, in the order
 // they were queued. Bounded: a stuck loop() must not take the heap with it (copies of MQTT messages, WS frames)

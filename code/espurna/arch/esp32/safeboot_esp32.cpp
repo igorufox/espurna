@@ -16,6 +16,7 @@ ref. safeboot_esp32.h
 #include "../../libs/esp32_partitions.h"
 #include "../../libs/fetch_check.h"
 #include "../../libs/http_client.h"
+#include "../../libs/image_receiver.h"
 
 #include <esp_attr.h>
 #include <esp_flash.h>
@@ -229,7 +230,7 @@ void image() {
     }
 }
 
-// the same checks as the mini and the head's fetch (libs/fetch_check.h); an empty SHA-256 is fine here
+// the same checks as the migration image and the head's fetch (libs/fetch_check.h); an empty SHA-256 is fine here
 bool validUrl(const String& url) {
     return ::espurna::fetch_check::validUrl(url);
 }
@@ -669,8 +670,10 @@ fieldset{margin-top:16px}.err{color:#b00}.ok{color:#070}#log{white-space:pre-wra
 <div id="old" hidden><fieldset><legend>Migrate to the safeboot layout</legend><p>This board has the old two-slot layout:
 the images with Matter (2.1 MB) no longer fit its 1.9 MB slots. The migration puts the ESPurna safeboot image in front
 and one 2880 KB slot for ESPurna after it, then restarts into safeboot. With an URL safeboot downloads ESPurna by itself,
-without one it waits for an upload in its own web UI (same address, user admin, the admin password). Settings stay.
-Keep the power on until ESPurna is back.</p>
+without one it waits for an upload in its own web UI (same address, user admin, the admin password). Settings stay.</p>
+<p class="err"><b>Keep the power on until ESPurna is back.</b> The flash layout changes: a power cut in between can leave
+the board without an image that boots, then only flashing by wire helps. Not on a board in a wall without a way to reach
+its UART.</p>
 <label>The release image (espurna-esp32-*.bin, its safeboot is used) or a safeboot image<input type="file" id="mfile" accept=".bin"></label>
 <label>ESPurna image URL, optional (http:// or https://, the .bin of the release)<input type="text" id="murl"></label>
 <button id="migrate">Migrate</button></fieldset></div>
@@ -678,7 +681,9 @@ Keep the power on until ESPurna is back.</p>
 image into the ESPurna slot and starts it.</p>
 <label>From an URL (http:// or https://, the .bin of the release)<input type="text" id="url"></label><button id="byurl">Update from URL</button>
 <p>Or with a file: <button id="byfile">Restart into safeboot</button> and upload the image there.</p></fieldset>
-<fieldset><legend>Install or replace safeboot</legend><label>The release image (espurna-esp32-*.bin, its safeboot is used) or a safeboot image
+<fieldset><legend>Install or replace safeboot</legend>
+<p class="err">Keep the power on while safeboot is written: a power cut leaves no safeboot (ESPurna still boots, the
+next update by URL or file needs a new safeboot first).</p><label>The release image (espurna-esp32-*.bin, its safeboot is used) or a safeboot image
 <input type="file" id="sfile" accept=".bin"></label><button id="install">Install</button></fieldset></div>
 <div id="log" hidden></div>
 <script>
@@ -692,18 +697,21 @@ async function espurna(t0,was){for(;;){await wait(5000);const s=Math.round((Date
  catch(e){}log('Waiting for ESPurna ('+s+' s): safeboot joins Wi-Fi, downloads and writes the image. If nothing after '
  +'5 minutes, open this address again (safeboot UI) or join its access point <hostname>-SAFEBOOT, 192.168.4.1.')}}
 async function safeboot(t0){for(;;){await wait(3000);const s=Math.round((Date.now()-t0)/1000);
- try{const r=await fetch('/',{cache:'no-store'});if(r.status==401&&(r.headers.get('WWW-Authenticate')||'').startsWith('Basic')){location.href='/';return}}
+ try{const r=await fetch('/',{cache:'no-store'});if(r.status==401&&(r.headers.get('WWW-Authenticate')||'').indexOf(' safeboot"')>=0){location.href='/';return}}
  catch(e){}log('Restarting into safeboot ('+s+' s)...')}}
 function send(path,body){return new Promise((ok,no)=>{const x=new XMLHttpRequest();x.open('POST',path);
  x.upload.onprogress=e=>{if(e.lengthComputable)log('Uploading '+Math.round(e.loaded*100/e.total)+'%')};
  x.onload=()=>(x.status==200?ok:no)(x.responseText);x.onerror=()=>no('connection error');x.send(body)})}
 function form(fields){const f=new FormData();for(const k in fields)f.append(k,fields[k]);return f}
 $('migrate').onclick=async()=>{const file=$('mfile').files[0];if(!file){log('Pick the safeboot image','err');return}
+ if(!confirm('The flash layout changes now. Keep the power on until ESPurna is back: a power cut in between can leave '
+  +'the board without an image that boots (then only flashing by wire helps). Continue?'))return;
  const f=form({url:$('murl').value.trim()});f.append('file',file,file.name);
  try{log(await send('safeboot/migrate',f));if($('murl').value.trim())espurna(Date.now(),'old');else safeboot(Date.now())}catch(e){log(e,'err')}};
 $('byurl').onclick=async()=>{try{log(await send('safeboot/update',form({url:$('url').value.trim()})));espurna(Date.now(),'safeboot')}catch(e){log(e,'err')}};
 $('byfile').onclick=async()=>{try{log(await send('safeboot/switch',form({})));safeboot(Date.now())}catch(e){log(e,'err')}};
 $('install').onclick=async()=>{const file=$('sfile').files[0];if(!file){log('Pick the safeboot image','err');return}
+ if(!confirm('Safeboot is written now. Keep the power on until it is done. Continue?'))return;
  const f=new FormData();f.append('file',file,file.name);try{log(await send('safeboot/install',f),'ok');show(await status())}catch(e){log(e,'err')}};
 function show(s){st=s;$('url').value=s.url;$('murl').value=s.url;
  $('info').innerHTML='Running: '+s.running+'<br>Layout: '+(s.layout==='old'?'two OTA slots (old)':s.layout)
@@ -716,6 +724,25 @@ status().then(show).catch(e=>log(e,'err'));
 bool authenticated(WebRequest& request) {
     if (!webAuthenticate(request)) {
         webRequestAuthentication(request);
+        return false;
+    }
+
+    return true;
+}
+
+// the POSTs that change what the board boots: the login, and not a page of another site (libs/image_receiver.h)
+bool sameOrigin(WebRequest& request) {
+    return espurna::image::sameOrigin(
+        request.header("Origin"), request.header("Host"), request.header("X-Forwarded-Host"));
+}
+
+bool allowed(WebRequest& request) {
+    if (!authenticated(request)) {
+        return false;
+    }
+
+    if (!sameOrigin(request)) {
+        webSend(request, 403, "text/plain", String(F("ERROR: Origin")));
         return false;
     }
 
@@ -780,7 +807,7 @@ String formUrl(WebRequest& request) {
 }
 
 void onUpdate(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -797,7 +824,7 @@ void onUpdate(WebRequest& request) {
 }
 
 void onSwitch(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -814,7 +841,7 @@ void onSwitch(WebRequest& request) {
 // One handler for both images that go into the safeboot slot: the migration (old layout, into the first OTA slot
 // that becomes the factory partition) and install / replace (safeboot layout, into the factory partition itself)
 void onSafebootUpload(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool final) {
-    if (!webAuthenticate(request)) {
+    if (!webAuthenticate(request) || !sameOrigin(request)) {
         return;
     }
 
@@ -868,7 +895,7 @@ bool uploadDone(WebRequest& request) {
 }
 
 void onInstall(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -883,7 +910,7 @@ void onInstall(WebRequest& request) {
 }
 
 void onMigrate(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -1064,6 +1091,14 @@ bool safebootUpdateFromUrl(const String& url, const String& sha256, String& erro
 
     setSetting("sbUrl", url);
     return true;
+}
+
+String safebootResult() {
+    return espurna::safeboot::request::read("result");
+}
+
+String safebootUrl() {
+    return espurna::safeboot::request::read("url");
 }
 
 #if WEB_SUPPORT

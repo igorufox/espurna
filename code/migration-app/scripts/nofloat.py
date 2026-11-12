@@ -9,3 +9,6 @@ for symbol in ("_printf_float", "_scanf_float"):
             del flags[index:index + 2]
             break
 
+
+# BearSSL: our fork (code/libraries.ini `bearssl`, lib_deps), as the head: the core's prebuilt libbearssl.a leaves the link
+env.Replace(LIBS=[lib for lib in env["LIBS"] if str(lib) != "bearssl"])

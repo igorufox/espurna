@@ -761,12 +761,6 @@
 #define WEB_ACCESS_LOG              0           // Log every request that was received by the server (but, not necessarily processed)
 #endif
 
-// Requires ESPAsyncTCP to be built with ASYNC_TCP_SSL_ENABLED=1 and Arduino Core version >= 2.4.0
-// XXX: This is not working at the moment!! Pending https://github.com/me-no-dev/ESPAsyncTCP/issues/95
-#ifndef WEB_SSL_ENABLED
-#define WEB_SSL_ENABLED             0           // Use HTTPS web interface
-#endif
-
 #ifndef WEB_USERNAME
 #define WEB_USERNAME                "admin"     // HTTP username
 #endif
@@ -892,39 +886,20 @@
 #endif
 
 // -----------------------------------------------------------------------------
-// SSL Client                                                 ** EXPERIMENTAL **
+// TLS client (libs/tls.h: BearSSL on every chip, the HTTP client and MQTT)
 // -----------------------------------------------------------------------------
 
-#ifndef SECURE_CLIENT
-#define SECURE_CLIENT                          SECURE_CLIENT_NONE     // What variant of WiFiClient to use:
-                                                                      // SECURE_CLIENT_NONE    - No secure client support (default)
-                                                                      // SECURE_CLIENT_BEARSSL - BearSSL client secure support (with Core versions newer than 2.5.0, TLS 1.2)
-                                                                      // SECURE_CLIENT_AXTLS   - axTLS client secure support (only with Core versions older than 3.0.0, ONLY TLS 1.1, NOT recommended)
-#endif
-
 // Security check that is performed when the connection is established:
-// SECURE_CLIENT_CHECK_CA           - Use Trust Anchor / Root Certificate
-//                                    Supported only by the SECURE_CLIENT_BEARSSL
-//                                    (See respective ..._SECURE_CLIENT_INCLUDE_CA options per-module)
-// SECURE_CLIENT_CHECK_FINGERPRINT  - Check certificate fingerprint
+// SECURE_CLIENT_CHECK_FINGERPRINT  - the SHA-1 fingerprint of the server certificate
 // SECURE_CLIENT_CHECK_NONE         - Allow insecure connections
+// SECURE_CLIENT_CHECK_CA           - a trust anchor; not available yet (the connection is refused)
 
 #ifndef SECURE_CLIENT_CHECK
-
-#if SECURE_CLIENT == SECURE_CLIENT_BEARSSL
-#define SECURE_CLIENT_CHECK                    SECURE_CLIENT_CHECK_CA
-
-#else
 #define SECURE_CLIENT_CHECK                    SECURE_CLIENT_CHECK_FINGERPRINT
-
 #endif
 
-
-#endif // SECURE_CLIENT_CHECK
-
-// Support Maximum Fragment Length Negotiation TLS extension
-// "...negotiate a smaller maximum fragment length due to memory limitations or bandwidth limitations."
-// - https://arduino-esp8266.readthedocs.io/en/latest/esp8266wifi/bearssl-client-secure-class.html#mfln-or-maximum-fragment-length-negotiation-saving-ram
+// Maximum Fragment Length Negotiation: the server is asked for records this small, the input buffer is that big
+// (~16.3 KB otherwise). A server that ignores the request fails the connection
 // - https://tools.ietf.org/html/rfc6066#section-4
 #ifndef SECURE_CLIENT_MFLN
 #define SECURE_CLIENT_MFLN                     0                      // The only possible values are: 512, 1024, 2048 and 4096
@@ -1029,30 +1004,18 @@
 // -----------------------------------------------------------------------------
 
 #ifndef MQTT_SUPPORT
-#define MQTT_SUPPORT                1           // MQTT support (22.38Kb async, 12.48Kb sync)
+#define MQTT_SUPPORT                1           // MQTT support
 #endif
 
 
-#ifndef MQTT_LIBRARY
-#define MQTT_LIBRARY                MQTT_LIBRARY_ASYNCMQTTCLIENT       // MQTT_LIBRARY_ASYNCMQTTCLIENT (default, https://github.com/marvinroger/async-mqtt-client)
-                                                                       // MQTT_LIBRARY_PUBSUBCLIENT (https://github.com/knolleary/pubsubclient)
-                                                                       // MQTT_LIBRARY_ARDUINOMQTT (https://github.com/256dpi/arduino-mqtt)
-#endif
 
 // -----------------------------------------------------------------------------
 // MQTT OVER SSL
 // -----------------------------------------------------------------------------
 //
-// Requires SECURE_CLIENT set to SECURE_CLIENT_AXTLS or SECURE_CLIENT_BEARSSL
-// It is recommended to use MQTT_LIBRARY_ARDUINOMQTT or MQTT_LIBRARY_PUBSUBCLIENT
-// It is recommended to use SECURE_CLIENT_BEARSSL
-// It is recommended to use ESP8266 Arduino Core >= 2.5.2 with SECURE_CLIENT_BEARSSL
-//
-// Current version of MQTT_LIBRARY_ASYNCMQTTCLIENT only supports SECURE_CLIENT_AXTLS
-//
-// It is recommended to use as little modules as possible with SECURE_CLIENT option, as it requires a large amount
-// of pre-allocated RAM. Even in MFLN mode, it will still require at least 16KiB to prepare input buffer.
-// See SECURE_CLIENT_CHECK for all possible connection verification options.
+// The one MQTT client (libs/mqtt_client.h) over the one TLS (libs/tls.h, BearSSL): mqttUseSSL, mqttScCheck (none or
+// the fingerprint, mqttFP), mqttScMFLN. The TLS buffers take ~5 KB plus the input buffer (~16.3 KB, or the MFLN size)
+// while connected.
 //
 // The simpliest way to verify SSL connection is to use fingerprinting.
 // For example, to get Google's MQTT server certificate fingerprint, run the following command:
@@ -1075,12 +1038,6 @@
 #define MQTT_SECURE_CLIENT_MFLN     SECURE_CLIENT_MFLN  // Use global MFLN setting by default
 #endif
 
-#ifndef MQTT_SECURE_CLIENT_INCLUDE_CA
-#define MQTT_SECURE_CLIENT_INCLUDE_CA        0           // Use user-provided CA. Only PROGMEM PEM option is supported.
-                                                         // When enabled, current implementation includes "static/mqtt_client_trusted_root_ca.h" with
-                                                         // const char _mqtt_client_trusted_root_ca[] PROGMEM = "...PEM data...";
-                                                         // By default, using LetsEncrypt X3 root in "static/letsencrypt_isrgroot_pem.h"
-#endif
 
 #ifndef MQTT_ENABLED
 #define MQTT_ENABLED                0               // Do not enable MQTT connection by default
@@ -1161,7 +1118,6 @@
 
 #ifndef MQTT_BUFFER_MAX_SIZE
 #define MQTT_BUFFER_MAX_SIZE        1024            // Size of the MQTT payload buffer for MQTT_MESSAGE_EVENT. Large messages will only be available via MQTT_MESSAGE_RAW_EVENT.
-                                                    // Note: When using MQTT_LIBRARY_PUBSUBCLIENT, MQTT_MAX_PACKET_SIZE should not be more than this value.
 #endif
 
 // These are the properties that will be sent when MQTT_JSON is enabled

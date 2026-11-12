@@ -1,6 +1,6 @@
 /*
 
-URL - the one URL parser of everything ESPurna builds (the HTTP client, the terminal commands, code/mini-app,
+URL - the one URL parser of everything ESPurna builds (the HTTP client, the terminal commands, code/migration-app,
 code/safeboot-app). No Arduino.
 
     <scheme>://<host>[:<port>][/<path>]   the port defaults to 80 for http, 443 for https, 0 otherwise; the path to "/"

@@ -1,6 +1,7 @@
 /*
 
-WEBSOCKET MODULE
+WEBSOCKET: the API of the WebUI's WebSocket. The server is the ws module (ws_server.cpp); every call below goes
+through the head's forwarders (ws.cpp, modules_ws.h), without the module nobody is connected and nothing is sent
 
 Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 Copyright (C) 2019 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
@@ -177,8 +178,10 @@ bool wsConnected(uint32_t client_id);
 void wsPayloadModule(JsonObject&, espurna::StringView);
 
 // Access to our module-specific lifetime callbacks.
-// Expected usage is through the on() methods
+// Expected usage is through the on() methods. Kept by the head, the ws module sends them (modules_ws.h)
 
 espurna::web::ws::Callbacks& wsRegister();
+
+// the ws module's start (ws_server.cpp, from module_ws.cpp)
 void wsSetup();
 

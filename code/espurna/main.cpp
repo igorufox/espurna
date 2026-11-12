@@ -359,8 +359,7 @@ void setup() {
     #if WEB_SUPPORT
         webSetup();
         SETUP_HEAP_PROBE("web");
-        wsSetup();
-        SETUP_HEAP_PROBE("ws");
+        // the WebSocket server is the ws module (module_ws.cpp), the head has its forwarders (ws.cpp)
         #if DEBUG_WEB_SUPPORT
             debugWebSetup();
             SETUP_HEAP_PROBE("debugWeb");

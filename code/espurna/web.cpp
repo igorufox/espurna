@@ -427,7 +427,7 @@ void webSetup() {
     }
 
     DEBUG_MSG_P(PSTR("[WEBSERVER] Webserver running on port %hu\n"), port);
-    espurnaRegisterLoop(loop);
+    espurnaRegisterLoop(espurna::web::loop);
 
     // new connections wait while the heap is low
     webGuardSetup();

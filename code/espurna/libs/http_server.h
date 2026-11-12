@@ -1,7 +1,7 @@
 /*
 
 HTTP SERVER - the one web server of everything ESPurna builds: the head of every chip (the WebUI module, the API, the
-head page of the modules, /upgrade, /safeboot ...), code/safeboot-app and code/mini-app. No Arduino: on the TCP
+head page of the modules, /upgrade, /safeboot ...), code/safeboot-app and code/migration-app. No Arduino: on the TCP
 connection of libs/tcp.h (lwIP's raw API), the loop drives it, nothing waits; handlers run in the loop.
 
 - a request: the method, the path, the query, the headers (up to HeadMax bytes of them), the parameters of the query
@@ -161,7 +161,7 @@ private:
     std::unique_ptr<Impl> _impl;
 };
 
-// --- login (also of code/mini-app's own use) -------------------------------------------------------------------------
+// --- login (also of code/migration-app's own use) -------------------------------------------------------------------------
 
 // the value of `key` in a header like Digest's (key=value, key="value"), into `out`; false - none
 bool headerParam(const char* header, const char* key, char* out, size_t size);

@@ -1,7 +1,7 @@
 /*
 
 The records of the ESPurna settings (settings_embedis.h) read in place, one version for the images that read them
-without ESPurna: code/mini-app (the EEPROM_Rotate sector of the ESP8266) and code/safeboot-app (the NVS blob of the
+without ESPurna: code/migration-app (the EEPROM_Rotate sector of the ESP8266) and code/safeboot-app (the NVS blob of the
 ESP32). Plain C++, no framework.
 
 The records go from the end of the area towards its beginning. A record, in the address order: value, value length

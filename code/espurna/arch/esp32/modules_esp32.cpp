@@ -191,11 +191,6 @@ bool rawWrite(uint32_t offset, const void* data, size_t size) {
     return esp_flash_write(writableChip(), data, offset, size) == ESP_OK;
 }
 
-// MD5 of the running app image (= firmware.bin), as the module link took it from the head
-bool headId(uint8_t out[16]) {
-    return hexId(ESP.getSketchMD5(), out);
-}
-
 uint32_t flashView(uint32_t slot) {
     return region.mapped ? (region.drom + (slot - region.lo)) : 0;
 }

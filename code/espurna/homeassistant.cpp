@@ -1279,16 +1279,12 @@ void send(DiscoveryPtr discovery, FlagPtr flag_ptr) {
 
     const auto sent = discovery->try_send_one(
         [&](const char* topic, const char* message) {
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
             // Receive acknowledgement from the broker before continuing.
             // Usually a good idea in general, to avoid filling network buffers too quickly.
             //
             // Callback is registered by mqttSendRaw() right after publishing. Registering it afterwards
             // would race with the PUBACK, which may already be handled while the publish is being logged
             // (debug output may yield), and the discovery would then wait for it forever.
-            //
-            // Not needed with LWMQTT, as it is already handled and wrapped in Result
-            // Not supported by PubSubClient
             flag = false;
             const auto pid = ::mqttSendRaw(topic, message, internal::retain, 1,
                 [flag_ptr]() {
@@ -1297,9 +1293,6 @@ void send(DiscoveryPtr discovery, FlagPtr flag_ptr) {
             if (!pid) {
                 flag = true;
             }
-#else
-            const auto pid = ::mqttSendRaw(topic, message, internal::retain, 1);
-#endif
             return pid > 0;
         });
 

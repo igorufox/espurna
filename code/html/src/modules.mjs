@@ -90,6 +90,7 @@ const STYLE = [
 // What a module brings, for the cards; a module that is not here shows its name only
 const DESCRIPTIONS = new Map([
     ["webui", "This web interface. Off: the board shows its small modules page instead."],
+    ["ws", "The WebSocket of this web interface: the live state, the settings, the debug log. The web interface needs it."],
     ["sensors", "Sensor drivers (temperature, power meters, analog, I2C, 1-Wire) and the SENSORS panel."],
     ["light", "Lights: PWM channels, colour and brightness, the LIGHTS panel."],
     ["rf", "RF bridge: learn and send 433 MHz codes, the RFBRIDGE panel."],
@@ -105,7 +106,7 @@ const DESCRIPTIONS = new Map([
 
 // the panel shows the modules by group, in this order; a module not listed goes to the last one
 export const GROUPS = [
-    ["Interface", ["webui"]],
+    ["Interface", ["webui", "ws"]],
     ["Inputs and outputs", ["relay", "button", "led", "rf", "ir", "encoder", "mcp23s08", "tuya", "dual", "stm",
         "lightfox", "ifan", "kingart"]],
     ["Light", ["light", "pwm", "my92xx"]],

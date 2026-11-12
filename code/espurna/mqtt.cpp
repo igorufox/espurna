@@ -25,74 +25,24 @@ Updated secure client support by Niek van der Maas < mail at niekvandermaas dot 
 #include "rtcmem.h"
 #include "ws.h"
 
-#include "libs/AsyncClientHelpers.h"
-#include "libs/SecureClientHelpers.h"
-
 #include "mqtt_common.ipp"
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-#include "espurna_asynctcp.h"
-#include <AsyncMqttClient.h>
-#elif MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
-#include <MQTTClient.h>
-#elif MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
-#include <PubSubClient.h>
-#endif
-
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-// AsyncMqttClient::disconnect() does nothing until the broker accepted the connection, there is no public call to
-// stop an attempt (TCP connect, or the CONNECT packet without an answer). Its AsyncClient is closed instead
-namespace espurna {
-namespace async {
-
-struct MqttClient {
-    using type = AsyncClient AsyncMqttClient::*;
-    friend type member(MqttClient);
-};
-
-template struct Member<MqttClient, &AsyncMqttClient::_client>;
-
-} // namespace async
-} // namespace espurna
-#endif
+// the one MQTT client (libs/mqtt_client.h) on the TCP / TLS stream of the head (libs/tls.h)
+#include "libs/mqtt_client_impl.h"
 
 // -----------------------------------------------------------------------------
 
 namespace {
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+enum class MqttClientState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Disconnecting
+};
 
-    AsyncMqttClient _mqtt;
-
-#else // MQTT_LIBRARY_ARDUINOMQTT / MQTT_LIBRARY_PUBSUBCLIENT
-
-    WiFiClient _mqtt_client;
-
-#if SECURE_CLIENT != SECURE_CLIENT_NONE
-    std::unique_ptr<SecureClient> _mqtt_client_secure = nullptr;
-
-    #if MQTT_SECURE_CLIENT_INCLUDE_CA
-    #include "static/mqtt_client_trusted_root_ca.h" // Assumes this header file defines a _mqtt_client_trusted_root_ca[] PROGMEM = "...PEM data..."
-    #else
-    #include "static/letsencrypt_isrgroot_pem.h" // Default to LetsEncrypt X3 certificate
-    #define _mqtt_client_trusted_root_ca _ssl_letsencrypt_isrg_x3_ca
-    #endif // MQTT_SECURE_CLIENT_INCLUDE_CA
-
-#endif // SECURE_CLIENT != SECURE_CLIENT_NONE
-
-#if MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
-
-    MQTTClient _mqtt(MQTT_BUFFER_MAX_SIZE);
-
-#elif MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
-
-    PubSubClient _mqtt;
-
-#endif
-
-#endif // MQTT_LIBRARY == MQTT_ASYNCMQTTCLIENT
-
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+// a received message up to MQTT_BUFFER_MAX_SIZE bytes is handed over whole
+espurna::mqtt::Client _mqtt(MQTT_BUFFER_MAX_SIZE);
 
 struct MqttPidCallbackHandler {
     uint16_t pid;
@@ -103,8 +53,6 @@ using MqttPidCallbacks = std::forward_list<MqttPidCallbackHandler>;
 
 MqttPidCallbacks _mqtt_publish_callbacks;
 MqttPidCallbacks _mqtt_subscribe_callbacks;
-
-#endif
 
 std::forward_list<espurna::heartbeat::Callback> _mqtt_heartbeat_callbacks;
 espurna::heartbeat::Mode _mqtt_heartbeat_mode;
@@ -318,6 +266,7 @@ STRING_VIEW_INLINE(Secure, "mqttUseSSL");
 STRING_VIEW_INLINE(Fingerprint, "mqttFP");
 STRING_VIEW_INLINE(SecureClientCheck, "mqttScCheck");
 STRING_VIEW_INLINE(SecureClientMfln, "mqttScMFLN");
+STRING_VIEW_INLINE(Ca, "mqttCA");
 
 STRING_VIEW_INLINE(Settings, "mqttSettingsEnabled");
 STRING_VIEW_INLINE(TopicSettings, "mqttSettings");
@@ -446,6 +395,12 @@ int secureClientCheck() {
 [[gnu::unused]]
 String fingerprint() {
     return getSetting(keys::Fingerprint, espurna::StringView(build::Fingerprint));
+}
+
+// PEM of the CA of the broker (mqttScCheck 2), "" - the built-in root
+[[gnu::unused]]
+String ca() {
+    return getSetting(keys::Ca);
 }
 
 [[gnu::unused]]
@@ -592,7 +547,7 @@ bool _mqttReconnectWait() {
 bool _mqtt_enabled { mqtt::build::enabled() };
 bool _mqtt_network { false };
 
-AsyncClientState _mqtt_state { AsyncClientState::Disconnected };
+MqttClientState _mqtt_state { MqttClientState::Disconnected };
 bool _mqtt_forward { false };
 
 bool _mqtt_subscribe_settings { false };
@@ -892,36 +847,6 @@ void _mqttApplyJson(String topic) {
 } // namespace
 
 // -----------------------------------------------------------------------------
-// Secure client handlers
-// -----------------------------------------------------------------------------
-
-namespace {
-
-#if SECURE_CLIENT != SECURE_CLIENT_NONE
-SecureClientConfig _mqtt_sc_config {
-    .tag = "MQTT",
-#if SECURE_CLIENT == SECURE_CLIENT_AXTLS
-    .on_host = []() -> String {
-        return _mqtt_server;
-    },
-#endif
-    .on_check = mqtt::settings::secureClientCheck,
-#if SECURE_CLIENT == SECURE_CLIENT_BEARSSL
-    .on_certificate = []() -> const char* {
-        return _mqtt_client_trusted_root_ca;
-    },
-#endif
-    .on_fingerprint = mqtt::settings::fingerprint,
-#if SECURE_CLIENT == SECURE_CLIENT_BEARSSL
-    .on_mfln = mqtt::settings::mfln,
-#endif
-    .debug = true,
-};
-#endif
-
-} // namespace
-
-// -----------------------------------------------------------------------------
 // Client configuration & setup
 // -----------------------------------------------------------------------------
 
@@ -941,9 +866,67 @@ namespace {
 //
 // Pending MQTT v5 client
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+// the CA (mqttCA) as the TLS reads it: a WebUI text field takes the PEM without its line breaks, the terminal
+// takes it with "\\n": the BEGIN / END lines are put on lines of their own again (the base64 between may be one line)
+String _mqtt_ca;
 
-void _mqttSetupAsyncClient(bool secure [[gnu::unused]] = false) {
+String _mqttCaPem(String pem) {
+    pem.replace("\\n", "\n");
+    pem.replace("-----BEGIN CERTIFICATE-----", "\n-----BEGIN CERTIFICATE-----\n");
+    pem.replace("-----END CERTIFICATE-----", "\n-----END CERTIFICATE-----\n");
+    return pem;
+}
+
+// TLS of the connection (mqttUseSSL): the certificate of the broker checked by its SHA-1 fingerprint (mqttScCheck 1,
+// mqttFP) or not at all (0); smaller records asked for (mqttScMFLN). false - a check this build cannot do
+bool _mqttTlsOptions(espurna::tls::Options& options) {
+    options = espurna::tls::Options{};
+    options.secure = mqtt::settings::secure();
+    if (!options.secure) {
+        return true;
+    }
+
+    options.fragment = mqtt::settings::mfln();
+
+    switch (mqtt::settings::secureClientCheck()) {
+    case SECURE_CLIENT_CHECK_NONE:
+        DEBUG_MSG_P(PSTR("[MQTT] TLS, the broker is not checked\n"));
+        break;
+
+    case SECURE_CLIENT_CHECK_FINGERPRINT: {
+        const auto fingerprint = mqtt::settings::fingerprint();
+        if (!espurna::tls::parseFingerprint(fingerprint.c_str(), options.fingerprint)) {
+            DEBUG_MSG_P(PSTR("[MQTT] TLS, invalid fingerprint \"%s\"\n"), fingerprint.c_str());
+            return false;
+        }
+        options.check = true;
+        DEBUG_MSG_P(PSTR("[MQTT] TLS, the broker is checked by its fingerprint\n"));
+        break;
+    }
+
+    case SECURE_CLIENT_CHECK_CA:
+        _mqtt_ca = _mqttCaPem(mqtt::settings::ca());
+        options.ca = true;
+        options.ca_pem = _mqtt_ca.c_str();
+        DEBUG_MSG_P(PSTR("[MQTT] TLS, the broker is checked against %s\n"),
+            _mqtt_ca.length() ? "the CA of mqttCA" : "the built-in root (ISRG Root X1)");
+        break;
+
+    default:
+        DEBUG_MSG_P(PSTR("[MQTT] TLS, unknown check %d\n"), mqtt::settings::secureClientCheck());
+        return false;
+    }
+
+    return true;
+}
+
+bool _mqttSetupClient() {
+    espurna::tls::Options options;
+    if (!_mqttTlsOptions(options)) {
+        return false;
+    }
+
+    _mqtt.setTls(options);
     _mqtt.setServer(_mqtt_settings.server.c_str(), _mqtt_settings.port);
     _mqtt.setClientId(_mqtt_settings.client_id.c_str());
     _mqtt.setKeepAlive(_mqtt_settings.keepalive.count());
@@ -960,100 +943,12 @@ void _mqttSetupAsyncClient(bool secure [[gnu::unused]] = false) {
         _mqtt.setCredentials(
             _mqtt_settings.user.c_str(),
             _mqtt_settings.pass.c_str());
+    } else {
+        _mqtt.setCredentials(nullptr, nullptr);
     }
-
-#if SECURE_CLIENT != SECURE_CLIENT_NONE
-    if (secure) {
-        DEBUG_MSG_P(PSTR("[MQTT] Using SSL\n"));
-        _mqtt.setSecure(secure);
-    }
-#endif // SECURE_CLIENT != SECURE_CLIENT_NONE
-
-    _mqtt.connect();
-}
-
-#endif // MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-
-#if (MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT) || (MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT)
-
-WiFiClient& _mqttGetClient(bool secure) {
-    #if SECURE_CLIENT != SECURE_CLIENT_NONE
-        return (secure ? _mqtt_client_secure->get() : _mqtt_client);
-    #else
-        return _mqtt_client;
-    #endif
-}
-
-bool _mqttSetupSyncClient(bool secure = false) {
-
-    #if SECURE_CLIENT != SECURE_CLIENT_NONE
-        if (secure) {
-            if (!_mqtt_client_secure) _mqtt_client_secure = std::make_unique<SecureClient>(_mqtt_sc_config);
-            return _mqtt_client_secure->beforeConnected();
-        }
-    #endif
 
     return true;
-
 }
-
-bool _mqttConnectSyncClient(bool secure = false) {
-    bool result = false;
-
-    const auto credentials =
-        _mqtt_settings.user.length()
-     && _mqtt_settings.pass.length();
-
-    const auto* user =
-        credentials
-            ? _mqtt_settings.user.c_str()
-            : nullptr;
-
-    const auto* pass =
-        credentials
-            ? _mqtt_settings.pass.c_str()
-            : nullptr;
-
-    if (credentials) {
-        DEBUG_MSG_P(PSTR("[MQTT] Connecting as user %s\n"), user);
-    }
-
-    #if MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
-        _mqtt.begin(_mqtt_settings.server.c_str(),
-            _mqtt_settings.port,
-            _mqttGetClient(secure));
-        _mqtt.setWill(_mqtt_settings.will_topic.c_str(),
-            _mqtt_payload_offline.c_str(),
-            _mqtt_settings.will_retain, _mqtt_settings.will_qos);
-        _mqtt.setKeepAlive(_mqtt_settings.keepalive.count());
-        _mqtt.setCleanSession(_mqtt_settings.clean_session);
-        result = _mqtt.connect(
-            _mqtt_settings.client_id.c_str(), user, pass);
-    #elif MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
-        _mqtt.setClient(_mqttGetClient(secure));
-        _mqtt.setServer(_mqtt_settings.server.c_str(), _mqtt_settings.port);
-
-        result = _mqtt.connect(
-                _mqtt_settings.client_id.c_str(),
-                user,
-                pass,
-                _mqtt_settings.will_topic.c_str(),
-                _mqtt_settings.will_qos,
-                _mqtt_settings.will_retain,
-                _mqtt_payload_offline.c_str(),
-                _mqtt_settings.clean_session);
-    #endif
-
-    #if SECURE_CLIENT != SECURE_CLIENT_NONE
-        if (result && secure) {
-            result = _mqtt_client_secure->afterConnected();
-        }
-    #endif
-
-    return result;
-}
-
-#endif // (MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT) || (MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT)
 
 #if MDNS_SERVER_SUPPORT
 bool _mqtt_mdns_discovery { false };
@@ -1101,17 +996,14 @@ void _mqttMdnsDiscovery() {
 
 void _mqttOnDisconnect();
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-// The attempt is given up (connect timeout, settings changed): its pcb is closed right here, so the next connect() does
-// not fail on the pcb still being there. Closing reports the disconnect through the library (onDisconnect, the usual
-// way); when there was no pcb (connect() failed without any callback, e.g. a DNS error) it is reported here
+// The attempt or the connection is given up (connect timeout, settings changed); the client reports it
+// (onDisconnect), when there was nothing to close it is reported here
 void _mqttStopClient() {
-    (_mqtt.*member(espurna::async::MqttClient{})).close(true);
-    if (_mqtt_state == AsyncClientState::Connecting) {
+    _mqtt.stop();
+    if (_mqtt_state == MqttClientState::Connecting) {
         _mqttOnDisconnect();
     }
 }
-#endif
 
 struct MqttConfigureGuard {
     explicit MqttConfigureGuard(bool reschedule) {
@@ -1128,12 +1020,10 @@ struct MqttConfigureGuard {
             if (_mqtt.connected()) {
                 mqttDisconnect();
             }
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
             // Pending attempt still uses the old settings, stopped same as on the connect timeout instead of waiting for it
-            else if (_mqtt_state == AsyncClientState::Connecting) {
+            else if (_mqtt_state == MqttClientState::Connecting) {
                 _mqttStopClient();
             }
-#endif
         }
 
         if (_mqtt_error && _mqtt_error.error().length()) {
@@ -1284,16 +1174,7 @@ void _mqttSettingsMigrate(int version) {
 #define __MQTT_INFO_STR(X) #X
 #define _MQTT_INFO_STR(X) __MQTT_INFO_STR(X)
 alignas(4) static constexpr char MqttBuild[] PROGMEM_STRING_ATTR {
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-    "AsyncMqttClient"
-#elif MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
-    "Arduino-MQTT"
-#elif MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
-    "PubSubClient"
-#endif
-#if SECURE_CLIENT != SEURE_CLIENT_NONE
-    " (w/ SECURE CLIENT)"
-#endif
+    "MQTT 3.1.1 client (lwIP TCP, BearSSL TLS)"
     " Buffer size " _MQTT_INFO_STR(MQTT_BUFFER_MAX_SIZE) " (bytes)"
 };
 
@@ -1304,20 +1185,20 @@ constexpr espurna::StringView _mqttBuildInfo() {
     return MqttBuild;
 }
 
-String _mqttClientState(AsyncClientState state) {
+String _mqttClientState(MqttClientState state) {
     espurna::StringView out;
 
     switch (state) {
-    case AsyncClientState::Connecting:
+    case MqttClientState::Connecting:
         out = STRING_VIEW("CONNECTING");
         break;
-    case AsyncClientState::Connected:
+    case MqttClientState::Connected:
         out = STRING_VIEW("CONNECTED");
         break;
-    case AsyncClientState::Disconnected:
+    case MqttClientState::Disconnected:
         out = STRING_VIEW("DISCONNECTED");
         break;
-    case AsyncClientState::Disconnecting:
+    case MqttClientState::Disconnecting:
         out = STRING_VIEW("DISCONNECTING");
         break;
     default:
@@ -1328,7 +1209,7 @@ String _mqttClientState(AsyncClientState state) {
     return out.toString();
 }
 
-String _mqttClientInfo(bool enabled, AsyncClientState state) {
+String _mqttClientInfo(bool enabled, MqttClientState state) {
     String out;
 
     if (enabled) {
@@ -1368,9 +1249,7 @@ bool _mqttWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant&) {
 
 void _mqttWebSocketOnVisible(JsonObject& root) {
     wsPayloadModule(root, mqtt::settings::Prefix);
-#if SECURE_CLIENT != SECURE_CLIENT_NONE
     wsPayloadModule(root, STRING_VIEW("mqttssl"));
-#endif
 }
 
 void _mqttWebSocketOnData(JsonObject& root) {
@@ -1406,10 +1285,10 @@ void _mqttWebSocketOnConnected(JsonObject& root) {
     root[Json] = mqtt::settings::json();
     root[TopicJson] = mqtt::settings::topicJson();
 
-#if SECURE_CLIENT != SECURE_CLIENT_NONE
     root[Secure] = mqtt::settings::secure();
     root[Fingerprint] = mqtt::settings::fingerprint();
-#endif
+    root[SecureClientCheck] = mqtt::settings::secureClientCheck();
+    root[Ca] = mqtt::settings::ca();
 }
 
 #endif
@@ -1628,7 +1507,7 @@ void _mqttOnConnect() {
         _mqtt_skip_flag.wait(_mqtt_skip_time);
     }
 
-    _mqtt_state = AsyncClientState::Connected;
+    _mqtt_state = MqttClientState::Connected;
 
     systemHeartbeat(_mqttHeartbeat, _mqtt_heartbeat_mode, _mqtt_heartbeat_interval);
 
@@ -1661,12 +1540,10 @@ void _mqttStopConnect() {
 }
 
 void _mqttOnDisconnect() {
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
     _mqtt_publish_callbacks.clear();
     _mqtt_subscribe_callbacks.clear();
-#endif
 
-    _mqtt_state = AsyncClientState::Disconnected;
+    _mqtt_state = MqttClientState::Disconnected;
 
     systemStopHeartbeat(_mqttHeartbeat);
 
@@ -1697,8 +1574,6 @@ void _mqttOnDisconnect() {
     }
 }
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-
 // Run the associated callback when message PID is acknowledged by the broker
 
 void _mqttPidCallback(MqttPidCallbacks& callbacks, uint16_t pid) {
@@ -1720,8 +1595,6 @@ void _mqttPidCallback(MqttPidCallbacks& callbacks, uint16_t pid) {
         }
     }
 }
-
-#endif
 
 // Force-skip everything received in a short window right after connecting to avoid syncronization issues.
 
@@ -1753,148 +1626,15 @@ void _mqttProcessMessage(espurna::StringView topic, espurna::StringView message)
     }
 }
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-
-// MQTT Broker can sometimes send messages in bulk. Even when message size is less than MQTT_BUFFER_MAX_SIZE, we *could*
-// receive a message with `len != total`, this requiring buffering of the received data. Prepare a static memory to store the
-// data until `(len + index) == total`.
-// TODO: One pending issue is streaming arbitrary data (e.g. binary, for OTA). We always set '\0' and API consumer expects C-String.
-//       In that case, there could be MQTT_MESSAGE_RAW_EVENT and this callback only trigger on small messages.
-// TODO: Current callback model does not allow to pass message length. Instead, implement a topic filter and record all subscriptions. That way we don't need to filter out events and could implement per-event callbacks.
-struct MqttMessageBuffer {
-    static constexpr auto MinSize = size_t{ 16 };
-    static constexpr auto MaxSize = size_t{ MQTT_BUFFER_MAX_SIZE };
-    static_assert(MaxSize > 0, "");
-
-    static constexpr auto Alignment = size_t{ 4 };
-    static constexpr auto Mask = Alignment - size_t{ 1 };
-
-    static constexpr auto AlignedSize = size_t{ (MaxSize + Mask) & ~Mask };
-    static constexpr auto Size = AlignedSize + Alignment;
-
-    MqttMessageBuffer() = default;
-
-    static constexpr bool fits(size_t value) {
-        return value < AlignedSize;
-    }
-
-    alignas(4) char data[(Size < MinSize) ? MinSize : Size] = {0};
-};
-
-void _mqttOnMessageAsync(char* raw_topic, char* raw_payload, AsyncMqttClientMessageProperties, size_t len, size_t index, size_t total) {
-    static auto buffer = MqttMessageBuffer();
-
-    auto topic = espurna::StringView{ raw_topic };
-    if (_mqttMaybeSkipRetained(topic)) {
+// The client hands a message over whole, the topic and the payload NUL-terminated; one longer than
+// MQTT_BUFFER_MAX_SIZE comes without them (acknowledged and dropped by the client)
+void _mqttOnMessage(const char* raw_topic, const char* raw_payload, size_t len) {
+    if (!raw_topic) {
+        DEBUG_MSG_P(PSTR("[MQTT] Ignored a message of %u bytes (more than %u)\n"),
+            len, static_cast<unsigned>(MQTT_BUFFER_MAX_SIZE));
         return;
     }
 
-    if (!buffer.fits(total)) {
-      DEBUG_MSG_P(PSTR("[MQTT] Ignored %.*s => %u / %u bytes\n"),
-          topic.length(), topic.data(), len, total);
-      return;
-    }
-
-    std::copy(raw_payload, raw_payload + len, &buffer.data[index]);
-    if (total != (len + index)) {
-        DEBUG_MSG_P(PSTR("[MQTT] Buffered %.*s => %u / %u bytes\n"),
-            topic.length(), topic.data(), len, total);
-        return;
-    }
-
-    buffer.data[total] = '\0'; // safeguard against cstring scanners
-
-    auto message = espurna::StringView{ &buffer.data[0], &buffer.data[total] };
-    _mqttProcessMessage(topic, message);
-}
-
-void _mqttOnDisconnectAsync(AsyncMqttClientDisconnectReason reason) {
-    switch (reason) {
-        case AsyncMqttClientDisconnectReason::TCP_DISCONNECTED:
-            DEBUG_MSG_P(PSTR("[MQTT] TCP Disconnected\n"));
-            break;
-
-        case AsyncMqttClientDisconnectReason::MQTT_IDENTIFIER_REJECTED:
-            DEBUG_MSG_P(PSTR("[MQTT] Identifier Rejected\n"));
-            break;
-
-        case AsyncMqttClientDisconnectReason::MQTT_SERVER_UNAVAILABLE:
-            DEBUG_MSG_P(PSTR("[MQTT] Server unavailable\n"));
-            break;
-
-        case AsyncMqttClientDisconnectReason::MQTT_MALFORMED_CREDENTIALS:
-            DEBUG_MSG_P(PSTR("[MQTT] Malformed credentials\n"));
-            break;
-
-        case AsyncMqttClientDisconnectReason::MQTT_NOT_AUTHORIZED:
-            DEBUG_MSG_P(PSTR("[MQTT] Not authorized\n"));
-            break;
-
-        case AsyncMqttClientDisconnectReason::TLS_BAD_FINGERPRINT:
-            #if ASYNC_TCP_SSL_ENABLED
-                DEBUG_MSG_P(PSTR("[MQTT] Bad fingerprint\n"));
-            #endif
-            break;
-
-        case AsyncMqttClientDisconnectReason::MQTT_UNACCEPTABLE_PROTOCOL_VERSION:
-            // This is never used by the AsyncMqttClient source
-            #if 0
-                DEBUG_MSG_P(PSTR("[MQTT] Unacceptable protocol version\n"));
-            #endif
-            break;
-
-        case AsyncMqttClientDisconnectReason::ESP8266_NOT_ENOUGH_SPACE:
-            DEBUG_MSG_P(PSTR("[MQTT] Connect packet too big\n"));
-            break;
-
-    }
-
-    // the attempt was already given up (ref. _mqttStopClient()), this is its pcb going away
-    if (_mqtt_state == AsyncClientState::Disconnected) {
-        return;
-    }
-
-    _mqttOnDisconnect();
-}
-
-// AsyncMqttClient callbacks run in the AsyncTCP task on chips with parallel network tasks. When the
-// loop lock could not be taken in time (ref. AsyncGuard), the event is handed over to loop() in order,
-// instead of racing with it (ref. Deferred in espurna_tasks.h). On esp8266 nothing is ever deferred.
-namespace {
-
-espurna::system::Deferred _mqtt_deferred;
-
-} // namespace
-
-// Library buffers are only valid while inside of the callback, deferred message owns a copy
-struct MqttDeferredMessage {
-    MqttDeferredMessage(const char* raw_topic, const char* raw_payload, AsyncMqttClientMessageProperties raw_properties, size_t len, size_t raw_index, size_t raw_total) :
-        topic(raw_topic),
-        payload(raw_payload, raw_payload + len),
-        properties(raw_properties),
-        index(raw_index),
-        total(raw_total)
-    {}
-
-    void operator()() {
-        _mqttOnMessageAsync(
-            const_cast<char*>(topic.c_str()),
-            payload.data(), properties,
-            payload.size(), index, total);
-    }
-
-    String topic;
-    std::vector<char> payload;
-    AsyncMqttClientMessageProperties properties;
-    size_t index;
-    size_t total;
-};
-
-#else
-
-// Sync client already implements buffering. Also assuming it modifies topic to include '\0', otherwise 'topic' conversion into StringView would not work properly.
-
-void _mqttOnMessage(char* raw_topic, char* raw_payload, unsigned int len) {
     auto topic = espurna::StringView{ raw_topic };
     if (_mqttMaybeSkipRetained(topic)) {
         return;
@@ -1904,7 +1644,28 @@ void _mqttOnMessage(char* raw_topic, char* raw_payload, unsigned int len) {
     _mqttProcessMessage(topic, message);
 }
 
-#endif // MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+void _mqttOnDisconnected(espurna::mqtt::DisconnectReason reason, int code) {
+    using espurna::mqtt::DisconnectReason;
+    switch (reason) {
+    case DisconnectReason::Refused:
+        DEBUG_MSG_P(PSTR("[MQTT] %s, code %d\n"), espurna::mqtt::reasonText(reason), code);
+        break;
+    case DisconnectReason::Tls:
+    case DisconnectReason::Untrusted:
+        DEBUG_MSG_P(PSTR("[MQTT] %s, BearSSL error %d\n"), espurna::mqtt::reasonText(reason), code);
+        break;
+    default:
+        DEBUG_MSG_P(PSTR("[MQTT] %s\n"), espurna::mqtt::reasonText(reason));
+        break;
+    }
+
+    // the attempt was already given up (ref. _mqttStopClient())
+    if (_mqtt_state == MqttClientState::Disconnected) {
+        return;
+    }
+
+    _mqttOnDisconnect();
+}
 
 } // namespace
 
@@ -1940,22 +1701,12 @@ namespace {
 uint16_t _mqttSendRaw(const char* topic, const char* message, bool retain, int qos, MqttPidCallback* on_publish) {
     if (_mqtt.connected()) {
         const unsigned int packetId {
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-            _mqtt.publish(topic, qos, retain, message)
-#elif MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
-            _mqtt.publish(topic, message, retain, qos)
-#elif MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
-            _mqtt.publish(topic, message, retain)
-#endif
+            _mqtt.publish(topic, qos, retain, message, strlen(message))
         };
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
         if (packetId && on_publish && *on_publish) {
             mqttOnPublish(packetId, std::move(*on_publish));
         }
-#else
-        (void)on_publish;
-#endif
 
 #if DEBUG_SUPPORT
         {
@@ -1987,11 +1738,9 @@ uint16_t mqttSendRaw(const char* topic, const char* message, bool retain, int qo
     return _mqttSendRaw(topic, message, retain, qos, nullptr);
 }
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
 uint16_t mqttSendRaw(const char* topic, const char* message, bool retain, int qos, MqttPidCallback on_publish) {
     return _mqttSendRaw(topic, message, retain, qos, &on_publish);
 }
-#endif
 
 uint16_t mqttSendRaw(const char* topic, const char* message, bool retain) {
     return mqttSendRaw(topic, message, retain, _mqtt_settings.qos);
@@ -2124,8 +1873,6 @@ void mqttEnqueue(espurna::StringView topic, espurna::StringView payload) {
 
 // -----------------------------------------------------------------------------
 
-// Only async client returns resulting PID, sync libraries return either success (1) or failure (0)
-
 uint16_t mqttSubscribeRaw(const char* topic, int qos) {
     uint16_t pid { 0u };
     if (_mqtt.connected() && (strlen(topic) > 0)) {
@@ -2192,8 +1939,6 @@ void mqttRegister(MqttCallback callback) {
     _mqtt_callbacks.push_front(callback);
 }
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-
 /**
     Register a temporary publish callback
 
@@ -2219,8 +1964,6 @@ void mqttOnSubscribe(uint16_t pid, MqttPidCallback callback) {
             .callback = std::move(callback),
         });
 }
-
-#endif
 
 // TODO: these strings are only updated after running the configuration routine and when MQTT is *enabled*
 
@@ -2248,7 +1991,7 @@ namespace {
 
 void _mqttConnect() {
     // Do not connect if already connected or still trying to connect
-    if (_mqtt.connected() || (_mqtt_state != AsyncClientState::Disconnected)) return;
+    if (_mqtt.connected() || (_mqtt_state != MqttClientState::Disconnected)) return;
 
     // Do not connect if disabled or no WiFi
     if (!_mqtt_enabled || !_mqtt_network) return;
@@ -2276,41 +2019,25 @@ void _mqttConnect() {
         return;
     }
 
-    _mqtt_state = AsyncClientState::Connecting;
+    _mqtt_state = MqttClientState::Connecting;
     _mqtt_connect_flag.reset();
     _mqttStopConnect();
 
     DEBUG_MSG_P(PSTR("[MQTT] Connecting to broker at %s:%hu\n"),
             _mqtt_settings.server.c_str(), _mqtt_settings.port);
 
-    #if SECURE_CLIENT != SECURE_CLIENT_NONE
-        const bool secure = mqtt::settings::secure();
-    #else
-        const bool secure = false;
-    #endif
-
-    #if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-        _mqttSetupAsyncClient(secure);
-    #elif (MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT) || (MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT)
-        if (_mqttSetupSyncClient(secure) && _mqttConnectSyncClient(secure)) {
-            _mqttOnConnect();
-        } else {
-            DEBUG_MSG_P(PSTR("[MQTT] Connection failed\n"));
+    if (!_mqttSetupClient() || !_mqtt.connect()) {
+        DEBUG_MSG_P(PSTR("[MQTT] Connection failed\n"));
+        if (_mqtt_state == MqttClientState::Connecting) {
             _mqttOnDisconnect();
         }
-    #else
-        #error "please check that MQTT_LIBRARY is valid"
-    #endif
-
+    }
 }
 
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-
-// AsyncMqttClient ignores the result of AsyncClient::connect(), which fails without any callback
-// on a DNS error or while the previous pcb is still around. Nothing would ever move us out of 'connecting'
+// the client times out on its own (no CONNACK); a name that never resolves or a TCP connect that hangs is given up here
 void _mqttConnectTimeout() {
     if ((mqtt::build::ConnectTimeout.count() > 0)
-        && (_mqtt_state == AsyncClientState::Connecting)
+        && (_mqtt_state == MqttClientState::Connecting)
         && _mqtt_connect_flag.wait(mqtt::build::ConnectTimeout))
     {
         DEBUG_MSG_P(PSTR("[MQTT] Not connected after %u seconds, giving up\n"),
@@ -2319,25 +2046,12 @@ void _mqttConnectTimeout() {
     }
 }
 
-#endif
-
 } // namespace
 
 void mqttLoop() {
-#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+    _mqtt.loop();
     _mqttConnectTimeout();
     _mqttConnect();
-#else
-    if (_mqtt.connected()) {
-        _mqtt.loop();
-    } else {
-        if (_mqtt_state != AsyncClientState::Disconnected) {
-            _mqttOnDisconnect();
-        }
-
-        _mqttConnect();
-    }
-#endif
 }
 
 void mqttHeartbeat(espurna::heartbeat::Callback callback) {
@@ -2351,94 +2065,18 @@ void mqttSetup() {
 
     mqtt::settings::query::setup();
 
-    #if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-
-        // XXX: should not place this in config, addServerFingerprint does not check for duplicates
-        #if SECURE_CLIENT != SECURE_CLIENT_NONE
-        {
-            if (_mqtt_sc_config.on_fingerprint) {
-                const String fingerprint = _mqtt_sc_config.on_fingerprint();
-                uint8_t buffer[20] = {0};
-                if (sslFingerPrintArray(fingerprint.c_str(), buffer)) {
-                    _mqtt.addServerFingerprint(buffer);
-                }
-            }
-        }
-        #endif // SECURE_CLIENT != SECURE_CLIENT_NONE
-
-        _mqtt.onMessage([](char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
-            espurna::system::AsyncGuard guard;
-            if (_mqtt_deferred.defer(guard)) {
-                // a copy each, bounded by runInLoop() while the loop is busy
-                _mqtt_deferred.run(MqttDeferredMessage(topic, payload, properties, len, index, total),
-                    len + std::strlen(topic));
-                return;
-            }
-
-            _mqttOnMessageAsync(topic, payload, properties, len, index, total);
-        });
-
-        _mqtt.onConnect([](bool) {
-            espurna::system::AsyncGuard guard;
-            if (_mqtt_deferred.defer(guard)) {
-                _mqtt_deferred.run([]() {
-                    _mqttOnConnect();
-                });
-                return;
-            }
-
-            _mqttOnConnect();
-        });
-
-        _mqtt.onSubscribe([](uint16_t pid, int) {
-            espurna::system::AsyncGuard guard;
-            if (_mqtt_deferred.defer(guard)) {
-                _mqtt_deferred.run([pid]() {
-                    _mqttPidCallback(_mqtt_subscribe_callbacks, pid);
-                });
-                return;
-            }
-
-            _mqttPidCallback(_mqtt_subscribe_callbacks, pid);
-        });
-
-        _mqtt.onPublish([](uint16_t pid) {
-            espurna::system::AsyncGuard guard;
-            if (_mqtt_deferred.defer(guard)) {
-                _mqtt_deferred.run([pid]() {
-                    _mqttPidCallback(_mqtt_publish_callbacks, pid);
-                });
-                return;
-            }
-
-            _mqttPidCallback(_mqtt_publish_callbacks, pid);
-        });
-
-        _mqtt.onDisconnect([](AsyncMqttClientDisconnectReason reason) {
-            espurna::system::AsyncGuard guard;
-            if (_mqtt_deferred.defer(guard)) {
-                _mqtt_deferred.run([reason]() {
-                    _mqttOnDisconnectAsync(reason);
-                });
-                return;
-            }
-
-            _mqttOnDisconnectAsync(reason);
-        });
-
-    #elif MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
-
-        _mqtt.onMessageAdvanced([](MQTTClient* , char topic[], char payload[], int length) {
-            _mqttOnMessage(topic, payload, length);
-        });
-
-    #elif MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
-
-        _mqtt.setCallback([](char* topic, byte* payload, unsigned int length) {
-            _mqttOnMessage(topic, (char *) payload, length);
-        });
-
-    #endif // MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+    // everything in loop() (libs/mqtt_client.h): the callbacks run there
+    _mqtt.onMessage(_mqttOnMessage);
+    _mqtt.onConnect([](bool) {
+        _mqttOnConnect();
+    });
+    _mqtt.onSubscribe([](uint16_t pid, uint8_t) {
+        _mqttPidCallback(_mqtt_subscribe_callbacks, pid);
+    });
+    _mqtt.onPublish([](uint16_t pid) {
+        _mqttPidCallback(_mqtt_publish_callbacks, pid);
+    });
+    _mqtt.onDisconnect(_mqttOnDisconnected);
 
     _mqttConfigure();
 
