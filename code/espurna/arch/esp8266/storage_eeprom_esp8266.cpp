@@ -10,8 +10,6 @@ EEPROM_Rotate loads the latest copy on the first use, before eepromSetup(), and 
 
 #include "../../espurna.h"
 
-#if defined(ESP8266)
-
 #include "../../storage_eeprom.h"
 
 #include <EEPROM_Rotate.h>
@@ -274,4 +272,3 @@ void backup(uint32_t index) {
 } // namespace storage
 } // namespace espurna
 
-#endif

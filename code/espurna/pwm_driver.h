@@ -49,10 +49,5 @@ inline void arduino_write(StopPwmFunc stop, uint8_t pin, uint32_t duty, uint32_t
 } // namespace driver
 } // namespace espurna
 
-#if defined(ESP8266)
-#include "arch/esp8266/pwm_esp8266.h"
-#elif defined(ESP32)
-#include "arch/esp32/pwm_esp32.h"
-#elif defined(LIBRETINY)
-#include "arch/beken/pwm_beken.h"
-#endif
+// arch/<chip>/pwm_chip.h: the chip's folder (-I of its ini)
+#include "pwm_chip.h"

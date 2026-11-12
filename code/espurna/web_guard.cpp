@@ -26,7 +26,7 @@ on the ESP8266 NONOS SDK (NO_SYS). The gate itself runs in lwIP's context, thres
 settings by the loop.
 
 Chip specific: the free heap and the largest block come from systemFreeHeap() / systemHeapStats() (arch/<chip>/
-system_<chip>.cpp). The ESP8266 head keeps its SDK reserve in heap_reserve_esp8266.cpp.
+system_<chip>.cpp). The ESP8266 head keeps its SDK reserve in arch/esp8266/heap_reserve_esp8266.cpp.
 
 */
 

@@ -119,6 +119,19 @@ class Esp32Linker(module_link.Linker):
         self._head_symbols[head_elf] = path.replace(chr(92), "/")
         return self._head_symbols[head_elf]
 
+    def symbols_arg(self, build_dir, elf, names, out):
+        """the symbols of a provider module as the head's: `"name" = address;` (an implicit linker script)"""
+        wanted = set(names)
+        lines = []
+        for line in self.run([self.tool("nm"), "-g", "--defined-only", elf]).splitlines():
+            parts = line.split()
+            if len(parts) == 3 and parts[2] in wanted:
+                lines.append(f'"{parts[2]}" = 0x{parts[0]};')
+        path = out + ".ld"
+        with open(path, "w", newline=chr(10)) as f:
+            f.write(chr(10).join(lines) + chr(10))
+        return path.replace(chr(92), "/")
+
     def check(self, name, syms):
         if syms["__mod_iram_start"] - IROM_A != syms["__mod_iram_load"] - DROM_A:
             raise RuntimeError(f"module {name}: the code is not at the same offset in both views")

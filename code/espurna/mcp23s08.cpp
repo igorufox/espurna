@@ -18,11 +18,19 @@ Copyright (C) 2016 Plamen Kovandjiev <p.kovandiev@kmpelectronics.eu> & Dimitar A
 #include "mcp23s08.h"
 #include "mcp23s08_pin.h"
 
+#include "spi.h"
+
 #include <SPI.h>
 #include <bitset>
 
-// TODO: check if this needed for SPI operation
+// the chip select of the expander (setting mcp23s08CS), the hardware CS pin of the ESP8266's HSPI by default
 #define MCP23S08_CS_PIN 15
+
+namespace {
+
+uint8_t _mcp23s08_cs { MCP23S08_CS_PIN };
+
+} // namespace
 
 // Known commands
 #define READ_CMD  0x41
@@ -88,8 +96,8 @@ private:
 
 namespace {
 
-// SPI bus (GPIO12 / 13 / 14, CS GPIO15) is set up by the first pin a relay / button / LED asks for,
-// the expander stays idle otherwise (generic images)
+// the bus of the spi module (it locks SCK / MISO / MOSI), the chip select of the expander from the settings: set up
+// by the first pin a relay / button / LED asks for, the expander stays idle otherwise
 void _mcp23s08Begin() {
     static bool done { false };
     if (done) {
@@ -97,21 +105,25 @@ void _mcp23s08Begin() {
     }
 
     done = true;
-    DEBUG_MSG_P(PSTR("[MCP23S08] Initialize SPI bus\n"));
-
-    // HSPI pins are no longer free for anything else
-    for (auto pin : {12, 13, 14, MCP23S08_CS_PIN}) {
-        gpioLock(pin);
+    if (!spiReady()) {
+        DEBUG_MSG_P(PSTR("[MCP23S08] The SPI bus is not set up\n"));
+        return;
     }
 
+    _mcp23s08_cs = getSetting(F("mcp23s08CS"), uint8_t{MCP23S08_CS_PIN});
+    if (!gpioLock(_mcp23s08_cs)) {
+        DEBUG_MSG_P(PSTR("[MCP23S08] CS GPIO%hhu is already used\n"), _mcp23s08_cs);
+        return;
+    }
+
+    DEBUG_MSG_P(PSTR("[MCP23S08] CS GPIO%hhu\n"), _mcp23s08_cs);
+
     // Expander SPI settings
-    SPI.begin();
-    SPI.setHwCs(true);
     SPI.setFrequency(1000000);
     SPI.setDataMode(SPI_MODE0);
 
-    pinMode(MCP23S08_CS_PIN, OUTPUT);
-    digitalWrite(MCP23S08_CS_PIN, HIGH);
+    pinMode(_mcp23s08_cs, OUTPUT);
+    digitalWrite(_mcp23s08_cs, HIGH);
 }
 
 } // namespace
@@ -156,9 +168,9 @@ uint8_t MCP23S08ReadRegister(uint8_t address)
     _mcp23s08TxData[0] = READ_CMD;
     _mcp23s08TxData[1] = address;
 
-    digitalWrite(MCP23S08_CS_PIN, LOW);
+    digitalWrite(_mcp23s08_cs, LOW);
     SPI.transferBytes(_mcp23s08TxData, _mcp23s08RxData, 3);
-    digitalWrite(MCP23S08_CS_PIN, HIGH);
+    digitalWrite(_mcp23s08_cs, HIGH);
 
     return _mcp23s08RxData[2];
 }
@@ -177,9 +189,9 @@ void MCP23S08WriteRegister(uint8_t address, uint8_t data)
     _mcp23s08TxData[1] = address;
     _mcp23s08TxData[2] = data;
 
-    digitalWrite(MCP23S08_CS_PIN, LOW);
+    digitalWrite(_mcp23s08_cs, LOW);
     SPI.transferBytes(_mcp23s08TxData, _mcp23s08RxData, 3);
-    digitalWrite(MCP23S08_CS_PIN, HIGH);
+    digitalWrite(_mcp23s08_cs, HIGH);
 }
 
 /**

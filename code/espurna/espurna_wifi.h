@@ -11,11 +11,8 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <Arduino.h>
 
 // SDK, lwIP and WiFi class headers, AUTH_MODE, driver::AuthOpen and driver::ScanResult
-#if defined(ESP8266)
-#include "arch/esp8266/wifi_types_esp8266.h"
-#else
-#include "arch/rtos/wifi_types_rtos.h"
-#endif
+// arch/esp8266/wifi_types_chip.h, arch/rtos/wifi_types_chip.h (ESP32, Beken): the chip's folder (-I of its ini)
+#include "wifi_types_chip.h"
 
 namespace espurna {
 namespace wifi {

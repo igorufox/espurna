@@ -60,10 +60,9 @@ is preserved.
 
 #include "scheduler_common.ipp"
 
-#if defined(ESP8266) && !defined(HOST_MOCK)
+// the chip's compat_chip.h says when the sun takes the small math of its own (the ESP8266: no libm of the SDK)
 #ifndef SCHEDULER_SUN_EMBEDDED_CMATH
-#define SCHEDULER_SUN_EMBEDDED_CMATH 1
-#endif
+#define SCHEDULER_SUN_EMBEDDED_CMATH 0
 #endif
 
 namespace espurna {

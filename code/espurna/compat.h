@@ -1,7 +1,7 @@
 /*
 
 COMPATIBILITY: C++ backports for the toolchains, then the chip part
-(arch/esp8266/compat_esp8266.h, arch/rtos/compat_rtos.h)
+(arch/esp8266/compat_chip.h, arch/rtos/compat_chip.h)
 
 */
 
@@ -78,32 +78,17 @@ constexpr const T& clamp(const T& value, const T& low, const T& high) {
 #endif
 
 #if __cplusplus < 201806L
-#if not (defined(ARDUINO_ESP8266_RELEASE_2_7_2) \
- || defined(ARDUINO_ESP8266_RELEASE_2_7_3) \
- || defined(ARDUINO_ESP8266_RELEASE_2_7_4))
-#define BIT_CAST_CONSTEXPR constexpr
-#else
-#define BIT_CAST_CONSTEXPR
-#endif
-
 template <typename To, typename From>
-BIT_CAST_CONSTEXPR To bit_cast(const From& src) noexcept {
+constexpr To bit_cast(const From& src) noexcept {
     static_assert(sizeof(From) == sizeof(To), "");
-// while part of the c++11, not implemented in the gcc4.8 release
-// just assume tests catch any issues with these when used in the code
-#if not (defined(ARDUINO_ESP8266_RELEASE_2_7_2) \
- || defined(ARDUINO_ESP8266_RELEASE_2_7_3) \
- || defined(ARDUINO_ESP8266_RELEASE_2_7_4))
     static_assert(std::is_trivially_copyable<From>::value, "");
     static_assert(std::is_trivially_copyable<To>::value, "");
-#endif
 
     To dst;
     __builtin_memcpy(&dst, &src, sizeof(dst));
 
     return dst;
 }
-#undef BIT_CAST_CONSTEXPR
 #endif
 
 #if __cplusplus < 202102L
@@ -114,6 +99,17 @@ constexpr Type to_underlying(Enum value) {
 #endif
 
 } // namespace std
+
+// An allocation that fails: std::bad_alloc where the build has exceptions (ESP32, Beken), the abort of the core where
+// it has none (ESP8266, -fno-exceptions). What the compiler has, not the chip: the code checks the heap before it
+// allocates much (nspanel heapAvailable()), the catch is the last resort where there is one
+#if __cpp_exceptions
+#define ESPURNA_TRY try
+#define ESPURNA_CATCH_BAD_ALLOC catch (const std::bad_alloc&)
+#else
+#define ESPURNA_TRY if (true)
+#define ESPURNA_CATCH_BAD_ALLOC else
+#endif
 
 // constexpr inline not always available
 #ifdef __cpp_inline_variables
@@ -126,9 +122,6 @@ constexpr Type to_underlying(Enum value) {
 // What the esp8266 Core lacks, and the esp8266 Core API shims of the other chips
 // -----------------------------------------------------------------------------
 
-#if defined(ESP8266)
-#include "arch/esp8266/compat_esp8266.h"
-#else
-#include "arch/rtos/compat_rtos.h"
-#endif
+// the chip's: arch/esp8266/compat_chip.h, arch/rtos/compat_chip.h (ESP32, Beken), by the -I of the chip's ini
+#include "compat_chip.h"
 

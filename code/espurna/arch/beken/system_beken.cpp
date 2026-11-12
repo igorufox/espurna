@@ -6,8 +6,6 @@ Chip part, the FreeRTOS chips part is in arch/rtos/system_rtos.cpp, common part 
 
 */
 
-#if defined(LIBRETINY)
-
 #include <Arduino.h>
 #include <WiFi.h>
 
@@ -565,4 +563,3 @@ void setup() {
 } // namespace debug
 } // namespace espurna
 
-#endif // LIBRETINY

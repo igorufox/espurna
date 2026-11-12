@@ -694,3 +694,13 @@ bool wakeupModemForcedSleep() {
     return espurna::sleep::forced_wakeup();
 }
 
+namespace espurna {
+namespace system {
+
+// the SYS tasks of the NONOS SDK run inside delay(), nothing to release (system_time.h)
+void delay_unlocked(uint32_t ms) {
+    ::delay(ms);
+}
+
+} // namespace system
+} // namespace espurna

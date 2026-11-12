@@ -1848,6 +1848,10 @@
 // Support expander MCP23S08
 //--------------------------------------------------------------------------------
 
+#ifndef SPI_SUPPORT
+#define SPI_SUPPORT                 0       // the SPI bus of the board (the spi module)
+#endif
+
 #ifndef MCP23S08_SUPPORT
 #define MCP23S08_SUPPORT            0
 #endif

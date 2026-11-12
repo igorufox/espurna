@@ -12,8 +12,6 @@ Copyright (C) 2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #include "../../espurna.h"
 
-#if defined(ESP8266)
-
 #include "../../wifi_driver.h"
 
 #include <AddrList.h>
@@ -513,4 +511,3 @@ void print_network(Print& out) {
 } // namespace wifi
 } // namespace espurna
 
-#endif

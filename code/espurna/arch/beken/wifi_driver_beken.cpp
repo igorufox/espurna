@@ -11,8 +11,6 @@ station channel), AP stations only from the supplicant. The watch on the IP stac
 
 #include "../../espurna.h"
 
-#if defined(LIBRETINY)
-
 #include "../rtos/wifi_driver_rtos.h"
 
 #include <WiFi.h>
@@ -324,4 +322,3 @@ void ipv6(bool) {
 } // namespace wifi
 } // namespace espurna
 
-#endif

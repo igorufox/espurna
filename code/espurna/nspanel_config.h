@@ -26,7 +26,8 @@ namespace nspanel {
 
 namespace build {
 
-constexpr size_t ConfigMax { 16384 };
+// a half of the module's flash data (nspanel_storage.cpp, 2 x 16 KB) less its header
+constexpr size_t ConfigMax { 16384 - 16 };
 
 // ArduinoJson 5 stops at 10 levels by default; each nested "page" adds 3 (item, page, items)
 constexpr uint8_t ConfigNestingLimit { 24 };

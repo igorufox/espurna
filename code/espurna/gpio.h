@@ -56,14 +56,13 @@ void setup();
 // state of the pin for the GPIO terminal command, rest of the line after the lock mark
 void print_pin(Print&, uint8_t pin);
 
-#if defined(ESP32) || defined(LIBRETINY)
 // Pins of the FreeRTOS chips are driven through the Arduino API (arch/rtos/gpio_rtos.cpp), what differs per chip:
-// which pins exist, which of them have an output driver, how a mode and a level reach the pad
+// which pins exist, which of them have an output driver, how a mode and a level reach the pad (ESP8266: its own gpio
+// layer, arch/esp8266/gpio_esp8266.cpp, does not use these)
 bool valid(uint8_t pin);
 bool valid_output(uint8_t pin);
 void pin_mode(uint8_t pin, int8_t mode);
 void write(uint8_t pin, int8_t value);
-#endif
 
 } // namespace chip
 } // namespace gpio

@@ -45,13 +45,6 @@ namespace {
 namespace build {
 namespace compat {
 
-#if defined(ESP8266)
-[[gnu::unused, gnu::deprecated("WIFI_MODEM_SLEEP_{NONE, MODEM, LIGHT} should be used instead, see config/general.h")]]
-constexpr sleep_type_t arduino_sleep(WiFiSleepType type) {
-    return static_cast<sleep_type_t>(type);
-}
-#endif
-
 [[gnu::unused]]
 constexpr sleep_type_t arduino_sleep(sleep_type_t type) {
     return type;

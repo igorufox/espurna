@@ -5,7 +5,7 @@
 # SDK's libhal comes with the libraries.
 #
 # The initial image espurna-esp8266.bin(.gz): the head, and in the sector behind it (the module area starts there,
-# modules_esp8266.cpp headEnd()) the modules file of the modules on by default (module_initial_image.py). One file for
+# arch/esp8266/modules_esp8266.cpp headEnd()) the modules file of the modules on by default (module_initial_image.py). One file for
 # the serial flash and the OTA: eboot writes the whole file from 0x0. The install image espurna-esp8266.ota: the head
 # (gzip, the Updater takes it) and every package.
 
@@ -26,7 +26,7 @@ from release_image import name as release_name, path as release_path, write, wri
 DATA_FLASH = 0x40400000
 
 # 1 MB layout: EEPROM_Rotate keeps the settings in sectors 251 and 250, the directory is the sector under them
-# (modules_esp8266.cpp directoryOffset()), its second copy the one under that
+# (arch/esp8266/modules_esp8266.cpp directoryOffset()), its second copy the one under that
 DIRECTORY_OFFSET = 0xF9000
 
 

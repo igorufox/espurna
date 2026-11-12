@@ -11,6 +11,8 @@ chip need underneath: the bk_* platform API it was written against (matter_pal.h
   discriminator, VID / PID. Nothing is ever written there
 - every other namespace (chip-config, chip-counters, the KVS of fabrics, ACL ...): FlashDB on the 'kvs' partition
 - Wi-Fi status and the connected / got IP events from the ESPurna wifi module
+- the store and the factory data of the board's identity (matter_identity.cpp, one code with the ESP32; the library
+  calls matter_identity_install() before its server init)
 - entropy from the TRNG of the chip
 - the watchdog while a controller commissions, IGMP on the netif for the mDNS of Matter
 
@@ -18,10 +20,11 @@ chip need underneath: the bk_* platform API it was written against (matter_pal.h
 
 #include "espurna.h"
 
-#if defined(LIBRETINY) && MATTER_SUPPORT
+#if MATTER_SUPPORT
 
 #include "espurna_matter.h"
 #include "espurna_tasks.h"
+#include "matter_identity.h"
 #include "layout_beken.h"
 #include "tuya_kv_beken.h"
 
@@ -392,7 +395,7 @@ bool read(const char* name, uint8_t* out, size_t size, size_t& length) {
 }
 
 // Where the identity of the board comes from, for MATTER.FACTORY and the MATTER page. No secrets. Empty: no factory
-// DAC, the library makes and uses its own development identity
+// DAC, the board makes and uses its own development identity (matter_identity.cpp)
 String source() {
     size_t length { 0 };
     if (!read("dac-cert", nullptr, 0, length)) {
@@ -600,7 +603,7 @@ int clear(const char* ns) {
 }
 
 // Matter factory reset: fabrics, ACL, counters... everything but the own identity of the board (namespace
-// "espurna-id" of matter_app.cpp), so the pairing code stays the same
+// "espurna-id" of matter_identity.cpp), so the pairing code stays the same
 constexpr char IdentityPrefix[] = "espurna-id/";
 
 int clear_all() {
@@ -840,7 +843,7 @@ void describe(Identity& out) {
     out.details += F(" bytes");
 }
 
-// everything but the own identity of the board (namespace "espurna-id" of the library), so the pairing code stays
+// everything but the own identity of the board (namespace "espurna-id", matter_identity.cpp), so the pairing code stays
 bool reset() {
     return kv::clear_all() == BkOk;
 }
@@ -850,8 +853,43 @@ size_t heap_min() {
 }
 
 } // namespace backend
+
+// The chip's part of the identity (matter_identity.cpp): FlashDB of the 'kvs' partition, namespace "espurna-id" next
+// to the stack's own; the factory data of the stock firmware, read only
+namespace identity {
+namespace {
+
+constexpr char Namespace[] = "espurna-id";
+
+} // namespace
+
+bool store_read(const char* name, uint8_t* out, size_t size, size_t& length) {
+    uint32_t read { 0 };
+    if (kv::read(Namespace, name, reinterpret_cast<char*>(out), size, &read) != BkOk) {
+        return false;
+    }
+
+    length = read;
+    return true;
+}
+
+bool store_write(const char* name, const uint8_t* data, size_t size) {
+    return kv::write(Namespace, name, reinterpret_cast<const char*>(data), size) == BkOk;
+}
+
+bool factory_read(const char* name, uint8_t* out, size_t size, size_t& length) {
+    return factory::read(name, out, size, length);
+}
+
+} // namespace identity
 } // namespace matter
 } // namespace espurna
+
+// The library calls it before its server init (matter-bk7231n matter_app.cpp): the providers of the board's identity,
+// in the Matter task (the identity is made there on the first start, below the loop's priority)
+extern "C" void matter_identity_install(void) {
+    espurna::matter::identity::install();
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The bk_* platform API of the Matter library

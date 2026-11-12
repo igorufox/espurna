@@ -82,7 +82,7 @@ void process() {
     String error;
     String warnings;
 
-    try {
+    ESPURNA_TRY {
         const size_t json_size = jsonBufferSize(job.buffer.get(), job.size);
         if (!heapAvailable(json_size, job.size, error)) {
             code = 503;
@@ -111,7 +111,7 @@ void process() {
                 applyConfig(std::move(next), warnings, build::ConfigPath);
             }
         }
-    } catch (const std::bad_alloc&) {
+    } ESPURNA_CATCH_BAD_ALLOC {
         // the file is only renamed after a successful parse, applyConfig() runs after that
         if (code == 200) {
             message = F("OK, saved; the display reload ran out of memory (try nspanel.reload)");
@@ -256,7 +256,7 @@ void onPostBody(WebRequest& request, const char*, size_t index, const uint8_t* d
         }
 
         // the body is the only copy of the text (parsed in place later)
-        if ((ESP->getMaxAllocHeap() < (total + 1 + build::ConfigBlockReserve))
+        if ((systemHeapStats().usable < (total + 1 + build::ConfigBlockReserve))
             || (systemFreeHeap() < (total + build::ConfigHeapReserve)))
         {
             rxFail(503, F("ERROR: low memory, retry"));

@@ -108,11 +108,10 @@ void finish(bool ok, const String& message) {
     storeResult(ok ? (String(F("ok: ")) + message) : (String(F("failed: ")) + message));
     DEBUG_MSG_P(PSTR("[OTA] %s %s\n"), ok ? PSTR("Done:") : PSTR("Failed:"), message.c_str());
 
-#if defined(ESP8266)
+    // the settings rotation back (only the ESP8266 rotates, storage_eeprom.cpp)
     if (!ok) {
         eepromRotate(true);
     }
-#endif
 
 #if SYSTEM_CHECK_ENABLED
     // back to the normal mode with the next boot
@@ -152,10 +151,8 @@ void loop() {
 
     pending.active = false;
 
-#if defined(ESP8266)
-    // Update writes over the second EEPROM rotation sector at the end of the free space (1 MB layout)
+    // Update writes over the second EEPROM rotation sector at the end of the free space (ESP8266 1 MB layout)
     eepromRotate(false);
-#endif
 
     const bool started = client.start(pending.url.c_str(), pending.sha256.c_str(), sink,
         [](const http::Result& result) {

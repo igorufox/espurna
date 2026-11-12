@@ -16,8 +16,6 @@ The buffer is the .bss of this object: platformio_beken.ini (custom_tcm_main_ram
 
 #include "espurna.h"
 
-#if defined(LIBRETINY)
-
 #include "storage_eeprom.h"
 #include "../../libs/crc32_ieee.h"
 
@@ -234,4 +232,3 @@ uint8_t pool() {
 } // namespace storage
 } // namespace espurna
 
-#endif // LIBRETINY

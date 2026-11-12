@@ -261,15 +261,6 @@ size_t PathParts::wildcards(const PathParts& pattern) {
     return out;
 }
 
-#if WEB_SUPPORT
-String ApiRequest::wildcard(int index) const {
-    return PathParts::wildcard(_pattern, _parts, index).toString();
-}
-
-size_t ApiRequest::wildcards() const {
-    return PathParts::wildcards(_pattern);
-}
-#endif
 
 // -----------------------------------------------------------------------------
 
@@ -286,24 +277,6 @@ STRING_VIEW_INLINE(Form, "application/x-www-form-urlencoded");
 
 } // namespace
 } // namespace content_type
-
-StringView Request::param(const String& name) {
-    const char* value = _request.param(name.c_str());
-    return value ? StringView(value) : StringView();
-}
-
-void Request::send(const String& payload) {
-    if (_done) {
-        return;
-    }
-
-    _done = true;
-    if (payload.length()) {
-        webSend(_request, 200, "text/plain", payload);
-    } else {
-        _request.send(204, "", "");
-    }
-}
 
 namespace {
 
@@ -888,13 +861,6 @@ void apiSetup() {
     espurna::api::setup();
 }
 
-bool apiOk(ApiRequest& request) {
-    return espurna::api::simple::ok(request);
-}
-
-bool apiError(ApiRequest& request) {
-    return espurna::api::simple::error(request);
-}
 
 #endif // API_SUPPORT
 

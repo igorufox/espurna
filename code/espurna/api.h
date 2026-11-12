@@ -37,8 +37,16 @@ void apiRegister(String path,
     espurna::api::JsonHandler&& get,
     espurna::api::JsonHandler&& put);
 
-bool apiError(espurna::api::Request&);
-bool apiOk(espurna::api::Request&);
+// inline: the modules answer with them without being linked against the api module
+inline bool apiError(espurna::api::Request& request) {
+    request.send(String(F("ERROR")));
+    return true;
+}
+
+inline bool apiOk(espurna::api::Request& request) {
+    request.send(String(F("OK")));
+    return true;
+}
 
 bool apiReservedParam(espurna::StringView);
 String apiKey();

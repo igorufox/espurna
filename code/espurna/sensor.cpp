@@ -39,192 +39,8 @@ Copyright (C) 2020-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "sensors/BaseAnalogEmonSensor.h"
 #include "sensors/BaseAnalogSensor.h"
 
-#if DUMMY_SENSOR_SUPPORT
-    #include "sensors/DummySensor.h"
-#endif
-
-#if A02YYU_SUPPORT
-    #include "sensors/A02YYUSensor.h"
-#endif
-#if AM2320_SUPPORT
-    #include "sensors/AM2320Sensor.h"
-#endif
-
-#if ANALOG_SUPPORT
-    #include "sensors/AnalogSensor.h"
-#endif
-
-#if BH1750_SUPPORT
-    #include "sensors/BH1750Sensor.h"
-#endif
-
-#if BMP180_SUPPORT
-    #include "sensors/BMP180Sensor.h"
-#endif
-
-#if BMX280_SUPPORT
-    #include "sensors/BMX280Sensor.h"
-#endif
-
-#if BME680_SUPPORT
-    #include "sensors/BME680Sensor.h"
-#endif
-
-#if CSE7766_SUPPORT
-    #include "sensors/CSE7766Sensor.h"
-#endif
-
-#if DALLAS_SUPPORT
-    #include "sensors/DallasSensor.h"
-#endif
-
-#if DHT_SUPPORT
-    #include "sensors/DHTSensor.h"
-#endif
-
-#if DIGITAL_SUPPORT
-    #include "sensors/DigitalSensor.h"
-#endif
-
-#if ECH1560_SUPPORT
-    #include "sensors/ECH1560Sensor.h"
-#endif
-
-#if EMON_ADC121_SUPPORT
-    #include "sensors/EmonADC121Sensor.h"
-#endif
-
-#if EMON_ADS1X15_SUPPORT
-    #include "sensors/EmonADS1X15Sensor.h"
-#endif
-
-#if EMON_ANALOG_SUPPORT
-    #include "sensors/EmonAnalogSensor.h"
-#endif
-
-#if EVENTS_SUPPORT
-    #include "sensors/EventSensor.h"
-#endif
-
-#if EZOPH_SUPPORT
-    #include "sensors/EZOPHSensor.h"
-#endif
-
-#if GEIGER_SUPPORT
-    #include "sensors/GeigerSensor.h"
-#endif
-
-#if GUVAS12SD_SUPPORT
-    #include "sensors/GUVAS12SDSensor.h"
-#endif
-
-#if HLW8012_SUPPORT
-    #include "sensors/HLW8012Sensor.h"
-#endif
-
-#if INA219_SUPPORT
-    #include "sensors/INA219Sensor.h"
-#endif
-
-#if LDR_SUPPORT
-    #include "sensors/LDRSensor.h"
-#endif
-
-#if MAX6675_SUPPORT
-    #include "sensors/MAX6675Sensor.h"
-#endif
-
-#if MICS2710_SUPPORT
-    #include "sensors/MICS2710Sensor.h"
-#endif
-
-#if MICS5525_SUPPORT
-    #include "sensors/MICS5525Sensor.h"
-#endif
-
-#if MHZ19_SUPPORT
-    #include "sensors/MHZ19Sensor.h"
-#endif
-
-#if NTC_SUPPORT
-    #include "sensors/NTCSensor.h"
-#endif
-
-#if SDS011_SUPPORT
-    #include "sensors/SDS011Sensor.h"
-#endif
-
-#if SENSEAIR_SUPPORT
-    #include "sensors/SenseAirSensor.h"
-#endif
-
-#if PM1006_SUPPORT
-    #include "sensors/PM1006Sensor.h"
-#endif
-
-#if PMSX003_SUPPORT
-    #include "sensors/PMSX003Sensor.h"
-#endif
-
-#if PULSEMETER_SUPPORT
-    #include "sensors/PulseMeterSensor.h"
-#endif
-
-#if PZEM004T_SUPPORT
-    #include "sensors/PZEM004TSensor.h"
-#endif
-
-#if SHT3X_I2C_SUPPORT
-    #include "sensors/SHT3XI2CSensor.h"
-#endif
-
-#if SI7021_SUPPORT
-    #include "sensors/SI7021Sensor.h"
-#endif
-
-#if SM300D2_SUPPORT
-    #include "sensors/SM300D2Sensor.h"
-#endif
-
-#if SONAR_SUPPORT
-    #include "sensors/SonarSensor.h"
-#endif
-
-#if T6613_SUPPORT
-    #include "sensors/T6613Sensor.h"
-#endif
-
-#if TMP3X_SUPPORT
-    #include "sensors/TMP3XSensor.h"
-#endif
-
-#if V9261F_SUPPORT
-    #include "sensors/V9261FSensor.h"
-#endif
-
-#if VEML6075_SUPPORT
-    #include "sensors/VEML6075Sensor.h"
-#endif
-
-#if VL53L1X_SUPPORT
-    #include "sensors/VL53L1XSensor.h"
-#endif
-
-#if ADE7953_SUPPORT
-    #include "sensors/ADE7953Sensor.h"
-#endif
-
-#if SI1145_SUPPORT
-    #include "sensors/SI1145Sensor.h"
-#endif
-
-#if HDC1080_SUPPORT
-    #include "sensors/HDC1080Sensor.h"
-#endif
-
-#if PZEM004TV30_SUPPORT
-    #include "sensors/PZEM004TV30Sensor.h"
-#endif
+// the drivers are modules of their own (sensors/module_<name>.cpp, config/head.h): they register with
+// sensorDriver() when they start and add their sensors with sensorAdd()
 
 #include "filters/LastFilter.h"
 #include "filters/MaxFilter.h"
@@ -233,7 +49,6 @@ Copyright (C) 2020-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "filters/MovingAverageFilter.h"
 #include "filters/SumFilter.h"
 
-#include "sensor_emon.ipp"
 
 //--------------------------------------------------------------------------------
 
@@ -1101,147 +916,6 @@ bool realTimeValues() {
 
 } // namespace settings
 
-alignas(4) static constexpr char List[] PROGMEM_STRING_ATTR =
-#if ADE7953_SUPPORT
-    "ADE7953 "
-#endif
-#if AM2320_SUPPORT
-    "AM2320_I2C "
-#endif
-#if ANALOG_SUPPORT
-    "ANALOG "
-#endif
-#if BH1750_SUPPORT
-    "BH1750 "
-#endif
-#if BMP180_SUPPORT
-    "BMP180 "
-#endif
-#if BMX280_SUPPORT
-    "BMX280 "
-#endif
-#if BME680_SUPPORT
-    "BME680 "
-#endif
-#if CSE7766_SUPPORT
-    "CSE7766 "
-#endif
-#if DALLAS_SUPPORT
-    "DALLAS "
-#endif
-#if DHT_SUPPORT
-    "DHTXX "
-#endif
-#if DIGITAL_SUPPORT
-    "DIGITAL "
-#endif
-#if ECH1560_SUPPORT
-    "ECH1560 "
-#endif
-#if EMON_ADC121_SUPPORT
-    "EMON_ADC121 "
-#endif
-#if EMON_ADS1X15_SUPPORT
-    "EMON_ADX1X15 "
-#endif
-#if EMON_ANALOG_SUPPORT
-    "EMON_ANALOG "
-#endif
-#if EVENTS_SUPPORT
-    "EVENTS "
-#endif
-#if GEIGER_SUPPORT
-    "GEIGER "
-#endif
-#if GUVAS12SD_SUPPORT
-    "GUVAS12SD "
-#endif
-#if HDC1080_SUPPORT
-    "HDC1080 "
-#endif
-#if HLW8012_SUPPORT
-    "HLW8012 "
-#endif
-#if INA219_SUPPORT
-    "INA219 "
-#endif
-#if LDR_SUPPORT
-    "LDR "
-#endif
-#if MAX6675_SUPPORT
-    "MAX6675 "
-#endif
-#if MHZ19_SUPPORT
-    "MHZ19 "
-#endif
-#if MICS2710_SUPPORT
-    "MICS2710 "
-#endif
-#if MICS5525_SUPPORT
-    "MICS5525 "
-#endif
-#if NTC_SUPPORT
-    "NTC "
-#endif
-#if PM1006_SUPPORT
-    "PM1006 "
-#endif
-#if PMSX003_SUPPORT
-    "PMSX003 "
-#endif
-#if PULSEMETER_SUPPORT
-    "PULSEMETER "
-#endif
-#if PZEM004T_SUPPORT
-    "PZEM004T "
-#endif
-#if PZEM004TV30_SUPPORT
-    "PZEM004TV30 "
-#endif
-#if SDS011_SUPPORT
-    "SDS011 "
-#endif
-#if SENSEAIR_SUPPORT
-    "SENSEAIR "
-#endif
-#if SHT3X_I2C_SUPPORT
-    "SHT3X_I2C "
-#endif
-#if SI7021_SUPPORT
-    "SI7021 "
-#endif
-#if SM300D2_SUPPORT
-    "SM300D2 "
-#endif
-#if SONAR_SUPPORT
-    "SONAR "
-#endif
-#if T6613_SUPPORT
-    "T6613 "
-#endif
-#if TMP3X_SUPPORT
-    "TMP3X "
-#endif
-#if V9261F_SUPPORT
-    "V9261F "
-#endif
-#if VEML6075_SUPPORT
-    "VEML6075 "
-#endif
-#if VL53L1X_SUPPORT
-    "VL53L1X "
-#endif
-#if EZOPH_SUPPORT
-    "EZOPH "
-#endif
-#if DUMMY_SENSOR_SUPPORT
-    "DUMMY "
-#endif
-#if SI1145_SUPPORT
-    "SI1145 "
-#endif
-    "";
-
 } // namespace
 } // namespace sensor
 
@@ -1944,7 +1618,7 @@ std::forward_list<timer::SystemTimer> timers;
 } // namespace notifications
 } // namespace
 
-void notify_after(duration::Milliseconds after, NotifyCallback callback) {
+void notify_after_impl(duration::Milliseconds after, NotifyCallback callback) {
     using namespace notifications;
 
     internal::timers.push_front(timer::SystemTimer());
@@ -1957,7 +1631,7 @@ void notify_after(duration::Milliseconds after, NotifyCallback callback) {
         });
 }
 
-void notify_now(NotifyCallback callback) {
+void notify_now_impl(NotifyCallback callback) {
     notifications::internal::callbacks.push_front(callback);
 }
 
@@ -1965,6 +1639,7 @@ namespace {
 namespace internal {
 
 std::vector<BaseSensorPtr> sensors;
+std::vector<Driver> drivers;
 size_t report_every { build::reportEvery() };
 
 duration::Seconds read_interval { build::readInterval() };
@@ -1999,720 +1674,6 @@ void add(BaseSensor* sensor) {
 
 size_t count() {
     return internal::sensors.size();
-}
-
-// Registers available sensor classes.
-//
-// Notice that every available sensor (*_SUPPORT set to 1) *that is configured* (see below) is queued
-// for initialization. For the time being, failure to `begin()` any sensor will stall all subsequent sensors.
-//
-// Future updates *should* work out whether we need to:
-// - allow to 'enable' specific sensor in settings
-//   (...would we have too much key prefixes?)
-// - 'probe' sensor (bus scan, attempt to read) separate from actual loading
-// - allow to soft-fail begin()
-//   (although, removing stable magnitude IDs)
-//
-// If you want to add another sensor instance of the same type, just duplicate
-// the initialization block and change the respective method arguments.
-// For example, to add a second DHT sensor:
-//
-// #if DHT_SUPPORT
-// {
-//     auto* sensor = new DHTSensor();
-//     sensor->setGPIO(DHT2_PIN);
-//     sensor->setType(DHT2_TYPE);
-//     add(sensor);
-// }
-// #endif
-//
-// Obviously, both DHT2_PIN and DHT2_TYPE should be accessible
-// - use `build_src_flags = -DDHT2_PIN=... -DDHT2_TYPE=...`
-// - update config/custom.h or config/sensor.h, adding `#define DHT2_PIN ...` and `#define DHT2_TYPE ...`
-
-// Every driver below is loaded only when its settings say so. Board builds have their hardware.h
-// values as the defaults of these keys and load the same as before. Generic images
-// (SENSOR_PINS_FROM_SETTINGS, ref. config/sensors.h) default every pin / port to 'none', so a driver
-// stays idle until the device template writes its keys. A driver that is not configured is skipped,
-// it no longer stops the drivers after it from loading.
-//
-// GPIO   hlw8012SEL hlw8012CF hlw8012CF1 hlw8012SelCurr(0|1) hlw8012IntMode(1 RISING|2 FALLING|3 CHANGE)
-//        ech1560CLK ech1560MISO ech1560Inv, dhtPin dhtType(11|12|21|22|2301|7021), dallasPin,
-//        digitalPin<n>, eventsPin<n> eventsPullUp<n> eventsIntMode<n> eventsDebounce<n>,
-//        pulsemeterPin pulsemeterIntMode pulsemeterDebounce, geigerPin
-// ADC    analogPin, ntcPin ntcBeta ntcRUp ntcRDown ntcR0, ldrPin ldrType ldrOnGround ldrResistor
-//        (ESP8266: 17 = A0)
-// I2C    i2cSDA + i2cSCL (bus), then ade7953Addr (0 = off), bmx280Number (0 = off) bmx280Address
-// UART   <driver>Port, 1-based number of the port set up by uartTx<n-1> / uartRx<n-1> / uartBaud<n-1>,
-//        0 = off: cse7766Port v9261fPort pzemPort pzemv30Port mhz19Port pmsPort pm1006Port
-//        sds011Port senseairPort sm300d2Port t6613Port ezophPort a02yyuPort
-//        The sensor claims the port (uartClaim), serial log and serial terminal stop using it;
-//        a second sensor on an already claimed port is not started.
-
-namespace load_helpers {
-
-[[gnu::unused]]
-bool pin_set(uint8_t pin) {
-    return pin != GPIO_NONE;
-}
-
-// set, valid, and not owned by a relay, button, LED ... that were set up before the sensors
-[[gnu::unused]]
-bool pin_free(uint8_t pin) {
-    if (pin_set(pin)) {
-        if (gpioValid(pin) && !gpioLocked(pin)) {
-            return true;
-        }
-
-        DEBUG_MSG_P(PSTR("[SENSOR] GPIO%hhu is invalid or used\n"), pin);
-    }
-
-    return false;
-}
-
-#if UART_SUPPORT
-[[gnu::unused]]
-espurna::driver::uart::PortPtr uart_port(const __FlashStringHelper* key, uint8_t number) {
-    number = getSetting(key, number);
-    if (!number) {
-        return nullptr;
-    }
-
-    auto port = uartPort(number - 1);
-    if (!port) {
-        DEBUG_MSG_P(PSTR("[SENSOR] UART%hhu is not configured\n"), number);
-        return port;
-    }
-
-    // the port is the sensor's alone, serial log and terminal let go of it
-    if (!uartClaim(number - 1, key)) {
-        return nullptr;
-    }
-
-    return port;
-}
-#endif
-
-#if I2C_SUPPORT
-// i2c.cpp only starts the bus when both pins are set
-[[gnu::unused]]
-bool i2c_bus() {
-    return pin_set(getSetting(F("i2cSDA"), uint8_t{ I2C_SDA_PIN }))
-        && pin_set(getSetting(F("i2cSCL"), uint8_t{ I2C_SCL_PIN }));
-}
-#endif
-
-#if DHT_SUPPORT
-constexpr int dht_type_number(DHTChipType type) {
-    return (type == DHTChipType::DHT11) ? 11 :
-        (type == DHTChipType::DHT12) ? 12 :
-        (type == DHTChipType::DHT21) ? 21 :
-        (type == DHTChipType::AM2301) ? 2301 :
-        (type == DHTChipType::SI7021) ? 7021 : 22;
-}
-
-DHTChipType dht_type(int number) {
-    switch (number) {
-    case 11:
-        return DHTChipType::DHT11;
-    case 12:
-        return DHTChipType::DHT12;
-    case 21:
-        return DHTChipType::DHT21;
-    case 2301:
-        return DHTChipType::AM2301;
-    case 7021:
-        return DHTChipType::SI7021;
-    }
-
-    return DHTChipType::DHT22;
-}
-#endif
-
-} // namespace load_helpers
-
-void load() {
-    using namespace load_helpers;
-
-#if I2C_SUPPORT
-    [[gnu::unused]] const bool i2c = i2c_bus();
-#endif
-
-#if A02YYU_SUPPORT
-    if (auto port = uart_port(F("a02yyuPort"), A02YYU_PORT)) {
-        auto* sensor = new A02YYUSensor();
-        sensor->setPort(port->stream);
-        add(sensor);
-    }
-#endif
-
-#if AM2320_SUPPORT
-    if (i2c) {
-        auto* sensor = new AM2320Sensor();
-        sensor->setAddress(AM2320_ADDRESS);
-        add(sensor);
-    }
-#endif
-
-#if ANALOG_SUPPORT
-    {
-        const auto pin = getSetting(F("analogPin"), uint8_t{ ANALOG_PIN });
-        if (pin_set(pin)) {
-            auto* sensor = new AnalogSensor();
-            sensor->setPin(pin);
-            sensor->setSamples(ANALOG_SAMPLES);
-            sensor->setDelay(ANALOG_DELAY);
-            sensor->setFactor(ANALOG_FACTOR);
-            sensor->setOffset(ANALOG_OFFSET);
-            add(sensor);
-        }
-    }
-#endif
-
-#if BH1750_SUPPORT
-    if (i2c) {
-        auto* sensor = new BH1750Sensor();
-        sensor->setAddress(BH1750_ADDRESS);
-        sensor->setAccuracy(BH1750_ACCURACY);
-        sensor->setSensitivity(BH1750_SENSITIVITY);
-        sensor->setMode(BH1750_MODE);
-        add(sensor);
-    }
-#endif
-
-#if BMP180_SUPPORT
-    if (i2c) {
-        auto* sensor = new BMP180Sensor();
-        sensor->setAddress(BMP180_ADDRESS);
-        add(sensor);
-    }
-#endif
-
-#if BMX280_SUPPORT
-    if (i2c) {
-        // TODO: bmx280AddressN, do some migrate code based on number?
-        // Support up to two sensors with full auto-discovery. 0 sensors means off
-        const auto number = std::clamp(getSetting("bmx280Number", BMX280_NUMBER), 0, 2);
-
-        // For second sensor, if BMX280_ADDRESS is 0x00 then auto-discover
-        // otherwise choose the other unnamed sensor address
-        static constexpr uint8_t Address { BMX280_ADDRESS };
-        const decltype(Address) first = getSetting("bmx280Address", Address);
-        const decltype(Address) second = (first == 0x00) ? 0x00 : (0x76 + 0x77 - first);
-
-        const decltype(Address) address_map[2] { first, second };
-        for (unsigned char n=0; n < number; ++n) {
-            auto* sensor = new BMX280Sensor();
-            sensor->setAddress(address_map[n]);
-            add(sensor);
-        }
-    }
-#endif
-
-#if BME680_SUPPORT
-    if (i2c) {
-        auto* sensor = new BME680Sensor();
-        sensor->setAddress(BME680_I2C_ADDRESS);
-        add(sensor);
-    }
-#endif
-
-#if CSE7766_SUPPORT
-    if (auto port = uart_port(F("cse7766Port"), CSE7766_PORT)) {
-        auto* sensor = new CSE7766Sensor();
-        sensor->setPort(port->stream);
-        add(sensor);
-    }
-#endif
-
-#if DALLAS_SUPPORT
-    if (pin_set(sensor::driver::dallas::settings::pin())) {
-        sensor::driver::dallas::load();
-    }
-#endif
-
-#if DHT_SUPPORT
-    {
-        const auto pin = getSetting(F("dhtPin"), uint8_t{ DHT_PIN });
-        if (pin_set(pin)) {
-            auto* sensor = new DHTSensor();
-            sensor->setGPIO(pin);
-            sensor->setType(dht_type(
-                getSetting(F("dhtType"), dht_type_number(DHT_TYPE))));
-            add(sensor);
-        }
-    }
-#endif
-
-#if DIGITAL_SUPPORT
-    if (pin_set(sensor::driver::digital::settings::pin(0))) {
-        sensor::driver::digital::load();
-    }
-#endif
-
-#if DUMMY_SENSOR_SUPPORT
-    {
-        add(new driver::dummy::Sensor());
-    }
-#endif
-
-#if ECH1560_SUPPORT
-    {
-        // CLK is locked when its interrupt is attached, MISO is only read and is locked here
-        const auto clk = getSetting(F("ech1560CLK"), uint8_t{ ECH1560_CLK_PIN });
-        const auto miso = getSetting(F("ech1560MISO"), uint8_t{ ECH1560_MISO_PIN });
-        if (pin_free(clk) && pin_free(miso) && gpioLock(miso)) {
-            auto* sensor = new ECH1560Sensor();
-            sensor->setCLK(clk);
-            sensor->setMISO(miso);
-            sensor->setInverted(getSetting(F("ech1560Inv"), ECH1560_INVERTED == 1));
-            add(sensor);
-        }
-    }
-#endif
-
-#if EMON_ADC121_SUPPORT
-    if (i2c) {
-        auto* sensor = new EmonADC121Sensor();
-        sensor->setAddress(EMON_ADC121_I2C_ADDRESS);
-        sensor->setVoltage(EMON_MAINS_VOLTAGE);
-        sensor->setReferenceVoltage(EMON_REFERENCE_VOLTAGE);
-        add(sensor);
-    }
-#endif
-
-#if EMON_ADS1X15_SUPPORT
-    if (i2c) {
-        auto port = std::make_shared<EmonADS1X15Sensor::I2CPort>(
-                EMON_ADS1X15_I2C_ADDRESS, EMON_ADS1X15_TYPE, EMON_ADS1X15_GAIN, EMON_ADS1X15_DATARATE);
-
-        constexpr unsigned char FirstBit { 1 };
-        unsigned char mask { EMON_ADS1X15_MASK };
-        unsigned char channel { 0 };
-
-        while (mask) {
-            if (mask & FirstBit) {
-                auto* sensor = new EmonADS1X15Sensor(port);
-                sensor->setVoltage(EMON_MAINS_VOLTAGE);
-                sensor->setChannel(channel);
-                add(sensor);
-            }
-            ++channel;
-            mask >>= 1;
-        }
-    }
-#endif
-
-#if EMON_ANALOG_SUPPORT
-    {
-        auto* sensor = new EmonAnalogSensor();
-        sensor->setVoltage(EMON_MAINS_VOLTAGE);
-        sensor->setReferenceVoltage(EMON_REFERENCE_VOLTAGE);
-        sensor->setResolution(EMON_ANALOG_RESOLUTION);
-        add(sensor);
-    }
-#endif
-
-#if EVENTS_SUPPORT
-    {
-        for (size_t index = 0; index < EventSensor::SensorsMax; ++index) {
-            const auto pin = getSetting({F("eventsPin"), index},
-                EventSensor::defaultPin(index));
-            if (!pin_free(pin)) {
-                break;
-            }
-
-            auto mode = EventSensor::defaultPinMode(index);
-            const auto pullup = getSetting({F("eventsPullUp"), index}, mode == INPUT_PULLUP);
-            if (pullup != (mode == INPUT_PULLUP)) {
-                mode = pullup ? INPUT_PULLUP : INPUT;
-            }
-
-            auto* sensor = new EventSensor();
-            sensor->setPin(pin);
-            sensor->setPinMode(mode);
-            sensor->setDebounceTime(
-                espurna::duration::Milliseconds(getSetting({F("eventsDebounce"), index},
-                    static_cast<uint32_t>(EventSensor::defaultDebounceTime(index).count()))));
-            sensor->setInterruptMode(
-                getSetting({F("eventsIntMode"), index},
-                    static_cast<uint8_t>(EventSensor::defaultInterruptMode(index))));
-            add(sensor);
-        }
-    }
-#endif
-
-#if GEIGER_SUPPORT
-    {
-        const auto pin = getSetting(F("geigerPin"), uint8_t{ GEIGER_PIN });
-        if (pin_free(pin)) {
-            auto* sensor = new GeigerSensor();
-            sensor->setGPIO(pin);
-            sensor->setMode(GEIGER_PIN_MODE);
-            sensor->setDebounceTime(
-                GeigerSensor::TimeSource::duration { GEIGER_DEBOUNCE });
-            sensor->setInterruptMode(GEIGER_INTERRUPT_MODE);
-            sensor->setCPM2SievertFactor(GEIGER_CPM2SIEVERT);
-            add(sensor);
-        }
-    }
-#endif
-
-#if GUVAS12SD_SUPPORT
-    {
-        auto* sensor = new GUVAS12SDSensor();
-        sensor->setGPIO(GUVAS12SD_PIN);
-        add(sensor);
-    }
-#endif
-
-#if SONAR_SUPPORT
-    {
-        auto* sensor = new SonarSensor();
-        sensor->setEcho(SONAR_ECHO);
-        sensor->setIterations(SONAR_ITERATIONS);
-        sensor->setMaxDistance(SONAR_MAX_DISTANCE);
-        sensor->setTrigger(SONAR_TRIGGER);
-        add(sensor);
-    }
-#endif
-
-#if HLW8012_SUPPORT
-    {
-        // CF and CF1 are locked when their interrupts are attached (and are only read otherwise).
-        // SEL is not locked, ESPurna H06 shares it with its LED
-        const auto sel = getSetting(F("hlw8012SEL"), uint8_t{ HLW8012_SEL_PIN });
-        const auto cf = getSetting(F("hlw8012CF"), uint8_t{ HLW8012_CF_PIN });
-        const auto cf1 = getSetting(F("hlw8012CF1"), uint8_t{ HLW8012_CF1_PIN });
-        if (pin_free(cf) && pin_free(cf1) && pin_set(sel)) {
-            auto* sensor = new HLW8012Sensor();
-            sensor->setSEL(sel);
-            sensor->setCF(cf);
-            sensor->setCF1(cf1);
-            sensor->setSELCurrent(
-                getSetting(F("hlw8012SelCurr"), HLW8012_SEL_CURRENT == HIGH));
-            sensor->setInterruptMode(
-                getSetting(F("hlw8012IntMode"), uint8_t{ HLW8012_INTERRUPT_ON }));
-            add(sensor);
-        }
-    }
-#endif
-
-#if INA219_SUPPORT
-    if (i2c) {
-        auto* sensor = new INA219Sensor();
-        sensor->setAddress(INA219_ADDRESS);
-        sensor->setOperatingMode(INA219Sensor::INA219_OPERATING_MODE);
-        sensor->setShuntMode(INA219Sensor::INA219_SHUNT_MODE);
-        sensor->setBusMode(INA219Sensor::INA219_BUS_MODE);
-        sensor->setBusRange(INA219Sensor::INA219_BUS_RANGE);
-        sensor->setGain(INA219Sensor::INA219_GAIN);
-        sensor->setShuntResistance(INA219_SHUNT_RESISTANCE);
-        sensor->setMaxExpectedCurrent(INA219_MAX_EXPECTED_CURRENT);
-        add(sensor);
-    }
-#endif
-
-#if LDR_SUPPORT
-    {
-        const auto pin = getSetting(F("ldrPin"), uint8_t{ LDR_PIN });
-        if (pin_set(pin)) {
-            auto* sensor = new LDRSensor();
-            sensor->setPin(pin);
-            sensor->setSamples(LDR_SAMPLES);
-            sensor->setDelay(LDR_DELAY);
-            sensor->setType(getSetting(F("ldrType"), uint8_t{ LDR_TYPE }));
-            sensor->setPhotocellPositionOnGround(
-                getSetting(F("ldrOnGround"), static_cast<bool>(LDR_ON_GROUND)));
-            sensor->setResistor(
-                getSetting(F("ldrResistor"), static_cast<unsigned long>(LDR_RESISTOR)));
-            sensor->setPhotocellParameters(LDR_MULTIPLICATION, LDR_POWER);
-            add(sensor);
-        }
-    }
-#endif
-
-#if MHZ19_SUPPORT
-    if (auto port = uart_port(F("mhz19Port"), MHZ19_PORT)) {
-        auto* sensor = new MHZ19Sensor();
-        sensor->setPort(port->stream);
-        sensor->setCalibrateAuto(
-            getSetting("mhz19CalibrateAuto", MHZ19_CALIBRATE_AUTO == 1));
-        sensor->setDetectionRange(
-            getSetting("mhz19DetectionRange", uint32_t{ MHZ19_DETECTION_RANGE }));
-        add(sensor);
-    }
-#endif
-
-#if MICS2710_SUPPORT
-    {
-        auto* sensor = new MICS2710Sensor();
-        sensor->setPreHeatGPIO(MICS2710_PRE_PIN);
-        sensor->setR0(MICS2710_R0);
-        sensor->setRL(MICS2710_RL);
-        sensor->setRS(0);
-        add(sensor);
-    }
-#endif
-
-#if MICS5525_SUPPORT
-    {
-        auto* sensor = new MICS5525Sensor();
-        sensor->setR0(MICS5525_R0);
-        sensor->setRL(MICS5525_RL);
-        sensor->setRS(0);
-        add(sensor);
-    }
-#endif
-
-#if NTC_SUPPORT
-    {
-        const auto pin = getSetting(F("ntcPin"), uint8_t{ NTC_PIN });
-        if (pin_set(pin)) {
-            auto* sensor = new NTCSensor();
-            sensor->setPin(pin);
-            sensor->setSamples(NTC_SAMPLES);
-            sensor->setDelay(NTC_DELAY);
-            sensor->setUpstreamResistor(
-                getSetting(F("ntcRUp"), static_cast<unsigned long>(NTC_R_UP)));
-            sensor->setDownstreamResistor(
-                getSetting(F("ntcRDown"), static_cast<unsigned long>(NTC_R_DOWN)));
-            sensor->setInputVoltage(NTC_INPUT_VOLTAGE);
-            sensor->setBeta(
-                getSetting(F("ntcBeta"), static_cast<unsigned long>(NTC_BETA)));
-            sensor->setR0(
-                getSetting(F("ntcR0"), static_cast<unsigned long>(NTC_R0)));
-            sensor->setT0(NTC_T0);
-            add(sensor);
-        }
-    }
-#endif
-
-#if PM1006_SUPPORT
-    if (auto port = uart_port(F("pm1006Port"), PM1006_PORT)) {
-        auto* sensor = new PM1006Sensor();
-        sensor->setPort(port->stream);
-        add(sensor);
-    }
-#endif
-
-#if PMSX003_SUPPORT
-    if (auto port = uart_port(F("pmsPort"), PMS_PORT)) {
-        auto* sensor = new PMSX003Sensor();
-        sensor->setPort(port->stream);
-        sensor->setType(PMS_TYPE);
-        add(sensor);
-    }
-#endif
-
-#if PULSEMETER_SUPPORT
-    {
-        const auto pin = getSetting(F("pulsemeterPin"), uint8_t{ PULSEMETER_PIN });
-        if (pin_free(pin)) {
-            auto* sensor = new PulseMeterSensor();
-            sensor->setPin(pin);
-            sensor->setInterruptMode(
-                getSetting(F("pulsemeterIntMode"), uint8_t{ PULSEMETER_INTERRUPT_ON }));
-            sensor->setDebounceTime(
-                PulseMeterSensor::TimeSource::duration{
-                    getSetting(F("pulsemeterDebounce"), uint32_t{ PULSEMETER_DEBOUNCE })});
-            add(sensor);
-        }
-    }
-#endif
-
-#if PZEM004T_SUPPORT
-    if (auto port = uart_port(F("pzemPort"), PZEM004T_PORT)) {
-        auto serial = std::make_shared<PZEM004TSensor::SerialPort>(port->stream);
-
-        bool initialized { false };
-#if !defined(PZEM004T_ADDRESSES)
-        for (size_t index = 0; index < PZEM004TSensor::DevicesMax; ++index) {
-            auto address = getSetting({"pzemAddr", index}, PZEM004TSensor::defaultAddress(index));
-            if (!espurna::chip::address_set(address)) {
-                break;
-            }
-
-            auto* ptr = PZEM004TSensor::make(serial, address);
-            if (ptr) {
-                add(ptr);
-                initialized = true;
-            }
-        }
-#else
-        String addrs = getSetting("pzemAddr", F(PZEM004T_ADDRESSES));
-
-        constexpr size_t BufferSize{64};
-        char buffer[BufferSize]{0};
-
-        if (addrs.length() < BufferSize) {
-            std::copy(addrs.c_str(), addrs.c_str() + addrs.length(), buffer);
-            buffer[addrs.length()] = '\0';
-
-            size_t device{0};
-            char* address{strtok(buffer, " ")};
-            while ((device < PZEM004TSensor::DevicesMax) && (address != nullptr)) {
-                auto* ptr = PZEM004TSensor::make(serial, IPAddress(address));
-                if (ptr) {
-                    add(ptr);
-                    initialized = true;
-                }
-            }
-        }
-#endif
-        if (initialized) {
-            PZEM004TSensor::registerTerminalCommands();
-        }
-    }
-#endif
-
-#if SENSEAIR_SUPPORT
-    if (auto port = uart_port(F("senseairPort"), SENSEAIR_PORT)) {
-        auto* sensor = new SenseAirSensor();
-        sensor->setPort(port->stream);
-        add(sensor);
-    }
-#endif
-
-#if SDS011_SUPPORT
-    if (auto port = uart_port(F("sds011Port"), SDS011_PORT)) {
-        auto* sensor = new SDS011Sensor();
-        sensor->setPort(port->stream);
-        add(sensor);
-    }
-#endif
-
-#if SHT3X_I2C_SUPPORT
-    if (i2c) {
-        auto* sensor = new SHT3XI2CSensor();
-        sensor->setAddress(SHT3X_I2C_ADDRESS);
-        add(sensor);
-    }
-#endif
-
-#if SI7021_SUPPORT
-    if (i2c) {
-        auto* sensor = new SI7021Sensor();
-        sensor->setAddress(SI7021_ADDRESS);
-        add(sensor);
-    }
-#endif
-
-#if SM300D2_SUPPORT
-    if (auto port = uart_port(F("sm300d2Port"), SM300D2_PORT)) {
-        auto* sensor = new SM300D2Sensor();
-        sensor->setPort(port->stream);
-        add(sensor);
-    }
-#endif
-
-#if T6613_SUPPORT
-    if (auto port = uart_port(F("t6613Port"), T6613_PORT)) {
-        auto* sensor = new T6613Sensor();
-        sensor->setPort(port->stream);
-        add(sensor);
-    }
-#endif
-
-#if TMP3X_SUPPORT
-    {
-        auto* sensor = new TMP3XSensor();
-        sensor->setType(TMP3X_TYPE);
-        add(sensor);
-    }
-#endif
-
-#if V9261F_SUPPORT
-    if (auto port = uart_port(F("v9261fPort"), V9261F_PORT)) {
-        auto* sensor = new V9261FSensor();
-        sensor->setPort(port->stream);
-        add(sensor);
-    }
-#endif
-
-#if MAX6675_SUPPORT
-    {
-        auto* sensor = new MAX6675Sensor();
-        sensor->setCS(MAX6675_CS_PIN);
-        sensor->setSO(MAX6675_SO_PIN);
-        sensor->setSCK(MAX6675_SCK_PIN);
-        add(sensor);
-    }
-#endif
-
-#if VEML6075_SUPPORT
-    if (i2c) {
-        auto* sensor = new VEML6075Sensor();
-        sensor->setIntegrationTime(VEML6075_INTEGRATION_TIME);
-        sensor->setDynamicMode(VEML6075_DYNAMIC_MODE);
-        add(sensor);
-    }
-#endif
-
-#if VL53L1X_SUPPORT
-    if (i2c) {
-        auto* sensor = new VL53L1XSensor();
-        sensor->setInterMeasurementPeriod(
-            VL53L1XSensor::InterMeasurementPeriod{VL53L1X_INTER_MEASUREMENT_PERIOD});
-        sensor->setMeasurementTimingBudget(
-            VL53L1XSensor::MeasurementTimingBudget{VL53L1X_MEASUREMENT_TIMING_BUDGET});
-        sensor->setDistanceMode(VL53L1X_DISTANCE_MODE);
-        add(sensor);
-    }
-#endif
-
-#if EZOPH_SUPPORT
-    if (auto port = uart_port(F("ezophPort"), EZOPH_PORT)) {
-        auto* sensor = new EZOPHSensor();
-        sensor->setPort(port->stream);
-        add(sensor);
-    }
-#endif
-
-#if ADE7953_SUPPORT
-    if (i2c && driver::ade7953::settings::address()) {
-        using namespace espurna::sensor::driver::ade7953;
-
-        auto values = std::make_shared<CommonValues>();
-        values->line_cycles = driver::ade7953::settings::lineCycles();
-        values->current_threshold = driver::ade7953::settings::currentThreshold();
-
-        const auto address = driver::ade7953::settings::address();
-        auto port = std::make_shared<I2CPort>(address);
-
-        add(new Common(values, port));
-        add(new Channel('A', RegistersA, values, port));
-        add(new Channel('B', RegistersB, values, port));
-    }
-#endif
-
-#if SI1145_SUPPORT
-    if (i2c) {
-        auto* sensor = new SI1145Sensor();
-        sensor->setAddress(SI1145_ADDRESS);
-        add(sensor);
-    }
-#endif
-
-#if HDC1080_SUPPORT
-    if (i2c) {
-        auto* sensor = new HDC1080Sensor();
-        sensor->setAddress(HDC1080_ADDRESS);
-        add(sensor);
-    }
-#endif
-
-#if PZEM004TV30_SUPPORT
-    if (auto port = uart_port(F("pzemv30Port"), PZEM004TV30_PORT)) {
-        auto* sensor = PZEM004TV30Sensor::make(port->stream,
-            getSetting("pzemv30Addr", PZEM004TV30Sensor::DefaultAddress),
-            getSetting("pzemv30ReadTimeout", PZEM004TV30Sensor::DefaultReadTimeout));
-        sensor->setDebug(
-            getSetting("pzemv30Debug", PZEM004TV30Sensor::DefaultDebug));
-
-        add(sensor);
-    }
-#endif
 }
 
 namespace units {
@@ -3463,10 +2424,93 @@ void migrate(int version) {
 // -----------------------------------------------------------------------------
 
 #if WEB_SUPPORT
+namespace {
+
+// every settings key of a driver: the first part of each field of its spec ("key|type|label|default|options|repeat"),
+// a '#' in a key is the index 0 .. repeat - 1
+template <typename T>
+void for_each_driver_key(const Driver& driver, T&& callback) {
+    const String spec(FPSTR(driver.spec));
+
+    int start = 0;
+    while (start < static_cast<int>(spec.length())) {
+        int end = spec.indexOf(';', start);
+        if (end < 0) {
+            end = spec.length();
+        }
+
+        const String field = spec.substring(start, end);
+        start = end + 1;
+
+        String parts[6];
+        int from = 0;
+        for (auto& part : parts) {
+            const int to = field.indexOf('|', from);
+            part = field.substring(from, (to < 0) ? field.length() : to);
+            if (to < 0) {
+                break;
+            }
+            from = to + 1;
+        }
+
+        const auto& key = parts[0];
+        if (!key.length()) {
+            continue;
+        }
+
+        const int hash = key.indexOf('#');
+        if (hash < 0) {
+            callback(key);
+            continue;
+        }
+
+        const long repeat = parts[5].toInt();
+        for (long index = 0; index < repeat; ++index) {
+            String out = key.substring(0, hash);
+            out += String(index);
+            out += key.substring(hash + 1);
+            callback(out);
+        }
+    }
+}
+
+[[gnu::unused]]
+bool driver_key(StringView key) {
+    for (const auto& driver : internal::drivers) {
+        bool found { false };
+        for_each_driver_key(driver, [&](const String& name) {
+            found = found || (key == StringView(name));
+        });
+        if (found) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
 namespace web {
 
 bool onKeyCheck(StringView key, const JsonVariant&) {
-    return settings::query::check(key);
+    return settings::query::check(key) || driver_key(key);
+}
+
+// the drivers and their settings, for the SENSORS panel: the spec as the driver wrote it (the WebUI parses it,
+// ref. sensors/driver.h) and the stored values of its keys (empty - not set, the WebUI shows the default)
+void drivers(JsonObject& root) {
+    JsonArray& out = root.createNestedArray(STRING_VIEW("snsDrivers"));
+    for (const auto& driver : internal::drivers) {
+        JsonObject& entry = out.createNestedObject();
+        entry[STRING_VIEW("name")] = driver.name;
+        entry[STRING_VIEW("spec")] = String(FPSTR(driver.spec));
+
+        JsonObject& values = entry.createNestedObject(STRING_VIEW("values"));
+        for_each_driver_key(driver, [&](const String& key) {
+            values[key] = getSetting(key);
+        });
+    }
 }
 
 // Entries related to things reported by the module.
@@ -3774,6 +2818,7 @@ void setup() {
         .onConnected(initial)
         .onConnected(list)
         .onConnected(settings)
+        .onConnected(drivers)
         .onVisible(onVisible)
         .onData(onData)
         .onAction(onAction)
@@ -4583,8 +3628,7 @@ void setup() {
     // Make sure settings stay up-to-date
     migrateVersion(settings::migrate);
 
-    // Load & initialize magnitudes from available sensors
-    sensor::load();
+    // Initialize what is there: the drivers come later, as their modules start (sensorDriver())
     sensor::try_init();
 
     // Minimal configuration required before entering loop()
@@ -4620,13 +3664,11 @@ void setup() {
 
 } // namespace
 
-PreInit::~PreInit() = default;
-
 bool ready() {
     return (State::Reading == internal::state) || (State::Ready == internal::state && magnitude::count() == 0);
 }
 
-void add_preinit(PreInitPtr ptr) {
+void add_preinit_impl(PreInitPtr ptr) {
     internal::pre_init.push_front(std::move(ptr));
 }
 
@@ -4741,8 +3783,47 @@ bool sensorReady() {
     return espurna::sensor::ready();
 }
 
-espurna::StringView sensorList() {
-    return espurna::sensor::List;
+String sensorList() {
+    String out;
+    for (const auto& driver : espurna::sensor::internal::drivers) {
+        if (out.length()) {
+            out += ' ';
+        }
+        out += driver.name;
+    }
+
+    return out;
+}
+
+// --- what the driver modules call (through the head: modules_api.cpp, the provides of the sensors module)
+
+void sensorDriver(const espurna::sensor::Driver& driver) {
+    using namespace espurna::sensor;
+
+    internal::drivers.push_back(driver);
+    DEBUG_MSG_P(PSTR("[SENSOR] Driver %s\n"), driver.name);
+
+    // what the settings of the driver say is there, then begin() what came: the same as the load of the sensors
+    // used to be in setup(), once per driver now. A sensor that does not begin yet is retried from the loop
+    driver.load();
+    internal::state = State::None;
+    try_init();
+}
+
+void sensorAdd(BaseSensor* sensor) {
+    espurna::sensor::add(sensor);
+}
+
+void sensorAddPreinit(espurna::sensor::PreInit* ptr) {
+    espurna::sensor::add_preinit_impl(espurna::sensor::PreInitPtr(ptr));
+}
+
+void sensorNotifyAfter(uint32_t milliseconds, espurna::sensor::NotifyCallback callback) {
+    espurna::sensor::notify_after_impl(espurna::duration::Milliseconds(milliseconds), callback);
+}
+
+void sensorNotifyNow(espurna::sensor::NotifyCallback callback) {
+    espurna::sensor::notify_now_impl(callback);
 }
 
 void sensorSetup() {

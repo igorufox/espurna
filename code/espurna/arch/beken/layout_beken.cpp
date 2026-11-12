@@ -10,8 +10,6 @@ no layout at all: nothing is written to its partitions then (no OTA, no Matter c
 
 #include "espurna.h"
 
-#if defined(LIBRETINY)
-
 #include "layout_beken.h"
 #include "../../libs/crc32_ieee.h"
 
@@ -105,4 +103,3 @@ const char* layoutName(Layout value) {
 } // namespace beken
 } // namespace espurna
 
-#endif

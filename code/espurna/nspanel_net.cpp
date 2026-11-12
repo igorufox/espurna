@@ -535,7 +535,7 @@ bool take(Series& out) {
     }
     is_fresh = false;
 
-    try {
+    ESPURNA_TRY {
         DynamicJsonBuffer buffer(4096);
         JsonObject& root = buffer.parseObject(payload.c_str());
         if (!root.success()) {
@@ -547,7 +547,7 @@ bool take(Series& out) {
         read(root["s"], out.setpoint);
         read(root["h"], out.humidity);
         read(root["p"], out.on);
-    } catch (const std::bad_alloc&) {
+    } ESPURNA_CATCH_BAD_ALLOC {
         return false;
     }
 

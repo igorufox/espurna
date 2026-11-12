@@ -24,30 +24,33 @@ public:
     static constexpr double SlotDefault { 0.0 };
 
     // Poor man's RTTI without -frtti. Store originating class ID to infer which class methods could be accessed.
+    // Fixed numbers, not a counter: every sensor driver is a module of its own, linked apart from the sensors module
+    // (sensor.cpp) that compares them, and a static counter (or a function-local static) would be one per module
     struct Kind {
-        Kind() :
-            _value(_last)
-        {
-            ++_last;
-        }
+        constexpr explicit Kind(int value) :
+            _value(value)
+        {}
 
-        int value() const {
+        constexpr int value() const {
             return _value;
         }
 
-        bool operator==(const Kind& other) const {
+        constexpr bool operator==(const Kind& other) const {
             return _value == other._value;
         }
 
     private:
-        static int _last;
         int _value;
     };
 
+    static constexpr int KindBase { 0 };
+    static constexpr int KindEmon { 1 };
+    static constexpr int KindAnalogEmon { 2 };
+    static constexpr int KindAnalog { 3 };
+
     // Base class kind instance, expected to be used by default in kind().
-    static Kind SensorKind() {
-        static const Kind kind;
-        return kind;
+    static constexpr Kind SensorKind() {
+        return Kind(KindBase);
     }
 
     // Generic way to pass the sensor instance to the isr
@@ -295,5 +298,4 @@ protected:
     bool _ready = false;
 };
 
-int BaseSensor::Kind::_last { 0 };
 

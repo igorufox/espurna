@@ -260,7 +260,7 @@ called. Data modules (the WebUI) are only registered.
   modules' IRAM code at its start, then statics. Only 32-bit access is native there; the core's `NON32XFER_HANDLER`
   emulates the rest, slower and never from an interrupt, so a module whose statics take byte access from an interrupt
   goes to the heap block. The head keeps 4 KB of heap for itself when the Apply sizes the block.
-- **Heap reserve** (`heap_reserve_esp8266.cpp`): the SDK's allocators and `operator new` are wrapped; a failing
+- **Heap reserve** (`arch/esp8266/heap_reserve_esp8266.cpp`): the SDK's allocators and `operator new` are wrapped; a failing
   allocation gets a 1.5 KB reserve and is tried again (without it the SDK wrote through a NULL pointer or `new` aborted
   the board). New connections are refused while less than 5 KB is free or three are open to the same port.
 - **One layout for every chip size:** the 1 MB layout (`eagle.flash.1m.ld`), settings in sectors 251 / 250

@@ -1,12 +1,10 @@
 /*
 
-esp8266 Core API shims, ESP32 part of the ESP object (ref. compat_rtos.h)
+esp8266 Core API shims, ESP32 part of the ESP object (ref. compat_chip.h)
 
 */
 
 #include "espurna.h"
-
-#if defined(ESP32)
 
 // system_esp32.cpp: the loop() stall that rebooted the chip last time, empty if none
 String systemStallInfo();
@@ -57,7 +55,6 @@ uint32_t EspCompat::getSketchSize() {
     return static_cast<EspClass&>(*this).getSketchSize();
 }
 
-
 uint32_t EspCompat::getMaxAllocHeap() {
     return static_cast<EspClass&>(*this).getMaxAllocHeap();
 }
@@ -66,4 +63,3 @@ bool EspCompat::flashRead(uint32_t, uint32_t*, size_t) {
     return false;
 }
 
-#endif

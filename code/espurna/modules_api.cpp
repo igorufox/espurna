@@ -15,6 +15,10 @@ here. The same on every chip.
 
 #include "modules.h"
 #include "sensor.h"
+#include "relay.h"
+#include "button.h"
+#include "api.h"
+#include "ntp.h"
 
 using espurna::modules::Api;
 
@@ -121,6 +125,117 @@ unsigned char magnitudeIndex(unsigned char index) {
 String magnitudeTopic(unsigned char index) {
     const auto func = api<decltype(magnitudeTopic)>(Api::MagnitudeTopic);
     return func ? func(index) : String();
+}
+
+// --- relay module: the modules that follow the relays and work without them too (button, led, sensors, scheduler,
+// alexa, Home Assistant, Domoticz, Thingspeak, rf, light, Matter, NSPanel): no relays when it is not installed
+
+size_t relayCount() {
+    const auto func = api<decltype(relayCount)>(Api::RelayCount);
+    return func ? func() : 0;
+}
+
+RelayStatus relayStatus(size_t id) {
+    const auto func = api<RelayStatus(size_t)>(Api::RelayStatusGet);
+    return func ? func(id) : RelayStatus::NotAvailable;
+}
+
+// any relay on (the led module)
+bool relayStatus() {
+    const auto func = api<bool()>(Api::RelayStatusAll);
+    return func ? func() : false;
+}
+
+bool relayStatus(size_t id, bool status) {
+    const auto func = api<bool(size_t, bool)>(Api::RelayStatusSet);
+    return func ? func(id, status) : false;
+}
+
+bool relayToggle(size_t id) {
+    const auto func = api<decltype(relayToggle)>(Api::RelayToggle);
+    return func ? func(id) : false;
+}
+
+PayloadStatus relayParsePayload(espurna::StringView payload) {
+    const auto func = api<decltype(relayParsePayload)>(Api::RelayParsePayload);
+    return func ? func(payload) : PayloadStatus::Unknown;
+}
+
+espurna::StringView relayPayload(PayloadStatus status) {
+    const auto func = api<decltype(relayPayload)>(Api::RelayPayload);
+    return func ? func(status) : espurna::StringView();
+}
+
+void relayOnStatusChange(RelayStatusCallback callback) {
+    const auto func = api<decltype(relayOnStatusChange)>(Api::RelayOnStatusChange);
+    if (func) {
+        func(callback);
+    }
+}
+
+void relayOnStatusNotify(RelayStatusCallback callback) {
+    const auto func = api<decltype(relayOnStatusNotify)>(Api::RelayOnStatusNotify);
+    if (func) {
+        func(callback);
+    }
+}
+
+void relayOnReady(RelayStatusCallback callback) {
+    const auto func = api<decltype(relayOnReady)>(Api::RelayOnReady);
+    if (func) {
+        func(callback);
+    }
+}
+
+int relayBtnGpio(size_t index) {
+    const auto func = api<decltype(relayBtnGpio)>(Api::RelayBtnGpio);
+    return func ? func(index) : -1;
+}
+
+// --- button module (NSPanel: its own action of the buttons)
+
+void buttonSetCustomAction(ButtonEventHandler handler) {
+    const auto func = api<decltype(buttonSetCustomAction)>(Api::ButtonSetCustomAction);
+    if (func) {
+        func(handler);
+    }
+}
+
+// --- api module: the modules that register API paths work without it
+
+void apiRegister(String path, espurna::api::BasicHandler&& get, espurna::api::BasicHandler&& put) {
+    const auto func = api<void(String, espurna::api::BasicHandler&&, espurna::api::BasicHandler&&)>(
+        Api::ApiRegisterBasic);
+    if (func) {
+        func(std::move(path), std::move(get), std::move(put));
+    }
+}
+
+void apiRegister(String path, espurna::api::JsonHandler&& get, espurna::api::JsonHandler&& put) {
+    const auto func = api<void(String, espurna::api::JsonHandler&&, espurna::api::JsonHandler&&)>(
+        Api::ApiRegisterJson);
+    if (func) {
+        func(std::move(path), std::move(get), std::move(put));
+    }
+}
+
+// --- ntp module: the time for the head (the log, the pages) and the modules; no time without it
+
+void ntpOnTick(NtpTickCallback callback) {
+    const auto func = api<decltype(ntpOnTick)>(Api::NtpOnTick);
+    if (func) {
+        func(callback);
+    }
+}
+
+String ntpDateTime() {
+    const auto func = api<decltype(ntpDateTime)>(Api::NtpDateTime);
+    return func ? func() : String();
+}
+
+bool ntpSynced() {
+    const auto func = api<decltype(ntpSynced)>(Api::NtpSynced);
+    return func ? func() : false;
 }
 
 // --- Domoticz and Thingspeak modules, called by the sensors module
@@ -346,6 +461,26 @@ void lightBlue(long value) {
     if (func) {
         func(value);
     }
+}
+
+// the button module steps the brightness; the relay module takes the light's state as a relay (a relay provider)
+void lightBrightnessStep(long steps) {
+    const auto func = api<void(long)>(Api::LightBrightnessStep);
+    if (func) {
+        func(steps);
+    }
+}
+
+void lightBrightnessStep(long steps, long multiplier) {
+    const auto func = api<void(long, long)>(Api::LightBrightnessStepMultiplier);
+    if (func) {
+        func(steps, multiplier);
+    }
+}
+
+std::unique_ptr<RelayProviderBase> lightMakeStateRelayProvider(size_t id) {
+    const auto func = api<decltype(lightMakeStateRelayProvider)>(Api::LightMakeStateRelayProvider);
+    return func ? func(id) : nullptr;
 }
 
 #endif // MODULES_SUPPORT

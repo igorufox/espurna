@@ -1348,7 +1348,7 @@ ParseResult parseInPlace(char* text, size_t json_size, const Limits& with, Confi
         return ParseResult::LowMemory;
     }
 
-    try {
+    ESPURNA_TRY {
         HeapJsonBuffer buffer(nodes.get(), json_size);
         JsonObject& root = buffer.parseObject(text, build::ConfigNestingLimit);
         if (!root.success()) {
@@ -1359,7 +1359,7 @@ ParseResult parseInPlace(char* text, size_t json_size, const Limits& with, Confi
         }
 
         return parseRoot(root, out, error, warnings) ? ParseResult::Ok : ParseResult::Invalid;
-    } catch (const std::bad_alloc&) {
+    } ESPURNA_CATCH_BAD_ALLOC {
         error = F("out of memory, retry");
     }
 

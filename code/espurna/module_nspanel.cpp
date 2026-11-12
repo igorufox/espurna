@@ -7,7 +7,7 @@ platformio_esp32.ini: nspanel*.cpp as they are (UART protocol, both display driv
 
 #include "espurna.h"
 
-#if MODULE_BUILD && defined(ESP32) && NSPANEL_SUPPORT
+#if MODULE_BUILD && NSPANEL_SUPPORT
 
 #include "modules.h"
 #include "nspanel.h"

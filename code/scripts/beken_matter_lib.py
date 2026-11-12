@@ -4,6 +4,9 @@
 # from a release asset of matter-bk7231n, a zip of
 #   lib/libMatterApp.a
 #   include/lwipopts.h   (lwIP options the library was built with: the SDK's lwIP has to be built with the same)
+#   include/chip/        the headers of the library's API, include/chip/flags.txt its include folders and defines: for
+#                        the modules only (ESPURNA_MODULE_CPPPATH / _CPPDEFINES of scripts/module_link.py), the code
+#                        of the board's identity (matter_identity.cpp, one code with the ESP32) is built against them
 # checked against its SHA-256 and unpacked into .pio/matter-lib/<hash>:
 #
 #   extra_scripts = pre:scripts/beken_matter_lib.py
@@ -32,7 +35,7 @@ import zipfile
 
 Import("env")  # noqa: F821
 
-FILES = ("lib/libMatterApp.a", "include/lwipopts.h")
+FILES = ("lib/libMatterApp.a", "include/lwipopts.h", "include/chip/flags.txt")
 
 LATEST_REPO = "igorufox/matter-bk7231n"
 LATEST_TAG = "libmatter-"
@@ -80,7 +83,10 @@ def fetch(url, expected, folder):
         raise ValueError(f"Matter library SHA-256 mismatch: {actual}, expected {expected}")
 
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        for name in FILES:
+        # flags.txt last: unpacked() is true only once everything is there
+        names = sorted((name for name in archive.namelist() if not name.endswith("/")),
+                       key=lambda name: name == "include/chip/flags.txt")
+        for name in names:
             target = os.path.join(folder, name)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target + ".part", "wb") as out:
@@ -174,3 +180,13 @@ if env.GetProjectOption("custom_matter_lib", "") or os.environ.get("ESPURNA_MATT
     env.Prepend(CPPPATH=[os.path.join(folder, "include")])
     # same as `-L<folder> -lMatterApp` in build_flags: LIBS come after the objects of the link
     env.Append(LIBPATH=[os.path.join(folder, "lib")], LIBS=["MatterApp"])
+
+    # the API of the library, for the modules
+    headers = os.path.join(folder, "include", "chip")
+    with open(os.path.join(headers, "flags.txt"), encoding="utf-8") as f:
+        for line in f.read().split():
+            if line.startswith("-I"):
+                env.Append(ESPURNA_MODULE_CPPPATH=[os.path.join(headers, line[2:])])
+            elif line.startswith("-D"):
+                name, _, value = line[2:].partition("=")
+                env.Append(ESPURNA_MODULE_CPPDEFINES=[(name, value) if value else name])

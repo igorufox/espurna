@@ -8,8 +8,6 @@ Chip facts are in arch/<chip>/system_<chip>.cpp, common part of every chip is in
 
 #include "espurna.h"
 
-#if defined(ESP32) || defined(LIBRETINY)
-
 #include "espurna_tasks.h"
 #include "rtcmem.h"
 #include "storage_eeprom.h"
@@ -156,7 +154,7 @@ void Mutex::reacquire(size_t depth) {
 } // namespace system
 } // namespace espurna
 
-// Global ESP object for the macro of compat_rtos.h
+// Global ESP object for the macro of compat_chip.h
 EspCompat ESP_COMPAT;
 
 // Same as esp8266, last 3 bytes of the MAC the chip id is made of (ref. systemChipId()), e.g. the SSDP serial number
@@ -385,7 +383,7 @@ void SystemTimer::schedule_once(Duration delay, Callback callback) {
 // MEMORY
 // -----------------------------------------------------------------------------
 
-// No VCC measurement, ADC_MODE_VALUE is forced to ADC_TOUT (ref. compat_rtos.h). Callers
+// No VCC measurement, ADC_MODE_VALUE is forced to ADC_TOUT (ref. compat_chip.h). Callers
 // (debug.cpp / influxdb.cpp / mqtt.cpp / ws.cpp) are gated by `ADC_MODE_VALUE == ADC_VCC`,
 // the definition still has to exist for the linker to resolve EspCompat::getVcc().
 uint16_t systemVcc() {
@@ -569,4 +567,3 @@ StringSumHelper convert(const String& v) {
 } // namespace settings
 } // namespace espurna
 
-#endif

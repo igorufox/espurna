@@ -136,6 +136,7 @@ struct Request {
     const uint8_t* body { nullptr };    // copied by start()
     size_t body_len { 0 };
     uint32_t from { 0 };                // > 0: only the file from that byte on (Range): 206 (or 200 with all of it)
+    const char* headers { nullptr };    // more lines of the head, each "Name: value\r\n" (NoFUSS), up to 255 bytes
 };
 
 // --- the client --------------------------------------------------------------------------------------------------

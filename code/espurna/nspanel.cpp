@@ -13,7 +13,7 @@ Shared core (the parts: nspanel_core.h):
 - this file: the running config, entities, cards, screen texts, room temperature (ESPurna NTC
   sensor), buzzer, relays and hardware buttons, terminal commands, setup and loop
 - nspanel_config.cpp: config model from /nspanel.json: pages of tiles, groups/scenes, shortcuts, buttons
-- nspanel_storage.cpp: LittleFS on the existing data/spiffs partition
+- nspanel_storage.cpp: the config in the flash data of the module (modulesData(), every chip)
 - nspanel_net.cpp: MQTT state map (absolute state topics), Open-Meteo weather task, "url" requests
 - nspanel_link.cpp: UART2 (TX GPIO16, RX GPIO17) ownership, display detection (link::)
 - nspanel_flash.cpp: Nextion TFT upload (flash::)
@@ -47,6 +47,8 @@ every ESP32 image
 #include "sensor.h"
 #endif
 
+#include "buzzer_chip.h"
+
 #include <cmath>
 #include <ctime>
 #include <memory>
@@ -62,8 +64,6 @@ namespace {
 // UART is a port of the uart module (nspPort, nspanel_link.cpp): without it the display part stays off
 int DisplayPowerPin { 4 };      // LOW = display ON
 int BuzzerPin { 21 };
-
-constexpr int BuzzerChannel { 15 };       // pwm.cpp allocates LEDC channels from 0
 
 Config running;
 
@@ -608,28 +608,19 @@ namespace {
 bool active { false };
 uint32_t until { 0 };
 
-// core 3.x: ledcWrite() takes the pin, the channel API is ledcAttachChannel() / ledcWriteChannel()
+// the chip's square wave (arch/<chip>/buzzer_chip.h)
 void duty(uint32_t value) {
     if (BuzzerPin < 0) {
         return;
     }
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-    ledcWriteChannel(BuzzerChannel, value);
-#else
-    ledcWrite(BuzzerChannel, value);
-#endif
+    espurna::driver::buzzer::duty(BuzzerPin, value);
 }
 
 void setup() {
     if (BuzzerPin < 0) {
         return;
     }
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-    ledcAttachChannel(BuzzerPin, 2700, 8, BuzzerChannel);
-#else
-    ledcSetup(BuzzerChannel, 2700, 8);
-    ledcAttachPin(BuzzerPin, BuzzerChannel);
-#endif
+    espurna::driver::buzzer::setup(BuzzerPin, 2700);
     duty(0);
 }
 
@@ -836,7 +827,7 @@ void applyConfig(Config&& next, const String& warnings, const char* source) {
 
     DEBUG_MSG_P(PSTR("[NSPANEL] Config %s: %u pages, %u items, %u entities, %u groups, heap %u / %u\n"),
         source, running.pages.size(), running.items.size(), running.entities.size(), running.groups.size(),
-        ESP.getFreeHeap(), ESP->getMaxAllocHeap());
+        systemHeapStats().available, systemHeapStats().usable);
 
     if (weather_changed) {
         weather::reset();
@@ -863,7 +854,7 @@ void load() {
     const char* source = "(default)";
     bool ok = false;
 
-    try {
+    ESPURNA_TRY {
         Config next;
         if (storage::exists()) {
             source = build::ConfigPath;
@@ -898,7 +889,7 @@ void load() {
         }
 
         applyConfig(std::move(next), warnings, source);
-    } catch (const std::bad_alloc&) {
+    } ESPURNA_CATCH_BAD_ALLOC {
         last_load_error = F("out of memory while applying the config");
         DEBUG_MSG_P(PSTR("[NSPANEL] Config: %s\n"), last_load_error.c_str());
     }

@@ -4,7 +4,7 @@ NSPANEL MODULE - what the parts of the module share
 
 nspanel.cpp          config lifecycle, entities, cards, screen texts, room temperature, buzzer, terminal, setup
 nspanel_config.cpp   config model and parser (nspanel_config.h), host tested
-nspanel_storage.cpp  LittleFS, the config file, parse heap budget
+nspanel_storage.cpp  the config in the flash data of the module, parse heap budget
 nspanel_net.cpp      MQTT subscriptions and state payloads, history series, weather, "url" requests
 nspanel_link.cpp     UART2, display events, display detection, the active Driver
 nspanel_flash.cpp    Nextion TFT upload

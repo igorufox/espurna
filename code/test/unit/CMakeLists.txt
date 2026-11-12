@@ -185,6 +185,8 @@ target_include_directories(espurna PUBLIC
     ${ESPURNA_PATH}/code/
     # arch/ headers include their siblings the way the firmware build sees them
     ${ESPURNA_PATH}/code/espurna/
+    # the chip's headers under the common names, as the ESP8266 build has them
+    ${ESPURNA_PATH}/code/espurna/arch/esp8266/
     ${CMAKE_SOURCE_DIR}/cache/arduinojson-${arduinojson_version}-src/src
 )
 target_compile_options(espurna PUBLIC

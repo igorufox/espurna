@@ -31,10 +31,5 @@ constexpr double linear_millivolts(uint32_t raw, int bits) {
 } // namespace adc
 } // namespace espurna
 
-#if defined(ESP8266)
-#include "arch/esp8266/adc_esp8266.h"
-#elif defined(ESP32)
-#include "arch/esp32/adc_esp32.h"
-#elif defined(LIBRETINY)
-#include "arch/beken/adc_beken.h"
-#endif
+// arch/<chip>/adc_chip.h: the chip's folder (-I of its ini)
+#include "adc_chip.h"

@@ -14,7 +14,7 @@ Arduino-ESP32 build). The monolithic images keep the library's version (MODULE_B
 
 #include "espurna.h"
 
-#if MODULE_BUILD && MATTER_SUPPORT && defined(ESP32)
+#if MODULE_BUILD && MATTER_SUPPORT
 
 #include <lib/core/ErrorStr.h>
 

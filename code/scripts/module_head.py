@@ -4,7 +4,7 @@
 #   line, written by the module link when it finds one missing): kept in the link with EXTERN() in an implicit linker
 #   script (scripts/module_link.py links the head again in the same build after a change)
 # - custom_head_wraps: symbols the head links with --wrap (ESP8266: the mDNS stubs ArduinoOTA references, the heap
-#   protection of heap_reserve_esp8266.cpp)
+#   protection of arch/esp8266/heap_reserve_esp8266.cpp)
 # - the GNU build id of the link (-Wl,--build-id=sha1), kept in the flash of the image at __build_id_start: the
 #   identity of the head, every chip alike. A module carries its first 16 bytes (scripts/module_link.py head_id()),
 #   modules.cpp compares them with the head's own; nothing is hashed at run time (the MD5 of the whole image was:

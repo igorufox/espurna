@@ -8,7 +8,7 @@ boot, the guard (its boot marks in the directory sector, low heap, failing alloc
 reader, the relocation (as a package arrives, and again at boot when the bases moved), the Apply, the /modules web
 endpoints and their JSON, the MODULES terminal commands, the start order and the data modules (the WebUI).
 
-A chip (modules_esp8266.cpp, arch/esp32/modules_esp32.cpp, arch/beken/modules_beken.cpp) has only what the hardware
+A chip (arch/esp8266/modules_esp8266.cpp, arch/esp32/modules_esp32.cpp, arch/beken/modules_beken.cpp) has only what the hardware
 forces: the functions of namespace `arch` below.
 
 */
@@ -53,6 +53,8 @@ struct Entry {
     uint32_t code_size;     // its IRAM code in the fixed pool (ESP8266), else 0
     uint32_t bases[3];      // the addresses its words hold now: BaseFlash, BaseCode, BaseRam
     uint32_t flags;         // EntryDisabled
+    uint32_t data_offset;   // the flash it keeps its data in (the data column of ESPURNA_MODULES, modulesData()),
+    uint32_t data_size;     // whole sectors at the top of the area, placed by the Apply; 0 - none
 };
 
 // Entry::bases: the image as data (kind 1 words), its code (kind 3: ESP8266 its IRAM code in the fixed pool, ESP32 the
@@ -69,7 +71,7 @@ constexpr uint32_t EntryDisabled { 1 };
 constexpr uint32_t RamSecondArena { 0x80000000 };
 
 // the directory format, one for every chip
-constexpr uint32_t DirectoryMagic { 0x36524445 }; // "EDR6"
+constexpr uint32_t DirectoryMagic { 0x37524445 }; // "EDR7": Entry::data_offset, data_size
 
 struct Directory {
     uint32_t magic;         // DirectoryMagic
@@ -176,9 +178,24 @@ void spaces(const Directory& dir, bool valid, Spaces& out);
 
 // the same format on every chip: its header, then per 4 KiB chunk of the image the chunk's map (2 bits per word: 0 as
 // is, 1 flash, 2 RAM, 3 code), the chunk's branch list (a count, then offset | kind << 16 per branch into the head:
-// Beken's Thumb / ARM BL / BLX; none on the other chips), then the chunk's bytes
-constexpr uint32_t PackageVersion { 4 };
+// Beken's Thumb / ARM BL / BLX; none on the other chips; and the links to the modules it needs, every chip: LinkWord,
+// LinkBranch), then the chunk's bytes
+constexpr uint32_t PackageVersion { 5 };
 constexpr size_t BranchesMax { 1024 };  // per chunk
+
+// A module is linked against the modules it needs (Header::needs) as against the head (scripts/module_link.py): its
+// words with an address of one of them get where the Apply put that module. Kinds of the branch list:
+//   LinkWord | provider << 2 | base kind (1 flash, 2 RAM, 3 code): the word + where that base of the provider is
+//   LinkBranch | provider << 2 | branch kind (Beken: 1 Thumb, 2 ARM BL / BLX): a branch into the provider
+// provider: the index in the needs of the module. The slot keeps them behind its maps (a count, then image offset |
+// kind << 24 each): a boot rewrites the module when a provider moved
+constexpr uint32_t LinkWord { 0x10 };
+constexpr uint32_t LinkBranch { 0x20 };
+constexpr size_t LinkProviders { 4 };
+
+constexpr bool isLink(uint32_t kind) {
+    return (kind >= LinkWord) && (kind < (LinkBranch + 0x10));
+}
 
 // one package being written: its statics and IRAM code where the Apply's plan put them (arch::pools, largest first),
 // its slot from the top of the area down
@@ -199,6 +216,9 @@ struct Upload {
 
     const Directory* apply_dir { nullptr };    // the Apply's directory in memory: the slot goes by it
     uint32_t flash_floor { 0 }; // no slot under it (the initial image's modules file)
+    uint32_t flash_ceiling { 0 };   // no slot over it (the data of the modules, placed first), 0 - the area's top
+    uint32_t data_offset { 0 }; // its data, planned (modulesData())
+    uint32_t data_size { 0 };
     uint32_t ram_offset { 0 };  // planned (RamSecondArena: in the fixed pool)
     uint32_t code_offset { 0 }; // planned, in the fixed pool (ESP8266)
 
@@ -206,6 +226,10 @@ struct Upload {
     uint32_t slot_size { 0 };
     uint32_t bases[3] {};       // the Entry::bases its words get
     uint32_t delta[4] {};       // by kind
+    char needs[32] {};          // the modules it needs (the modules file), the providers of its links
+    uint32_t provider[LinkProviders][4] {};    // the deltas of each provider, by kind: where the Apply put it
+    bool provider_known[LinkProviders] {};
+    uint32_t links_written { 0 };
     uint32_t written { 0 };     // image bytes handed to arch::imageWrite
     uint32_t image_crc { 0 };   // of the image as it will run (arch::imageWrite adds to it)
 
@@ -214,6 +238,9 @@ struct Upload {
 
 // a whole chunk relocated by the deltas of its kinds, in place
 void relocateChunk(uint8_t* data, size_t size, const uint8_t* map, const uint32_t delta[4]);
+
+// the word of a link (LinkWord) at `at` in the chunk moved by its provider's delta; false - not a word in the chunk
+bool linkWord(uint8_t* data, size_t size, uint32_t at, uint32_t delta);
 
 // --- the guard -----------------------------------------------------------------------------------------------------
 
@@ -301,6 +328,11 @@ uint32_t failedAllocations();   // default 0: the chip does not count them
 
 // an OTA is running: no Apply then. Default: the web upload
 bool otaBusy();
+
+// the guard's timer: guardTick() every second, also while loop() waits or hangs (ESP8266: an SDK timer,
+// arch/esp8266/modules_esp8266.cpp; ESP32, Beken: a FreeRTOS timer, its own task, arch/rtos/modules_rtos.cpp)
+void guardTimerStart();
+void guardTimerStop();
 
 } // namespace arch
 

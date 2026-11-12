@@ -18,19 +18,25 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 constexpr size_t RelaysMax { 32ul };
 
+// inline: the providers of other modules (light, the relay of a Tuya MCU ...) derive from it without being linked
+// against the relay module
 class RelayProviderBase {
 public:
     RelayProviderBase() = default;
-    virtual ~RelayProviderBase();
+    virtual ~RelayProviderBase() = default;
 
     // whether the provider is ready
-    virtual bool setup();
+    virtual bool setup() {
+        return true;
+    }
 
     // status requested at boot
-    virtual void boot(bool status);
+    virtual void boot(bool) {
+    }
 
     // when 'status' was requested, but target status remains the same or is canceled
-    virtual void notify(bool status);
+    virtual void notify(bool) {
+    }
 
     // when relay 'status' is changed from target to current
     virtual void change(bool status) = 0;

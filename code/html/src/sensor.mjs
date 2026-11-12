@@ -18,6 +18,8 @@ import {
     setSelectValue,
 } from './settings/select.mjs';
 
+import { setInputValue } from './settings/input.mjs';
+
 import { variableListeners } from './settings.mjs';
 
 import {
@@ -614,11 +616,239 @@ function updateEnergy(values, schema) {
     });
 }
 
+// --- the sensor drivers: one module each, the settings of every installed one (espurna::sensor::Driver of sensor.h)
+
+/**
+ * @typedef {{key: string, type: string, label: string, def: string, options: string}} DriverField
+ */
+
+/**
+ * "key|type|label|default|options|repeat" separated by ';', a '#' in key and label is the index (key 0.., label 1..)
+ * @param {string} spec
+ * @returns {DriverField[]}
+ */
+export function parseDriverSpec(spec) {
+    /** @type {DriverField[]} */
+    const out = [];
+
+    for (const field of spec.split(";")) {
+        if (!field.length) {
+            continue;
+        }
+
+        const [key = "", type = "text", label = "", def = "", options = "", repeat = ""] = field.split("|");
+        if (!key.length) {
+            continue;
+        }
+
+        if (!key.includes("#")) {
+            out.push({key, type, label, def, options});
+            continue;
+        }
+
+        const count = parseInt(repeat) || 0;
+        for (let index = 0; index < count; ++index) {
+            out.push({
+                key: key.replace("#", index.toString()),
+                type,
+                label: label.replace("#", (index + 1).toString()),
+                def,
+                options,
+            });
+        }
+    }
+
+    return out;
+}
+
+/**
+ * select options of a field: [value, text]
+ * @param {DriverField} field
+ * @returns {[string, string][]}
+ */
+export function driverFieldOptions(field) {
+    switch (field.type) {
+    case "select":
+        return field.options.split(",")
+            .filter((option) => option.length)
+            .map((option) => {
+                const [value = "", text = value] = option.split("=");
+                return [value, text];
+            });
+
+    case "uart":
+        return [["0", "Off"], ["1", "Port 1"], ["2", "Port 2"], ["3", "Port 3"]];
+
+    case "i2c": {
+        /** @type {[string, string][]} */
+        const out = [["0", "Find it"]];
+        for (let address = 0x08; address <= 0x77; ++address) {
+            out.push([address.toString(), `0x${address.toString(16).padStart(2, "0")}`]);
+        }
+        return out;
+    }
+
+    }
+
+    return [];
+}
+
+// what the GPIO list (gpio.mjs) calls 'none'
+const GPIO_NONE = "153";
+
+/**
+ * @param {DriverField} field
+ * @param {string} value the stored one, empty when not set
+ * @returns {HTMLElement}
+ */
+function driverFieldControl(field, value) {
+    const current = value.length ? value : field.def;
+
+    /** @type {HTMLInputElement | HTMLSelectElement} */
+    let control;
+
+    switch (field.type) {
+    case "gpio": {
+        const select = document.createElement("select");
+        // the GPIO list of the board comes with gpioConfig, maybe later: the stored value stays the original
+        initElementOptions(select, [{value: current || GPIO_NONE, text: `GPIO${current || GPIO_NONE}`}]);
+        setSelectValue(select, current || GPIO_NONE);
+        select.dataset["enumerable"] = "gpio-hardware";
+        control = select;
+        break;
+    }
+
+    case "select":
+    case "uart":
+    case "i2c": {
+        const select = document.createElement("select");
+        initElementOptions(select, driverFieldOptions(field)
+            .map(([value, text]) => ({value, text})));
+        setSelectValue(select, current);
+        control = select;
+        break;
+    }
+
+    case "bool": {
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.classList.add("checkbox-toggle");
+        setInputValue(input, current);
+        control = input;
+        break;
+    }
+
+    default: {
+        // numbers as text: some are fractions (0.1 Ohm), the number input of the WebUI keeps integers only
+        const input = document.createElement("input");
+        input.type = "text";
+        if (field.type === "number" || field.type === "adc") {
+            input.inputMode = "decimal";
+        }
+        if (field.type === "adc") {
+            input.placeholder = "none (ESP8266: 17 = A0)";
+        } else if (field.def.length) {
+            input.placeholder = field.def;
+        }
+        if (field.type === "number" && field.options.includes("-")) {
+            input.title = `${field.options}`;
+        }
+        setInputValue(input, value);
+        control = input;
+        break;
+    }
+
+    }
+
+    control.name = field.key;
+    control.id = `sns-driver-${field.key}`;
+    // the drivers load once, when they start
+    control.dataset["action"] = "reboot";
+
+    return control;
+}
+
+/**
+ * @param {string} id of the container
+ * @param {{name: string, spec: string, values: {[k: string]: string}}[]} drivers
+ */
+function initDrivers(id, drivers) {
+    const container = document.getElementById(id);
+    if (!container) {
+        return;
+    }
+
+    // every module sends its own entries (the i2c and the spi bus each), an entry replaces the one of its name only
+    const names = new Set(drivers.map((driver) => driver.name));
+    for (const node of Array.from(container.children)) {
+        if (names.has(/** @type {HTMLElement} */(node).dataset["name"] ?? "")) {
+            container.removeChild(node);
+        }
+    }
+
+    for (const driver of drivers) {
+        const fieldset = document.createElement("fieldset");
+        fieldset.dataset["name"] = driver.name;
+
+        const legend = document.createElement("legend");
+        legend.textContent = (id === "sns-buses") ? `Bus: ${driver.name}` : `Driver: ${driver.name}`;
+        fieldset.appendChild(legend);
+
+        const fields = parseDriverSpec(driver.spec);
+        if (!fields.length) {
+            const span = document.createElement("span");
+            span.classList.add("pure-form-message");
+            span.textContent = "Nothing to set up.";
+            fieldset.appendChild(span);
+        }
+
+        const group = document.createElement("div");
+        group.classList.add("pure-form-aligned");
+
+        for (const field of fields) {
+            const row = document.createElement("div");
+            row.classList.add("pure-control-group");
+
+            const control = driverFieldControl(field, driver.values[field.key] ?? "");
+
+            const label = document.createElement("label");
+            label.textContent = field.label;
+            label.htmlFor = control.id;
+
+            row.appendChild(label);
+            row.appendChild(control);
+            group.appendChild(row);
+        }
+
+        fieldset.appendChild(group);
+        container.appendChild(fieldset);
+
+        setOriginalsFromValuesForNode(fieldset);
+        fieldset.querySelectorAll("select[data-enumerable]")
+            .forEach((elem) => {
+                listenEnumerableName(/** @type {HTMLSelectElement} */(elem), "gpio-hardware");
+            });
+    }
+
+    if (drivers.length && (id === "sns-drivers")) {
+        const note = document.createElement("span");
+        note.classList.add("pure-form-message");
+        note.textContent = "The sensor drivers read these at boot: Save, then reboot.";
+        container.appendChild(note);
+    }
+}
+
 /**
  * @returns {import('./settings.mjs').KeyValueListeners}
  */
 function listeners() {
     return {
+        "snsDrivers": (_, value) => {
+            initDrivers("sns-drivers", value);
+        },
+        "snsBus": (_, value) => {
+            initDrivers("sns-buses", value);
+        },
         "magnitudes-pending": () => {
             waitPendingMagnitudes();
         },

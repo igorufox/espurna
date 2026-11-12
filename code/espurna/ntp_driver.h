@@ -3,8 +3,8 @@
 NTP MODULE
 
 Chip part of the NTP module. ntp.cpp holds the settings, timezone, ticks, terminal and WebUI;
-everything that talks to the SNTP client of the SDK is behind these functions,
-implemented by ntp_driver.cpp
+everything that talks to the SNTP client of the SDK is behind these functions: ntp_driver.cpp (what every chip has
+alike) and arch/<chip>/ntp_<chip>.cpp (the SDK around lwIP's client)
 
 */
 

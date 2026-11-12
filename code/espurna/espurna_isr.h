@@ -19,10 +19,5 @@ Chip part of the code running in GPIO interrupt handlers, ref. arch/<chip>/isr_<
 
 #include <Arduino.h>
 
-#if defined(ESP8266)
-#include "arch/esp8266/isr_esp8266.h"
-#elif defined(ESP32)
-#include "arch/esp32/isr_esp32.h"
-#elif defined(LIBRETINY)
-#include "arch/beken/isr_beken.h"
-#endif
+// arch/<chip>/isr_chip.h: the chip's folder (-I of its ini)
+#include "isr_chip.h"

@@ -6,8 +6,6 @@ CHIP DESCRIPTION AND LWIP GLUE, esp8266 part (ref. espurna_chip.h)
 
 #include "../../espurna.h"
 
-#if defined(ESP8266)
-
 #include "../../espurna_chip.h"
 
 #include <SPI.h>
@@ -141,4 +139,7 @@ bool equalsConstantTime(const String& lhs, const String& rhs) {
     return lhs.equalsConstantTime(rhs);
 }
 
-#endif
+// the core's IPAddress has toString(), utils.h
+String ipToString(const IPAddress& ip) {
+    return ip.toString();
+}

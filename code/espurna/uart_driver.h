@@ -86,10 +86,5 @@ constexpr int serial_config(Config config) {
 } // namespace driver
 } // namespace espurna
 
-#if defined(ESP8266)
-#include "arch/esp8266/uart_esp8266.h"
-#elif defined(ESP32)
-#include "arch/esp32/uart_esp32.h"
-#elif defined(LIBRETINY)
-#include "arch/beken/uart_beken.h"
-#endif
+// arch/<chip>/uart_chip.h: the chip's folder (-I of its ini)
+#include "uart_chip.h"

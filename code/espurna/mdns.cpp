@@ -68,15 +68,13 @@ void addServices() {
 }
 
 void start() {
-#if defined(ESP32) || defined(LIBRETINY)
-    // one mDNS responder per chip, and with Matter it is Matter's: on the Beken its own responder takes 5353 (ours is
+    // one mDNS responder per chip, and with Matter it is Matter's (the ESP8266 has no matter module: never enabled): on the Beken its own responder takes 5353 (ours is
     // a second one, lwIP refuses it: ERR_USE, the commissioner never sees the board); on the ESP32 both sit on the IDF
     // mdns component, the second mdns_init() fails and our MDNS.end() would take Matter's records down
     if (modulesEnabled("matter")) {
         DEBUG_MSG_P(PSTR("[MDNS] Off: the matter module answers mDNS on this chip\n"));
         return;
     }
-#endif
 
     const auto hostname = systemHostname();
     if (espurna::mdns::driver::begin(hostname)) {

@@ -17,21 +17,17 @@ Copyright (C) 2019 by Xose Pérez <xose dot perez at gmail dot com>
 // The SDK calls are the esp8266 names on every chip. ESP32 and LibreTiny get them from arch/<chip>/compat_<chip>.h:
 // esp_get_cycle_count() (ESP32 xtensa ccount, 32bit, wraps every ~18s at 240MHz; BK72xx FreeRTOS ticks scaled
 // to F_CPU, 2ms resolution), micros64() and ets_delay_us()
-#if defined(ESP32) || defined(LIBRETINY)
-#include "arch/rtos/compat_rtos.h"
-#endif
+#include "compat_chip.h"
 
 namespace espurna {
 
-#if defined(ESP32) || defined(LIBRETINY)
 namespace system {
 
-// Sleep with the loop lock released, so AsyncTCP handlers can run in the
-// meantime (same as esp8266 servicing SYS tasks inside delay()). arch/rtos/system_rtos.cpp
+// Sleep with the loop lock released, so the network tasks can run in the meantime (arch/rtos/system_rtos.cpp); the
+// esp8266 services its SYS tasks inside delay() (arch/esp8266/system_esp8266.cpp)
 void delay_unlocked(uint32_t ms);
 
 } // namespace system
-#endif
 
 // Clock sources and delays that call the SDK
 namespace time {
@@ -55,11 +51,7 @@ inline void delay_us(uint32_t value) {
 
 // esp8266 SYS tasks are serviced while sleeping, the other chips release the loop lock for the network tasks
 inline void delay(uint32_t ms) {
-#if defined(ESP32) || defined(LIBRETINY)
     system::delay_unlocked(ms);
-#else
-    ::delay(ms);
-#endif
 }
 
 } // namespace chip

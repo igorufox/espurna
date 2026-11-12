@@ -19,7 +19,7 @@ branch list of the package). The fixed pool: the data TCM the head leaves free (
 #include "espurna.h"
 #include "modules.h"
 
-#if MODULES_SUPPORT && defined(LIBRETINY)
+#if MODULES_SUPPORT
 
 #include "modules_core.h"
 #include "terminal.h"
@@ -339,6 +339,7 @@ struct Writing {
     uint32_t erased { 0 };          // flash erased up to here
     uint8_t carry[BlockData];       // the last block of the previous chunk, while a branch spans into this one
     uint32_t carry_address { 0 };
+    uint32_t carry_delta { 0 };     // what that branch moves by
     bool carry_pending { false };
 };
 
@@ -412,14 +413,15 @@ const char* moveArm(uint8_t* ptr, uint32_t delta) {
 }
 
 // the branches of a whole chunk moved by the flash delta, written; a Thumb pair across the chunk's end waits for the
-// next chunk (its last block is held back)
+// next chunk (its last block is held back). A branch into a module it needs (LinkBranch) moves by the flash delta of
+// this module less the provider's; the words of the links (LinkWord) the core did already
 const char* writeChunk(Upload& up, uint32_t offset, uint8_t* chunk, size_t size) {
     const uint32_t address = up.bases[BaseFlash] + offset;
     const uint32_t delta = up.delta[1];
 
     // a Thumb branch from the end of the previous chunk into this one
     if (writing.carry_pending) {
-        const auto* error = moveThumb(&writing.carry[BlockData - 2], &chunk[0], delta);
+        const auto* error = moveThumb(&writing.carry[BlockData - 2], &chunk[0], writing.carry_delta);
         if (error) {
             return error;
         }
@@ -433,16 +435,26 @@ const char* writeChunk(Upload& up, uint32_t offset, uint8_t* chunk, size_t size)
     bool spans = false;
     for (uint32_t index = 0; index < up.branch_count; ++index) {
         const uint32_t at = up.branches[index] & 0xffff;
-        const uint32_t kind = up.branches[index] >> 16;
+        uint32_t kind = up.branches[index] >> 16;
+        uint32_t move = delta;
+        if (isLink(kind)) {
+            if ((kind & ~0xfu) != LinkBranch) {
+                continue;
+            }
+            move = delta - up.provider[(kind >> 2) & 3][1];
+            kind &= 3;
+        }
+
         const char* error { nullptr };
         if ((kind == BranchThumb) && ((at + 2) == size) && (size == ChunkSize)) {
             spans = true;
+            writing.carry_delta = move;
             continue;
         }
         if ((kind == BranchThumb) && ((at + 4) <= size) && !(at & 1)) {
-            error = moveThumb(&chunk[at], &chunk[at + 2], delta);
+            error = moveThumb(&chunk[at], &chunk[at + 2], move);
         } else if ((kind == BranchArm) && ((at + 4) <= size) && !(at & 3)) {
-            error = moveArm(&chunk[at], delta);
+            error = moveArm(&chunk[at], move);
         } else {
             error = PSTR("branch list: bad entry");
         }

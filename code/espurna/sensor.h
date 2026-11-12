@@ -255,8 +255,21 @@ struct Info {
 
 using NotifyCallback = bool (*)(const BaseSensor*);
 
-void notify_after(duration::Milliseconds, NotifyCallback);
-void notify_now(NotifyCallback);
+// A sensor driver: a module of its own (sensors/module_<name>.cpp, config/head.h), started after the sensors module.
+// Its entry registers it with sensorDriver(); the sensors module calls load() right away, load() reads the settings of
+// the driver and adds the sensors they configure with sensorAdd() (none when its pins / port / address are not set).
+// The SENSORS panel of the WebUI shows the settings of every registered driver, from `spec`:
+//   fields separated by ';', a field "key|type|label|default|options|repeat"
+//   type    gpio, adc (a pin of the ADC), uart (1-based number of a port of the uart module, 0 - off), i2c (an
+//           address, 0x.. hex), number, text, bool, select
+//   options select: "value=Text,value=Text", number: "min-max"
+//   repeat  the key and the label have '#' for the index: keys 0 .. repeat - 1, labels 1 .. repeat
+// The changes apply at the next boot (the drivers load once, when they start)
+struct Driver {
+    const char* name;   // the module name
+    const char* spec;   // PROGMEM
+    void (*load)();
+};
 
 struct PreInit {
     using Sensors = Span<BaseSensor*>;
@@ -266,7 +279,8 @@ struct PreInit {
         int error;
     };
 
-    virtual ~PreInit();
+    // inline: the sensor drivers (separate modules) derive from it
+    virtual ~PreInit() = default;
 
     virtual Result find_sensors() = 0;
     virtual String description() const = 0;
@@ -275,7 +289,31 @@ struct PreInit {
 bool ready();
 
 using PreInitPtr = std::unique_ptr<PreInit>;
-void add_preinit(PreInitPtr);
+
+} // namespace sensor
+} // namespace espurna
+
+// what the driver modules call: the sensors module's, a driver is linked against it directly (it needs it)
+void sensorDriver(const espurna::sensor::Driver&);
+void sensorAdd(BaseSensor*);
+void sensorAddPreinit(espurna::sensor::PreInit*);
+void sensorNotifyAfter(uint32_t milliseconds, espurna::sensor::NotifyCallback);
+void sensorNotifyNow(espurna::sensor::NotifyCallback);
+
+namespace espurna {
+namespace sensor {
+
+inline void notify_after(duration::Milliseconds after, NotifyCallback callback) {
+    sensorNotifyAfter(after.count(), callback);
+}
+
+inline void notify_now(NotifyCallback callback) {
+    sensorNotifyNow(callback);
+}
+
+inline void add_preinit(PreInitPtr ptr) {
+    sensorAddPreinit(ptr.release());
+}
 
 } // namespace sensor
 } // namespace espurna
@@ -323,5 +361,114 @@ void sensorWebSocketMagnitudes(JsonObject& root, espurna::StringView prefix, Sen
 
 bool sensorReady();
 
-espurna::StringView sensorList();
+// the names of the registered drivers
+String sensorList();
 void sensorSetup();
+
+// --- the energy counter, inline: the energy meter drivers are modules of their own, apart from the sensors module
+
+#include <cmath>
+#include <limits>
+
+namespace espurna {
+namespace sensor {
+
+// Generic storage. Most of the time we init this on boot with both members or start at 0 and increment with watt-second
+
+inline Energy::Energy(Energy::Pair pair) :
+    _kwh(pair.kwh),
+    _ws(pair.ws)
+{}
+
+inline Energy::Energy(WattSeconds ws) {
+    _ws.value = ws.value;
+    while (_ws.value >= WattSecondsMax) {
+        _ws.value -= WattSecondsMax;
+        ++_kwh.value;
+    }
+}
+
+inline Energy::Energy(WattHours other) :
+    Energy(static_cast<double>(other.value) / 1000.0)
+{}
+
+inline Energy::Energy(double kwh) {
+    double lhs;
+    double rhs = std::modf(kwh, &lhs);
+
+    _kwh.value = lhs;
+    _ws.value = rhs * static_cast<double>(KilowattHours::Ratio::num);
+}
+
+inline Energy& Energy::operator+=(WattSeconds other) {
+    return *this += Energy(other);
+}
+
+inline Energy Energy::operator+(WattSeconds other) {
+    Energy result(*this);
+    result += other;
+
+    return result;
+}
+
+inline Energy& Energy::operator+=(const Energy& other) {
+    _kwh.value += other._kwh.value;
+
+    const auto left = WattSecondsMax - _ws.value;
+    if (other._ws.value >= left) {
+        _kwh.value += 1;
+        _ws.value = (other._ws.value - left);
+    } else {
+        _ws.value += other._ws.value;
+    }
+
+    return *this;
+}
+
+inline Energy::operator bool() const {
+    return (_kwh.value > 0) && (_ws.value > 0);
+}
+
+inline WattSeconds Energy::asWattSeconds() const {
+    using Type = WattSeconds::Type;
+
+    static constexpr auto TypeMax = std::numeric_limits<Type>::max();
+    static constexpr Type KwhMax { TypeMax / WattSecondsMax };
+
+    auto kwh = _kwh.value;
+    while (kwh >= KwhMax) {
+        kwh -= KwhMax;
+    }
+
+    WattSeconds out;
+    out.value += _ws.value;
+    out.value += kwh * WattSecondsMax;
+
+    return out;
+}
+
+inline double Energy::asDouble() const {
+    return static_cast<double>(_kwh.value)
+        + static_cast<double>(_ws.value)
+        / static_cast<double>(WattSecondsMax);
+}
+
+inline String Energy::asString() const {
+    String out;
+
+    // Value without `+` is treated as just `<kWh>`
+    out += String(_kwh.value, 10);
+    if (_ws.value) {
+        out += '+';
+        out += String(_ws.value, 10);
+    }
+
+    return out;
+}
+
+inline void Energy::reset() {
+    *this = Energy{};
+}
+
+} // namespace sensor
+} // namespace espurna

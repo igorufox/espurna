@@ -14,18 +14,7 @@ Common part of every chip, ref. rtcmem.h for where the memory is
 #include <algorithm>
 #include <cstring>
 
-#if defined(ESP8266)
-volatile RtcmemData* Rtcmem = reinterpret_cast<volatile RtcmemData*>(RTCMEM_ADDR);
-#elif defined(ESP32)
-// RTC_NOINIT_ATTR keeps the values across SW / WDT / panic resets and deep sleep
-RTC_NOINIT_ATTR static RtcmemData _rtcmem_storage;
-volatile RtcmemData* Rtcmem = &_rtcmem_storage;
-#elif defined(LIBRETINY)
-// No RAM survives the reset, bootloader clears all of it (0x00400000 and up, checked on BK7231N).
-// Contents only live until the next reboot, relay state is restored from settings instead.
-static RtcmemData _rtcmem_storage;
-volatile RtcmemData* Rtcmem = &_rtcmem_storage;
-#endif
+// Rtcmem itself, rtcmemChipKept(), rtcmemChipSetup(): the chip's (arch/<chip>/rtcmem_<chip>.cpp)
 
 namespace espurna {
 namespace peripherals {
@@ -67,19 +56,7 @@ void init() {
 // Treat memory as dirty on cold boot, hardware wdt reset and rst pin.
 // Beken: nothing but the system word survives any reset (ref. rtcmemChipSetup())
 bool status() {
-#if defined(LIBRETINY)
-    return false;
-#else
-    switch (systemResetReason()) {
-    case REASON_EXT_SYS_RST:
-    case REASON_DEFAULT_RST:
-        return false;
-    default:
-        break;
-    }
-
-    return Magic == Rtcmem->magic;
-#endif
+    return rtcmemChipKept() && (Magic == Rtcmem->magic);
 }
 
 #if TERMINAL_SUPPORT
@@ -152,9 +129,7 @@ void setup() {
         init();
     }
 
-#if defined(LIBRETINY)
     rtcmemChipSetup();
-#endif
 }
 
 } // namespace rtc

@@ -6,8 +6,6 @@ GPIO MODULE, BK72xx (LibreTiny) part (common part is in gpio.cpp and arch/rtos/g
 
 #include "espurna.h"
 
-#if defined(LIBRETINY)
-
 namespace espurna {
 namespace gpio {
 namespace {
@@ -67,4 +65,3 @@ void print_pin(Print& out, uint8_t pin) {
 } // namespace gpio
 } // namespace espurna
 
-#endif // LIBRETINY

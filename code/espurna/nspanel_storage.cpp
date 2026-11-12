@@ -2,8 +2,12 @@
 
 NSPANEL MODULE - storage
 
-LittleFS on the existing data/spiffs partition: /nspanel.json, written through a temporary file; the
-heap budget of a config parse and the built-in config
+The config (nspanel.json) in the flash the module keeps its data in (modulesData() of the head: 32 KB at the top of
+the module area, placed by the Apply only while the module is installed, kept by the next Apply), the same on every
+chip. Two halves of 16 KB: a new config goes into the half the current one is not in, its header (a sequence number,
+the size, the CRC) last, after the parse said it is valid (commitTmp()); the boot takes the valid half with the higher
+number. An upload that breaks off or does not parse leaves the current one. The heap budget of a config parse and the
+built-in config below
 
 */
 
@@ -12,6 +16,9 @@ heap budget of a config parse and the built-in config
 #if NSPANEL_SUPPORT
 
 #include "nspanel_core.h"
+#include "modules.h"
+#include "modules_core.h"
+#include "system.h"
 
 #if MQTT_SUPPORT
 #include "mqtt.h"
@@ -21,10 +28,8 @@ heap budget of a config parse and the built-in config
 #include "relay.h"
 #endif
 
-#include <LittleFS.h>
-
-#include <esp_partition.h>
-
+#include <algorithm>
+#include <cstring>
 #include <memory>
 #include <new>
 
@@ -33,142 +38,83 @@ namespace nspanel {
 namespace storage {
 namespace {
 
+constexpr char Module[] = "nspanel";
+constexpr uint32_t Half { 16384 };
+constexpr uint32_t Magic { 0x4350534e }; // "NSPC"
+
+struct Header {
+    uint32_t magic;
+    uint32_t sequence;
+    uint32_t size;
+    uint32_t crc32;
+};
+
+static_assert(sizeof(Header) + build::ConfigMax <= Half, "");
+
 bool is_mounted { false };
-String label;
+
+// the upload: the half it goes into, what its header will say
+struct Pending {
+    uint32_t half;
+    uint32_t sequence;
+    uint32_t size;
+    uint32_t crc32;
+    bool written;
+};
+
+Pending pending {};
+
+bool header(uint32_t half, Header& out) {
+    return modulesDataRead(Module, half * Half, &out, sizeof(out))
+        && (out.magic == Magic) && out.size && (out.size <= build::ConfigMax);
+}
+
+// the valid half with the higher sequence number; false - none
+bool current(uint32_t& half, Header& out) {
+    Header first;
+    Header second;
+    const bool a = header(0, first);
+    const bool b = header(1, second);
+    if (!a && !b) {
+        return false;
+    }
+
+    if (a && (!b || (static_cast<int32_t>(first.sequence - second.sequence) > 0))) {
+        half = 0;
+        out = first;
+    } else {
+        half = 1;
+        out = second;
+    }
+
+    return true;
+}
+
+// the data of a half into `out` (size bytes), its CRC checked
+bool readData(uint32_t half, const Header& header, char* out) {
+    alignas(4) uint8_t chunk[256];
+    uint32_t crc = 0;
+    for (uint32_t done = 0; done < header.size; done += sizeof(chunk)) {
+        const uint32_t length = std::min<uint32_t>(sizeof(chunk), header.size - done);
+        if (!modulesDataRead(Module, (half * Half) + sizeof(Header) + done, chunk, (length + 3) & ~3u)) {
+            return false;
+        }
+        std::memcpy(out + done, chunk, length);
+        crc = modules::crc32Update(crc, chunk, length);
+    }
+
+    return crc == header.crc32;
+}
 
 } // namespace
 
 bool mount() {
-    if (is_mounted) {
-        return true;
-    }
-
-    const auto* part = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
-    if (!part) {
-        DEBUG_MSG_P(PSTR("[NSPANEL] No data/spiffs partition\n"));
-        return false;
-    }
-
-    label = part->label;
-    if (!LittleFS.begin(false, "/littlefs", 4, part->label)) {
-        DEBUG_MSG_P(PSTR("[NSPANEL] LittleFS mount failed on '%s', formatting\n"), part->label);
-        if (!LittleFS.begin(true, "/littlefs", 4, part->label)) {
-            DEBUG_MSG_P(PSTR("[NSPANEL] LittleFS format failed\n"));
-            return false;
-        }
-    }
-
-    is_mounted = true;
-    DEBUG_MSG_P(PSTR("[NSPANEL] LittleFS on '%s' (%u / %u bytes used)\n"),
-        part->label, LittleFS.usedBytes(), LittleFS.totalBytes());
-
-    return true;
-}
-
-bool read(String& out) {
-    if (!is_mounted || !LittleFS.exists(build::ConfigPath)) {
-        return false;
-    }
-
-    File file = LittleFS.open(build::ConfigPath, "r");
-    if (!file) {
-        return false;
-    }
-
-    const size_t size = file.size();
-    if (!size || (size > build::ConfigMax)) {
-        file.close();
-        return false;
-    }
-
-    out = String();
-    out.reserve(size);
-    char buf[256];
-    while (file.available()) {
-        const auto len = file.readBytes(buf, sizeof(buf));
-        if (!len) {
-            break;
-        }
-        out.concat(buf, len);
-    }
-    file.close();
-
-    return out.length() == size;
-}
-
-// NUL terminated copy of the file for an in-place parse, exactly size + 1 bytes
-bool read(std::unique_ptr<char[]>& out, size_t& out_size) {
-    out.reset();
-    out_size = 0;
-    if (!is_mounted || !LittleFS.exists(build::ConfigPath)) {
-        return false;
-    }
-
-    File file = LittleFS.open(build::ConfigPath, "r");
-    if (!file) {
-        return false;
-    }
-
-    const size_t size = file.size();
-    if (!size || (size > build::ConfigMax)) {
-        file.close();
-        return false;
-    }
-
-    out.reset(new (std::nothrow) char[size + 1]);
-    if (!out) {
-        file.close();
-        return false;
-    }
-
-    const auto len = file.readBytes(out.get(), size);
-    file.close();
-    if (len != size) {
-        out.reset();
-        return false;
-    }
-
-    out[size] = '\0';
-    out_size = size;
-    return true;
-}
-
-void removeTmp() {
-    if (is_mounted) {
-        LittleFS.remove(build::ConfigTmpPath);
-    }
-}
-
-// the upload is saved before the in-place parse destroys it, and only renamed to
-// ConfigPath when it is valid (ref. commitTmp())
-bool writeTmp(const char* data, size_t size) {
+    is_mounted = modulesDataSize(Module) >= (2 * Half);
     if (!is_mounted) {
-        return false;
+        DEBUG_MSG_P(PSTR("[NSPANEL] No flash data of the module (Apply it again)\n"));
     }
 
-    File file = LittleFS.open(build::ConfigTmpPath, "w");
-    if (!file) {
-        return false;
-    }
-
-    const auto written = file.write(reinterpret_cast<const uint8_t*>(data), size);
-    file.close();
-    if (written != size) {
-        removeTmp();
-        return false;
-    }
-
-    return true;
-}
-
-bool commitTmp() {
-    if (!LittleFS.rename(build::ConfigTmpPath, build::ConfigPath)) {
-        LittleFS.remove(build::ConfigPath);
-        return LittleFS.rename(build::ConfigTmpPath, build::ConfigPath);
-    }
-
-    return true;
+    return is_mounted;
 }
 
 bool mounted() {
@@ -176,15 +122,109 @@ bool mounted() {
 }
 
 bool exists() {
-    return is_mounted && LittleFS.exists(build::ConfigPath);
+    uint32_t half;
+    Header out;
+    return is_mounted && current(half, out);
+}
+
+bool read(std::unique_ptr<char[]>& out, size_t& out_size) {
+    out.reset();
+    out_size = 0;
+
+    uint32_t half;
+    Header found;
+    if (!is_mounted || !current(half, found)) {
+        return false;
+    }
+
+    out.reset(new (std::nothrow) char[found.size + 1]);
+    if (!out) {
+        return false;
+    }
+
+    if (!readData(half, found, out.get())) {
+        out.reset();
+        return false;
+    }
+
+    out[found.size] = '\0';
+    out_size = found.size;
+    return true;
+}
+
+bool read(String& out) {
+    std::unique_ptr<char[]> text;
+    size_t size;
+    if (!read(text, size)) {
+        return false;
+    }
+
+    out = String();
+    out.reserve(size);
+    out.concat(text.get(), size);
+    return out.length() == size;
+}
+
+void removeTmp() {
+    pending = Pending{};
+}
+
+// the upload into the other half before the in-place parse destroys it; the header only with commitTmp()
+bool writeTmp(const char* data, size_t size) {
+    pending = Pending{};
+    if (!is_mounted || !size || (size > build::ConfigMax)) {
+        return false;
+    }
+
+    uint32_t half = 0;
+    Header found {};
+    const bool has = current(half, found);
+    pending.half = has ? (1 - half) : 0;
+    pending.sequence = has ? (found.sequence + 1) : 1;
+    pending.size = size;
+
+    if (!modulesDataErase(Module, pending.half * Half, Half)) {
+        return false;
+    }
+
+    alignas(4) uint8_t chunk[256];
+    uint32_t crc = 0;
+    for (uint32_t done = 0; done < size; done += sizeof(chunk)) {
+        const uint32_t length = std::min<uint32_t>(sizeof(chunk), size - done);
+        std::memset(chunk, 0xff, sizeof(chunk));
+        std::memcpy(chunk, data + done, length);
+        crc = modules::crc32Update(crc, chunk, length);
+        if (!modulesDataWrite(Module, (pending.half * Half) + sizeof(Header) + done, chunk, (length + 3) & ~3u)) {
+            return false;
+        }
+    }
+
+    pending.crc32 = crc;
+    pending.written = true;
+    return true;
+}
+
+bool commitTmp() {
+    if (!pending.written) {
+        return false;
+    }
+
+    alignas(4) Header out { Magic, pending.sequence, pending.size, pending.crc32 };
+    const bool ok = modulesDataWrite(Module, pending.half * Half, &out, sizeof(out));
+    pending = Pending{};
+    return ok;
 }
 
 void info(Print& out) {
-    if (is_mounted) {
-        out.printf_P(PSTR("FS: LittleFS on '%s', %u / %u bytes used\n"),
-            label.c_str(), LittleFS.usedBytes(), LittleFS.totalBytes());
+    uint32_t half;
+    Header found;
+    if (!is_mounted) {
+        out.print(F("Config: no flash data of the module\n"));
+    } else if (current(half, found)) {
+        out.printf_P(PSTR("Config: %u bytes in the flash data of the module (half %u, #%u)\n"),
+            found.size, half, found.sequence);
     } else {
-        out.print(F("FS: not mounted\n"));
+        out.print(F("Config: none saved, the built-in one\n"));
     }
 }
 
@@ -219,8 +259,9 @@ Limits parseLimits() {
 // items: about 3 bytes per byte of text) plus what WiFi / lwIP / TLS must keep
 bool heapAvailable(size_t json_size, size_t length, String& error) {
     const size_t need = json_size + (build::ConfigHeapPerByte * length) + build::ConfigHeapReserve;
-    const size_t free_heap = ESP.getFreeHeap();
-    const size_t block = ESP->getMaxAllocHeap();
+    const auto heap = systemHeapStats();
+    const size_t free_heap = heap.available;
+    const size_t block = heap.usable;
     if ((free_heap >= need) && (block >= (json_size + build::ConfigBlockReserve))) {
         return true;
     }

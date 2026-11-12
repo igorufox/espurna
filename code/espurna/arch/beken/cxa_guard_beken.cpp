@@ -13,8 +13,6 @@ THREAD-SAFE STATIC LOCALS FOR BEKEN (LibreTiny)
 // come before libstdc++.a, so its guard.o is never pulled in): another task waits for the construction to end,
 // only a real recursion inside one task still traps.
 
-#if defined(LIBRETINY)
-
 #include <Arduino.h>
 
 #include <FreeRTOS.h>
@@ -171,4 +169,3 @@ void __cxa_guard_abort(uint32_t* raw) {
 
 } // extern "C"
 
-#endif

@@ -14,6 +14,8 @@ Copyright (C) 2016-2017 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include <RFM69.h>
 #include <RFM69_ATC.h>
+#include "spi.h"
+
 #include <SPI.h>
 
 #include <vector>
@@ -113,7 +115,7 @@ constexpr size_t node(size_t) {
 namespace settings {
 
 // Radio. Build values are the defaults; generic images have no CS pin (RFM69_CS_PIN GPIO_NONE) and the
-// module stays idle until rfm69CsGPIO is set. The radio uses the hardware SPI (SCK / MISO / MOSI of the chip)
+// module stays idle until rfm69CsGPIO is set. The radio is on the bus of the spi module (spiSCK / spiMISO / spiMOSI)
 uint8_t cs() {
     return getSetting("rfm69CsGPIO", build::cs());
 }
@@ -495,9 +497,10 @@ void rfm69Setup() {
         return;
     }
 
-    // SPI pins of the chip (esp8266 HSPI: GPIO14 / 12 / 13), chip select and the interrupt are no longer free for anything else
-    for (uint8_t pin : {SCK, MISO, MOSI}) {
-        gpioLock(pin);
+    // the bus of the spi module (it has locked SCK / MISO / MOSI); chip select and the interrupt are no longer free
+    if (!spiReady()) {
+        DEBUG_MSG_P(PSTR("[RFM69] The SPI bus is not set up\n"));
+        return;
     }
     if (!gpioLock(cs) || !gpioLock(irq)) {
         DEBUG_MSG_P(PSTR("[RFM69] CS GPIO%hhu or IRQ GPIO%hhu is already used\n"), cs, irq);

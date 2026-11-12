@@ -5,17 +5,17 @@ MATTER APPLICATION FOR ESP32 (Arduino-ESP32 core 3.x)
 The Matter application C API of espurna_matter.h on the Matter library of Arduino-ESP32 (esp_matter, connectedhomeip):
 On/Off plug endpoints, a bridge (Aggregator + Bridged Nodes) for more than one relay. Everything else is matter.cpp.
 Commissioning is on-network only: ESPurna is on Wi-Fi already, and the libraries are built without CHIPoBLE. Setup
-codes and device attestation are the board's own (matter_identity_esp32.cpp), under the SDK test PAI (VID 0xFFF1,
+codes and device attestation are the board's own (matter_identity.cpp, one code with Beken), under the SDK test PAI (VID 0xFFF1,
 PID 0x8000)
 
 */
 
 #include "espurna.h"
 
-#if defined(ARDUINO_ARCH_ESP32) && MATTER_SUPPORT
+#if MATTER_SUPPORT
 
 #include "espurna_matter.h"
-#include "matter_identity_esp32.h"
+#include "matter_identity.h"
 
 #include <Matter.h>
 #include <WiFi.h>
@@ -24,6 +24,8 @@ PID 0x8000)
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/ESP32/ESP32Config.h>
 #include <platform/KeyValueStoreManager.h>
+
+#include <nvs.h>
 
 #include <cstring>
 
@@ -230,11 +232,11 @@ void describe(Identity& out) {
     out.vendor_id = vendor;
     out.product = systemDevice().toString();
     out.product_id = product;
-    out.source = identity::status();
+    out.source = espurna::matter::identity::status();
 }
 
 // What a Matter factory reset clears: chip-config (fabric index, unique id ...) and the KVS of fabrics, ACL, sessions.
-// The counters stay (no reuse of a message counter), the own identity stays in its "espurna-matter" namespace
+// The counters stay (no reuse of a message counter), the own identity stays in its "espurna-id" namespace
 bool reset() {
     using namespace chip::DeviceLayer::Internal;
     using chip::DeviceLayer::PersistedStorage::KeyValueStoreMgrImpl;
@@ -250,6 +252,55 @@ size_t heap_min() {
 }
 
 } // namespace backend
+
+// The chip's part of the identity (matter_identity.cpp): NVS of the default 'nvs' partition, namespace "espurna-id"
+// next to the stack's own (CHIP_KVS, chip-config, chip-counters); no factory data on any ESP32
+namespace identity {
+namespace {
+
+constexpr char Namespace[] = "espurna-id";
+
+} // namespace
+
+bool store_read(const char* name, uint8_t* out, size_t size, size_t& length) {
+    nvs_handle_t handle;
+    if (nvs_open(Namespace, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+
+    // a read without a buffer: the size only
+    size_t blob { out ? size : 0 };
+    const auto err = nvs_get_blob(handle, name, out, &blob);
+    nvs_close(handle);
+
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    length = blob;
+    return true;
+}
+
+bool store_write(const char* name, const uint8_t* data, size_t size) {
+    nvs_handle_t handle;
+    if (nvs_open(Namespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+
+    auto err = nvs_set_blob(handle, name, data, size);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+
+    return err == ESP_OK;
+}
+
+bool factory_read(const char*, uint8_t*, size_t, size_t&) {
+    return false;
+}
+
+} // namespace identity
 } // namespace matter
 } // namespace espurna
 
@@ -332,7 +383,7 @@ int matter_app_start(void) {
     // the SDK test codes stay when NVS fails
     uint32_t passcode;
     uint16_t discriminator;
-    if (identity::load(passcode, discriminator)) {
+    if (espurna::matter::identity::load(passcode, discriminator)) {
         Matter.setSetupPasscode(passcode);
         Matter.setSetupDiscriminator(discriminator);
     }
@@ -358,13 +409,13 @@ int matter_app_start(void) {
     // Matter.begin(), and the Matter task may already read it (a controller commissions right away): it is swapped
     // with the CHIP stack lock held
     chip::DeviceLayer::PlatformMgr().LockChipStack();
-    const bool installed = identity::install();
+    const bool installed = espurna::matter::identity::install();
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     if (!installed) {
         DEBUG_MSG_P(PSTR("[MATTER] Own device attestation failed, the SDK test one stays\n"));
     }
-    DEBUG_MSG_P(PSTR("[MATTER] Identity: %s\n"), identity::status().c_str());
+    DEBUG_MSG_P(PSTR("[MATTER] Identity: %s\n"), espurna::matter::identity::status().c_str());
 
     return 0;
 }

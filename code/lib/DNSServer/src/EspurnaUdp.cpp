@@ -6,6 +6,7 @@
 #include <lwip/ip_addr.h>
 #include <lwip/pbuf.h>
 #include <lwip/udp.h>
+#include <lwip/igmp.h>
 
 #if !NO_SYS
 #include <lwip/tcpip.h>
@@ -109,6 +110,14 @@ struct EspurnaUdpLwip {
     return ERR_OK;
   }
 
+  static err_t join_call(Call &call) {
+#if LWIP_IGMP
+    return igmp_joingroup(IP4_ADDR_ANY4, ip_2_ip4(&call.addr));
+#else
+    return ERR_VAL;
+#endif
+  }
+
   static err_t close_call(Call &call) {
     if (call.udp->_pcb) {
       udp_remove(call.udp->_pcb);
@@ -208,6 +217,14 @@ bool EspurnaUdp::listen(uint16_t port) {
   call.port = port;
 
   return EspurnaUdpLwip::run(EspurnaUdpLwip::listen_call, call) == ERR_OK;
+}
+
+bool EspurnaUdp::joinGroup(const IPAddress &group) {
+  EspurnaUdpLwip::Call call{};
+  call.udp = this;
+  EspurnaUdpLwip::to_ip(call.addr, group);
+
+  return EspurnaUdpLwip::run(EspurnaUdpLwip::join_call, call) == ERR_OK;
 }
 
 void EspurnaUdp::close() {

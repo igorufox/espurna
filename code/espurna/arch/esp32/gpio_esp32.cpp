@@ -6,8 +6,6 @@ GPIO MODULE, ESP32 part (common part is in gpio.cpp and arch/rtos/gpio_rtos.cpp)
 
 #include "espurna.h"
 
-#if defined(ESP32)
-
 #include "rtcmem.h"
 
 #include <driver/gpio.h>
@@ -90,4 +88,3 @@ void print_pin(Print& out, uint8_t pin) {
 } // namespace gpio
 } // namespace espurna
 
-#endif

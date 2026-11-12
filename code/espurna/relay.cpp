@@ -1702,20 +1702,6 @@ String _relay_payload_toggle;
 // RELAY PROVIDERS
 // -----------------------------------------------------------------------------
 
-// 'anchor' default virtual implementations to the relay.cpp.o
-
-RelayProviderBase::~RelayProviderBase() = default;
-
-bool RelayProviderBase::setup() {
-    return true;
-}
-
-void RelayProviderBase::boot(bool) {
-}
-
-void RelayProviderBase::notify(bool) {
-}
-
 // Direct status notifications
 
 namespace {

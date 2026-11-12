@@ -34,15 +34,6 @@ void* espurna_module_api[static_cast<size_t>(espurna::modules::Api::Count)] {};
 #include <cstring>
 #include <memory>
 
-#if defined(ESP8266)
-#include <osapi.h>
-#elif __has_include(<freertos/FreeRTOS.h>)
-#include <freertos/FreeRTOS.h>
-#include <freertos/timers.h>
-#else
-#include <FreeRTOS.h>
-#include <timers.h>
-#endif
 
 // guard: free heap below this for MODULES_HEAP_SECONDS while modules run -> modules off, restart
 #ifndef MODULES_HEAP_MIN
@@ -842,6 +833,9 @@ void spaces(const Directory& dir, bool valid, Spaces& out) {
     for (size_t index = 0; valid && (index < dir.count); ++index) {
         const auto& entry = dir.entries[index];
         out.flash.add(entry.offset, entry.slot);
+        if (entry.data_size) {
+            out.flash.add(entry.data_offset, entry.data_size);
+        }
         if (entry.ram_offset & RamSecondArena) {
             out.fixed.add(entry.ram_offset & ~RamSecondArena, entry.ram_size);
         } else {
@@ -977,44 +971,14 @@ void guardBooted() {
     }
 }
 
-// a timer that runs while loop() waits or hangs: the SDK's on the ESP8266, a FreeRTOS one (its own task) elsewhere
-#if defined(ESP8266)
-os_timer_t guard_timer;
-
-void guardTimerCallback(void*) {
-    guardTick();
-}
-
+// a timer that runs while loop() waits or hangs, the chip's (arch::guardTimerStart, every second guardTick())
 void guardTimer() {
-    os_timer_setfn(&guard_timer, guardTimerCallback, nullptr);
-    os_timer_arm(&guard_timer, 1000, true);
+    arch::guardTimerStart();
 }
 
 void guardTimerStop() {
-    os_timer_disarm(&guard_timer);
+    arch::guardTimerStop();
 }
-#else
-TimerHandle_t guard_timer { nullptr };
-
-void guardTimerCallback(TimerHandle_t) {
-    guardTick();
-}
-
-void guardTimer() {
-    if (!guard_timer) {
-        guard_timer = xTimerCreate("modules", pdMS_TO_TICKS(1000), pdTRUE, nullptr, guardTimerCallback);
-    }
-    if (guard_timer) {
-        xTimerStart(guard_timer, 0);
-    }
-}
-
-void guardTimerStop() {
-    if (guard_timer) {
-        xTimerStop(guard_timer, 0);
-    }
-}
-#endif
 
 } // namespace
 
@@ -1059,13 +1023,53 @@ uint32_t mapsSize(uint32_t image) {
     return ((image + ChunkSize - 1) / ChunkSize) * MapSize;
 }
 
-// the slot: the image in the chip's flash format, then its relocation maps
-uint32_t slotSize(uint32_t image) {
-    return arch::imageFlash(image) + roundUp(mapsSize(image), SectorSize);
+// behind the maps: the count of the links to the modules it needs, then one word each (image offset | kind << 24)
+uint32_t linksSize(uint32_t links) {
+    return 4 + (links * 4);
+}
+
+// the slot: the image in the chip's flash format, then its relocation maps and its links
+uint32_t slotSize(uint32_t image, uint32_t links) {
+    return arch::imageFlash(image) + roundUp(mapsSize(image) + linksSize(links), SectorSize);
 }
 
 uint32_t mapsAt(uint32_t slot, uint32_t image) {
     return slot + arch::imageFlash(image);
+}
+
+uint32_t linksAt(uint32_t slot, uint32_t image) {
+    return mapsAt(slot, image) + mapsSize(image);
+}
+
+// Header::needs (or the needs of the modules file): up to LinkProviders names
+size_t needsList(const char* needs, size_t size, char (&out)[LinkProviders][16]) {
+    char list[33] {};
+    std::memcpy(list, needs, std::min(size, sizeof(list) - 1));
+
+    size_t count = 0;
+    char* item = list;
+    while (item && *item && (count < LinkProviders)) {
+        char* next = std::strchr(item, ',');
+        if (next) {
+            *next++ = '\0';
+        }
+        while (*item == ' ') {
+            ++item;
+        }
+        if (*item) {
+            std::strncpy(out[count], item, sizeof(out[count]) - 1);
+            out[count][sizeof(out[count]) - 1] = '\0';
+            ++count;
+        }
+        item = next;
+    }
+
+    return count;
+}
+
+// kind 1, 2, 3 of a word -> Entry::bases
+constexpr size_t baseOfKind(uint32_t kind) {
+    return (kind == 1) ? BaseFlash : (kind == 2) ? BaseRam : BaseCode;
 }
 
 // the header is in: its slot from the top of what the Apply left free, its bases, the deltas of its kinds
@@ -1092,8 +1096,11 @@ const char* prepare(Upload& up) {
     }
     spaces(dir, true, *space);
     space->flash.lo = std::max(space->flash.lo, up.flash_floor);
+    if (up.flash_ceiling) {
+        space->flash.hi = std::min(space->flash.hi, up.flash_ceiling);
+    }
 
-    up.slot_size = slotSize(header.image_size);
+    up.slot_size = slotSize(header.image_size, header.links);
     if (!space->flash.place(up.slot_size, true, up.slot)) {
         return PSTR("not enough flash");
     }
@@ -1112,9 +1119,31 @@ const char* prepare(Upload& up) {
     up.delta[2] = up.bases[BaseRam] - header.link_ram;
     up.delta[3] = up.bases[BaseCode] - header.link_iram;
 
-    // the maps behind the image: erased now, written chunk by chunk
-    if (!flashErase(mapsAt(up.slot, header.image_size), roundUp(mapsSize(header.image_size), SectorSize))) {
+    // the modules it needs: written before it by this Apply (the modules file has them first), where they are now
+    {
+        char names[LinkProviders][16] {};
+        const size_t count = needsList(up.needs, sizeof(up.needs), names);
+        for (size_t index = 0; index < count; ++index) {
+            for (size_t entry = 0; entry < dir.count; ++entry) {
+                const auto& other = dir.entries[entry];
+                if (std::strncmp(other.name, names[index], sizeof(other.name)) != 0) {
+                    continue;
+                }
+                up.provider[index][1] = other.bases[BaseFlash] - header.link_flash;
+                up.provider[index][2] = other.bases[BaseRam] - header.link_ram;
+                up.provider[index][3] = other.bases[BaseCode] - header.link_iram;
+                up.provider_known[index] = true;
+            }
+        }
+    }
+
+    // the maps and the links behind the image: erased now, written chunk by chunk, the count of the links first
+    const uint32_t maps = mapsAt(up.slot, header.image_size);
+    if (!flashErase(maps, roundUp(mapsSize(header.image_size) + linksSize(header.links), SectorSize))) {
         return PSTR("flash erase");
+    }
+    if (!flashWrite(linksAt(up.slot, header.image_size), &header.links, 4)) {
+        return PSTR("flash write");
     }
 
     return arch::imageBegin(up);
@@ -1128,6 +1157,34 @@ const char* chunkDone(Upload& up) {
         return PSTR("flash write");
     }
 
+    // the links to the modules it needs: the words here, kept behind the maps; branches (Beken) for imageWrite
+    for (uint32_t index = 0; index < up.branch_count; ++index) {
+        const uint32_t kind = up.branches[index] >> 16;
+        if (!isLink(kind)) {
+            continue;
+        }
+
+        const uint32_t at = up.branches[index] & 0xffff;
+        const size_t provider = (kind >> 2) & 3;
+        if (!up.provider_known[provider]) {
+            return PSTR("needs a module the Apply did not write before it");
+        }
+        if (up.links_written >= up.header.links) {
+            return PSTR("more links than the package says");
+        }
+        if ((kind & ~0xfu) == LinkWord) {
+            if (!linkWord(up.chunk, up.chunk_fill, at, up.provider[provider][kind & 3])) {
+                return PSTR("link: not a word of the chunk");
+            }
+        }
+
+        const uint32_t record = ((offset + at) & 0xffffff) | (kind << 24);
+        if (!flashWrite(linksAt(up.slot, up.header.image_size) + 4 + (up.links_written * 4), &record, 4)) {
+            return PSTR("flash write");
+        }
+        ++up.links_written;
+    }
+
     relocateChunk(up.chunk, up.chunk_fill, up.map, up.delta);
     const bool last = (offset + up.chunk_fill) == up.header.image_size;
     const auto* error = arch::imageWrite(up, offset, up.chunk, up.chunk_fill, last);
@@ -1137,6 +1194,18 @@ const char* chunkDone(Upload& up) {
 }
 
 } // namespace
+
+bool linkWord(uint8_t* data, size_t size, uint32_t at, uint32_t delta) {
+    if ((at & 3) || ((at + 4) > size)) {
+        return false;
+    }
+
+    uint32_t value;
+    std::memcpy(&value, &data[at], 4);
+    value += delta;
+    std::memcpy(&data[at], &value, 4);
+    return true;
+}
 
 void relocateChunk(uint8_t* data, size_t size, const uint8_t* map, const uint32_t delta[4]) {
     for (size_t index = 0; index < (size / 4); ++index) {
@@ -1257,6 +1326,10 @@ const char* packageFinish(Upload& up, Entry& out) {
         return PSTR("package crc");
     }
 
+    if (up.links_written != up.header.links) {
+        return PSTR("links missing in the package");
+    }
+
     std::memset(&out, 0, sizeof(out));
     out.offset = up.slot;
     out.slot = up.slot_size;
@@ -1265,6 +1338,8 @@ const char* packageFinish(Upload& up, Entry& out) {
     out.ram_size = roundUp(up.header.ram_size, 8);
     out.code_size = roundUp(up.header.iram_size, 4);
     std::memcpy(out.bases, up.bases, sizeof(out.bases));
+    out.data_offset = up.data_offset;
+    out.data_size = up.data_size;
 
     arch::imageDone(up.slot, up.header.image_size);
     const auto at = arch::imageAt(out);
@@ -1283,7 +1358,7 @@ const char* packageFinish(Upload& up, Entry& out) {
 // --- relocation at boot: the bases of a module moved since the Apply (ESP32: the maps of the flash came out
 // elsewhere, every chip: the heap block). The image rewritten in its slot from its relocation maps, chunk by chunk
 
-const char* relocateEntry(Entry& entry, const uint32_t (&now)[3]) {
+const char* relocateEntry(Entry& entry, const uint32_t (&now)[3], const uint32_t (&provider)[LinkProviders][4]) {
     if (!arch::rewritable()) {
         return PSTR("moved since the Apply: Apply again");
     }
@@ -1297,6 +1372,11 @@ const char* relocateEntry(Entry& entry, const uint32_t (&now)[3]) {
         now[BaseCode] - entry.bases[BaseCode]};
     const uint32_t at = arch::imageAt(entry);
     const uint32_t maps = mapsAt(entry.offset, entry.size);
+    const uint32_t links_at = linksAt(entry.offset, entry.size);
+    uint32_t links = 0;
+    if (!arch::rawRead(links_at, &links, 4) || (links == 0xffffffff)) {
+        links = 0;
+    }
     up->slot = entry.offset;
     up->slot_size = entry.slot;
     up->header.image_size = entry.size;
@@ -1310,6 +1390,26 @@ const char* relocateEntry(Entry& entry, const uint32_t (&now)[3]) {
         }
 
         relocateChunk(up->chunk, size, up->map, delta);
+
+        // the links of the chunk to the modules it needs (a few dozen: read one at a time)
+        for (uint32_t index = 0; index < links; ++index) {
+            uint32_t record;
+            if (!arch::rawRead(links_at + 4 + (index * 4), &record, 4)) {
+                return PSTR("relocate: read");
+            }
+            const uint32_t offset = record & 0xffffff;
+            const uint32_t kind = record >> 24;
+            if ((offset < done) || (offset >= (done + size))) {
+                continue;
+            }
+            if ((kind & ~0xfu) != LinkWord) {
+                return PSTR("moved since the Apply: Apply again");
+            }
+            if (!linkWord(up->chunk, size, offset - done, provider[(kind >> 2) & 3][kind & 3])) {
+                return PSTR("relocate: bad link");
+            }
+        }
+
         up->branch_count = 0;
         const auto* error = arch::imageWrite(*up, done, up->chunk, size, (done + size) == entry.size);
         if (error) {
@@ -1679,10 +1779,13 @@ bool authenticated(WebRequest& request) {
 // the modules file: magic, count, then per package name[16], offset, size, image, RAM, IRAM, needs[32], flags
 constexpr uint32_t ModulesFileMagic { 0x32434D45 }; // "EMC2"
 constexpr size_t ModulesFileEntry { 72 };
-constexpr size_t ModulesFileMax { 32 };
+// every package of the build: the managers and every sensor driver (a module each)
+constexpr size_t ModulesFileMax { 80 };
 
 // the flags word at the end of an entry of the modules file
 constexpr uint32_t ModuleByteRam { 1 };     // its statics take byte access from interrupts: never in a 32-bit only pool
+constexpr uint32_t ModuleDataShift { 8 };   // bits 8..15: the sectors of flash it keeps its data in (modulesData())
+                                            // bits 16..31: its links to the modules it needs
 
 struct Apply {
     // the new directory, built here as the packages are written and put into flash once, at the end: an Apply that
@@ -1690,6 +1793,8 @@ struct Apply {
     Directory fresh {};
     uint32_t plan_ram[ModulesFileMax] {};   // RAM offset (RamSecondArena: in the fixed pool) per package of the table
     uint32_t plan_code[ModulesFileMax] {};  // IRAM code offset in the fixed pool (ESP8266)
+    uint32_t plan_data[ModulesFileMax] {};  // flash of its data (modulesData()), 0 - none
+    uint32_t ceiling { 0 };                 // no slot over it: the data of the modules
     char names[DirectoryEntries][16] {};
     size_t names_count { 0 };
     bool every { false };                   // every package of the file (the initial image's)
@@ -1777,8 +1882,11 @@ const char* applyPlan() {
         const uint32_t lo = std::max(area.lo, state.floor);
         const uint32_t room = (area.hi > (lo + SectorSize)) ? (area.hi - SectorSize - lo) : 0;
         uint32_t flash = 0;
+        constexpr size_t PlanFlagsAt { 68 };
         for (size_t index = 0; index < count; ++index) {
-            flash += slotSize(applyWord(order[index], ImageAt));
+            const uint32_t flags = applyWord(order[index], PlanFlagsAt);
+            flash += slotSize(applyWord(order[index], ImageAt), flags >> 16);
+            flash += ((flags >> ModuleDataShift) & 0xff) * SectorSize;
         }
         if (flash > room) {
             DEBUG_MSG_P(PSTR("[MODULES] Apply: the modules need %u bytes of flash, the area has %u\n"), flash, room);
@@ -1789,6 +1897,42 @@ const char* applyPlan() {
     constexpr size_t RamAt { 28 };
     constexpr size_t IramAt { 32 };
     constexpr size_t FlagsAt { 68 };
+
+    // the data of the modules (modulesData()): at the top of the area, under the directory, in the order of the
+    // modules file, before any slot (state.ceiling). The same modules with data -> the same places: the data stays.
+    // A place that was not this module's data before is erased (whatever lay there is no data of it)
+    {
+        const auto area = arch::area();
+        uint32_t top = (area.hi >= (area.lo + SectorSize)) ? (area.hi - SectorSize) : area.lo;
+        auto old = boxed<Directory>();
+        const bool old_valid = old && readDirectory(*old);
+        for (size_t index = 0; index < state.count; ++index) {
+            char name[16];
+            uint32_t offset;
+            uint32_t size;
+            applyEntry(index, name, offset, size);
+            const uint32_t data = ((applyWord(index, FlagsAt) >> ModuleDataShift) & 0xff) * SectorSize;
+            if (!applySelected(name) || !data) {
+                continue;
+            }
+
+            top -= data;
+            state.plan_data[index] = top;
+
+            bool kept = false;
+            for (size_t entry = 0; old_valid && (entry < old->count); ++entry) {
+                const auto& was = old->entries[entry];
+                kept = kept || ((std::strncmp(was.name, name, sizeof(was.name)) == 0)
+                    && (was.data_offset == top) && (was.data_size == data));
+            }
+            if (!kept && !flashErase(top, data)) {
+                return PSTR("flash erase");
+            }
+            DEBUG_MSG_P(PSTR("[MODULES] Apply: %s keeps its data at 0x%06X (%u bytes%s)\n"),
+                name, top, data, kept ? "" : ", new");
+        }
+        state.ceiling = top;
+    }
 
     uint32_t fixed = 0;
     sorted(IramAt);
@@ -1934,6 +2078,11 @@ void applyData(const uint8_t* data, size_t len) {
                     }
                     state.upload->apply_dir = &state.fresh;
                     state.upload->flash_floor = state.floor;
+                    state.upload->flash_ceiling = state.ceiling;
+                    state.upload->data_offset = state.plan_data[inside];
+                    state.upload->data_size = ((applyWord(inside, 68) >> ModuleDataShift) & 0xff) * SectorSize;
+                    std::memcpy(state.upload->needs, &state.table[(inside * ModulesFileEntry) + 36],
+                        sizeof(state.upload->needs));
                     state.upload->ram_offset = state.plan_ram[inside];
                     state.upload->code_offset = state.plan_code[inside];
                     state.current = inside;
@@ -2655,11 +2804,40 @@ void modulesSetup() {
         arch::Pools pools {};
         arch::pools(pools);
         bool changed = false;
+
+        // where every module was (the providers' deltas below: where it is now less where it was)
+        uint32_t before[DirectoryEntries][3];
+        for (size_t index = 0; index < dir.count; ++index) {
+            std::memcpy(before[index], dir.entries[index].bases, sizeof(before[index]));
+        }
+
         for (size_t index = 0; index < dir.count; ++index) {
             auto& entry = dir.entries[index];
+            if (entry.flags & EntryDisabled) {
+                continue;
+            }
+
             uint32_t now[3];
             basesNow(entry, pools, now);
-            if ((entry.flags & EntryDisabled) || (std::memcmp(now, entry.bases, sizeof(now)) == 0)) {
+
+            // a module it needs moved: its links move with it
+            uint32_t provider[LinkProviders][4] {};
+            bool moved = std::memcmp(now, entry.bases, sizeof(now)) != 0;
+            const auto list = requiresOf(entry);
+            for (size_t need = 0; (need < list.count) && (need < LinkProviders); ++need) {
+                for (size_t other = 0; other < dir.count; ++other) {
+                    if (std::strncmp(dir.entries[other].name, list.names[need], sizeof(dir.entries[other].name))) {
+                        continue;
+                    }
+                    uint32_t there[3];
+                    basesNow(dir.entries[other], pools, there);
+                    for (uint32_t kind = 1; kind <= 3; ++kind) {
+                        provider[need][kind] = there[baseOfKind(kind)] - before[other][baseOfKind(kind)];
+                        moved = moved || provider[need][kind];
+                    }
+                }
+            }
+            if (!moved) {
                 continue;
             }
 
@@ -2668,7 +2846,7 @@ void modulesSetup() {
                 continue;
             }
 
-            const auto* error = relocateEntry(entry, now);
+            const auto* error = relocateEntry(entry, now, provider);
             DEBUG_MSG_P(PSTR("[MODULES] %s relocated for this boot%s%s\n"), entry.name,
                 error ? ": " : "", error ? error : "");
             changed = changed || !error;
@@ -2747,6 +2925,63 @@ String modulesHeadId() {
 
 bool modulesRunning() {
     return espurna::modules::running;
+}
+
+namespace {
+
+// the data of the module of that name (Entry::data_offset, data_size): false - none
+bool modulesDataPlace(const char* name, uint32_t& offset, uint32_t& size) {
+    using namespace espurna::modules;
+    auto dir = boxed<Directory>();
+    if (!dir || !readDirectory(*dir)) {
+        return false;
+    }
+
+    for (size_t index = 0; index < dir->count; ++index) {
+        const auto& entry = dir->entries[index];
+        if ((std::strncmp(entry.name, name, sizeof(entry.name)) == 0) && entry.data_size) {
+            offset = entry.data_offset;
+            size = entry.data_size;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool modulesDataInside(const char* name, uint32_t at, size_t len, uint32_t& offset) {
+    uint32_t size;
+    if (!modulesDataPlace(name, offset, size)) {
+        return false;
+    }
+
+    return (at <= size) && (len <= (size - at)) && !(at & 3) && !(len & 3);
+}
+
+} // namespace
+
+uint32_t modulesDataSize(const char* name) {
+    uint32_t offset;
+    uint32_t size;
+    return modulesDataPlace(name, offset, size) ? size : 0;
+}
+
+bool modulesDataRead(const char* name, uint32_t at, void* data, size_t len) {
+    uint32_t offset;
+    return modulesDataInside(name, at, len, offset) && espurna::modules::arch::rawRead(offset + at, data, len);
+}
+
+bool modulesDataWrite(const char* name, uint32_t at, const void* data, size_t len) {
+    uint32_t offset;
+    return modulesDataInside(name, at, len, offset) && espurna::modules::arch::rawWrite(offset + at, data, len);
+}
+
+bool modulesDataErase(const char* name, uint32_t at, size_t len) {
+    using espurna::modules::SectorSize;
+    uint32_t offset;
+    uint32_t size;
+    return modulesDataPlace(name, offset, size) && !(at % SectorSize) && !(len % SectorSize) && (at <= size)
+        && (len <= (size - at)) && espurna::modules::arch::rawErase(offset + at, len);
 }
 
 bool modulesEnabled(const char* name) {

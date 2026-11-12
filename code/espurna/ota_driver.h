@@ -27,25 +27,6 @@ Web OTA (ref. ota_web.cpp)
 #include <cstddef>
 #include <cstdint>
 
-#if defined(ESP8266)
-#include "arch/esp8266/ota_driver_esp8266.h"
-#elif defined(ESP32)
-#include "arch/esp32/ota_driver_esp32.h"
-#elif defined(LIBRETINY)
-#include "arch/beken/ota_driver_beken.h"
-#endif
+// arch/<chip>/ota_driver_chip.h: the chip's folder (-I of its ini)
+#include "ota_driver_chip.h"
 
-// Chips where Update writes every upload it takes: every one of them is fine for the board
-#if !defined(LIBRETINY)
-namespace espurna {
-namespace ota {
-namespace driver {
-
-constexpr const char* upload_check(const uint8_t*, size_t) {
-    return nullptr;
-}
-
-} // namespace driver
-} // namespace ota
-} // namespace espurna
-#endif

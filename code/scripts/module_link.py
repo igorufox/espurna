@@ -10,6 +10,7 @@
 #   custom_module_undef = NAME ...   macros of the head the module objects do not get (MODULES_SUPPORT ...)
 #   custom_module_libs = NAME ...    libraries only the modules use, compiled with the module flags (the head's
 #                                    lib_ignore keeps them out of its LDF): <libdeps>/<NAME> or the framework's
+#   custom_module_lib_filter =       <NAME> <source filter>: the part of a library the modules build
 #   custom_modules =
 #       <name> | <objects always linked> | <objects linked only for what the head does not have> | <API it provides>
 #           | <modules it needs>
@@ -18,6 +19,15 @@
 # $BUILD_DIR/libmod. Each module is linked against the head's ELF: its calls go to the head, what it needs that the
 # head dropped (--gc-sections) is appended to custom_head_exports (scripts/module_head.py keeps it in the head) and the
 # head is linked again in the same build (up to RELINKS times), then the modules.
+#
+# The modules a module needs (5th column): it is linked against them too, directly, as against the head. Each of them is
+# linked before it (the modules in the order of their needs), its global symbols (without the head's) are the
+# symbols of this link (provider_symbols()); its library members with state are left out of this module's libraries,
+# as the head's are. A symbol it needs that the provider dropped (--gc-sections) goes to custom_module_provided
+# (espurna/modules_provided.txt: <provider> <symbol> <chip>), the provider keeps it (-Wl,--undefined) and is linked
+# again with everything after it. Where the words of this module hold an address of a provider: a third link with
+# that provider at its link B bases, the words that move with it are the links of the package (below), the board adds
+# where the Apply put that provider (or where it moved to at a boot).
 #
 # API it provides: functions (plain names, every overload) other modules call through the head. The head defines them
 # as forwarders to a slot of espurna_module_api[], which this module's entry fills; in this module's objects the real
@@ -34,7 +44,10 @@
 # The package, one format on every chip (PACKAGE_VERSION, modules_core.h PackageVersion): PACKAGE, then per CHUNK of
 # the image the map of 2 bits per word (0 as is, 1 flash data view, 2 RAM, 3 code: ESP8266 IRAM code, ESP32 the
 # instruction view), a u32 branch count and that many u32 branches (offset in the chunk | kind << 16: Beken's BL / BLX
-# into the head; 0 on the other chips), then the chunk. The module header (modules.h) in the image gets the head id
+# into the head, kind 1 / 2; the links to the modules it needs, every chip: LINK_WORD | provider << 2 | base kind, a
+# word plus where that provider's base is, LINK_BRANCH | provider << 2 | branch kind, Beken's BL / BLX into it;
+# provider: its index in the needs of the module), then the chunk. The last word of PACKAGE: how many links, the
+# board keeps them behind the maps of the slot (a boot relocates the module again when a provider moved). The module header (modules.h) in the image gets the head id
 # (offset 24) and the modules it needs (HEADER_REQUIRES).
 #
 # The outputs of every chip: module-<name>.module / .elf / .map, the modules file espurna-<chip>-modules.bin (EMC2,
@@ -57,9 +70,18 @@ import release_image  # noqa: E402  pylint: disable=wrong-import-position
 
 HEADER_MAGIC = 0x31444D45   # "EMD1"
 PACKAGE_MAGIC = 0x31504D45  # "EMP1"
-PACKAGE_VERSION = 4         # modules_core.h PackageVersion
-# magic, version, name, head id, image size, RAM, IRAM, the link A bases of kind 1, 2, 3, crc32 of the body, reserved
+PACKAGE_VERSION = 5         # modules_core.h PackageVersion
+# magic, version, name, head id, image size, RAM, IRAM, the link A bases of kind 1, 2, 3, crc32 of the body, links
 PACKAGE = struct.Struct("<II16s16sIIIIIIII")
+PACKAGE_LINKS = 68
+# the links to the modules a module needs, in the branch lists (modules_core.h LinkWord, LinkBranch)
+LINK_WORD = 0x10
+LINK_BRANCH = 0x20
+LINK_PROVIDERS = 4
+# the symbols a provider module keeps for the modules that need it (custom_module_provided)
+PROVIDED_FILE = "espurna/modules_provided.txt"
+# a provider's own symbols that are no symbols of the modules that need it
+PROVIDER_PRIVATE = ("__mod_", "espurna_module_", "_GLOBAL_", "_etext", "_edata", "_end")
 CHUNK = 4096
 MAP_SIZE = CHUNK // 16
 RENAMED = "espmod_"
@@ -68,8 +90,12 @@ RENAMED = "espmod_"
 CONTAINER_MAGIC = 0x32434D45  # "EMC2"
 CONTAINER_ENTRY = struct.Struct("<16sIIIII32sI")
 # flags of a container entry: its RAM takes byte access from interrupts (custom_module_byte_ram), not into a pool that
-# takes 32-bit access only (ESP8266: the IRAM tail)
+# takes 32-bit access only (ESP8266: the IRAM tail); the upper 16 bits: its links to the modules it needs (the slot
+# keeps them, the Apply plans the flash with them)
 CONTAINER_BYTE_RAM = 1
+# bits 8..15: the sectors of flash it keeps its data in (the data column of ESPURNA_MODULES, modulesData())
+CONTAINER_DATA_SHIFT = 8
+CONTAINER_LINKS_SHIFT = 16
 
 # the module header (modules.h): the head id at 24, `needs` after the 96 bytes of the first version
 HEADER = struct.Struct("<II16s16s14I32s")
@@ -131,10 +157,12 @@ def pack_body(image, kinds, branches):
 def package_bytes(name, head_id, image, kinds, ram, iram, bases, branches=None):
     """PACKAGE + body; bases: the link A bases of kind 1, 2, 3 (0 for what the chip has not); branches: {offset in the
     image: kind} of the words the board moves other than by the map (Beken), none elsewhere"""
-    body = pack_body(image, kinds, branches or {})
+    branches = branches or {}
+    body = pack_body(image, kinds, branches)
     bases = list(bases) + [0] * (3 - len(bases))
+    links = sum(1 for kind in branches.values() if kind >= LINK_WORD)
     header = PACKAGE.pack(PACKAGE_MAGIC, PACKAGE_VERSION, module_name(name), head_id, len(image), ram, iram, *bases,
-                          zlib.crc32(body) & 0xFFFFFFFF, 0)
+                          zlib.crc32(body) & 0xFFFFFFFF, links)
     return header + body
 
 
@@ -207,6 +235,37 @@ def write_head_exports(env):
         for name in names:
             f.write(f"EXTERN({name})" + chr(10))
     return script.replace(chr(92), "/"), len(names)
+
+
+def provided_path(env):
+    return os.path.join(env.subst("$PROJECT_DIR"), PROVIDED_FILE)
+
+
+def read_provided(env):
+    """{provider: [symbol]} of this chip"""
+    out = {}
+    path = provided_path(env)
+    if not os.path.exists(path):
+        return out
+    chip = export_chip(env)
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 2 and not line.startswith("#") and (len(parts) == 2 or chip in parts[2:]):
+                out.setdefault(parts[0], []).append(parts[1])
+    return out
+
+
+def add_provided(env, provider, symbols):
+    path = provided_path(env)
+    known = set(read_provided(env).get(provider, []))
+    chip = export_chip(env)
+    new = [symbol for symbol in symbols if symbol not in known]
+    if new:
+        with open(path, "a", newline=chr(10)) as f:
+            for symbol in new:
+                f.write(f"{provider} {symbol} {chip}" + chr(10))
+    return new
 
 
 def define_name(item):
@@ -293,6 +352,25 @@ class Linker:
     def odd_word(self, image_a, image_b, offset, branches):
         """a word that differs by no base delta and that the chip knows (adds it to branches): True"""
         return False
+
+    def provider_branches(self, name, elf, image_a, image_p):
+        """{offset: branch kind} of the branches into a provider (Beken: BL / BLX whose bytes changed when only the
+        provider moved), none on the other chips"""
+        return {}
+
+    def provider_odd_word(self, image_a, image_p, offset):
+        """the branch kind of a word that moved with a provider but by no base delta (Beken: a veneer), else None"""
+        return None
+
+    def symbols_arg(self, build_dir, elf, names, out):
+        """the link argument that gives a module these global symbols of `elf` with their addresses and types:
+        a copy of the ELF with only them (-Wl,--just-symbols), as the head's on most chips"""
+        keep = out + ".keep"
+        with open(keep, "w", newline=chr(10)) as f:
+            f.write(chr(10).join(sorted(names)) + chr(10))
+        path = out + ".elf"
+        self.run([self.tool("objcopy"), "--extract-symbol", "--strip-all", f"--keep-symbols={keep}", elf, path])
+        return f"-Wl,--just-symbols={path}"
 
     def check(self, name, syms):
         """more checks of the linked module (its symbols)"""
@@ -445,10 +523,10 @@ class Linker:
             json.dump(self._members_cache, f)
         return out
 
-    def lib_archives(self, build_dir, head_names):
-        """the libraries for a module link, without the members the head has state of.
-        Returns (archives, symbols of the members left out)."""
-        work = os.path.join(build_dir, "mod-libs")
+    def lib_archives(self, build_dir, head_names, work_name="mod-libs"):
+        """the libraries for a module link, without the members the head (and the providers it is linked against)
+        have state of. Returns (archives, symbols of the members left out)."""
+        work = os.path.join(build_dir, work_name)
         os.makedirs(work, exist_ok=True)
         out = []
         head_only = set()
@@ -594,8 +672,9 @@ class Linker:
             text = text.replace(f"@{placeholder}@", f"0x{base:08X}")
         return text
 
-    def link(self, build_dir, name, head_elf, objects, archives, tag, placed):
-        """link at the placeholder bases `placed`; returns (elf, map, image)"""
+    def link(self, build_dir, name, head_elf, objects, archives, tag, placed, providers=(), keep=()):
+        """link at the placeholder bases `placed`, with the symbols of its providers (link arguments) and the symbols
+        it keeps for the modules that need it; returns (elf, map, image)"""
         ld = os.path.join(build_dir, f"module-{name}-{tag}.ld")
         with open(ld, "w") as f:
             f.write(self.link_text(placed))
@@ -604,6 +683,7 @@ class Linker:
         mapfile = os.path.join(build_dir, f"module-{name}-{tag}.map")
         args = self.machine_flags() + list(LINK_FLAGS) + list(self.link_options) + [
             self.head_symbols(build_dir, head_elf),
+        ] + list(providers) + [f"-Wl,--undefined={symbol}" for symbol in keep] + [
             f"-Wl,-T,{ld}",
             f"-Wl,-Map,{mapfile}",
             "-Wl,--cref",
@@ -676,12 +756,68 @@ class Linker:
             counts[kind] += 1
         return kinds, counts
 
-    def package(self, ctx, name, objects, archives):
-        """link twice, write module-<name>.module; returns (RAM bytes, IRAM bytes)"""
+    def provider_symbols(self, ctx, provider, tag):
+        """the link argument with the global symbols of a provider module linked at its bases A or B, without the
+        head's and its own private ones"""
+        build_dir = ctx["build_dir"]
+        elf = os.path.join(build_dir, f"module-{provider}.elf" if tag == "a" else f"module-{provider}-b.elf")
+        head = ctx["head_syms"]
+        names = []
+        for line in self.run([self.tool("nm"), "-g", "--defined-only", elf]).splitlines():
+            parts = line.split()
+            if len(parts) != 3 or parts[1] not in "TDBRVWAGSuiN":
+                continue
+            symbol = parts[2]
+            if symbol in head or symbol.startswith(PROVIDER_PRIVATE):
+                continue
+            names.append(symbol)
+        return self.symbols_arg(build_dir, elf, names, os.path.join(build_dir, f"mod-{provider}", f"provided-{tag}"))
+
+    def provider_links(self, ctx, name, objects, archives, providers, extra_a, image_a):
+        """{offset: kind} of the words (and Beken's branches) that hold an address of a provider: linked once more
+        per provider with that one at its B bases"""
+        build_dir = ctx["build_dir"]
+        deltas = {(b - a) & 0xFFFFFFFF: kind for kind, (_, a, b, _) in enumerate(self.bases, 1)}
+        out = {}
+        for position, (index, provider) in enumerate(providers):
+            extra = list(extra_a)
+            extra[position] = self.provider_symbols(ctx, provider, "b")
+            elf_p, map_p, image_p = self.link(build_dir, name, ctx["head_elf"], objects, archives, f"p{index}",
+                                              [(base[0], base[1]) for base in self.bases], extra)
+            if len(image_p) != len(image_a):
+                raise RuntimeError(f"module {name}: image changes size with {provider}")
+            branches = self.provider_branches(name, elf_p, image_a, image_p)
+            for offset, kind in branches.items():
+                out[offset] = LINK_BRANCH | (index << 2) | kind
+            covered = {word for offset in branches for word in range(offset // 4, (offset + 3) // 4 + 1)}
+            for offset in range(0, len(image_a), 4):
+                a, = struct.unpack_from("<I", image_a, offset)
+                p, = struct.unpack_from("<I", image_p, offset)
+                if a == p or (offset // 4) in covered:
+                    continue
+                kind = deltas.get((p - a) & 0xFFFFFFFF)
+                if kind is not None:
+                    out[offset] = LINK_WORD | (index << 2) | kind
+                    continue
+                branch = self.provider_odd_word(image_a, image_p, offset)
+                if branch is None:
+                    raise RuntimeError(f"module {name}: word at +0x{offset:X} moves with {provider} by "
+                                       f"0x{(p - a) & 0xFFFFFFFF:X}")
+                out[offset] = LINK_BRANCH | (index << 2) | branch
+            for path in (elf_p, map_p):
+                if os.path.exists(path):
+                    os.remove(path)
+        return out
+
+    def package(self, ctx, name, objects, archives, providers=(), keep=()):
+        """link twice (and once more per provider), write module-<name>.module; returns (RAM bytes, IRAM bytes).
+        providers: (index in its needs, name) of the modules it is linked against; keep: the symbols the modules that
+        need it want of it"""
         build_dir = ctx["build_dir"]
         head_id = ctx["head_id"]
+        extra_a = [self.provider_symbols(ctx, provider, "a") for _, provider in providers]
         links = [self.link(build_dir, name, ctx["head_elf"], objects, archives, tag,
-                           [(base[0], base[1 + index]) for base in self.bases])
+                           [(base[0], base[1 + index]) for base in self.bases], extra_a, keep)
                  for index, tag in enumerate("ab")]
         (elf_a, map_a, image_a), (_, _, image_b) = links
         if len(image_a) != len(image_b) or len(image_a) % 4:
@@ -690,6 +826,18 @@ class Linker:
         branches = self.branches(name, elf_a, image_a, image_b)
         linked = len(branches)
         kinds, counts = self.relocations(name, image_a, image_b, branches)
+        provided = self.provider_links(ctx, name, objects, archives, providers, extra_a, image_a) if providers else {}
+        # a branch into a provider is one into the head too for the links A and B (the provider stays where it is in
+        # both): the provider's link moves it by both deltas, the head's entry goes
+        for offset in provided:
+            if offset in branches:
+                del branches[offset]
+                linked -= 1
+        overlap = [offset for offset in provided
+                   if kinds[offset // 4] or any(abs(offset - other) < 4 for other in branches)]
+        if overlap:
+            raise RuntimeError(f"module {name}: a word moves with the module and a provider: +0x{overlap[0]:X}")
+        branches.update(provided)
 
         flash = self.bases[0][1]
         syms = self.symbols(elf_a)
@@ -717,8 +865,11 @@ class Linker:
         if self.has_iram:
             memory += f", IRAM {iram_size}"
         moved = ", ".join(f"{label} {counts[kind]}" for kind, (_, _, _, label) in enumerate(self.bases, 1))
-        if branches:
-            moved += f", branches into the head {len(branches)} ({len(branches) - linked} in veneers)"
+        head_branches = len(branches) - len(provided)
+        if head_branches:
+            moved += f", branches into the head {head_branches} ({head_branches - linked} in veneers)"
+        if provided:
+            moved += f", links to {' '.join(p for _, p in providers)} {len(provided)}"
         print(f"Module '{name}': image {len(image)} bytes{self.image_detail(syms)}, {memory}; relocations {moved}; "
               f"package {len(data)}")
         print(f"  {name} pulled: {' '.join(self.pulled_members(map_a))}")
@@ -735,19 +886,21 @@ class Linker:
 
     @staticmethod
     def parse_lines(lines):
-        """module lines: <name> | <objects> | <optional objects> | <provides> | <requires>"""
+        """module lines: <name> | <objects> | <optional objects> | <provides> | <requires> | <data bytes>"""
         out = []
         for line in lines:
             line = line.strip()
             if not line:
                 continue
-            parts = [part.strip() for part in line.split("|")] + ["", "", "", ""]
+            parts = [part.strip() for part in line.split("|")] + ["", "", "", "", ""]
             out.append({
                 "name": parts[0],
                 "objects": parts[1].split(),
                 "optional": parts[2].split(),
                 "provides": parts[3].split(),
                 "requires": parts[4].split(),
+                # bytes of flash it keeps its data in (modulesData(), placed by the Apply), whole sectors
+                "data": int(parts[5]) if parts[5] else 0,
             })
         return out
 
@@ -780,9 +933,45 @@ class Linker:
                 module["objects"] = extra["objects"] + [o for o in module["objects"] if o not in extra["objects"]]
                 for key in ("optional", "provides", "requires"):
                     module[key] = module[key] + [o for o in extra[key] if o not in module[key]]
+                module["data"] = module["data"] or extra["data"]
             out.append(module)
         out += [module for module in chip.values() if module["name"] not in skip]
         return out
+
+    def ordered_modules(self):
+        """parse_modules() with every module after the modules of this build it needs: they are linked first, the
+        modules file has them first (the Apply writes them in its order)"""
+        modules = self.parse_modules()
+        by_name = {module["name"]: module for module in modules}
+        out = []
+        state = {}
+
+        def visit(module, path):
+            name = module["name"]
+            if state.get(name) == "done":
+                return
+            if state.get(name) == "busy":
+                raise RuntimeError(f"modules: circular needs {' -> '.join(path + [name])}")
+            state[name] = "busy"
+            for need in module["requires"]:
+                if need in by_name:
+                    visit(by_name[need], path + [name])
+            state[name] = "done"
+            out.append(module)
+
+        for module in modules:
+            visit(module, [])
+        return out
+
+    def data_sectors(self, name):
+        """sectors of flash the module keeps its data in (the data column), at most 255"""
+        for module in self.parse_modules():
+            if module["name"] == name and module["data"]:
+                sectors = (module["data"] + 4095) // 4096
+                if sectors > 255:
+                    raise RuntimeError(f"module {name}: more than 255 sectors of data")
+                return sectors
+        return 0
 
     def requires_of(self, name):
         for module in self.parse_modules():
@@ -814,6 +1003,9 @@ class Linker:
             name, image, ram, iram = struct.unpack_from("<8x16s16xIII", data, 0)
             requires = self.requires_bytes(name.rstrip(b"\0").decode())
             flags = CONTAINER_BYTE_RAM if name.rstrip(b"\0").decode() in byte_ram else 0
+            links, = struct.unpack_from("<I", data, PACKAGE_LINKS)
+            flags |= links << CONTAINER_LINKS_SHIFT
+            flags |= self.data_sectors(name.rstrip(b"\0").decode()) << CONTAINER_DATA_SHIFT
             table += CONTAINER_ENTRY.pack(name, offset, len(data), image, ram, iram, requires, flags)
             offset += len(data)
 
@@ -852,6 +1044,10 @@ class Linker:
         rest = {key: value for key, value in parsed.items() if value}
         if rest:
             menv.Append(**rest)
+        # what a pre: script of the chip gives the modules alone (scripts/beken_matter_lib.py: the include folders and
+        # defines of the Matter library's API for matter_identity.cpp), not the head
+        menv.Append(CPPPATH=list(self.env.get("ESPURNA_MODULE_CPPPATH", [])),
+                    CPPDEFINES=list(self.env.get("ESPURNA_MODULE_CPPDEFINES", [])))
         return menv
 
     def library_dir(self, name):
@@ -871,13 +1067,39 @@ class Linker:
             path = os.path.join(folder, name)
             if not os.path.isdir(path) and os.path.isdir(folder):
                 # the names of the ini are the lib_ignore ones (hlw8012), the folders the libraries' own (HLW8012): a
-                # case-sensitive file system (CI) finds them by the name in any case
+                # case-sensitive file system (CI) finds them by the name in any case. A folder with spaces ("SparkFun
+                # VEML6075 Arduino Library") has '_' for them in the ini, the list is split at the spaces
+                def same(entry):
+                    return entry.lower().replace(" ", "_") == name.lower().replace(" ", "_")
+
                 path = next((os.path.join(folder, entry) for entry in sorted(os.listdir(folder))
-                             if entry.lower() == name.lower() and os.path.isdir(os.path.join(folder, entry))), path)
+                             if same(entry) and os.path.isdir(os.path.join(folder, entry))), path)
             if os.path.isdir(path):
                 print(f"  module library {name}: {path}")
                 return path
         raise RuntimeError(f"custom_module_libs: library {name} not found in {', '.join(folders)}")
+
+    def precompiled(self, name, src):
+        """a library that comes with its code prebuilt (library.properties: precompiled=true, the BSEC of the bme680
+        driver): its archive of this chip, <src>/<chip>/lib*.a, goes next to the libraries of the modules (every module
+        link takes the archives of the build dir)"""
+        properties = os.path.join(os.path.dirname(src) if os.path.basename(src) == "src" else src, "library.properties")
+        if not os.path.isfile(properties):
+            return
+        with open(properties, "r", encoding="utf-8", errors="replace") as f:
+            if "precompiled=true" not in f.read().replace(" ", ""):
+                return
+        chip = export_chip(self.env)
+        folder = os.path.join(src, chip)
+        archives = [entry for entry in os.listdir(folder) if entry.endswith(".a")] if os.path.isdir(folder) else []
+        if not archives:
+            raise RuntimeError(f"custom_module_libs: {name} has no prebuilt archive for {chip} ({folder})")
+        # in the build dir itself: every chip's archives_in() takes the archives there (ESP32 packs the library
+        # folders' objects and skips the archives inside them)
+        out = self.env.subst("$BUILD_DIR")
+        for entry in archives:
+            shutil.copyfile(os.path.join(folder, entry), os.path.join(out, f"libmodpre_{entry[3:] if entry.startswith('lib') else entry}"))
+            print(f"  module library {name}: prebuilt {entry} ({chip})")
 
     def compile_modules(self):
         """the module objects in $BUILD_DIR/mod-src, the module libraries in $BUILD_DIR/libmod"""
@@ -889,9 +1111,19 @@ class Linker:
             menv.Prepend(CPPPATH=[src])
             libraries.append((name, src))
 
+        # custom_module_lib_filter: <library> <source filter>, the part of a library the modules use (Adafruit BusIO:
+        # the I2C device of the si1145 driver, its SPI device does not build on every chip)
+        filters = {}
+        for line in self.env.GetProjectOption("custom_module_lib_filter", "").splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                filters[parts[0]] = parts[1]
+
         out = []
         for name, src in libraries:
-            out += menv.Flatten([menv.BuildLibrary(os.path.join("$BUILD_DIR", MODULE_LIBS, name), src)])
+            out += menv.Flatten([menv.BuildLibrary(os.path.join("$BUILD_DIR", MODULE_LIBS, name), src,
+                                                   filters.get(name))])
+            self.precompiled(name, src)
 
         src_filter = "-<*> " + " ".join(f"+<{source}>" for source in self.module_sources())
         for node in menv.CollectBuildFiles(os.path.join("$BUILD_DIR", MODULE_SRC), "$PROJECT_SRC_DIR", src_filter):
@@ -941,11 +1173,25 @@ class Linker:
         print(f"Head {head_env}: id {ctx['head_id'].hex()}")
 
         src = os.path.join(build_dir, MODULE_SRC)
-        libraries, head_only = self.lib_archives(build_dir, set(self.symbols(ctx["head_elf"])))
+        head_names = set(self.symbols(ctx["head_elf"]))
+        libraries, head_only = self.lib_archives(build_dir, head_names)
+        provided = read_provided(self.env)
         missing = {}
         totals = [0, 0]
-        for module in self.parse_modules():
+        linked = set()
+        ctx["provider_inputs"] = {}
+        ordered = self.ordered_modules()
+        in_build = {module["name"] for module in ordered}
+        for module in ordered:
             name = module["name"]
+            waiting = [need for need in module["requires"] if need in in_build and need not in linked]
+            if waiting:
+                # a module it needs did not link in this pass: after that one is fixed (the next pass)
+                print(f"  {name}: waits for {' '.join(waiting)}")
+                continue
+            providers = [(index, need) for index, need in enumerate(module["requires"]) if need in linked]
+            if len(module["requires"]) > LINK_PROVIDERS:
+                raise RuntimeError(f"module {name}: more than {LINK_PROVIDERS} modules it needs")
             objects = [os.path.join(src, o) for o in module["objects"]]
             optional = []
             for object_name in module["optional"]:
@@ -964,17 +1210,47 @@ class Linker:
                     os.remove(archive)
                 self.run([self.tool("ar"), "rcs", archive] + renamed[len(objects):])
                 archives.append(archive)
-            archives += libraries
+            if providers:
+                # the library members with state the providers have stay theirs (Wire of the i2c module)
+                names = set(head_names)
+                for _, provider in providers:
+                    names.update(self.symbols(os.path.join(build_dir, f"module-{provider}.elf")))
+                tag = "-".join(sorted(provider for _, provider in providers))
+                archives += self.lib_archives(build_dir, names, f"mod-libs-{tag}")[0]
+            else:
+                archives += libraries
             if api:
                 print(f"  {name} provides {len(api)} functions through the head")
 
+            ctx["provider_inputs"][name] = objects + archives
             try:
-                first, second = self.package(ctx, name, objects, archives)
+                first, second = self.package(ctx, name, objects, archives, providers, provided.get(name, []))
                 totals[0] += first
                 totals[1] += second
+                linked.add(name)
             except MissingSymbols as e:
+                e.providers = [provider for _, provider in providers]
                 missing[name] = e
         return missing, totals, head_only
+
+    def provider_defined(self, ctx, provider):
+        """the global symbols the inputs of a provider's link define (before --gc-sections): its objects and the
+        members of the libraries its link pulled"""
+        mapfile = os.path.join(ctx["build_dir"], f"module-{provider}.map")
+        pulled = set(self.pulled_members(mapfile)) if os.path.exists(mapfile) else set()
+        out = set()
+        for path in ctx["provider_inputs"].get(provider, []):
+            if path.endswith(".a"):
+                base = os.path.basename(path)
+                for member, defined in self.archive_members(path).items():
+                    if f"{base}({member})" in pulled:
+                        out.update(symbol for kind, symbol in defined if kind.isupper())
+            else:
+                for line in self.run([self.tool("nm"), "-g", "--defined-only", path]).splitlines():
+                    parts = line.split()
+                    if len(parts) == 3:
+                        out.add(parts[2])
+        return out
 
     def modules_link(self, target, source, env):
         for attempt in range(RELINKS + 1):
@@ -985,21 +1261,36 @@ class Linker:
 
             exported_all = []
             absent_all = []
+            kept_all = []
             for name, e in missing.items():
-                exported, absent = self.update_exports(ctx["head_dir"], head_only, e.names)
+                # what a provider has: it keeps it for this module (custom_module_provided), linked again
+                names = list(e.names)
+                for provider in getattr(e, "providers", []):
+                    defined = self.provider_defined(ctx, provider)
+                    mine = [symbol for symbol in names if symbol in defined]
+                    if mine:
+                        kept = add_provided(self.env, provider, mine)
+                        kept_all += kept
+                        for symbol in mine:
+                            print(f"  {name}: kept by {provider}: {symbol}")
+                        names = [symbol for symbol in names if symbol not in mine]
+                if not names:
+                    continue
+                exported, absent = self.update_exports(ctx["head_dir"], head_only, names)
                 exported_all += exported
                 for symbol in exported:
                     print(f"  {name}: head export added: {symbol}")
                 for symbol in absent:
                     print(f"  {name}: NOT IN THE HEAD: {symbol}")
                 absent_all += absent
-            if absent_all or not exported_all or attempt == RELINKS:
+            if absent_all or not (exported_all or kept_all) or attempt == RELINKS:
                 raise RuntimeError(f"{len(set(exported_all))} head exports added, "
                                    f"{len(set(absent_all))} symbols the head does not have")
-            self.relink_head()
+            if exported_all:
+                self.relink_head()
 
         print(f"All modules: RAM {totals[0]}" + (f", IRAM code {totals[1]}" if self.has_iram else ""))
-        container = self.write_container(ctx, [module["name"] for module in self.parse_modules()])
+        container = self.write_container(ctx, [module["name"] for module in self.ordered_modules()])
         import module_initial_image  # it imports this file
         on = module_initial_image.modules_on(self.env.subst("$PROJECT_DIR"))
         images = self.initial(ctx, container, on)

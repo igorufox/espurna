@@ -9,8 +9,6 @@ arch/<chip>/gpio_<chip>.cpp (ref. espurna::gpio::chip in gpio.h). Common part of
 
 #include "espurna.h"
 
-#if defined(ESP32) || defined(LIBRETINY)
-
 #include "espurna_isr.h"
 #include "gpio.h"
 
@@ -75,4 +73,3 @@ GpioBase& hardwareGpio() {
     return gpio;
 }
 
-#endif

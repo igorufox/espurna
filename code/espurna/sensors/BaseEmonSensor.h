@@ -9,9 +9,8 @@
 
 class BaseEmonSensor : public BaseSensor {
 public:
-    static BaseSensor::Kind SensorKind() {
-        static const BaseSensor::Kind kind;
-        return kind;
+    static constexpr BaseSensor::Kind SensorKind() {
+        return BaseSensor::Kind(BaseSensor::KindEmon);
     }
 
     BaseSensor::Kind kind() const override {

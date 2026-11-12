@@ -7,8 +7,6 @@ itself (events, link state, connection, scan, AP settings) is the shared one, wi
 
 #include "../../espurna.h"
 
-#if defined(ARDUINO_ARCH_ESP32)
-
 #include "../rtos/wifi_driver_rtos.h"
 
 #include <WiFi.h>
@@ -203,4 +201,3 @@ void ipv6(bool enabled) {
 } // namespace wifi
 } // namespace espurna
 
-#endif

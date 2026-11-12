@@ -6,10 +6,7 @@ CHIP DESCRIPTION AND LWIP GLUE, LibreTiny part (ref. espurna_chip.h)
 
 #include "../../espurna.h"
 
-#if defined(LIBRETINY)
-
 #include "../../espurna_chip.h"
-
 
 #if WEB_SUPPORT
 #include "../../ws.h"
@@ -143,4 +140,3 @@ String core_revision() {
 } // namespace chip
 } // namespace espurna
 
-#endif

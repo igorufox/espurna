@@ -1267,7 +1267,7 @@ void init(rpn_context& context) {
 
     rpn_operator_set(context, "rssi", 0, [](rpn_context& ctxt) -> rpn_error {
         const rpn_int rssi = wifiConnected()
-            ? wifi_station_get_rssi()
+            ? WiFi.RSSI()
             : -127;
         rpn_stack_push(ctxt, rpn_value { rssi });
         return 0;

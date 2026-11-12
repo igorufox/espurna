@@ -82,6 +82,9 @@ public:
   bool listen(uint16_t port);
   void close();
 
+  // receive what is sent to the multicast group too (IGMP, every interface): SSDP, LLMNR
+  bool joinGroup(const IPAddress &group);
+
   size_t sendTo(EspurnaUdpMessage &message, const IPAddress &addr, uint16_t port);
 
   bool connected() const {

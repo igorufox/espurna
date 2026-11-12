@@ -1,12 +1,10 @@
 /*
 
-esp8266 Core API shims, BK72xx (LibreTiny) part (ref. compat_rtos.h)
+esp8266 Core API shims, BK72xx (LibreTiny) part (ref. compat_chip.h)
 
 */
 
 #include "espurna.h"
-
-#if defined(LIBRETINY)
 
 #include "rtcmem.h"
 
@@ -28,86 +26,8 @@ uint64_t micros64() {
     return out;
 }
 
-// ARM968E-S (ARMv5) has no atomic instructions and libatomic is not linked.
-// Same as libatomic for single core MCUs, every operation runs with the interrupts masked.
-// ESPurna itself has no std::atomic any more (espurna::system::Shared, espurna_tasks.h), these stay for what is built
-// elsewhere: the prebuilt Matter library (libCHIP / libMatterApp: __atomic_compare_exchange_1/4, fetch_add/sub/and_4)
-// and the modules (__atomic_* in modules_exports.txt). Hardware layer, the BK72xx only
-namespace {
-
-struct IrqGuard {
-    IrqGuard() : _level(port_disable_interrupts_flag()) {}
-    ~IrqGuard() { port_enable_interrupts_flag(_level); }
-
-    IrqGuard(const IrqGuard&) = delete;
-    IrqGuard& operator=(const IrqGuard&) = delete;
-
-private:
-    int _level;
-};
-
-template <typename T>
-T atomic_exchange(volatile void* ptr, T value) {
-    IrqGuard guard;
-    auto* target = static_cast<volatile T*>(ptr);
-    const T out = *target;
-    *target = value;
-    return out;
-}
-
-template <typename T>
-bool atomic_compare_exchange(volatile void* ptr, void* expected, T desired) {
-    IrqGuard guard;
-    auto* target = static_cast<volatile T*>(ptr);
-    auto* current = static_cast<T*>(expected);
-    if (*target == *current) {
-        *target = desired;
-        return true;
-    }
-
-    *current = *target;
-    return false;
-}
-
-template <typename T, typename Op>
-T atomic_fetch(volatile void* ptr, T value, Op op) {
-    IrqGuard guard;
-    auto* target = static_cast<volatile T*>(ptr);
-    const T out = *target;
-    *target = op(out, value);
-    return out;
-}
-
-} // namespace
-
-#define BEKEN_ATOMIC(SIZE, TYPE) \
-extern "C" TYPE __atomic_exchange_##SIZE(volatile void* ptr, TYPE value, int) { \
-    return atomic_exchange<TYPE>(ptr, value); \
-} \
-extern "C" bool __atomic_compare_exchange_##SIZE(volatile void* ptr, void* expected, TYPE desired, bool, int, int) { \
-    return atomic_compare_exchange<TYPE>(ptr, expected, desired); \
-} \
-extern "C" TYPE __atomic_fetch_add_##SIZE(volatile void* ptr, TYPE value, int) { \
-    return atomic_fetch<TYPE>(ptr, value, [](TYPE lhs, TYPE rhs) -> TYPE { return lhs + rhs; }); \
-} \
-extern "C" TYPE __atomic_fetch_sub_##SIZE(volatile void* ptr, TYPE value, int) { \
-    return atomic_fetch<TYPE>(ptr, value, [](TYPE lhs, TYPE rhs) -> TYPE { return lhs - rhs; }); \
-} \
-extern "C" TYPE __atomic_fetch_and_##SIZE(volatile void* ptr, TYPE value, int) { \
-    return atomic_fetch<TYPE>(ptr, value, [](TYPE lhs, TYPE rhs) -> TYPE { return lhs & rhs; }); \
-} \
-extern "C" TYPE __atomic_fetch_or_##SIZE(volatile void* ptr, TYPE value, int) { \
-    return atomic_fetch<TYPE>(ptr, value, [](TYPE lhs, TYPE rhs) -> TYPE { return lhs | rhs; }); \
-} \
-extern "C" TYPE __atomic_fetch_xor_##SIZE(volatile void* ptr, TYPE value, int) { \
-    return atomic_fetch<TYPE>(ptr, value, [](TYPE lhs, TYPE rhs) -> TYPE { return lhs ^ rhs; }); \
-}
-
-BEKEN_ATOMIC(1, uint8_t)
-BEKEN_ATOMIC(2, uint16_t)
-BEKEN_ATOMIC(4, unsigned int)
-
-#undef BEKEN_ATOMIC
+// __atomic_* of the ARM968E-S (no atomic instructions, no libatomic): only the prebuilt Matter library needs them,
+// its port has them (matter-bk7231n bk7231n_port.c); ESPurna has no std::atomic (espurna::system::Shared)
 
 // LibreTiny names what the SDK start type says, which is 'watchdog' after our crash handlers
 String EspCompat::getResetReason() {
@@ -115,7 +35,7 @@ String EspCompat::getResetReason() {
         return String(F("Crash"));
     }
 
-    // the EspClass of LibreTiny, not ::ESP: here that is the macro of compat_rtos.h, this very object
+    // the EspClass of LibreTiny, not ::ESP: here that is the macro of compat_chip.h, this very object
     return static_cast<EspClass&>(*this).getResetReason();
 }
 
@@ -161,7 +81,6 @@ uint32_t EspCompat::getSketchSize() {
     const auto data = static_cast<uint32_t>(&_data_ram_end - &_data_ram_begin);
     return reinterpret_cast<uint32_t>(&_data_flash_begin) + data - FlashOrigin;
 }
-
 
 // EspClass::getMaxFreeBlockSize() of LibreTiny is 16bit
 uint32_t EspCompat::getMaxAllocHeap() {
@@ -221,4 +140,3 @@ unsigned long pulseIn(pin_size_t pin, uint8_t state, unsigned long timeout) {
 
 } // extern "C"
 
-#endif

@@ -11,7 +11,7 @@ xtensa-esp32-elf-addr2line -pfiaC -e firmware.elf <PC>:<SP> ...
 
 #include "espurna.h"
 
-#if defined(ARDUINO_ARCH_ESP32) && TERMINAL_SUPPORT
+#if TERMINAL_SUPPORT
 
 #include "terminal.h"
 

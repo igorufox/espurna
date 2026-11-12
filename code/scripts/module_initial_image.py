@@ -8,7 +8,7 @@
 # modules file by the Apply of the MODULES panel.
 #
 # Where the area starts, per chip (what the flash layout forces):
-#   ESP8266  roundUp(head size, 4096): right behind the head in espurna-esp8266.bin (modules_esp8266.cpp headEnd())
+#   ESP8266  roundUp(head size, 4096): right behind the head in espurna-esp8266.bin (arch/esp8266/modules_esp8266.cpp headEnd())
 #   ESP32    roundUp(app0 + app image size, 0x10000) in the merged espurna-esp32.bin (modules_esp32.cpp findArea())
 #   Beken    the OTA 'download' partition + 4096: not behind the head, a separate run of the UF2 written by the flasher
 #            (beken_module_link.py, beken_quectel_image.py: `<file>+0x1000=flasher:download`)

@@ -165,6 +165,7 @@ public:
         copy(_sha256, sizeof(_sha256), request.sha256);
         copy(_method, sizeof(_method), request.method ? request.method : "GET");
         copy(_type, sizeof(_type), request.type);
+        copy(_headers, sizeof(_headers), request.headers);
         _from = request.from;
 
         _body.reset();
@@ -320,11 +321,14 @@ private:
 
     // the request head and the body, in one block
     bool buildRequest() {
-        char head[UrlMax + 256];
+        char head[UrlMax + 512];
         int len = snprintf(head, sizeof(head), "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n",
             _method, _target.path, _target.host, HTTP_CLIENT_AGENT);
         if (_from && (len > 0) && (static_cast<size_t>(len) < sizeof(head))) {
             len += snprintf(head + len, sizeof(head) - len, "Range: bytes=%u-\r\n", static_cast<unsigned>(_from));
+        }
+        if (_headers[0] && (len > 0) && (static_cast<size_t>(len) < sizeof(head))) {
+            len += snprintf(head + len, sizeof(head) - len, "%s", _headers);
         }
         if (post() && (len > 0) && (static_cast<size_t>(len) < sizeof(head))) {
             len += snprintf(head + len, sizeof(head) - len, "Content-Type: %s\r\nContent-Length: %u\r\n",
@@ -658,6 +662,7 @@ private:
     char _sha256[65] {};
     char _method[8] {};
     char _type[64] {};
+    char _headers[256] {};
     std::unique_ptr<uint8_t[]> _body;
     size_t _body_len { 0 };
     uint32_t _from { 0 };

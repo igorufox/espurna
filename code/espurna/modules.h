@@ -103,6 +103,9 @@ enum class Api : size_t {
     LightRedSet,
     LightGreenSet,
     LightBlueSet,
+    LightBrightnessStep,
+    LightBrightnessStepMultiplier,
+    LightMakeStateRelayProvider,
     AlexaPause,
     MdnsRunning,
     MdnsServiceQuery,
@@ -115,6 +118,23 @@ enum class Api : size_t {
     TlsExtend,
     TlsKey,
     TlsCaCheck,
+    RelayCount,
+    RelayStatusGet,
+    RelayStatusSet,
+    RelayStatusAll,
+    RelayToggle,
+    RelayParsePayload,
+    RelayPayload,
+    RelayOnStatusChange,
+    RelayOnStatusNotify,
+    RelayOnReady,
+    RelayBtnGpio,
+    ButtonSetCustomAction,
+    ApiRegisterBasic,
+    ApiRegisterJson,
+    NtpOnTick,
+    NtpDateTime,
+    NtpSynced,
     Count,
 };
 
@@ -136,7 +156,7 @@ struct PackageHeader {
     uint32_t link_ram;
     uint32_t link_iram;
     uint32_t crc32;         // over everything after this header (maps + chunks)
-    uint32_t reserved;
+    uint32_t links;         // its links to the modules it needs (the branch lists, LinkWord / LinkBranch)
 };
 
 static_assert(sizeof(PackageHeader) == 72, "");
@@ -192,23 +212,28 @@ extern char __mod_init_end[];
         reinterpret_cast<uint32_t>(&espurna_module_entry_##ID), PRIORITY }; \
     extern "C" void espurna_module_entry_##ID()
 
-// the setup of a part that came with the module (an address inside it); the head's parts are set up already.
-// ESP32: the code is in the instruction view of the slot (iram_start..iram_end of the header, ref.
-// scripts/esp32_module.ld), flash_start..flash_end is its data view
-#if defined(ESP32)
+// the setup of a part that came with the module (an address inside it); the head's parts are set up already. The code
+// of a module is in its flash (flash_start..flash_end) or in its code range (iram_start..iram_end: the instruction
+// view of the slot on ESP32, ref. scripts/esp32_module.ld; the IRAM code on ESP8266), every chip alike
 #define ESPURNA_MODULE_OWNS(ID, FUNC) \
-    ((reinterpret_cast<uint32_t>(&FUNC) >= espurna_module_header_##ID.iram_start) \
-     && (reinterpret_cast<uint32_t>(&FUNC) < espurna_module_header_##ID.iram_end))
-#else
-#define ESPURNA_MODULE_OWNS(ID, FUNC) \
-    ((reinterpret_cast<uint32_t>(&FUNC) >= espurna_module_header_##ID.flash_start) \
-     && (reinterpret_cast<uint32_t>(&FUNC) < espurna_module_header_##ID.flash_end))
-#endif
+    (((reinterpret_cast<uint32_t>(&FUNC) >= espurna_module_header_##ID.flash_start) \
+      && (reinterpret_cast<uint32_t>(&FUNC) < espurna_module_header_##ID.flash_end)) \
+     || ((reinterpret_cast<uint32_t>(&FUNC) >= espurna_module_header_##ID.iram_start) \
+      && (reinterpret_cast<uint32_t>(&FUNC) < espurna_module_header_##ID.iram_end)))
 #endif
 
 // the module of that name is installed and switched on (the directory), whether or not it started yet. In the head;
 // declared for the module objects too (MODULE_BUILD has MODULES_SUPPORT 0), they call it through the head's exports
 bool modulesEnabled(const char* name);
+
+// The flash a module keeps its data in (the data column of ESPURNA_MODULES, config/head.h): whole sectors at the top of
+// the module area, placed by the Apply only when the module is installed, kept by the next Apply while it stays (its
+// place the same). Offsets from its start, word aligned, lengths whole words; the erase whole sectors (raw flash: an
+// erased word reads 0xFFFFFFFF, a write only clears bits). 0 / false - the module has none. In the head, for the modules
+uint32_t modulesDataSize(const char* name);
+bool modulesDataRead(const char* name, uint32_t at, void* data, size_t len);
+bool modulesDataWrite(const char* name, uint32_t at, const void* data, size_t len);
+bool modulesDataErase(const char* name, uint32_t at, size_t len);
 
 #if MODULES_SUPPORT
 // first thing after the settings storage: the heap block of the modules' statics, before ESPurna allocates much
@@ -226,12 +251,11 @@ bool modulesOffMark(const char* reason);
 // directory erased, modules do not start at the next boot (ArduinoOTA writes over them)
 void modulesForget();
 
-#if defined(ESP8266)
-// first thing at boot: settings of the old 4 MB layout (pool at the end of the real chip) into the head's pool, once
+// first thing at boot: settings of the old 4 MB layout (pool at the end of the real chip) into the head's pool, once.
+// Only the ESP8266 had that layout (arch/esp8266/modules_esp8266.cpp, called by its system_esp8266.cpp)
 void modulesMigrateSettings();
-#endif
 
-// the SDK reserve and the TCP accept gate (heap_reserve_esp8266.cpp)
+// the SDK reserve and the TCP accept gate (arch/esp8266/heap_reserve_esp8266.cpp)
 void modulesHeapSetup();
 uint32_t modulesHeapReserve();
 uint32_t modulesHeapReserveUsed();

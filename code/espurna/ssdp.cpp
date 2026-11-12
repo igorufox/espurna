@@ -12,7 +12,7 @@ https://github.com/esp8266/Arduino/issues/2283#issuecomment-299635604
 
 #if SSDP_SUPPORT
 
-#include <ESP8266SSDP.h>
+#include <EspurnaUdp.h>
 
 #include "web.h"
 
@@ -123,30 +123,95 @@ String response() {
     return out;
 }
 
+// --- the responder: M-SEARCH on 239.255.255.250:1900 answered with where description.xml is (the same on every
+// chip, on lwIP: EspurnaUdp of lib/DNSServer; the cores' SSDP libraries are gone, Beken never had one)
+
+constexpr uint16_t Port { 1900 };
+
+EspurnaUdp udp;
+
+bool wanted(const String& st) {
+    return st.equalsIgnoreCase(F("ssdp:all"))
+        || st.equalsIgnoreCase(F("upnp:rootdevice"))
+        || st.equalsIgnoreCase(settings::type())
+        || st.equalsIgnoreCase(String(F("uuid:")) + settings::udn());
+}
+
+// "ST: <value>" of a request, empty when there is none
+String header(const String& request, const __FlashStringHelper* name) {
+    const String key(name);
+    int at = 0;
+    while (at < static_cast<int>(request.length())) {
+        int end = request.indexOf('\n', at);
+        if (end < 0) {
+            end = request.length();
+        }
+
+        String line = request.substring(at, end);
+        line.trim();
+        at = end + 1;
+
+        const int colon = line.indexOf(':');
+        if ((colon > 0) && line.substring(0, colon).equalsIgnoreCase(key)) {
+            String value = line.substring(colon + 1);
+            value.trim();
+            return value;
+        }
+    }
+
+    return String();
+}
+
+void answer(const String& st, const IPAddress& to, uint16_t port) {
+    String out;
+    out.reserve(320);
+    out += F("HTTP/1.1 200 OK\r\nEXT:\r\nCACHE-CONTROL: max-age=1800\r\nSERVER: ESPurna UPnP/1.1\r\nST: ");
+    out += st;
+    out += F("\r\nUSN: uuid:");
+    out += settings::udn();
+    if (!st.startsWith(F("uuid:"))) {
+        out += F("::");
+        out += st;
+    }
+    out += F("\r\nLOCATION: http://");
+    out += WiFi.localIP().toString();
+    out += ':';
+    out += String(webPort(), 10);
+    out += F("/description.xml\r\n\r\n");
+
+    EspurnaUdpMessage message(out.length());
+    if (message) {
+        message.write(reinterpret_cast<const uint8_t*>(out.c_str()), out.length());
+        udp.sendTo(message, to, port);
+    }
+}
+
 void setup() {
     webServer().on("/description.xml", WebMethod::Get, [](WebRequest& request) {
         webSend(request, 200, "text/xml", response());
     });
 
-    SSDP.setSchemaURL("description.xml");
-    SSDP.setHTTPPort(webPort());
+    // lwIP's context: answered right there (a short text, no loop needed)
+    udp.onPacket([](EspurnaUdpPacket& packet) {
+        String request;
+        request.concat(reinterpret_cast<const char*>(packet.data()), packet.length());
+        if (!request.startsWith(F("M-SEARCH"))) {
+            return;
+        }
 
-    SSDP.setDeviceType(settings::type());
-    SSDP.setSerialNumber(ESP.getChipId());
-
-    const auto app = buildApp();
-    SSDP.setModelName(String(app.name));
-    SSDP.setModelNumber(String(app.version));
-    SSDP.setModelURL(String(app.website));
-    SSDP.setManufacturer(String(systemDevice()));
-    SSDP.setURL("/");
-
-    SSDP.setName(settings::name());
-    SSDP.begin();
-
-    espurnaRegisterReload([]() {
-        SSDP.setName(settings::name());
+        const auto st = header(request, F("ST"));
+        if (wanted(st)) {
+            answer(st.equalsIgnoreCase(F("ssdp:all")) ? String(F("upnp:rootdevice")) : st,
+                packet.remoteIP(), packet.remotePort());
+        }
     });
+
+    if (!udp.listen(Port) || !udp.joinGroup(IPAddress(239, 255, 255, 250))) {
+        DEBUG_MSG_P(PSTR("[SSDP] Cannot listen on %u\n"), Port);
+        return;
+    }
+
+    DEBUG_MSG_P(PSTR("[SSDP] Answering as %s\n"), settings::name().c_str());
 }
 
 } // namespace

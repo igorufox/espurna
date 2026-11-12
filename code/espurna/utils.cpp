@@ -327,13 +327,8 @@ ParseUnsignedResult parseUnsigned(espurna::StringView value) {
     return parseUnsignedImpl(value, base);
 }
 
-// one ipToString() for the cores whose IPAddress has toString(); LibreTiny's core defines the function itself
-// (wiring_compat.h). equalsConstantTime() is per chip, ref. arch/<chip>/chip_<chip>.cpp
-#if !defined(LIBRETINY)
-String ipToString(const IPAddress& ip) {
-    return ip.toString();
-}
-#endif
+// ipToString() and equalsConstantTime() are per chip, ref. arch/<chip>/chip_<chip>.cpp (LibreTiny's core defines
+// ipToString() itself, wiring_compat.h)
 
 String formatUnsigned(uint32_t value, int base) {
     constexpr size_t BufferSize { 8 * sizeof(decltype(value)) };

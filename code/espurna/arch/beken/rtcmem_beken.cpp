@@ -16,9 +16,15 @@ RTMEM MODULE FOR BEKEN (LibreTiny)
 #include <cstddef>
 #include <cstring>
 
-#if defined(LIBRETINY)
+// No RAM survives the reset, bootloader clears all of it (0x00400000 and up, checked on BK7231N).
+// Contents only live until the next reboot, relay state is restored from settings instead.
+static RtcmemData _rtcmem_storage;
+volatile RtcmemData* Rtcmem = &_rtcmem_storage;
 
-// The structure itself is plain RAM, cleared by the bootloader on every reset (ref. rtcmem.cpp)
+// only the system word survives, the rest never (rtcmem.cpp)
+bool rtcmemChipKept() {
+    return false;
+}
 
 namespace {
 
@@ -630,5 +636,3 @@ void rtcmemCrashDump(Print& print) {
         print.print('\n');
     }
 }
-
-#endif

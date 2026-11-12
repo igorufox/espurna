@@ -17,7 +17,7 @@ Copyright (C) 2019 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #include <Arduino.h>
 
-// NTP_TIMEZONE default (TZ_Etc_UTC): the core's TZ.h where there is one, compat_rtos.h otherwise
+// NTP_TIMEZONE default (TZ_Etc_UTC): the core's TZ.h where there is one, compat_chip.h otherwise
 #if __has_include(<TZ.h>)
 #include <TZ.h>
 #endif

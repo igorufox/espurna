@@ -2,7 +2,7 @@
 
 // Forced into every C++ unit (ref. platformio_beken.ini), libraries use std::mutex as well
 
-#if defined(__cplusplus) && defined(LIBRETINY)
+#if defined(__cplusplus)
 
 #include <FreeRTOS.h>
 #include <task.h>

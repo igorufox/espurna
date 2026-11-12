@@ -114,19 +114,6 @@ void error(ota_error_t error) {
     case OTA_END_ERROR:
         reason = STRING_VIEW("End");
         break;
-#if defined(ESP8266) && !defined(ARDUINO_ESP8266_RELEASE_2_7_2) \
-&& !defined(ARDUINO_ESP8266_RELEASE_2_7_3) \
-&& !defined(ARDUINO_ESP8266_RELEASE_2_7_4) \
-&& !defined(ARDUINO_ESP8266_RELEASE_3_0_0) \
-&& !defined(ARDUINO_ESP8266_RELEASE_3_0_1) \
-&& !defined(ARDUINO_ESP8266_RELEASE_3_0_2) \
-&& !defined(ARDUINO_ESP8266_RELEASE_3_1_0) \
-&& !defined(ARDUINO_ESP8266_RELEASE_3_1_1) \
-&& !defined(ARDUINO_ESP8266_RELEASE_3_1_2)
-    case OTA_ERASE_SETTINGS_ERROR:
-        reason = STRING_VIEW("Settings erase");
-        break;
-#endif
     }
 
     DEBUG_MSG_P(PSTR("[OTA] OTA Stopped: %.*s\n"),

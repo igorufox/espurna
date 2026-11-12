@@ -12,7 +12,7 @@ image, kind 1), and the maps stay. When they come out elsewhere at a boot the co
 #include "espurna.h"
 #include "modules.h"
 
-#if MODULES_SUPPORT && defined(ESP32)
+#if MODULES_SUPPORT
 
 #include "modules_core.h"
 

@@ -14,8 +14,6 @@ safeboot reads the blob the same way (any length, from its end)
 
 #include "espurna.h"
 
-#if defined(ARDUINO_ARCH_ESP32)
-
 #include "storage_eeprom.h"
 
 #include <nvs.h>
@@ -157,4 +155,3 @@ uint8_t pool() {
 } // namespace storage
 } // namespace espurna
 
-#endif // ARDUINO_ARCH_ESP32

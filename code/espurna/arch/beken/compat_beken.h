@@ -1,6 +1,6 @@
 /*
 
-esp8266 Core and SDK API shims, BK72xx (LibreTiny) part (ref. the common compat_rtos.h, which includes this one)
+esp8266 Core and SDK API shims, BK72xx (LibreTiny) part (ref. the common compat_chip.h, which includes this one)
 
 */
 

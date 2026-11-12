@@ -148,6 +148,38 @@ class BekenLinker(module_link.Linker):
         branches[offset] = BRANCH_ARM
         return True
 
+    def provider_branches(self, name, elf, image_a, image_p):
+        """branches into a provider module: the BL / BLX whose bytes changed when only the provider moved (to its B
+        bases): the board moves them by where the provider is less where this module is"""
+        delta = self.bases[0][2] - self.bases[0][1]
+        out = {}
+        for offset, kind in self.branch_sites(elf, FLASH_A):
+            if offset < 0 or offset + 4 > len(image_a) or image_a[offset: offset + 4] == image_p[offset: offset + 4]:
+                continue
+            if kind in THUMB_TYPES:
+                a, p = thumb_offset(image_a, offset), thumb_offset(image_p, offset)
+                code = BRANCH_THUMB
+            elif kind in ARM_TYPES:
+                a, p = arm_offset(image_a, offset), arm_offset(image_p, offset)
+                code = BRANCH_ARM
+            else:
+                continue
+            if a is None or p is None or (p - a) != delta:
+                raise RuntimeError(f"module {name}: branch at +0x{offset:X} ({kind}) does not move with its provider")
+            out[offset] = code
+        return out
+
+    def provider_odd_word(self, image_a, image_p, offset):
+        """an interworking veneer of the linker into a provider (`b <provider function>`)"""
+        a, = struct.unpack_from("<I", image_a, offset)
+        p, = struct.unpack_from("<I", image_p, offset)
+        if (a >> 24) != (p >> 24):
+            return None
+        off_a, off_p = arm_offset(image_a, offset), arm_offset(image_p, offset)
+        if off_a is None or off_p is None or (off_p - off_a) != self.bases[0][2] - self.bases[0][1]:
+            return None
+        return BRANCH_ARM
+
     def initial(self, ctx, container, on):
         """the two initial UF2s of the head, each with the modules on by default at the start of the module area"""
         folder = ctx["build_dir"]

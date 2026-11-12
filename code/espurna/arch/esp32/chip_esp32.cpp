@@ -6,8 +6,6 @@ CHIP DESCRIPTION AND LWIP GLUE, ESP32 part (ref. espurna_chip.h)
 
 #include "../../espurna.h"
 
-#if defined(ESP32)
-
 #include "../../espurna_chip.h"
 
 #include <SPI.h>
@@ -100,4 +98,7 @@ String core_revision() {
 } // namespace chip
 } // namespace espurna
 
-#endif
+// the core's IPAddress has toString(), utils.h
+String ipToString(const IPAddress& ip) {
+    return ip.toString();
+}

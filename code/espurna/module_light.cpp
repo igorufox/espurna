@@ -16,6 +16,9 @@ ESPURNA_MODULE(light, "light", 10) {
 
     // the real ones (renamed in this module), before the integrations call them
     modulesProvide(Api::LightStateSet, static_cast<void(*)(bool)>(&lightState));
+    modulesProvide(Api::LightBrightnessStep, static_cast<void(*)(long)>(&lightBrightnessStep));
+    modulesProvide(Api::LightBrightnessStepMultiplier, static_cast<void(*)(long, long)>(&lightBrightnessStep));
+    modulesProvide(Api::LightMakeStateRelayProvider, &lightMakeStateRelayProvider);
     modulesProvide(Api::LightStateIdSet, static_cast<void(*)(size_t, bool)>(&lightState));
     modulesProvide(Api::LightStateGet, static_cast<bool(*)()>(&lightState));
     modulesProvide(Api::LightUpdate, static_cast<void(*)()>(&lightUpdate));

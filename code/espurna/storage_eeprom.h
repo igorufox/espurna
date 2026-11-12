@@ -14,9 +14,10 @@ arch/<chip>/storage_eeprom_<chip>.cpp (ref. espurna::storage::chip below)
 
 #if __has_include(<spi_flash_mmap.h>)
 #include <spi_flash_mmap.h>    // ESP-IDF 5 (core 3.x): SPI_FLASH_SEC_SIZE
-#elif defined(ESP8266)
-#include <spi_flash.h>
 #endif
+
+// the chip's (ESP8266: spi_flash.h of its SDK, arch/esp8266/compat_chip.h)
+#include "compat_chip.h"
 #ifndef SPI_FLASH_SEC_SIZE
 #define SPI_FLASH_SEC_SIZE 4096    // LibreTiny
 #endif

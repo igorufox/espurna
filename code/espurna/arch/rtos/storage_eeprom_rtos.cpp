@@ -8,8 +8,6 @@ Common part is in storage_eeprom.cpp, the rest of the chip part in arch/<chip>/s
 
 #include "espurna.h"
 
-#if defined(ARDUINO_ARCH_ESP32) || defined(LIBRETINY)
-
 #include "storage_eeprom.h"
 
 namespace espurna {
@@ -48,4 +46,3 @@ void backup(uint32_t) {
 } // namespace storage
 } // namespace espurna
 
-#endif

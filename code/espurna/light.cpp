@@ -27,13 +27,7 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "libs/fs_math.h"
 #include "libs/Delimiter.h"
 
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-#include <my92xx.h>
-#endif
 
-#if LIGHT_PROVIDER_DIMMER_SUPPORT
-#include "pwm.h"
-#endif
 
 // -----------------------------------------------------------------------------
 
@@ -160,68 +154,6 @@ constexpr bool inverse(size_t index) {
     );
 }
 
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-
-constexpr my92xx_cmd_t my92xxCommand() {
-    return MY92XX_COMMAND;
-}
-
-constexpr size_t my92xxChannels() {
-    return MY92XX_CHANNELS;
-}
-
-constexpr my92xx_model_t my92xxModel() {
-    return MY92XX_MODEL;
-}
-
-constexpr int my92xxChips() {
-    return MY92XX_CHIPS;
-}
-
-constexpr int my92xxDiPin() {
-    return MY92XX_DI_PIN;
-}
-
-constexpr int my92xxDckiPin() {
-    return MY92XX_DCKI_PIN;
-}
-
-#if defined(MY92XX_MAPPING)
-namespace my92xx {
-
-constexpr unsigned char mapping[MY92XX_CHANNELS] {
-    MY92XX_MAPPING
-};
-
-template <typename... T>
-struct FailSafe {
-    static constexpr bool value { false };
-};
-
-constexpr unsigned char channel(T channel) {
-    static_assert(FailSafe<T>::value, "MY92XX_CH# flags should be used instead of MY92XX_MAPPING");
-    return mapping[channel];
-}
-
-} // namespace my92xx
-
-constexpr unsigned char my92xxChannel(size_t channel) {
-    return my92xx::channel(channel);
-}
-
-#else // !defined(MY92XX_MAPPING)
-
-constexpr unsigned char my92xxChannel(size_t channel) {
-    return (channel == 0) ? MY92XX_CH1 :
-        (channel == 1) ? MY92XX_CH2 :
-        (channel == 2) ? MY92XX_CH3 :
-        (channel == 3) ? MY92XX_CH4 :
-        (channel == 4) ? MY92XX_CH5 : espurna::light::ChannelsMax;
-}
-
-#endif
-
-#endif
 
 } // namespace build
 
@@ -243,41 +175,11 @@ unsigned char enablePin() {
     return getSetting("ltEnableGPIO", espurna::light::build::enablePin());
 }
 
-#if LIGHT_PROVIDER_DIMMER_SUPPORT
-unsigned char channelPin(size_t index) {
-    return getSetting({"ltDimmerGPIO", index}, build::channelPin(index));
-}
-#endif
 
 bool inverse(size_t index) {
     return getSetting({"ltInv", index}, build::inverse(index));
 }
 
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-size_t my92xxChannels() {
-    return getSetting("ltMy92xxChannels", build::my92xxChannels());
-}
-
-my92xx_model_t my92xxModel() {
-    return getSetting("ltMy92xxModel", build::my92xxModel());
-}
-
-int my92xxChips() {
-    return getSetting("ltMy92xxChips", build::my92xxChips());
-}
-
-int my92xxDiPin() {
-    return getSetting("ltMy92xxDiGPIO", build::my92xxDiPin());
-}
-
-int my92xxDckiPin() {
-    return getSetting("ltMy92xxDckiGPIO", build::my92xxDckiPin());
-}
-
-unsigned char my92xxChannel(size_t channel) {
-    return getSetting({"ltMy92xxCh", channel}, build::my92xxChannel(channel));
-}
-#endif
 
 // TODO: avoid clamping here in favour of handlers themselves always making sure values are in range?
 
@@ -654,22 +556,6 @@ LightProviderType convert(const String& value) {
     return convert(LightProviderOptions, value, espurna::light::build::provider());
 }
 
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-template <>
-my92xx_model_t convert(const String& value) {
-    // compared by hand, not through settings::options::Enumeration: the library's plain enum is one byte with
-    // -fshort-enums (LibreTiny), and Enumeration takes 4 byte wide values only
-    if (value.equals(F("9291"))) {
-        return MY92XX_MODEL_MY9291;
-    }
-
-    if (value.equals(F("9231"))) {
-        return MY92XX_MODEL_MY9231;
-    }
-
-    return espurna::light::build::my92xxModel();
-}
-#endif
 
 } // namespace internal
 } // namespace settings
@@ -877,9 +763,6 @@ void _lightProcessNoop(LightChannels&) {
 using LightProcessInputValues = void(*)(LightChannels&);
 LightProcessInputValues _light_process_input_values { _lightProcessNoop };
 
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-std::unique_ptr<my92xx> _my92xx;
-#endif
 
 #if LIGHT_PROVIDER_CUSTOM_SUPPORT
 std::unique_ptr<LightProvider> _light_provider;
@@ -2007,70 +1890,7 @@ constexpr T _lightValueMap(long value, T min, T max) {
     return (value - espurna::light::ValueMin) * (max - min) / (espurna::light::ValueMax - espurna::light::ValueMin) + min;
 }
 
-#if LIGHT_PROVIDER_DIMMER_SUPPORT
 
-uint32_t _light_pwm_min;
-uint32_t _light_pwm_max;
-
-// since we expect 0 duty on OFF state, no need to do anything else from here
-void _lightDimmerHandleState(bool) {
-}
-
-// Automatically scale from our value to the internal one used by the PWM
-// Currently, both u32 and float variants are almost the same precision
-// Slight difference would be the amount of generated code; one variant
-// needs to call float division, the other one is to simply truncate it
-// using two external values which are then used in integer divison
-// TODO: actually check call speed?
-// TODO: any difference between __fixsfsi and lround?
-void _lightDimmerHandleValue(size_t channel, float value) {
-    pwmDuty(channel, _lightValueMap(value, _light_pwm_min, _light_pwm_max));
-}
-
-void _lightDimmerHandleUpdate() {
-    pwmUpdate();
-}
-
-#endif
-
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-
-constexpr unsigned int _lightMy92xxValueShift(my92xx_cmd_bit_width_t width) {
-    return (width == MY92XX_CMD_BIT_WIDTH_16) ? 16 :
-        (width == MY92XX_CMD_BIT_WIDTH_14) ? 14 :
-        (width == MY92XX_CMD_BIT_WIDTH_12) ? 12 :
-        (width == MY92XX_CMD_BIT_WIDTH_8) ? 8 : 8;
-}
-
-constexpr unsigned int _lightMy92xxValueMax(my92xx_cmd_bit_width_t width) {
-    return (1 << _lightMy92xxValueShift(width)) - 1;
-}
-
-constexpr unsigned int _lightMy92xxValueMax(my92xx_cmd_t command) {
-    return _lightMy92xxValueMax(command.bit_width);
-}
-
-unsigned char _light_my92xx_channel_map[espurna::light::ChannelsMax] = {};
-
-constexpr unsigned int _my92xx_value_min = 0;
-constexpr unsigned int _my92xx_value_max =
-        _lightMy92xxValueMax(espurna::light::build::my92xxCommand());
-
-void _lightMy92xxHandleValue(size_t channel, float value) {
-    _my92xx->setChannel(
-        _light_my92xx_channel_map[channel],
-        _lightValueMap(value, _my92xx_value_min, _my92xx_value_max));
-}
-
-void _lightMy92xxHandleUpdate() {
-    _my92xx->update();
-}
-
-void _lightMy92xxHandleState(bool state) {
-    _my92xx->setState(state);
-}
-
-#endif
 
 #if LIGHT_PROVIDER_CUSTOM_SUPPORT
 
@@ -2092,16 +1912,6 @@ void _lightCustomHandleUpdate() {
 
 void _lightProviderHandleState(bool state) {
     switch (_lightProviderType()) {
-#if LIGHT_PROVIDER_DIMMER_SUPPORT
-    case LightProviderType::Dimmer:
-        _lightDimmerHandleState(state);
-        break;
-#endif
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-    case LightProviderType::My92xx:
-        _lightMy92xxHandleState(state);
-        break;
-#endif
 #if LIGHT_PROVIDER_CUSTOM_SUPPORT
     case LightProviderType::Custom:
         _lightCustomHandleState(state);
@@ -2114,16 +1924,6 @@ void _lightProviderHandleState(bool state) {
 
 void _lightProviderHandleValue(size_t channel, float value) {
     switch (_lightProviderType()) {
-#if LIGHT_PROVIDER_DIMMER_SUPPORT
-    case LightProviderType::Dimmer:
-        _lightDimmerHandleValue(channel, value);
-        break;
-#endif
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-    case LightProviderType::My92xx:
-        _lightMy92xxHandleValue(channel, value);
-        break;
-#endif
 #if LIGHT_PROVIDER_CUSTOM_SUPPORT
     case LightProviderType::Custom:
         _lightCustomHandleValue(channel, value);
@@ -2136,16 +1936,6 @@ void _lightProviderHandleValue(size_t channel, float value) {
 
 void _lightProviderHandleUpdate() {
     switch (_lightProviderType()) {
-#if LIGHT_PROVIDER_DIMMER_SUPPORT
-    case LightProviderType::Dimmer:
-        _lightDimmerHandleUpdate();
-        break;
-#endif
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-    case LightProviderType::My92xx:
-        _lightMy92xxHandleUpdate();
-        break;
-#endif
 #if LIGHT_PROVIDER_CUSTOM_SUPPORT
     case LightProviderType::Custom:
         _lightCustomHandleUpdate();
@@ -3601,9 +3391,6 @@ void _lightConfigure() {
 
     _light_use_gamma = espurna::light::settings::gamma();
     for (size_t index = 0; index < Channels; ++index) {
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-        _light_my92xx_channel_map[index] = espurna::light::settings::my92xxChannel(index);
-#endif
         _light_channels[index].inverse = espurna::light::settings::inverse(index);
         _light_channels[index].gamma = (_light_has_color && _light_use_gamma) && _lightUseGamma(Channels, index);
     }
@@ -3811,57 +3598,7 @@ void lightSetup() {
     constexpr auto provider = espurna::light::build::provider();
 #endif
 
-#if LIGHT_PROVIDER_MY92XX_SUPPORT
-    if (LightProviderType::My92xx == provider) {
-        // TODO: library API specifies some hard-coded amount of channels, based off of the model and chips
-        // we always map channel index 1-to-1, to simplify hw config, but most of the time there are less active channels
-        // than the value generated by the lib (ref. `my92xx::getChannels()`)
-        const auto channels = std::min(
-            espurna::light::settings::my92xxChannels(),
-            espurna::light::ChannelsMax);
-        const auto di = espurna::light::settings::my92xxDiPin();
-        const auto dcki = espurna::light::settings::my92xxDckiPin();
-        if (channels && gpioValid(di) && gpioValid(dcki) && gpioLock(di) && gpioLock(dcki)) {
-            _my92xx = std::make_unique<my92xx>(
-                    espurna::light::settings::my92xxModel(),
-                    espurna::light::settings::my92xxChips(),
-                    di, dcki,
-                    espurna::light::build::my92xxCommand());
-            _light_channels.resize(channels);
-#if LIGHT_PROVIDER == LIGHT_PROVIDER_ANY
-            _light_provider_type = provider;
-#endif
-        }
-    }
-#endif
 
-#if LIGHT_PROVIDER_DIMMER_SUPPORT
-    if (LightProviderType::Dimmer == provider) {
-        // Load up until first invalid pin. Allow settings to override, but not remove values
-        std::vector<uint8_t> pins;
-        pins.reserve(espurna::light::ChannelsMax);
-
-        for (size_t index = 0; index < espurna::light::ChannelsMax; ++index) {
-            const auto pin = espurna::light::settings::channelPin(index);
-            if (!gpioValid(pin)) {
-                break;
-            }
-
-            pins.push_back(pin);
-        }
-
-        // The rest is handled by the PWM driver, continue *only* when it actually agrees on selected pins
-        if (pins.size() && pwmInitPins(pins)) {
-            const auto range = pwmRange();
-            _light_pwm_min = range.min;
-            _light_pwm_max = range.max;
-            _light_channels.resize(pins.size());
-#if LIGHT_PROVIDER == LIGHT_PROVIDER_ANY
-            _light_provider_type = provider;
-#endif
-        }
-    }
-#endif
 
     _lightProviderDebug();
     _lightBoot();

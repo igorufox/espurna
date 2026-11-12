@@ -16,6 +16,7 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #include "api_async_server.h"
 #include "api_path.h"
+#include "web.h"
 
 namespace espurna {
 namespace api {
@@ -75,16 +76,37 @@ struct Request {
 
     // Only works when pattern cointains '+', retrieving the part at the same index from the real path
     // e.g. for the pair of `some/+/path` and `some/data/path`, calling `wildcard(0)` will return `data`
-    String wildcard(int index) const;
-    size_t wildcards() const;
+    // inline: the modules that register API paths (relay, sensors, light, rf, scheduler) work with it without being
+    // linked against the api module (they call through the head, apiRegister())
+    String wildcard(int index) const {
+        return PathParts::wildcard(_pattern, _parts, index).toString();
+    }
+
+    size_t wildcards() const {
+        return PathParts::wildcards(_pattern);
+    }
 
     // Extract form data parameter value from request by name
-    StringView param(const String&);
+    StringView param(const String& name) {
+        const char* value = _request.param(name.c_str());
+        return value ? StringView(value) : StringView();
+    }
 
     // Send out the payload and finish the request
     // By default, payload is sent with status 200
     // For zero-length payloads, status is set to 204
-    void send(const String& payload);
+    void send(const String& payload) {
+        if (_done) {
+            return;
+        }
+
+        _done = true;
+        if (payload.length()) {
+            webSend(_request, 200, "text/plain", payload);
+        } else {
+            _request.send(204, "", "");
+        }
+    }
 
 private:
     bool _done { false };

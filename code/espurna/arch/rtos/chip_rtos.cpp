@@ -9,8 +9,6 @@ is in arch/<chip>/chip_<chip>.cpp
 
 #include "../../espurna.h"
 
-#if defined(ESP32) || defined(LIBRETINY)
-
 #include "../../espurna_chip.h"
 
 namespace espurna {
@@ -60,4 +58,3 @@ bool equalsConstantTime(const String& lhs, const String& rhs) {
     return diff == 0;
 }
 
-#endif

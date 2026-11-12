@@ -1,6 +1,6 @@
 /*
 
-OTA MODULE, BK7231N: which bootloader a .uf2 upload is for (ref. ota_driver_beken.h)
+OTA MODULE, BK7231N: which bootloader a .uf2 upload is for (ref. ota_driver_chip.h)
 
 One head image, two initial images of it: espurna-beken-tuya.uf2 for the Tuya bootloader and espurna-beken-quectel.uf2
 for the Quectel one (scripts/beken_quectel_image.py). Each UF2 carries its own FAL partition table (tag FAL_PTABLE)
@@ -12,8 +12,6 @@ would install an image in the wrong format (the Tuya one is encrypted, the Quect
 */
 
 #include "espurna.h"
-
-#if defined(LIBRETINY)
 
 #include "layout_beken.h"
 #include "../../ota_driver.h"
@@ -127,4 +125,3 @@ const char* upload_check(const uint8_t* data, size_t len) {
 } // namespace ota
 } // namespace espurna
 
-#endif

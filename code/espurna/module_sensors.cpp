@@ -1,9 +1,13 @@
 /*
 
-PROTOTYPE: the sensors module (docs/modules.md). Compiled in env:esp8266-1m-modules of
-platformio_esp8266.ini; scripts/esp8266_module_link.py links it with sensor.cpp against the head.
+The sensors module (docs/modules.md): the sensor manager of sensor.cpp, the magnitudes, their settings, MQTT /
+WebSocket / API, the energy. No drivers: every driver is a module of its own (sensors/module_<name>.cpp), it needs this
+one and starts after it, registers with sensorDriver() and adds its sensors with sensorAdd(). The I2C bus is the
+i2c module's (i2c.cpp: one Wire for the drivers and the libraries of the drivers), the 1-Wire bus the dallas module's.
 
-Provides the magnitude API to the other modules (Home Assistant, Domoticz, Thingspeak ...) through the head.
+Provides the magnitude API to the other modules (Home Assistant, Domoticz, Thingspeak ...) through the head
+(modules_api.cpp: they work without it too). The driver API (sensorDriver(), sensorAdd() ...) is not in the head: a
+driver needs this module and is linked against it directly.
 
 */
 
@@ -11,30 +15,10 @@ Provides the magnitude API to the other modules (Home Assistant, Domoticz, Thing
 
 #include "espurna.h"
 #include "modules.h"
-
-#if I2C_SUPPORT
-#include "i2c.h"
-#endif
-
-#if ONE_WIRE_SUPPORT
-#include "driver_onewire.h"
-#endif
-
 #include "sensor.h"
 
 ESPURNA_MODULE(sensors, "sensors", 10) {
     using espurna::modules::Api;
-
-#if I2C_SUPPORT
-    if (ESPURNA_MODULE_OWNS(sensors, i2cSetup)) {
-        i2cSetup();
-    }
-#endif
-#if ONE_WIRE_SUPPORT
-    if (ESPURNA_MODULE_OWNS(sensors, oneWireSetup)) {
-        oneWireSetup();
-    }
-#endif
 
     // the real ones (renamed in this module), before anything else calls them
     modulesProvide(Api::MagnitudeCount, &magnitudeCount);
