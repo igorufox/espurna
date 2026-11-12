@@ -34,3 +34,18 @@ Web OTA (ref. ota_web.cpp)
 #elif defined(LIBRETINY)
 #include "arch/beken/ota_driver_beken.h"
 #endif
+
+// Chips where Update writes every upload it takes: every one of them is fine for the board
+#if !defined(LIBRETINY)
+namespace espurna {
+namespace ota {
+namespace driver {
+
+constexpr const char* upload_check(const uint8_t*, size_t) {
+    return nullptr;
+}
+
+} // namespace driver
+} // namespace ota
+} // namespace espurna
+#endif

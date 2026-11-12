@@ -1,39 +1,45 @@
 # ESP32: the merged image espurna-<env>.bin (bootloader, partitions, boot_app0, ESPurna, safeboot), flashed at 0x0
-# and the release file (naming, listing: scripts/release_image.py)
+# and the release file (naming, listing: scripts/release_image.py). The partition table of the build
+# (board_build.partitions) is read by scripts/esp32_partitions.py, which also writes its entries as the C header
+# esp32_partition_csv.h for the firmware (the table the WebUI migration writes, arch/esp32/safeboot_esp32.cpp)
 
-Import("env")
+Import("env", "projenv")
 import os
 import sys
 
 # release_image.py is in this folder: PlatformIO runs extra scripts without it on sys.path
 sys.path.insert(0, os.path.join(env.subst("$PROJECT_DIR"), "scripts"))  # noqa: F821
 from release_image import listing, path, quote as _quote  # noqa: E402
+import esp32_partitions  # noqa: E402
 
 
-def _app_offsets(env):
-    """Offsets of the app slot (ota_0, else the first app) and of the factory partition when there is an ota_0 too,
-    from the partition table csv."""
+def _partitions_csv(env):
+    """the partition csv of the build: the project's, else the framework's"""
     csv = env.BoardConfig().get("build.partitions", "default.csv")
     path = os.path.join(env.subst("$PROJECT_DIR"), csv)
     if not os.path.exists(path):
         framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
         path = os.path.join(framework_dir, "tools", "partitions", csv)
+    return path
 
-    apps = {}
-    with open(path) as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            cols = [c.strip() for c in line.split(",")]
-            if len(cols) >= 4 and cols[1] == "app":
-                apps.setdefault(cols[2], cols[3])
 
-    if "ota_0" in apps:
-        return apps["ota_0"], apps.get("factory")
-    if apps:
-        return next(iter(apps.values())), None
-    raise Exception("[POST-BUILD] No app partition in {}".format(path))
+def _app_offsets(env):
+    """Offsets of the app slot (ota_0, else the first app) and of the factory partition when there is an ota_0 too"""
+    path = _partitions_csv(env)
+    try:
+        offset, factory = esp32_partitions.app_offsets(esp32_partitions.read_csv(path))
+    except ValueError as error:
+        raise Exception("[POST-BUILD] {}: {}".format(path, error))
+    return hex(offset), (hex(factory) if factory is not None else None)
+
+
+def _partition_header(env, projenv):
+    """esp32_partition_csv.h in $BUILD_DIR/generated, on the include path of the firmware and the modules"""
+    path = _partitions_csv(env)
+    folder = os.path.join(env.subst("$BUILD_DIR"), "generated")
+    esp32_partitions.write_header(esp32_partitions.read_csv(path), path,
+                                  os.path.join(folder, "esp32_partition_csv.h"))
+    projenv.Append(CPPPATH=[folder])
 
 
 def _esptool(env, platform):
@@ -143,4 +149,5 @@ def merge_bin(source, target, env):
     listing([output])
 
 
+_partition_header(env, projenv)  # noqa: F821
 env.AddPostAction("$BUILD_DIR/firmware.bin", merge_bin)

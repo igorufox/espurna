@@ -42,4 +42,3 @@ void pwmUpdate();
 
 // Configure driver. Should be called *before* initializing any pins.
 void pwmSetup();
-

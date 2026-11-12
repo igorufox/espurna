@@ -1,7 +1,7 @@
 /*
 
-PROTOTYPE: the ESP32 test module (docs/modules.md, "ESP32"), env:esp32-modules of
-platformio_esp32.ini. Exercises every kind of relocation and a call into the head of each sort:
+PROTOTYPE: the test module of every chip (docs/modules.md), in ESPURNA_MODULES of config/head.h. Not on by default.
+Exercises every kind of relocation and a call into the head of each sort:
 a global object with a constructor (init array), .data and .bss, strings and a vtable in the data view, a timer of the
 head calling back into the module, a terminal command.
 
@@ -9,7 +9,7 @@ head calling back into the module, a terminal command.
 
 #include "espurna.h"
 
-#if MODULE_BUILD && defined(ESP32)
+#if MODULE_BUILD
 
 #include "modules.h"
 #include "terminal.h"

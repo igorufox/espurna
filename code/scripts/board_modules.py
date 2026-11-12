@@ -2,8 +2,7 @@
 # firmware_esp_net.load_password(), never printed). Terminal commands (MODULES, MODULES.ENABLE <name>, HEAP...) go through
 # firmware_esp_net.py:  py -3 firmware_esp_net.py --host <ip> cmd "MODULES"
 #
-#   py -3 code/scripts/board_modules.py <host> status                 GET /modules: the head, the arena, every module
-#   py -3 code/scripts/board_modules.py <host> upload <file> [query]  POST /modules/upload (a .module or the modules file)
+#   py -3 code/scripts/board_modules.py <host> status                 GET /modules: the head, the pools, every module
 #   py -3 code/scripts/board_modules.py <host> remove <name>          POST /modules/remove
 #   py -3 code/scripts/board_modules.py <host> restart                POST /modules/restart
 #   py -3 code/scripts/board_modules.py <host> sbupdate <url>         ESP32: POST /safeboot/update, the safeboot fetches
@@ -56,16 +55,6 @@ def status(dev):
         print(" ", m)
 
 
-def upload(dev, path, query):
-    data = open(path, "rb").read()
-    boundary = "----board" + os.urandom(6).hex()
-    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="module"; filename="{os.path.basename(path)}"\r\n'
-            f'Content-Type: application/octet-stream\r\n\r\n').encode() + data + f"\r\n--{boundary}--\r\n".encode()
-    t = time.time()
-    st, text = post(dev, "/modules/upload" + query, body, "multipart/form-data; boundary=" + boundary)
-    print(st, text, "%.1fs" % (time.time() - t))
-
-
 def wait_back(dev, timeout=120):
     """the board answers /modules again after a restart"""
     time.sleep(5)
@@ -108,15 +97,13 @@ def apply(dev, path, names):
 
 def main(argv):
     if len(argv) < 2:
-        print("usage: board_modules.py <host> status | upload <file> [query] | remove <name> | restart | "
+        print("usage: board_modules.py <host> status | off | apply <file> <a,b,c> | remove <name> | restart | "
               "sbupdate <url> | get <uri>")
         return 2
     dev = firmware_esp_net.Device(argv[0])
     cmd, args = argv[1], argv[2:]
     if cmd == "status":
         status(dev)
-    elif cmd == "upload":
-        upload(dev, args[0], args[1] if len(args) > 1 else "")
     elif cmd == "remove":
         print(*form(dev, "/modules/remove", {"name": args[0]}))
     elif cmd == "restart":

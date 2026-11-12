@@ -18,13 +18,13 @@ extern "C" {
 void* espurna_module_api[static_cast<size_t>(espurna::modules::Api::Count)] {};
 }
 
-#endif
-
-#if MODULES_SUPPORT && MODULES_CORE
-
 #include "espurna_ota.h"
+#include "espurna_tasks.h"
 #include "modules_core.h"
+#include "modules_page.h"
 #include "modules_package.h"
+#include "libs/crc32_ieee.h"
+#include "libs/text.h"
 #include "terminal.h"
 #include "web.h"
 #include "ws.h"
@@ -33,6 +33,16 @@ void* espurna_module_api[static_cast<size_t>(espurna::modules::Api::Count)] {};
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+
+#if defined(ESP8266)
+#include <osapi.h>
+#elif __has_include(<freertos/FreeRTOS.h>)
+#include <freertos/FreeRTOS.h>
+#include <freertos/timers.h>
+#else
+#include <FreeRTOS.h>
+#include <timers.h>
+#endif
 
 // guard: free heap below this for MODULES_HEAP_SECONDS while modules run -> modules off, restart
 #ifndef MODULES_HEAP_MIN
@@ -58,8 +68,10 @@ void* espurna_module_api[static_cast<size_t>(espurna::modules::Api::Count)] {};
 #define MODULES_CRASHES 3
 #endif
 
+// long enough for what the modules start late: Matter starts 75 s after the Wi-Fi on the Beken and its hang came
+// ~25 s later, every boot, with 60 here nothing stopped that loop (10.0.5.139, 11-11)
 #ifndef MODULES_BOOT_SECONDS
-#define MODULES_BOOT_SECONDS 60
+#define MODULES_BOOT_SECONDS 300
 #endif
 
 namespace espurna {
@@ -68,14 +80,7 @@ namespace modules {
 // --- small things --------------------------------------------------------------------------------------------------
 
 uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t size) {
-    crc = ~crc;
-    while (size--) {
-        crc ^= *data++;
-        for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-        }
-    }
-    return ~crc;
+    return crc32_ieee::crc32Update(crc, data, size);
 }
 
 uint32_t roundUp(uint32_t value, uint32_t to) {
@@ -85,6 +90,9 @@ uint32_t roundUp(uint32_t value, uint32_t to) {
 bool insideRange(uint32_t start, uint32_t end, uint32_t lo, uint32_t hi) {
     return (start <= end) && (start >= lo) && (end <= hi);
 }
+
+// a JSON string value, escaped: a module name or a reason with a quote does not break the panel (libs/text.h)
+using espurna::text::jsonString;
 
 void jsonField(String& out, const __FlashStringHelper* name, uint32_t value) {
     out += ",\"";
@@ -206,7 +214,7 @@ bool directoryNames(const Directory& dir) {
 }
 
 bool directoryShape(const Directory& dir) {
-    return (dir.magic == arch::directoryMagic()) && (dir.count <= DirectoryEntries) && directoryNames(dir);
+    return (dir.magic == DirectoryMagic) &&(dir.count <= DirectoryEntries) && directoryNames(dir);
 }
 
 // the second copy's sector: under the directory, kept out of the module slots (spaces(), the full images)
@@ -222,6 +230,9 @@ uint32_t directorySecond() {
 // the one working copy of the directory (about 1 KB with 16 entries): two of them on the 4 KB stack of the ESP8266
 // loop next to the caller's own overflowed it (cont_check, 10.0.5.0 2026-11-10)
 Directory scratch;
+
+// the directory and `scratch` are read and written from the loop, the web callbacks and the guard's timer (plan 3.5)
+espurna::system::Mutex directory_mutex;
 
 // the heap block of the modules' statics (arch::Pools::heap): taken before anything of ESPurna allocates much
 // (modulesRamSetup), as big as the modules placed in it need. With nothing to hold, a probe of it is taken and given
@@ -244,7 +255,7 @@ uint32_t heapNeed(const Directory& dir) {
     uint32_t need = 0;
     for (size_t index = 0; index < dir.count; ++index) {
         const auto& entry = dir.entries[index];
-        if (entry.ram_size && !(entry.ram_offset & RamSecondArena) && !(entry.flags & EntryUnplaced)) {
+        if (entry.ram_size && !(entry.ram_offset & RamSecondArena)) {
             need = std::max<uint32_t>(need, entry.ram_offset + entry.ram_size);
         }
     }
@@ -253,6 +264,7 @@ uint32_t heapNeed(const Directory& dir) {
 }
 
 bool readDirectory(Directory& out) {
+    espurna::system::MutexLock lock(directory_mutex);
     const auto area = arch::area();
     if (!area.hi) {
         return false;
@@ -297,6 +309,7 @@ bool sameInFlash(uint32_t at, const void* data, size_t size) {
 }
 
 bool writeDirectoryIn(const Directory& dir, bool primary) {
+    espurna::system::MutexLock lock(directory_mutex);
     const auto area = arch::area();
     if (!area.hi) {
         return false;
@@ -341,6 +354,15 @@ bool eraseDirectory() {
     const auto area = arch::area();
     if (!area.hi) {
         return false;
+    }
+
+    // an empty directory first, one write with a newer generation: a power cut between the two erases below would
+    // otherwise leave the older copy, and the modules came back after an "off" (review 1.10)
+    auto empty = boxed<Directory>();
+    if (empty) {
+        empty->magic = DirectoryMagic;
+        empty->count = 0;
+        writeDirectory(*empty);
     }
 
     const uint32_t second = directorySecond();
@@ -429,9 +451,7 @@ const char* checkImage(const Entry& entry, Header& out) {
 
 namespace {
 
-// the one WebUI (code/html, `gulp build`, with the MODULES panel); web.cpp leaves its own out with MODULES_SUPPORT.
-// Only arch::page's default uses it: on the ESP8266 (a page of its own) the linker drops both
-#include "static/index.html.ipp"
+// the WebUI is the webui data module on every chip (decision 11-11); the head keeps its own small page
 
 
 void offWrite(const char* reason) {
@@ -489,9 +509,75 @@ void zeroWords(uint32_t to, uint32_t size) {
     }
 }
 
-// the image checked, its ranges against where the backend says it runs; its data copied, its bss cleared, its IRAM
-// code copied, its constructors and its entry run. nullptr - started; PSTR("stale") - made for another head; else why
-// not. A data module (header.entry 0) gives its bytes
+// where a module runs in this boot, from its bases: the image as data (header, .data image, constructors), its code
+// (the data view, ESP32 the instruction view, ESP8266 the IRAM code in the fixed pool), its statics
+struct Runs {
+    uint32_t flash_lo;
+    uint32_t flash_hi;
+    uint32_t entry_lo;
+    uint32_t entry_hi;
+    uint32_t ram_lo;
+    uint32_t ram_hi;
+    uint32_t iram_lo;
+    uint32_t iram_hi;
+    bool iram_copy;     // the IRAM code copied from iram_load into the fixed pool
+    bool words;         // 32-bit loads and stores only
+};
+
+// the address of the statics of an entry with this offset, in this boot
+uint32_t ramAddress(uint32_t ram_offset, const arch::Pools& pools) {
+    return (ram_offset & RamSecondArena)
+        ? (pools.fixed_base + (ram_offset & ~RamSecondArena))
+        : (heapBlockBase() + ram_offset);
+}
+
+// the bases a module needs in this boot
+void basesNow(const Entry& entry, const arch::Pools& pools, uint32_t (&out)[3]) {
+    out[BaseFlash] = arch::flashView(entry.offset);
+    out[BaseCode] = entry.code_size ? entry.bases[BaseCode] : arch::codeView(entry.offset);
+    out[BaseRam] = entry.ram_size ? ramAddress(entry.ram_offset, pools) : entry.bases[BaseRam];
+}
+
+const char* runsOf(const Entry& entry, const Header& header, Runs& out) {
+    arch::Pools pools {};
+    arch::pools(pools);
+
+    uint32_t now[3];
+    basesNow(entry, pools, now);
+    if (std::memcmp(now, entry.bases, sizeof(now)) != 0) {
+        return PSTR("not relocated for this boot: Apply again");
+    }
+
+    if (entry.ram_size && !(entry.ram_offset & RamSecondArena)
+        && ((entry.ram_offset + entry.ram_size) > heapBlockSize()))
+    {
+        return PSTR("not in this boot's heap block: Apply again");
+    }
+
+    const uint32_t code = arch::codeView(entry.offset);
+    out.flash_lo = entry.bases[BaseFlash];
+    out.flash_hi = out.flash_lo + entry.size;
+    out.entry_lo = code ? code : out.flash_lo;
+    out.entry_hi = out.entry_lo + entry.size;
+    out.ram_lo = entry.bases[BaseRam];
+    out.ram_hi = out.ram_lo + entry.ram_size;
+    if (entry.code_size) {
+        out.iram_lo = entry.bases[BaseCode];
+        out.iram_hi = out.iram_lo + entry.code_size;
+        out.iram_copy = true;
+    } else {
+        out.iram_lo = code;
+        out.iram_hi = code ? (code + entry.size) : 0;
+        out.iram_copy = false;
+    }
+    out.words = pools.words;
+    (void)header;
+    return nullptr;
+}
+
+// the image checked, its ranges against where it runs; its data copied, its bss cleared, its IRAM code copied, its
+// constructors and its entry run. nullptr - started; PSTR("stale") - made for another head; else why not. A data
+// module (header.entry 0) gives its bytes
 void guardArm();
 
 const char* run(const Entry& entry, Started& out) {
@@ -501,8 +587,8 @@ const char* run(const Entry& entry, Started& out) {
         return error;
     }
 
-    arch::Runs runs {};
-    error = arch::runs(entry, header, runs);
+    Runs runs {};
+    error = runsOf(entry, header, runs);
     if (error) {
         return error;
     }
@@ -689,49 +775,9 @@ bool removeEntry(const String& name, const char*& error) {
     return true;
 }
 
-// --- placing -------------------------------------------------------------------------------------------------------
-
-// flash of the modules started at this boot: a module switched off keeps running from it until the restart, so a
-// module switched on before the restart (the same one with its RAM moved, too) must be placed elsewhere
-struct BootPiece {
-    uint32_t offset;
-    uint32_t size;
-};
-
-BootPiece boot_flash[DirectoryEntries];
-size_t boot_flash_count { 0 };
-
-void flashPieces(const Directory& dir, bool valid, Space& flash) {
-    for (size_t index = 0; valid && (index < dir.count); ++index) {
-        flash.add(dir.entries[index].offset, dir.entries[index].slot);
-    }
-
-    for (size_t piece = 0; piece < boot_flash_count; ++piece) {
-        bool listed = false;
-        for (size_t index = 0; valid && (index < dir.count); ++index) {
-            listed = listed || (dir.entries[index].offset == boot_flash[piece].offset);
-        }
-        if (!listed) {
-            flash.add(boot_flash[piece].offset, boot_flash[piece].size);
-        }
-    }
-}
-
 } // namespace
 
-bool startedAt(uint32_t offset) {
-    for (size_t piece = 0; piece < boot_flash_count; ++piece) {
-        if (boot_flash[piece].offset == offset) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-size_t startedCount() {
-    return boot_flash_count;
-}
+// --- placing -------------------------------------------------------------------------------------------------------
 
 void Space::add(uint32_t from, uint32_t size) {
     if (!size || (count >= (DirectoryEntries * 2))) {
@@ -791,172 +837,213 @@ bool Space::place(uint32_t size, bool top, uint32_t& out) const {
     return found;
 }
 
-bool counted(const Entry& entry, const char* except) {
-    // off, its RAM given back (EntryUnplaced): no arena counts it
-    if (entry.flags & EntryUnplaced) {
-        return false;
-    }
-
-    return !except || (std::strncmp(entry.name, except, sizeof(entry.name)) != 0);
-}
-
-void spaces(const Directory& dir, bool valid, Spaces& out, const char* except) {
+// the flash between the head and the directory's second copy, the heap block as big as the heap may give it, the fixed
+// pool; with what the modules of the directory take
+void spaces(const Directory& dir, bool valid, Spaces& out) {
     const auto area = arch::area();
     out.flash.lo = area.lo;
-    // the directory's second copy under it (DirectorySectors)
     out.flash.hi = (area.hi >= (area.lo + SectorSize)) ? (area.hi - SectorSize) : area.lo;
-    flashPieces(dir, valid, out.flash);
 
     arch::Pools pools {};
     arch::pools(pools);
     out.ram.lo = 0;
     out.ram.hi = pools.heap;
+    out.fixed.lo = 0;
+    out.fixed.hi = pools.fixed;
+
     for (size_t index = 0; valid && (index < dir.count); ++index) {
         const auto& entry = dir.entries[index];
-        if (!counted(entry, except)) {
-            continue;
-        }
+        out.flash.add(entry.offset, entry.slot);
         if (entry.ram_offset & RamSecondArena) {
-            out.ram_second.add(entry.ram_offset & ~RamSecondArena, entry.ram_size);
+            out.fixed.add(entry.ram_offset & ~RamSecondArena, entry.ram_size);
         } else {
             out.ram.add(entry.ram_offset, entry.ram_size);
         }
+        if (entry.code_size) {
+            out.fixed.add(entry.bases[BaseCode] - pools.fixed_base, entry.code_size);
+        }
     }
-
-    arch::arenas(dir, valid, out, except);
 }
 
-// --- the guard's count ---------------------------------------------------------------------------------------------
+// --- the guard's count: boot marks in the directory sector ---------------------------------------------------------
+//
+// The same on every chip (Beken clears the whole RAM at every reset: nothing survives a crash there): a pair of words
+// per boot that started module code, written without an erase (bits only go 1 -> 0): [0] cleared when the code
+// starts, [1] once the boot ran MODULES_BOOT_SECONDS or ended by a restart of ESPurna. A directory write erases them
 
 namespace {
 
-constexpr uint32_t GuardMagic { 0x34474D45 }; // "EMG4"
+constexpr uint32_t MarksOffset { 2048 };
+constexpr size_t Marks { 64 };
 
-} // namespace
+struct GuardState {
+    uint32_t running;   // the boot before this one started module code
+    uint32_t booted;    // ... and it ran past MODULES_BOOT_SECONDS
+    uint32_t crashes;   // boots in a row before it that started module code and did not get there
+};
 
-arch::GuardState& guardStateIn(GuardSaved& memory) {
-    if (memory.magic != GuardMagic) {
-        memory.magic = GuardMagic;
-        memory.state = arch::GuardState{0, 0, 0};
+GuardState guard_state {};
+size_t boot_mark { Marks };
+bool boot_mark_finished { false };
+
+bool readMarks(uint32_t (&marks)[Marks * 2]) {
+    const auto area = arch::area();
+    return area.hi && arch::rawRead(area.hi + MarksOffset, marks, sizeof(marks));
+}
+
+bool clearMark(size_t word) {
+    const auto area = arch::area();
+    const uint32_t zero { 0 };
+    return area.hi && arch::rawWrite(area.hi + MarksOffset + (word * 4), &zero, sizeof(zero));
+}
+
+// boots in a row that started module code and did not get to their end mark
+size_t unfinishedBoots(const uint32_t (&marks)[Marks * 2]) {
+    size_t out = 0;
+    for (size_t index = 0; index < Marks; ++index) {
+        if (marks[index * 2] != 0) {
+            break;
+        }
+        out = (marks[index * 2 + 1] != 0) ? (out + 1) : 0;
     }
 
-    return memory.state;
+    return out;
 }
+
+// a restart of ESPurna, not a crash: a custom reason, except Stability (the exit of the unstable mode, a boot without
+// modules: the last mark is of the crashed boot before it)
+bool deliberateRestart() {
+    const auto reason = customResetReason();
+    return (reason != CustomResetReason::None) && (reason != CustomResetReason::Stability);
+}
+
+// the boot before this one ended by a crash (an exception, a watchdog), the chip's reset reason
+bool crashRestart() {
+    switch (espurna::system::chip::reset_reason()) {
+    case REASON_EXCEPTION_RST:
+    case REASON_WDT_RST:
+    case REASON_SOFT_WDT_RST:
+        return true;
+    }
+
+    return false;
+}
+
+void guardLoad() {
+    uint32_t marks[Marks * 2];
+    if (!readMarks(marks)) {
+        return;
+    }
+
+    size_t last = Marks;
+    for (size_t index = 0; index < Marks; ++index) {
+        if (marks[index * 2] == 0) {
+            last = index;
+        }
+    }
+
+    // ended by a restart of ESPurna: that boot is finished
+    if ((last < Marks) && (marks[last * 2 + 1] != 0) && deliberateRestart()) {
+        clearMark(last * 2 + 1);
+        marks[last * 2 + 1] = 0;
+    }
+
+    const auto unfinished = unfinishedBoots(marks);
+    guard_state.running = (last < Marks) ? 1 : 0;
+    guard_state.booted = ((last < Marks) && (marks[last * 2 + 1] == 0)) ? 1 : 0;
+    // guardBoot() adds the last boot when it crashed
+    guard_state.crashes = (guard_state.running && !guard_state.booted && unfinished) ? (unfinished - 1) : unfinished;
+}
+
+// module code starts in this boot
+void guardMark() {
+    uint32_t marks[Marks * 2];
+    if (!readMarks(marks)) {
+        return;
+    }
+
+    size_t index = 0;
+    while ((index < Marks) && (marks[index * 2] == 0)) {
+        ++index;
+    }
+
+    // full: the sector again without the marks (the directory kept)
+    if (index == Marks) {
+        auto dir = boxed<Directory>();
+        if (!dir || !readDirectory(*dir) || !writeDirectoryPrimary(*dir)) {
+            return;
+        }
+        index = 0;
+    }
+
+    if (clearMark(index * 2)) {
+        boot_mark = index;
+    }
+}
+
+// this boot ran MODULES_BOOT_SECONDS with module code
+void guardBooted() {
+    if (!boot_mark_finished && (boot_mark < Marks)) {
+        boot_mark_finished = true;
+        clearMark(boot_mark * 2 + 1);
+    }
+}
+
+// a timer that runs while loop() waits or hangs: the SDK's on the ESP8266, a FreeRTOS one (its own task) elsewhere
+#if defined(ESP8266)
+os_timer_t guard_timer;
+
+void guardTimerCallback(void*) {
+    guardTick();
+}
+
+void guardTimer() {
+    os_timer_setfn(&guard_timer, guardTimerCallback, nullptr);
+    os_timer_arm(&guard_timer, 1000, true);
+}
+
+void guardTimerStop() {
+    os_timer_disarm(&guard_timer);
+}
+#else
+TimerHandle_t guard_timer { nullptr };
+
+void guardTimerCallback(TimerHandle_t) {
+    guardTick();
+}
+
+void guardTimer() {
+    if (!guard_timer) {
+        guard_timer = xTimerCreate("modules", pdMS_TO_TICKS(1000), pdTRUE, nullptr, guardTimerCallback);
+    }
+    if (guard_timer) {
+        xTimerStart(guard_timer, 0);
+    }
+}
+
+void guardTimerStop() {
+    if (guard_timer) {
+        xTimerStop(guard_timer, 0);
+    }
+}
+#endif
+
+} // namespace
 
 // --- a package as it arrives ---------------------------------------------------------------------------------------
 
 namespace {
 
-// PackageReader::part
+// Upload::part
 constexpr uint8_t PartMap { 0 };
 constexpr uint8_t PartCount { 1 };
 constexpr uint8_t PartBranches { 2 };
 constexpr uint8_t PartChunk { 3 };
 
-const char* installCheck(const Directory& dir, const char* name, bool replace, bool& installed) {
-    installed = false;
-    for (size_t index = 0; index < dir.count; ++index) {
-        if (std::strncmp(dir.entries[index].name, name, sizeof(dir.entries[index].name)) == 0) {
-            if (!replace) {
-                return PSTR("installed already (MODULES.REMOVE first)");
-            }
-            installed = true;
-        }
-    }
-
-    if (!installed && (dir.count >= DirectoryEntries)) {
-        return PSTR("directory full");
-    }
-
-    return nullptr;
-}
-
-} // namespace
-
-void packageFeed(PackageReader& reader, const uint8_t* data, size_t len) {
-    const auto& hooks = *reader.hooks;
-    while (len && !reader.error) {
-        // the package header
-        if (reader.received < sizeof(PackageHeader)) {
-            const size_t part = std::min(len, sizeof(PackageHeader) - reader.received);
-            std::memcpy(reinterpret_cast<uint8_t*>(&reader.header) + reader.received, data, part);
-            reader.received += part;
-            data += part;
-            len -= part;
-            if (reader.received == sizeof(PackageHeader)) {
-                reader.error = hooks.prepare(reader);
-            }
-            continue;
-        }
-
-        if (reader.delivered >= reader.header.image_size) {
-            reader.error = PSTR("more data than the image");
-            return;
-        }
-
-        // the chunk's bytes
-        if (reader.part == PartChunk) {
-            const size_t part = std::min(len, reader.chunk_left);
-            reader.body_crc = crc32Update(reader.body_crc, data, part);
-            reader.error = hooks.bytes(reader, data, part);
-            reader.delivered += part;
-            reader.chunk_left -= part;
-            reader.received += part;
-            data += part;
-            len -= part;
-            if (!reader.chunk_left) {
-                reader.part = PartMap;
-            }
-            continue;
-        }
-
-        // the map of the next chunk, its branch count, its branch list
-        uint8_t* target { reinterpret_cast<uint8_t*>(reader.map) };
-        size_t want { MapSize };
-        if (reader.part == PartCount) {
-            target = reinterpret_cast<uint8_t*>(&reader.branch_count);
-            want = sizeof(reader.branch_count);
-        } else if (reader.part == PartBranches) {
-            target = reinterpret_cast<uint8_t*>(reader.branches);
-            want = reader.branch_count * 4;
-        }
-
-        const size_t part = std::min(len, want - reader.fill);
-        std::memcpy(target + reader.fill, data, part);
-        reader.body_crc = crc32Update(reader.body_crc, data, part);
-        reader.fill += part;
-        reader.received += part;
-        data += part;
-        len -= part;
-        if (reader.fill < want) {
-            continue;
-        }
-
-        reader.fill = 0;
-        if ((reader.part == PartMap) && reader.branches) {
-            reader.part = PartCount;
-            continue;
-        }
-
-        if (reader.part == PartCount) {
-            if (reader.branch_count > reader.branches_max) {
-                reader.error = PSTR("too many branches in a chunk");
-                return;
-            }
-            if (reader.branch_count) {
-                reader.part = PartBranches;
-                continue;
-            }
-        }
-
-        reader.chunk_left = std::min<size_t>(ChunkSize, reader.header.image_size - reader.delivered);
-        reader.part = PartChunk;
-    }
-}
-
-const char* packageCheck(const PackageHeader& header, uint32_t version) {
-    if ((header.magic != PackageMagic) || (header.version != version)) {
-        return PSTR("not a module package of this chip");
+// the header alone: the package magic and the version, made for this head, the sizes
+const char* packageCheck(const PackageHeader& header) {
+    if ((header.magic != PackageMagic) || (header.version != PackageVersion)) {
+        return PSTR("not a module package of this version");
     }
 
     if (!sameHead(header.head_md5)) {
@@ -980,113 +1067,277 @@ const char* packageCheck(const PackageHeader& header, uint32_t version) {
     return nullptr;
 }
 
-const char* packageAccept(const PackageReader& reader, uint32_t version, Directory& dir, bool& installed) {
-    const auto* error = packageCheck(reader.header, version);
+uint32_t mapsSize(uint32_t image) {
+    return ((image + ChunkSize - 1) / ChunkSize) * MapSize;
+}
+
+// the slot: the image in the chip's flash format, then its relocation maps
+uint32_t slotSize(uint32_t image) {
+    return arch::imageFlash(image) + roundUp(mapsSize(image), SectorSize);
+}
+
+uint32_t mapsAt(uint32_t slot, uint32_t image) {
+    return slot + arch::imageFlash(image);
+}
+
+// the header is in: its slot from the top of what the Apply left free, its bases, the deltas of its kinds
+const char* prepare(Upload& up) {
+    const auto& header = up.header;
+    const auto* error = packageCheck(header);
     if (error) {
         return error;
     }
 
-    if (reader.apply_dir) {
-        std::memcpy(&dir, reader.apply_dir, sizeof(dir));
-    } else if (!readDirectory(dir)) {
-        std::memset(&dir, 0, sizeof(dir));
+    const auto& dir = *up.apply_dir;
+    for (size_t index = 0; index < dir.count; ++index) {
+        if (std::strncmp(dir.entries[index].name, header.name, sizeof(dir.entries[index].name)) == 0) {
+            return PSTR("twice in the Apply");
+        }
+    }
+    if (dir.count >= DirectoryEntries) {
+        return PSTR("directory full");
     }
 
-    return installCheck(dir, reader.header.name, reader.replace, installed);
+    auto space = boxed<Spaces>();
+    if (!space) {
+        return PSTR("no memory");
+    }
+    spaces(dir, true, *space);
+    space->flash.lo = std::max(space->flash.lo, up.flash_floor);
+
+    up.slot_size = slotSize(header.image_size);
+    if (!space->flash.place(up.slot_size, true, up.slot)) {
+        return PSTR("not enough flash");
+    }
+
+    arch::Pools pools {};
+    arch::pools(pools);
+    if (header.iram_size && !pools.code_in_fixed) {
+        return PSTR("IRAM code, and the chip has no pool for it");
+    }
+
+    up.bases[BaseFlash] = arch::flashView(up.slot);
+    up.bases[BaseCode] = header.iram_size ? (pools.fixed_base + up.code_offset) : arch::codeView(up.slot);
+    up.bases[BaseRam] = header.ram_size ? ramAddress(up.ram_offset, pools) : 0;
+    up.delta[0] = 0;
+    up.delta[1] = up.bases[BaseFlash] - header.link_flash;
+    up.delta[2] = up.bases[BaseRam] - header.link_ram;
+    up.delta[3] = up.bases[BaseCode] - header.link_iram;
+
+    // the maps behind the image: erased now, written chunk by chunk
+    if (!flashErase(mapsAt(up.slot, header.image_size), roundUp(mapsSize(header.image_size), SectorSize))) {
+        return PSTR("flash erase");
+    }
+
+    return arch::imageBegin(up);
 }
 
-const char* packageComplete(const PackageReader& reader) {
-    if (reader.error) {
-        return reader.error;
+// a whole chunk is in: its map kept behind the image, its words relocated, written
+const char* chunkDone(Upload& up) {
+    const uint32_t offset = up.written;
+    const uint32_t maps = mapsAt(up.slot, up.header.image_size);
+    if (!flashWrite(maps + ((offset / ChunkSize) * MapSize), up.map, MapSize)) {
+        return PSTR("flash write");
     }
 
-    if ((reader.received < sizeof(PackageHeader)) || (reader.delivered != reader.header.image_size)) {
-        return PSTR("short upload");
-    }
-
-    if (reader.body_crc != reader.header.crc32) {
-        return PSTR("package crc");
-    }
-
-    return nullptr;
-}
-
-// --- the relocating writer ---------------------------------------------------------------------------------------------
-
-namespace {
-
-bool wordFlush(WordUpload& up) {
-    if (!up.buffered) {
-        return true;
-    }
-
-    // chunks are 4 KiB and sector aligned, the buffer divides a sector: a flush never crosses a sector
-    const uint32_t address = up.slot + up.written;
-    if (((address % SectorSize) == 0) && !flashErase(address, SectorSize)) {
-        return false;
-    }
-
-    if (!flashWrite(address, up.buffer, up.buffered)) {
-        return false;
-    }
-
-    up.image_crc = crc32Update(up.image_crc, up.buffer, up.buffered);
-    up.written += up.buffered;
-    up.buffered = 0;
-    return true;
-}
-
-// one image word, in chunk order
-bool wordPut(WordUpload& up, uint32_t value) {
-    const size_t index = ((up.written + up.buffered) % ChunkSize) / 4;
-    const uint8_t kind = (up.map[index >> 2] >> ((index & 3) * 2)) & 3;
-    value += up.delta[kind];
-
-    std::memcpy(&up.buffer[up.buffered], &value, 4);
-    up.buffered += 4;
-    if (up.buffered == sizeof(up.buffer)) {
-        return wordFlush(up);
-    }
-
-    return true;
+    relocateChunk(up.chunk, up.chunk_fill, up.map, up.delta);
+    const bool last = (offset + up.chunk_fill) == up.header.image_size;
+    const auto* error = arch::imageWrite(up, offset, up.chunk, up.chunk_fill, last);
+    up.written += up.chunk_fill;
+    up.chunk_fill = 0;
+    return error;
 }
 
 } // namespace
 
-const char* wordBytes(PackageReader& reader, const uint8_t* data, size_t size) {
-    auto& up = static_cast<WordUpload&>(reader);
-    for (size_t index = 0; index < size; ++index) {
-        up.word |= static_cast<uint32_t>(data[index]) << (8 * up.word_size);
-        if (++up.word_size == 4) {
-            if (!wordPut(up, up.word)) {
-                return PSTR("flash write");
+void relocateChunk(uint8_t* data, size_t size, const uint8_t* map, const uint32_t delta[4]) {
+    for (size_t index = 0; index < (size / 4); ++index) {
+        const uint8_t kind = (map[index >> 2] >> ((index & 3) * 2)) & 3;
+        if (kind && delta[kind]) {
+            uint32_t value;
+            std::memcpy(&value, &data[index * 4], 4);
+            value += delta[kind];
+            std::memcpy(&data[index * 4], &value, 4);
+        }
+    }
+}
+
+namespace {
+
+void packageFeed(Upload& up, const uint8_t* data, size_t len) {
+    while (len && !up.error) {
+        // the package header
+        if (up.received < sizeof(PackageHeader)) {
+            const size_t part = std::min(len, sizeof(PackageHeader) - up.received);
+            std::memcpy(reinterpret_cast<uint8_t*>(&up.header) + up.received, data, part);
+            up.received += part;
+            data += part;
+            len -= part;
+            if (up.received == sizeof(PackageHeader)) {
+                up.error = prepare(up);
             }
-            up.word = 0;
-            up.word_size = 0;
+            continue;
+        }
+
+        if (up.delivered >= up.header.image_size) {
+            up.error = PSTR("more data than the image");
+            return;
+        }
+
+        // the chunk's bytes
+        if (up.part == PartChunk) {
+            const size_t part = std::min(len, up.chunk_left);
+            up.body_crc = crc32Update(up.body_crc, data, part);
+            std::memcpy(&up.chunk[up.chunk_fill], data, part);
+            up.chunk_fill += part;
+            up.delivered += part;
+            up.chunk_left -= part;
+            up.received += part;
+            data += part;
+            len -= part;
+            if (!up.chunk_left) {
+                up.part = PartMap;
+                up.error = chunkDone(up);
+            }
+            continue;
+        }
+
+        // the map of the next chunk, its branch count, its branch list
+        uint8_t* target { up.map };
+        size_t want { MapSize };
+        if (up.part == PartCount) {
+            target = reinterpret_cast<uint8_t*>(&up.branch_count);
+            want = sizeof(up.branch_count);
+        } else if (up.part == PartBranches) {
+            target = reinterpret_cast<uint8_t*>(up.branches.get());
+            want = up.branch_count * 4;
+        }
+
+        const size_t part = std::min(len, want - up.fill);
+        std::memcpy(target + up.fill, data, part);
+        up.body_crc = crc32Update(up.body_crc, data, part);
+        up.fill += part;
+        up.received += part;
+        data += part;
+        len -= part;
+        if (up.fill < want) {
+            continue;
+        }
+
+        up.fill = 0;
+        if (up.part == PartMap) {
+            up.part = PartCount;
+            continue;
+        }
+
+        if (up.part == PartCount) {
+            if (up.branch_count > BranchesMax) {
+                up.error = PSTR("too many branches in a chunk");
+                return;
+            }
+            if (up.branch_count) {
+                if (!up.branches) {
+                    up.branches.reset(new (std::nothrow) uint32_t[BranchesMax]);
+                }
+                if (!up.branches) {
+                    up.error = PSTR("no memory for the branch list");
+                    return;
+                }
+                up.part = PartBranches;
+                continue;
+            }
+        }
+
+        up.chunk_left = std::min<size_t>(ChunkSize, up.header.image_size - up.delivered);
+        up.part = PartChunk;
+    }
+}
+
+// the end of the package: the whole package came, its CRC, the image read back as it runs
+const char* packageFinish(Upload& up, Entry& out) {
+    if (up.error) {
+        return up.error;
+    }
+
+    if ((up.received < sizeof(PackageHeader)) || (up.delivered != up.header.image_size)
+        || (up.written != up.header.image_size))
+    {
+        return PSTR("short package");
+    }
+
+    if (up.body_crc != up.header.crc32) {
+        return PSTR("package crc");
+    }
+
+    std::memset(&out, 0, sizeof(out));
+    out.offset = up.slot;
+    out.slot = up.slot_size;
+    out.size = up.header.image_size;
+    out.ram_offset = up.ram_offset;
+    out.ram_size = roundUp(up.header.ram_size, 8);
+    out.code_size = roundUp(up.header.iram_size, 4);
+    std::memcpy(out.bases, up.bases, sizeof(out.bases));
+
+    arch::imageDone(up.slot, up.header.image_size);
+    const auto at = arch::imageAt(out);
+    uint32_t crc;
+    if (!at || !imageCrc(at, out.size, crc)) {
+        return PSTR("verify: read");
+    }
+    if (crc != up.image_crc) {
+        return PSTR("verify: the image in flash");
+    }
+
+    out.crc32 = crc;
+    return nullptr;
+}
+
+// --- relocation at boot: the bases of a module moved since the Apply (ESP32: the maps of the flash came out
+// elsewhere, every chip: the heap block). The image rewritten in its slot from its relocation maps, chunk by chunk
+
+const char* relocateEntry(Entry& entry, const uint32_t (&now)[3]) {
+    if (!arch::rewritable()) {
+        return PSTR("moved since the Apply: Apply again");
+    }
+
+    auto up = boxed<Upload>();
+    if (!up) {
+        return PSTR("no memory to relocate");
+    }
+
+    const uint32_t delta[4] {0, now[BaseFlash] - entry.bases[BaseFlash], now[BaseRam] - entry.bases[BaseRam],
+        now[BaseCode] - entry.bases[BaseCode]};
+    const uint32_t at = arch::imageAt(entry);
+    const uint32_t maps = mapsAt(entry.offset, entry.size);
+    up->slot = entry.offset;
+    up->slot_size = entry.slot;
+    up->header.image_size = entry.size;
+    up->image_crc = 0;
+    for (uint32_t done = 0; done < entry.size; done += ChunkSize) {
+        const uint32_t size = std::min<uint32_t>(ChunkSize, entry.size - done);
+        if (!arch::imageRead(at + done, up->chunk, size)
+            || !arch::rawRead(maps + ((done / ChunkSize) * MapSize), up->map, MapSize))
+        {
+            return PSTR("relocate: read");
+        }
+
+        relocateChunk(up->chunk, size, up->map, delta);
+        up->branch_count = 0;
+        const auto* error = arch::imageWrite(*up, done, up->chunk, size, (done + size) == entry.size);
+        if (error) {
+            return error;
         }
     }
 
+    arch::imageDone(entry.offset, entry.size);
+    entry.crc32 = up->image_crc;
+    std::memcpy(entry.bases, now, sizeof(entry.bases));
     return nullptr;
 }
 
-const char* wordFinish(WordUpload& up, uint32_t& crc) {
-    const auto* error = packageComplete(up);
-    if (error) {
-        return error;
-    }
+} // namespace
 
-    if (!wordFlush(up) || (up.written != up.header.image_size)) {
-        return PSTR("flash write");
-    }
-
-    if (!imageCrc(up.slot, up.written, crc) || (crc != up.image_crc)) {
-        return PSTR("verify");
-    }
-
-    return nullptr;
-}
-
-// --- the defaults of the contract ----------------------------------------------------------------------------------
+// --- the defaults of what a chip provides --------------------------------------------------------------------------
 
 namespace arch {
 
@@ -1099,56 +1350,40 @@ __attribute__((weak)) bool imageRead(uint32_t at, void* data, size_t size) {
     return rawRead(at, data, size);
 }
 
+__attribute__((weak)) uint32_t imageFlash(uint32_t image) {
+    return roundUp(image, SectorSize);
+}
+
+// plain flash: each sector erased as the chunk reaches it, the words written as they are
+__attribute__((weak)) const char* imageWrite(Upload& up, uint32_t offset, uint8_t* data, size_t size, bool) {
+    const uint32_t address = up.slot + offset;
+    if (!flashErase(address, roundUp(size, SectorSize)) || !flashWrite(address, data, roundUp(size, 4))) {
+        return PSTR("flash write");
+    }
+
+    up.image_crc = crc32Update(up.image_crc, data, size);
+    return nullptr;
+}
+
+__attribute__((weak)) const char* imageBegin(Upload&) {
+    return nullptr;
+}
+
+__attribute__((weak)) void imageDone(uint32_t, uint32_t) {
+}
+
+__attribute__((weak)) bool rewritable() {
+    return true;
+}
+
 __attribute__((weak)) void crashNow() {
     *reinterpret_cast<volatile uint32_t*>(0) = 0;
 }
 
-__attribute__((weak)) void beforeStart(Directory&, bool) {
+__attribute__((weak)) void statusJson(String&) {
 }
 
-__attribute__((weak)) void imageModules(Directory&, bool&) {
-}
-
-// a backend that places the RAM at the install only: nothing given back, nothing to place
-__attribute__((weak)) const char* place(const Directory&, Entry&) {
-    return PSTR("this chip places the RAM at the install only");
-}
-
-__attribute__((weak)) bool placeable(const Entry&) {
-    return false;
-}
-
-__attribute__((weak)) void arenas(const Directory&, bool, Spaces&, const char*) {
-}
-
-__attribute__((weak)) uint32_t entryIram(const Entry&) {
-    return 0;
-}
-
-__attribute__((weak)) void entryJson(String&, const Entry&) {
-}
-
-__attribute__((weak)) uint32_t fileSize() {
-    return 0;
-}
-
-__attribute__((weak)) void fileSend(AsyncWebServerRequest* request) {
-    request->send(404, String(F("text/plain")), String(F("ERROR: no modules file in flash")));
-}
-
-// gzip, cached by its Last-Modified
-__attribute__((weak)) bool page(AsyncWebServerRequest* request) {
-    const auto* modified = request->getHeader(String(F("If-Modified-Since")));
-    if (modified && modified->value().equals(FPSTR(webui_last_modified))) {
-        request->send(304);
-        return true;
-    }
-
-    auto* response = request->beginResponse_P(200, String(F("text/html")), webui_data, sizeof(webui_data));
-    response->addHeader(String(F("Content-Encoding")), String(FPSTR(webui_content_encoding)));
-    response->addHeader(String(F("Last-Modified")), String(FPSTR(webui_last_modified)));
-    request->send(response);
-    return true;
+__attribute__((weak)) void listHead(Print&) {
 }
 
 __attribute__((weak)) uint32_t failedAllocations() {
@@ -1163,29 +1398,52 @@ __attribute__((weak)) bool otaBusy() {
 
 namespace {
 
+// the head's own page (modules_page.h): the same on every chip
+// a page from the flash (PROGMEM, the module area), a piece at a time
+void sendFlash(WebRequest& request, const uint8_t* data, size_t size, bool gzip) {
+    if (gzip) {
+        request.addHeader("Content-Encoding", "gzip");
+    }
+
+    request.send(200, "text/html", static_cast<long>(size),
+        [data, size](uint8_t* out, size_t max, size_t index) -> size_t {
+            const size_t take = (index < size) ? std::min(max, size - index) : 0;
+            if (take) {
+                memcpy_P(out, data + index, take);
+            }
+            return take;
+        });
+}
+
+void headPage(WebRequest& request) {
+    sendFlash(request, reinterpret_cast<const uint8_t*>(HeadPage), sizeof(HeadPage) - 1, false);
+}
+
+} // namespace
+
+namespace {
+
 // --- the guard: modules off after crashes at boot, a heap shortage, failing allocations or a stalled loop --------
 
 // MODULES.TEST.LOWHEAP: the guard sees no free heap
 bool test_low_heap { false };
 
 void guardBoot() {
-    auto& guard = arch::guardState();
+    guardLoad();
+    auto& guard = guard_state;
 
     // a boot crash: the modules ran, but not past their first MODULES_BOOT_SECONDS. Boots without module code (the
     // unstable mode after the crashes, its exit restart) keep the count, so the crash loop ends here and not in
     // ESPurna's unstable mode every 10 minutes; modules running past their boot clear it
-    if (arch::crashRestart() && guard.running && !guard.booted) {
+    if (crashRestart() && guard.running && !guard.booted) {
         ++guard.crashes;
     } else if (guard.running && guard.booted) {
         guard.crashes = 0;
     }
-    guard.running = 0;
-    guard.booted = 0;
 
     if (guard.crashes >= MODULES_CRASHES) {
         modulesOff(String(F("the boot crashed ")) + String(guard.crashes, 10)
             + F(" times in a row with the modules running"));
-        guard.crashes = 0;
     }
 }
 
@@ -1202,9 +1460,10 @@ void guardLoop() {
 }
 
 void guardDecide(const char* reason) {
-    arch::guardTimerStop();
+    guardTimerStop();
     offWrite(reason);
-    arch::restartNow();
+    customResetReason(CustomResetReason::Stability);
+    espurna::system::chip::restart();
 }
 
 } // namespace
@@ -1218,15 +1477,13 @@ void guardTick() {
     static uint32_t stalled { 0 };
     ++seconds;
 
-    auto& guard = arch::guardState();
-    if (!guard.booted && (seconds >= MODULES_BOOT_SECONDS)) {
-        guard.booted = 1;
-        guard.crashes = 0;
+    if (seconds >= MODULES_BOOT_SECONDS) {
+        guardBooted();
     }
 
     char reason[96];
 
-    const auto free = test_low_heap ? 0 : arch::freeHeap();
+    const auto free = test_low_heap ? 0 : systemFreeHeap();
     low = (free < MODULES_HEAP_MIN) ? (low + 1) : 0;
     if (low >= MODULES_HEAP_SECONDS) {
         snprintf_P(reason, sizeof(reason), PSTR("free heap %u bytes for %u s with the modules running"), free, low);
@@ -1285,7 +1542,6 @@ Status* statusSlot(const Entry& entry) {
     return nullptr;
 }
 
-// a copy of this module runs (another one, replaced before the restart, too)
 bool runningByName(const char* name) {
     for (const auto& out : status) {
         if ((out.state == State::Started) && (std::strncmp(out.name, name, sizeof(out.name)) == 0)) {
@@ -1295,65 +1551,35 @@ bool runningByName(const char* name) {
     return false;
 }
 
-// EntryUnplaced: its RAM now (the directory is written); nullptr - ready to start
-const char* placeNow(Directory& dir, Entry& entry) {
-    if (!(entry.flags & EntryUnplaced)) {
-        return nullptr;
+void setStatus(const Entry& entry, State state, const char* reason) {
+    if (auto* slot = statusSlot(entry)) {
+        *slot = Status{state, reason, entry.offset, entry.crc32};
+        std::memcpy(slot->name, entry.name, sizeof(slot->name));
     }
-
-    // a crash while placing (the relocation) counts for the guard as well
-    if (entry.ram_size) {
-        guardArm();
-    }
-    const auto* error = arch::place(dir, entry);
-    if (error) {
-        return error;
-    }
-
-    entry.flags &= ~EntryUnplaced;
-    if (!writeDirectory(dir)) {
-        return PSTR("directory write");
-    }
-    DEBUG_MSG_P(PSTR("[MODULES] %s placed (RAM %u)\n"), entry.name, entry.ram_size);
-    return nullptr;
 }
 
-// off and not running: its RAM back, when the board can place it again. true - the entry changed
-bool giveBack(Entry& entry) {
-    if ((entry.flags & EntryUnplaced) || !arch::placeable(entry)) {
-        return false;
-    }
-
-    entry.flags |= EntryUnplaced;
-    return true;
-}
-
-// start one module: at boot, or when it is switched on (from the loop, never from a web or TCP callback)
+// one module started, at boot
 const char* startEntry(const Entry& entry) {
     auto* slot = statusSlot(entry);
     if (!slot) {
         return PSTR("no status slot");
     }
 
-    const uint32_t heap_before = arch::freeHeap();
+    const uint32_t heap_before = systemFreeHeap();
     Started started;
     // run() arms the guard right before the module's first code (its constructors, entry())
     const auto* error = run(entry, started);
     if (error) {
         const bool stale = (strcmp_P("stale", error) == 0);
-        *slot = Status{stale ? State::Stale : State::Broken, error, entry.offset, entry.crc32};
-        std::memcpy(slot->name, entry.name, sizeof(slot->name));
+        setStatus(entry, stale ? State::Stale : State::Broken, error);
         DEBUG_MSG_P(PSTR("[MODULES] %s not started: %s\n"), entry.name, error);
         return error;
     }
 
-    const uint32_t heap_after = arch::freeHeap();
+    const uint32_t heap_after = systemFreeHeap();
     *slot = Status{State::Started, nullptr, entry.offset, entry.crc32,
         (heap_before > heap_after) ? (heap_before - heap_after) : 0};
     std::memcpy(slot->name, entry.name, sizeof(slot->name));
-    if (boot_flash_count < DirectoryEntries) {
-        boot_flash[boot_flash_count++] = BootPiece{entry.offset, entry.slot};
-    }
     if (started.code) {
         running = true;
         guardArm();
@@ -1367,93 +1593,7 @@ const char* startEntry(const Entry& entry) {
     return nullptr;
 }
 
-// modules switched on (or uploaded) while the board runs: started by the loop
-char pending[DirectoryEntries][16];
-size_t pending_count { 0 };
-
-void startLater(const char* name) {
-    for (size_t index = 0; index < pending_count; ++index) {
-        if (std::strncmp(pending[index], name, sizeof(pending[index])) == 0) {
-            return;
-        }
-    }
-    if (pending_count < DirectoryEntries) {
-        std::strncpy(pending[pending_count], name, sizeof(pending[pending_count]) - 1);
-        pending[pending_count][sizeof(pending[pending_count]) - 1] = '\0';
-        ++pending_count;
-    }
-}
-
-void pendingLoop() {
-    if (!pending_count) {
-        return;
-    }
-    if (offReason().length()) {
-        pending_count = 0;
-        return;
-    }
-
-    char name[16];
-    std::memcpy(name, pending[0], sizeof(name));
-    --pending_count;
-    std::memmove(&pending[0], &pending[1], pending_count * sizeof(pending[0]));
-
-    Directory dir;
-    if (!readDirectory(dir)) {
-        return;
-    }
-
-    for (size_t index = 0; index < dir.count; ++index) {
-        const auto& entry = dir.entries[index];
-        if (std::strncmp(entry.name, name, sizeof(entry.name)) != 0) {
-            continue;
-        }
-        if ((entry.flags & EntryDisabled) || runningByName(entry.name)) {
-            return;
-        }
-
-        // what it needs runs first: one still queued - this one waits behind it; one missing, off or failed - it
-        // does not start
-        const auto list = requiresOf(entry);
-        for (size_t need = 0; need < list.count; ++need) {
-            if (runningByName(list.names[need])) {
-                continue;
-            }
-            bool queued = false;
-            for (size_t other = 0; other < pending_count; ++other) {
-                queued = queued || (std::strncmp(pending[other], list.names[need], sizeof(pending[other])) == 0);
-            }
-            if (queued) {
-                startLater(entry.name);
-                return;
-            }
-            if (auto* slot = statusSlot(entry)) {
-                *slot = Status{State::Broken, PSTR("needs a module that is not running"), entry.offset, entry.crc32};
-                std::memcpy(slot->name, entry.name, sizeof(slot->name));
-            }
-            DEBUG_MSG_P(PSTR("[MODULES] %s not started: needs %s\n"), entry.name, list.names[need]);
-            return;
-        }
-
-        arch::beforeStart(dir, true);
-        auto& target = dir.entries[index];
-        const auto* error = placeNow(dir, target);
-        if (error) {
-            if (auto* slot = statusSlot(target)) {
-                *slot = Status{State::Broken, error, target.offset, target.crc32};
-                std::memcpy(slot->name, target.name, sizeof(slot->name));
-            }
-            DEBUG_MSG_P(PSTR("[MODULES] %s not started: %s\n"), target.name, error);
-            return;
-        }
-        startEntry(target);
-        return;
-    }
-}
-
-// on: the flag off, the module starts now (unless a copy of it runs: then at the restart). off: the flag on, its code
-// keeps running until the restart, its flash stays
-// switch on this one and what it needs (installed ones only), the deepest first; queued for the loop in that order
+// switched on with what it needs (installed ones only), the deepest first
 const char* enableTree(Directory& dir, const char* name, size_t depth, bool& changed) {
     if (depth > 4) {
         return PSTR("dependencies too deep (a loop?)");
@@ -1476,14 +1616,11 @@ const char* enableTree(Directory& dir, const char* name, size_t depth, bool& cha
         entry->flags &= ~EntryDisabled;
         changed = true;
     }
-    if (!runningByName(entry->name)) {
-        startLater(entry->name);
-    }
     return nullptr;
 }
 
-// on: the flag off for it and what it needs, they start now (unless a copy runs: then at the restart). off: refused
-// while a switched-on module needs it; its code keeps running until the restart, its flash stays
+// on: the flag off for it and what it needs; off: refused while a switched-on module needs it. Both at the next boot:
+// nothing starts or stops while the board runs (the Apply's rule)
 const char* setEnabled(const String& name, bool on, String& text) {
     auto dir_box = boxed<Directory>();
     if (!dir_box) {
@@ -1499,210 +1636,90 @@ const char* setEnabled(const String& name, bool on, String& text) {
         return PSTR("not installed");
     }
 
+    bool changed = false;
     if (on) {
-        bool changed = false;
         const auto* error = enableTree(dir, entry->name, 0, changed);
         if (error) {
             return error;
         }
-        if (changed && !writeDirectory(dir)) {
-            return PSTR("directory write");
+    } else {
+        if (neededBy(dir, entry->name, true)) {
+            return PSTR("a switched on module needs it, switch that off first");
         }
-        text = runningByName(entry->name) ? F("OK, on") : F("OK, starting");
-        return nullptr;
+        if (!(entry->flags & EntryDisabled)) {
+            const_cast<Entry*>(entry)->flags |= EntryDisabled;
+            changed = true;
+        }
     }
 
-    if (neededBy(dir, entry->name, true)) {
-        return PSTR("a switched on module needs it, switch that off first");
-    }
-
-    const_cast<Entry*>(entry)->flags |= EntryDisabled;
-    if (!runningByName(entry->name)) {
-        giveBack(*const_cast<Entry*>(entry));
-    }
-    if (!writeDirectory(dir)) {
+    if (changed && !writeDirectory(dir)) {
         return PSTR("directory write");
     }
-    text = runningByName(entry->name) ? F("OK, off after restart") : F("OK, off");
+    text = on ? F("OK, on after the restart") : F("OK, off after the restart");
     return nullptr;
 }
 
-// --- upload --------------------------------------------------------------------------------------------------------
+// --- web helpers ---------------------------------------------------------------------------------------------------
 
-PackageReader* upload { nullptr };
-AsyncWebServerRequest* owner { nullptr };
+WebRequest* owner { nullptr };
 
-void release() {
-    delete upload;
-    upload = nullptr;
-    owner = nullptr;
+void answer(WebRequest& request, int code, const String& text) {
+    webSend(request, code, "text/plain", text);
 }
 
-void answer(AsyncWebServerRequest* request, int code, const String& text) {
-    auto* response = request->beginResponse(code, String(F("text/plain")), text);
-    response->addHeader(String(F("Connection")), String(F("close")));
-    request->send(response);
-}
-
-bool authenticated(AsyncWebServerRequest* request) {
+bool authenticated(WebRequest& request) {
     if (!webAuthenticate(request)) {
-        request->requestAuthentication(systemHostname().c_str());
+        webRequestAuthentication(request);
         return false;
     }
 
     return true;
 }
 
-// the directory gets the entry once the backend wrote and checked the module: a new one at the end, a new copy of an
-// installed one (replace) in its place
-const char* addEntry(const Entry& entry) {
-    auto dir_box = boxed<Directory>();
-    if (!dir_box) {
-        return PSTR("no memory");
-    }
-    auto& dir = *dir_box;
-    if (!readDirectory(dir)) {
-        std::memset(&dir, 0, sizeof(dir));
-        dir.magic = arch::directoryMagic();
-    }
-
-    size_t index = dir.count;
-    for (size_t other = 0; other < dir.count; ++other) {
-        if (std::strncmp(dir.entries[other].name, entry.name, sizeof(entry.name)) == 0) {
-            index = other;
-        }
-    }
-
-    if (index >= DirectoryEntries) {
-        return PSTR("directory full");
-    }
-
-    dir.entries[index] = entry;
-    if (index == dir.count) {
-        ++dir.count;
-    }
-
-    return writeDirectory(dir) ? nullptr : PSTR("directory write");
-}
-
-void onUploadDone(AsyncWebServerRequest* request) {
-    if (!authenticated(request)) {
-        return;
-    }
-
-    if (!upload || (owner != request)) {
-        answer(request, 400, F("ERROR: no module upload in this request"));
-        return;
-    }
-
-    Entry entry;
-    std::memset(&entry, 0, sizeof(entry));
-    const auto* error = arch::uploadFinish(*upload, entry);
-    if (!error) {
-        std::memcpy(entry.name, upload->header.name, sizeof(entry.name));
-        entry.name[sizeof(entry.name) - 1] = '\0';
-        error = addEntry(entry);
-    }
-
-    String text;
-    if (error) {
-        text = String(F("ERROR: ")) + FPSTR(error);
-        answer(request, 400, text);
-    } else if (!runningByName(entry.name) && !offReason().length()) {
-        // it and what it needs (installed ones) start now, the deepest first
-        String started;
-        const auto* problem = setEnabled(String(entry.name), true, started);
-        text = String(F("OK, ")) + entry.name + F(" at 0x") + String(entry.offset, 16)
-            + (problem ? String(F(", installed; ")) + FPSTR(problem) : String(F(", starting")));
-        answer(request, 200, text);
-    } else {
-        text = String(F("OK, ")) + entry.name + F(" at 0x") + String(entry.offset, 16) + F(", restart to start it");
-        answer(request, 200, text);
-    }
-
-    DEBUG_MSG_P(PSTR("[MODULES] Upload: %s\n"), text.c_str());
-    release();
-}
-
-void onUploadData(AsyncWebServerRequest* request, String, size_t index, uint8_t* bytes, size_t len, bool) {
-    if (!webAuthenticate(request)) {
-        return;
-    }
-
-    if (!index) {
-        if (upload) {
-            if (owner) {
-                return;
-            }
-            release();
-        }
-
-        if (arch::otaBusy()) {
-            return;
-        }
-
-        upload = arch::uploadNew(request);
-        if (!upload) {
-            return;
-        }
-
-        upload->replace = request->hasParam(String(F("replace")));
-        owner = request;
-        request->onDisconnect([request]() {
-            if (owner == request) {
-                release();
-            }
-        });
-    }
-
-    if (upload && (owner == request)) {
-        packageFeed(*upload, bytes, len);
-    }
-}
 
 // --- apply: the whole module area anew ------------------------------------------------------------------------------
 //
-// The MODULES panel: modules ticked, *Apply*. First POST /modules/off: the directory erased, a restart without module
-// code. Then POST /modules/apply?names=a,b,c with the modules file (EMC2) of the release: the ticked packages are
-// written one after another into the empty area (the backend places each under the one before: no gaps, nothing
-// fragmented), the directory gets them as they are done, the rest of the file is skipped; then a restart. Nothing runs
-// from the area meanwhile: no module code started at this boot, else 409
+// The MODULES panel: modules ticked, *Apply*. First POST /modules/off: the off mark, a restart without module code.
+// Then POST /modules/apply?names=a,b,c with the modules file (EMC2) of the release: the ticked packages are written one
+// after another into the area from the top down (no gaps, nothing fragmented), the new directory is built in memory
+// and written once at the end, the rest of the file is skipped; then a restart. Nothing runs from the area meanwhile:
+// no module code started at this boot, else 409.
+//
+// The initial image of every chip carries a modules file of the modules on out of the box at the start of the area
+// (the captive portal): a boot with no directory of this head installs them from there by the same Apply
 
-// the modules file: magic, count, then per package name[16], offset, size, image, RAM, second arena, needs[32], pad
+// the modules file: magic, count, then per package name[16], offset, size, image, RAM, IRAM, needs[32], flags
 constexpr uint32_t ModulesFileMagic { 0x32434D45 }; // "EMC2"
 constexpr size_t ModulesFileEntry { 72 };
 constexpr size_t ModulesFileMax { 32 };
 
 // the flags word at the end of an entry of the modules file
-constexpr uint32_t ModuleByteRam { 1 };     // its RAM takes byte access from interrupts: never in a 32-bit only pool
+constexpr uint32_t ModuleByteRam { 1 };     // its statics take byte access from interrupts: never in a 32-bit only pool
 
 struct Apply {
     // the new directory, built here as the packages are written and put into flash once, at the end: an Apply that
     // breaks off leaves the old one (with the off mark of /modules/off), never an empty area
     Directory fresh {};
     uint32_t plan_ram[ModulesFileMax] {};   // RAM offset (RamSecondArena: in the fixed pool) per package of the table
-    uint32_t plan_iram[ModulesFileMax] {};  // IRAM code offset in the fixed pool (ESP8266)
+    uint32_t plan_code[ModulesFileMax] {};  // IRAM code offset in the fixed pool (ESP8266)
     char names[DirectoryEntries][16] {};
     size_t names_count { 0 };
+    bool every { false };                   // every package of the file (the initial image's)
+    uint32_t floor { 0 };                   // no slot under it (the initial image's modules file lies there)
     uint8_t head[8] {};
     uint8_t table[ModulesFileMax * ModulesFileEntry] {};
     uint32_t count { 0 };
     size_t received { 0 };
     size_t current { ModulesFileMax };
+    std::unique_ptr<Upload> upload;
     const char* error { nullptr };
     String done;
 };
 
 Apply* applying { nullptr };
 
-bool applySelected(const char* name) {
-    for (size_t index = 0; index < applying->names_count; ++index) {
-        if (std::strncmp(applying->names[index], name, sizeof(applying->names[index])) == 0) {
-            return true;
-        }
-    }
-
-    return false;
+bool applyRunning() {
+    return applying != nullptr;
 }
 
 void applyEntry(size_t index, char (&name)[16], uint32_t& offset, uint32_t& size) {
@@ -1719,8 +1736,22 @@ uint32_t applyWord(size_t index, size_t at) {
     return out;
 }
 
+bool applySelected(const char* name) {
+    if (applying->every) {
+        return true;
+    }
+
+    for (size_t index = 0; index < applying->names_count; ++index) {
+        if (std::strncmp(applying->names[index], name, sizeof(applying->names[index])) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // the statics of the selected packages, largest first: the IRAM code into the fixed pool from its start (ESP8266),
-// then the RAM into what the fixed pool has left, the rest into the heap block. Every Apply anew: no gaps, nothing kept
+// then the statics into what the fixed pool has left, the rest into the heap block. Every Apply anew: no gaps
 const char* applyPlan() {
     auto& state = *applying;
     arch::Pools pools {};
@@ -1751,14 +1782,15 @@ const char* applyPlan() {
     };
 
     // the flash first: the area is written from empty, every selected module must fit (the directory and its second
-    // copy stay out)
+    // copy stay out, and the initial image's modules file)
     {
         constexpr size_t ImageAt { 24 };
         const auto area = arch::area();
-        const uint32_t room = (area.hi > (area.lo + SectorSize)) ? (area.hi - SectorSize - area.lo) : 0;
+        const uint32_t lo = std::max(area.lo, state.floor);
+        const uint32_t room = (area.hi > (lo + SectorSize)) ? (area.hi - SectorSize - lo) : 0;
         uint32_t flash = 0;
         for (size_t index = 0; index < count; ++index) {
-            flash += arch::slotFor(applyWord(order[index], ImageAt));
+            flash += slotSize(applyWord(order[index], ImageAt));
         }
         if (flash > room) {
             DEBUG_MSG_P(PSTR("[MODULES] Apply: the modules need %u bytes of flash, the area has %u\n"), flash, room);
@@ -1773,15 +1805,15 @@ const char* applyPlan() {
     uint32_t fixed = 0;
     sorted(IramAt);
     for (size_t index = 0; index < count; ++index) {
-        const uint32_t iram = roundUp(applyWord(order[index], IramAt), 4);
-        if (!iram) {
+        const uint32_t code = roundUp(applyWord(order[index], IramAt), 4);
+        if (!code) {
             continue;
         }
-        if (!pools.code_in_fixed || ((fixed + iram) > pools.fixed)) {
+        if (!pools.code_in_fixed || ((fixed + code) > pools.fixed)) {
             return PSTR("not enough IRAM for the module code");
         }
-        state.plan_iram[order[index]] = fixed;
-        fixed += iram;
+        state.plan_code[order[index]] = fixed;
+        fixed += code;
     }
 
     uint32_t heap = 0;
@@ -1811,18 +1843,18 @@ const char* applyPlan() {
 }
 
 void applyRelease() {
-    release();
     delete applying;
     applying = nullptr;
+    owner = nullptr;
 }
 
 // the package just fed to its end: checked, into the directory
 void applyFinish() {
     Entry entry;
-    std::memset(&entry, 0, sizeof(entry));
-    const auto* error = arch::uploadFinish(*upload, entry);
+    auto& up = *applying->upload;
+    const auto* error = packageFinish(up, entry);
     if (!error) {
-        std::memcpy(entry.name, upload->header.name, sizeof(entry.name));
+        std::memcpy(entry.name, up.header.name, sizeof(entry.name));
         entry.name[sizeof(entry.name) - 1] = '\0';
         auto& fresh = applying->fresh;
         if (fresh.count < DirectoryEntries) {
@@ -1841,12 +1873,11 @@ void applyFinish() {
         applying->done += entry.name;
     }
 
-    delete upload;
-    upload = nullptr;
+    applying->upload.reset();
     applying->current = ModulesFileMax;
 }
 
-void applyData(AsyncWebServerRequest* request, const uint8_t* data, size_t len) {
+void applyData(const uint8_t* data, size_t len) {
     auto& state = *applying;
     while (len && !state.error) {
         // the header, then the table of the packages
@@ -1875,10 +1906,9 @@ void applyData(AsyncWebServerRequest* request, const uint8_t* data, size_t len) 
             state.received += part;
             data += part;
             len -= part;
-            // the area anew: the old directory goes, the packages are placed into an empty area
             if ((at + part) == table) {
                 state.error = applyPlan();
-                state.fresh.magic = arch::directoryMagic();
+                state.fresh.magic = DirectoryMagic;
                 state.fresh.count = 0;
             }
             continue;
@@ -1909,21 +1939,21 @@ void applyData(AsyncWebServerRequest* request, const uint8_t* data, size_t len) 
             applyEntry(inside, name, offset, size);
             if (applySelected(name)) {
                 if (state.current != inside) {
-                    upload = arch::uploadNew(request);
-                    if (!upload) {
+                    state.upload = boxed<Upload>();
+                    if (!state.upload) {
                         state.error = PSTR("no memory for the package");
                         break;
                     }
-                    upload->planned = true;
-                    upload->apply_dir = &state.fresh;
-                    upload->planned_ram = state.plan_ram[inside];
-                    upload->planned_iram = state.plan_iram[inside];
+                    state.upload->apply_dir = &state.fresh;
+                    state.upload->flash_floor = state.floor;
+                    state.upload->ram_offset = state.plan_ram[inside];
+                    state.upload->code_offset = state.plan_code[inside];
                     state.current = inside;
                 }
 
-                packageFeed(*upload, data, take);
-                if (upload->error) {
-                    state.error = upload->error;
+                packageFeed(*state.upload, data, take);
+                if (state.upload->error) {
+                    state.error = state.upload->error;
                     break;
                 }
 
@@ -1939,13 +1969,37 @@ void applyData(AsyncWebServerRequest* request, const uint8_t* data, size_t len) 
     }
 }
 
-void onApplyData(AsyncWebServerRequest* request, String, size_t index, uint8_t* bytes, size_t len, bool) {
+// the end: nullptr - every selected package written and the directory with them in flash
+const char* applyEnd(String& missing) {
+    if (applying->error) {
+        return applying->error;
+    }
+
+    for (size_t index = 0; index < applying->names_count; ++index) {
+        const String name(applying->names[index]);
+        if ((String(' ') + applying->done + ' ').indexOf(String(' ') + name + ' ') < 0) {
+            missing += missing.length() ? F(", ") : F("");
+            missing += name;
+        }
+    }
+    if (missing.length()) {
+        return PSTR("not in the modules file or not written");
+    }
+
+    if (!writeDirectory(applying->fresh)) {
+        return PSTR("directory write");
+    }
+
+    return nullptr;
+}
+
+void onApplyData(WebRequest& request, const char*, size_t index, const uint8_t* bytes, size_t len, bool) {
     if (!webAuthenticate(request)) {
         return;
     }
 
     if (!index) {
-        if (applying || upload || arch::otaBusy()) {
+        if (applying || arch::otaBusy()) {
             return;
         }
 
@@ -1953,20 +2007,17 @@ void onApplyData(AsyncWebServerRequest* request, String, size_t index, uint8_t* 
         if (!applying) {
             return;
         }
-        owner = request;
-        request->onDisconnect([request]() {
-            if (owner == request) {
+        owner = &request;
+        auto* self = &request;
+        request.onDisconnect([self]() {
+            if (owner == self) {
                 applyRelease();
             }
         });
 
         // names=a,b,c: a form field before the file (a query string is not in the URI the browser's Digest signs and
         // the server checks), or the query
-        const auto* param = request->getParam(String(F("names")), true);
-        if (!param) {
-            param = request->getParam(String(F("names")));
-        }
-        const String names = param ? param->value() : String();
+        const String names = webParam(request, "names");
         int from = 0;
         while ((from < static_cast<int>(names.length())) && (applying->names_count < DirectoryEntries)) {
             int to = names.indexOf(',', from);
@@ -1988,40 +2039,26 @@ void onApplyData(AsyncWebServerRequest* request, String, size_t index, uint8_t* 
         }
     }
 
-    if (applying && (owner == request)) {
-        applyData(request, bytes, len);
+    if (applying && (owner == &request)) {
+        applyData(const_cast<uint8_t*>(bytes), len);
     }
 }
 
-void onApplyDone(AsyncWebServerRequest* request) {
+void onApplyDone(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
-    if (!applying || (owner != request)) {
-        answer(request, 409, F("ERROR: no apply in this request (another upload, or modules running)"));
+    if (!applying || (owner != &request)) {
+        answer(request, 409, F("ERROR: no apply in this request (another one, or modules running)"));
         return;
     }
 
-    const auto* error = applying->error;
     String missing;
-    if (!error) {
-        for (size_t index = 0; index < applying->names_count; ++index) {
-            const String name(applying->names[index]);
-            if ((String(' ') + applying->done + ' ').indexOf(String(' ') + name + ' ') < 0) {
-                missing += missing.length() ? F(", ") : F("");
-                missing += name;
-            }
-        }
-    }
-
+    const auto* error = applyEnd(missing);
     if (error) {
-        const bool conflict = running;
-        answer(request, conflict ? 409 : 400, String(F("ERROR: ")) + FPSTR(error));
-    } else if (missing.length()) {
-        answer(request, 400, String(F("ERROR: not in the modules file or not written: ")) + missing);
-    } else if (!writeDirectory(applying->fresh)) {
-        answer(request, 500, F("ERROR: directory write"));
+        const int code = running ? 409 : (strcmp_P("directory write", error) == 0) ? 500 : 400;
+        answer(request, code, String(F("ERROR: ")) + FPSTR(error) + (missing.length() ? (String(F(": ")) + missing) : String()));
     } else {
         answer(request, 200, String(F("OK, applied: ")) + (applying->done.length() ? applying->done : String(F("no modules")))
             + F(", restarting"));
@@ -2035,7 +2072,7 @@ void onApplyDone(AsyncWebServerRequest* request) {
 // the first step of an apply: no module code at the next boot (the off mark of the guard, the directory stays), the
 // area free to be rewritten. The Apply writes a new directory without the mark; one that breaks off leaves the old
 // modules off, MODULES.ON (the panel's "Start the modules again") brings them back
-void onModulesOff(AsyncWebServerRequest* request) {
+void onModulesOff(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
@@ -2046,16 +2083,81 @@ void onModulesOff(AsyncWebServerRequest* request) {
     prepareReset(CustomResetReason::Modules);
 }
 
+// the modules the initial image brings (a modules file at the start of the area): installed by the Apply when there is
+// no directory of this head, then a restart (their statics are taken at boot). true - restarting
+bool applyInitial(const Directory& dir, bool valid) {
+    const auto area = arch::area();
+    uint32_t head[2];
+    if (!area.hi || !arch::rawRead(area.lo, head, sizeof(head)) || (head[0] != ModulesFileMagic) || !head[1]
+        || (head[1] > ModulesFileMax))
+    {
+        return false;
+    }
+
+    // a directory with a module of this head: installed already (a module the user removed stays removed)
+    for (size_t index = 0; valid && (index < dir.count); ++index) {
+        Header header;
+        if (readHeader(dir.entries[index], header) && (header.magic == HeaderMagic) && sameHead(header.head_md5)) {
+            return false;
+        }
+    }
+
+    applying = new (std::nothrow) Apply;
+    if (!applying) {
+        return false;
+    }
+    applying->every = true;
+
+    // the file's size: the end of its last package
+    uint32_t size = 8 + (head[1] * ModulesFileEntry);
+    for (uint32_t index = 0; index < head[1]; ++index) {
+        uint32_t row[ModulesFileEntry / 4];
+        if (!arch::rawRead(area.lo + 8 + (index * ModulesFileEntry), row, sizeof(row))) {
+            applyRelease();
+            return false;
+        }
+        size = std::max(size, row[4] + row[5]);
+    }
+    applying->floor = area.lo + roundUp(size, SectorSize);
+
+    alignas(4) uint8_t part[256];
+    for (uint32_t done = 0; (done < size) && !applying->error; done += sizeof(part)) {
+        const uint32_t length = std::min<uint32_t>(sizeof(part), size - done);
+        if (!arch::rawRead(area.lo + done, part, roundUp(length, 4))) {
+            applying->error = PSTR("read");
+            break;
+        }
+        applyData(part, length);
+        yield();
+    }
+
+    String missing;
+    const auto* error = applyEnd(missing);
+    DEBUG_MSG_P(PSTR("[MODULES] The modules of the initial image (%s): %s\n"), applying->done.c_str(),
+        error ? error : PSTR("installed, restarting"));
+    applyRelease();
+
+    // the file goes: the area is the modules' now (and a directory erased later does not bring them back)
+    if (!error) {
+        flashErase(area.lo, roundUp(size, SectorSize));
+        prepareReset(CustomResetReason::Modules);
+        return true;
+    }
+
+    return false;
+}
+
+
 // --- web -----------------------------------------------------------------------------------------------------------
 
-void onStatus(AsyncWebServerRequest* request) {
+void onStatus(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
     auto dir_box = boxed<Directory>();
     if (!dir_box) {
-        request->send(503, String(F("text/plain")), String(F("ERROR: no memory"))); return;
+        request.send(503, "text/plain", "ERROR: no memory"); return;
     }
     auto& dir = *dir_box;
     const bool valid = readDirectory(dir);
@@ -2068,25 +2170,23 @@ void onStatus(AsyncWebServerRequest* request) {
     out += F(ESPURNA_IMAGE);
     out += F("\",\"md5\":\"");
     out += headText();
-    out += F("\",\"list\":\"");
-    out += getSetting(F("webFwUrl"));
-    out += F("\",\"off\":\"");
-    out += offReason();
-    out += F("\",\"modules\":[");
+    out += F("\",\"list\":");
+    jsonString(out, getSetting(F("webFwUrl")).c_str());
+    out += F(",\"off\":");
+    jsonString(out, offReason().c_str());
+    out += F(",\"modules\":[");
     for (size_t index = 0; valid && (index < dir.count); ++index) {
         const auto& entry = dir.entries[index];
         if (index) {
             out += ',';
         }
-        out += F("{\"name\":\"");
-        out += entry.name;
-        out += '"';
+        out += F("{\"name\":");
+        jsonString(out, entry.name);
         jsonField(out, F("size"), entry.size);
         jsonField(out, F("offset"), entry.offset);
         jsonField(out, F("ram"), entry.ram_size);
         jsonField(out, F("heap"), statusOf(entry).heap);
         jsonField(out, F("enabled"), (entry.flags & EntryDisabled) ? 0 : 1);
-        jsonField(out, F("placed"), (entry.flags & EntryUnplaced) ? 0 : 1);
         {
             const auto list = requiresOf(entry);
             out += F(",\"requires\":\"");
@@ -2099,8 +2199,7 @@ void onStatus(AsyncWebServerRequest* request) {
             out += '"';
         }
         out += (entry.ram_offset & RamSecondArena) ? F(",\"ram_in\":\"iram\"") : F(",\"ram_in\":\"dram\"");
-        jsonField(out, F("iram"), arch::entryIram(entry));
-        arch::entryJson(out, entry);
+        jsonField(out, F("iram"), entry.code_size);
         out += F(",\"state\":\"");
         out += stateName(statusOf(entry));
         out += F("\"}");
@@ -2110,7 +2209,7 @@ void onStatus(AsyncWebServerRequest* request) {
     // the meters: Flash from the area's start (the head) to the directory, the arenas
     auto space_box = boxed<Spaces>();
     if (!space_box) {
-        request->send(503, String(F("text/plain")), String(F("ERROR: no memory"))); return;
+        request.send(503, "text/plain", "ERROR: no memory"); return;
     }
     auto& space = *space_box;
     spaces(dir, valid, space);
@@ -2123,123 +2222,112 @@ void onStatus(AsyncWebServerRequest* request) {
     jsonField(out, F("ram_used"), space.ram.hi - space.ram.free());
     jsonField(out, F("ram_max"), space.ram.largest());
     {
-        // the heap the started modules took when they started (their own allocations, not their statics)
+        // the heap the started modules took when they started (their own allocations, not their statics), the IRAM
+        // code of the modules (in the fixed pool)
         uint32_t taken = 0;
-        for (size_t index = 0; valid && (index < dir.count); ++index) {
-            taken += statusOf(dir.entries[index]).heap;
-        }
-        jsonField(out, F("ram_dynamic"), taken);
-
-        // module IRAM code (ESP8266: in the IRAM tail, with the RAM placed there)
         uint32_t code = 0;
         for (size_t index = 0; valid && (index < dir.count); ++index) {
-            if (counted(dir.entries[index], nullptr)) {
-                code += arch::entryIram(dir.entries[index]);
-            }
+            taken += statusOf(dir.entries[index]).heap;
+            code += dir.entries[index].code_size;
         }
+        jsonField(out, F("ram_dynamic"), taken);
         jsonField(out, F("iram_code"), code);
     }
-    jsonField(out, F("iram_arena"), space.iram.hi);
-    jsonField(out, F("iram_used"), space.iram.hi - space.iram.free());
-    jsonField(out, F("iram_max"), space.iram.largest());
-    jsonField(out, F("iram_data"), space.ram_second.hi);
-    jsonField(out, F("iram_data_used"), space.ram_second.hi - space.ram_second.free());
-    jsonField(out, F("iram_data_max"), space.ram_second.largest());
+    // the fixed pool: the code and the statics in it
+    jsonField(out, F("iram_arena"), space.fixed.hi);
+    jsonField(out, F("iram_used"), space.fixed.hi - space.fixed.free());
+    jsonField(out, F("iram_max"), space.fixed.largest());
+    jsonField(out, F("iram_data"), space.fixed.hi);
+    jsonField(out, F("iram_data_used"), space.fixed.hi - space.fixed.free());
+    jsonField(out, F("iram_data_max"), space.fixed.largest());
+    {
+        arch::Pools pools {};
+        arch::pools(pools);
+        if (pools.name) {
+            out += F(",\"pool\":\"");
+            out += pools.name;
+            out += '"';
+        }
+    }
 
     arch::statusJson(out);
-    jsonField(out, F("heap"), arch::freeHeap());
+    jsonField(out, F("heap"), systemFreeHeap());
     jsonField(out, F("heap_boot"), systemInitialFreeHeap());
     jsonField(out, F("oom"), arch::failedAllocations());
-    jsonField(out, F("file"), arch::fileSize());
     out += '}';
 
-    request->send(200, String(F("application/json")), out);
+    webSend(request, 200, "application/json", out);
 }
 
-void onFile(AsyncWebServerRequest* request) {
-    if (!authenticated(request)) {
-        return;
-    }
-
-    if (!arch::fileSize()) {
-        request->send(404, String(F("text/plain")), String(F("ERROR: no modules file in flash")));
-        return;
-    }
-
-    arch::fileSend(request);
-}
-
-void onModulesOn(AsyncWebServerRequest* request) {
+void onModulesOn(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
     modulesOffClear();
-    request->send(200, String(F("text/plain")), String(F("OK, modules on, restarting")));
+    request.send(200, "text/plain", "OK, modules on, restarting");
     prepareReset(CustomResetReason::Modules);
 }
 
 // a module out of the directory; its code keeps running until the restart
-void onRemove(AsyncWebServerRequest* request) {
+void onRemove(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
-    const auto* param = request->getParam(String(F("name")), true);
+    const char* param = request.param("name");
     if (!param) {
-        request->send(400, String(F("text/plain")), String(F("ERROR: no name")));
+        request.send(400, "text/plain", "ERROR: no name");
         return;
     }
 
     const char* error = nullptr;
-    if (!removeEntry(param->value(), error)) {
-        request->send(400, String(F("text/plain")), String(F("ERROR: ")) + FPSTR(error));
+    if (!removeEntry(String(param), error)) {
+        answer(request, 400, String(F("ERROR: ")) + FPSTR(error));
         return;
     }
 
-    request->send(200, String(F("text/plain")), String(F("OK, removed, restart to apply")));
+    request.send(200, "text/plain", "OK, removed, restart to apply");
 }
 
 // POST name=, on=1|0
-void onEnable(AsyncWebServerRequest* request) {
+void onEnable(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
-    const auto* name = request->getParam(String(F("name")), true);
-    const auto* on = request->getParam(String(F("on")), true);
+    const char* name = request.param("name");
+    const char* on = request.param("on");
     if (!name || !on) {
-        request->send(400, String(F("text/plain")), String(F("ERROR: name and on")));
+        request.send(400, "text/plain", "ERROR: name and on");
         return;
     }
 
     String text;
-    const auto* error = setEnabled(name->value(), on->value().equals(F("1")), text);
+    const auto* error = setEnabled(String(name), strcmp(on, "1") == 0, text);
     if (error) {
-        request->send(400, String(F("text/plain")), String(F("ERROR: ")) + FPSTR(error));
+        answer(request, 400, String(F("ERROR: ")) + FPSTR(error));
         return;
     }
 
-    request->send(200, String(F("text/plain")), text);
+    answer(request, 200, text);
 }
 
-void onRestart(AsyncWebServerRequest* request) {
+void onRestart(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
-    request->send(200, String(F("text/plain")), String(F("OK")));
+    request.send(200, "text/plain", "OK");
     prepareReset(CustomResetReason::Modules);
 }
 
-void onPage(AsyncWebServerRequest* request) {
+void onPage(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
-    if (!arch::page(request)) {
-        request->send(404, String(F("text/plain")), String(F("no modules page in this image")));
-    }
+    headPage(request);
 }
 
 // --- terminal ------------------------------------------------------------------------------------------------------
@@ -2305,30 +2393,26 @@ void commandList(::terminal::CommandContext&& ctx) {
         headText().c_str(), area.lo, area.hi, area.hi);
     arch::listHead(ctx.output);
 
-    Spaces space;
-    spaces(dir, valid, space);
-    ctx.output.printf_P(PSTR("free for modules: flash %u (largest %u), RAM %u (%u)"),
-        space.flash.free(), space.flash.largest(), space.ram.free(), space.ram.largest());
-    if (space.iram.hi || space.ram_second.hi) {
-        ctx.output.printf_P(PSTR(", IRAM %u (%u), RAM in the second arena %u"),
-            space.iram.free(), space.iram.largest(), space.ram_second.free());
+    auto space = boxed<Spaces>();
+    if (!space) {
+        terminalError(ctx, F("no memory"));
+        return;
     }
-    ctx.output.println(F(" bytes"));
+    spaces(dir, valid, *space);
+    ctx.output.printf_P(PSTR("free for modules: flash %u (largest %u), heap block %u of %u, fixed pool %u of %u bytes\n"),
+        space->flash.free(), space->flash.largest(), space->ram.hi - space->ram.free(), space->ram.hi,
+        space->fixed.hi - space->fixed.free(), space->fixed.hi);
 
     if (valid) {
         for (size_t index = 0; index < dir.count; ++index) {
             const auto& entry = dir.entries[index];
             const auto status = statusOf(entry);
-            if (entry.flags & EntryUnplaced) {
-                ctx.output.printf_P(PSTR("%-15s 0x%05x %6u bytes, RAM %u not placed"),
-                    entry.name, entry.offset, entry.size, entry.ram_size);
-            } else {
-                ctx.output.printf_P(PSTR("%-15s 0x%05x %6u bytes, RAM %u @%u"),
-                    entry.name, entry.offset, entry.size, entry.ram_size, entry.ram_offset & ~RamSecondArena);
-            }
-            arch::listEntry(ctx.output, entry);
-            ctx.output.printf_P(PSTR(": %s%s%s\n"), String(stateName(status)).c_str(),
-                status.reason ? " - " : "", status.reason ? String(FPSTR(status.reason)).c_str() : "");
+            ctx.output.printf_P(PSTR("%-15s 0x%06x %6u bytes, RAM %u @%u%s, code %u, bases %08x %08x %08x: %s%s%s\n"),
+                entry.name, entry.offset, entry.size, entry.ram_size, entry.ram_offset & ~RamSecondArena,
+                (entry.ram_offset & RamSecondArena) ? " (fixed pool)" : "", entry.code_size,
+                entry.bases[BaseFlash], entry.bases[BaseCode], entry.bases[BaseRam],
+                String(stateName(status)).c_str(), status.reason ? " - " : "",
+                status.reason ? String(FPSTR(status.reason)).c_str() : "");
         }
     } else {
         ctx.output.println(F("no modules"));
@@ -2379,9 +2463,9 @@ void guardArm() {
         return;
     }
     guard_armed = true;
-    arch::guardState().running = 1;
+    guardMark();
     espurnaRegisterLoop(guardLoop);
-    arch::guardTimer();
+    guardTimer();
 }
 
 } // namespace
@@ -2528,7 +2612,7 @@ void modulesBootSetup() {
     // "Start the modules again" or an Apply brings them back
     // The count starts anew with the modules off: two more crashes without them before the unstable mode, else the
     // next crash went straight there and the step without modules never came (ESP32 10.0.5.66, 11-11)
-    if (arch::crashRestart() && (systemStabilityCounter() >= SYSTEM_CHECK_MAX)
+    if (crashRestart() && (systemStabilityCounter() >= SYSTEM_CHECK_MAX)
         && modulesOffMark("the board crashed at boot again and again"))
     {
         systemForceStable();
@@ -2549,17 +2633,15 @@ void modulesBootSetup() {
 void modulesSetup() {
     using namespace espurna::modules;
 
-    webServer().on("/modules/upload", HTTP_POST, onUploadDone, onUploadData);
-    webServer().on("/modules/apply", HTTP_POST, onApplyDone, onApplyData);
-    webServer().on("/modules/off", HTTP_POST, onModulesOff);
-    webServer().on("/modules/restart", HTTP_POST, onRestart);
-    webServer().on("/modules/remove", HTTP_POST, onRemove);
-    webServer().on("/modules/on", HTTP_POST, onModulesOn);
-    webServer().on("/modules/enable", HTTP_POST, onEnable);
-    espurnaRegisterLoop(pendingLoop);
-    webServer().on("/modules/file", HTTP_GET, onFile);
-    webServer().on("/modules.html", HTTP_GET, onPage);
-    webServer().on("/modules", HTTP_GET, onStatus);
+    auto& server = webServer();
+    server.on("/modules/apply", WebMethod::Post, onApplyDone, onApplyData);
+    server.on("/modules/off", WebMethod::Post, onModulesOff);
+    server.on("/modules/restart", WebMethod::Post, onRestart);
+    server.on("/modules/remove", WebMethod::Post, onRemove);
+    server.on("/modules/on", WebMethod::Post, onModulesOn);
+    server.on("/modules/enable", WebMethod::Post, onEnable);
+    server.on("/modules.html", WebMethod::Get, onPage);
+    server.on("/modules", WebMethod::Get, onStatus);
 
     // the MODULES menu entry of the WebUI module
     wsRegister().onVisible([](JsonObject& root) {
@@ -2567,9 +2649,8 @@ void modulesSetup() {
     });
 
     Directory dir;
-    bool valid = readDirectory(dir);
-    arch::imageModules(dir, valid);
-    if (!valid) {
+    const bool valid = readDirectory(dir);
+    if (applyInitial(dir, valid) || !valid) {
         return;
     }
 
@@ -2581,36 +2662,31 @@ void modulesSetup() {
         return;
     }
 
-    arch::beforeStart(dir, valid);
+    // the bases of a module moved since the Apply (the maps of the flash, the heap block): rewritten for this boot
+    {
+        arch::Pools pools {};
+        arch::pools(pools);
+        bool changed = false;
+        for (size_t index = 0; index < dir.count; ++index) {
+            auto& entry = dir.entries[index];
+            uint32_t now[3];
+            basesNow(entry, pools, now);
+            if ((entry.flags & EntryDisabled) || (std::memcmp(now, entry.bases, sizeof(now)) == 0)) {
+                continue;
+            }
 
-    // switched off: their RAM back first (nothing runs yet), the ones placed below may take it. Beken 10.0.5.139
-    // 2026-11-09: mqtt switched off, restart, matter switched on still found its RAM taken by mqtt
-    bool given = false;
-    for (size_t index = 0; index < dir.count; ++index) {
-        auto& entry = dir.entries[index];
-        if (entry.flags & EntryDisabled) {
-            given = giveBack(entry) || given;
-        }
-    }
-    if (given && !writeDirectory(dir)) {
-        DEBUG_MSG_P(PSTR("[MODULES] Directory write failed\n"));
-    }
+            Header header;
+            if (checkImage(entry, header)) {
+                continue;
+            }
 
-    // switched on, RAM not placed (the modules on by default of the full image, the ones the head's image brings): placed
-    // first. Their slot holds the image only then (the ones of the head's tail: nothing yet), and the order below reads
-    // its header (priority, what it needs). One that cannot be placed stays out (Broken, why), the start skips it
-    bool unplaced[DirectoryEntries] {};
-    for (size_t index = 0; index < dir.count; ++index) {
-        auto& entry = dir.entries[index];
-        if ((entry.flags & EntryDisabled) || !(entry.flags & EntryUnplaced)) {
-            continue;
+            const auto* error = relocateEntry(entry, now);
+            DEBUG_MSG_P(PSTR("[MODULES] %s relocated for this boot%s%s\n"), entry.name,
+                error ? ": " : "", error ? error : "");
+            changed = changed || !error;
         }
-        const auto* error = placeNow(dir, entry);
-        if (error) {
-            unplaced[index] = true;
-            status[index] = Status{State::Broken, error, entry.offset, entry.crc32};
-            std::memcpy(status[index].name, entry.name, sizeof(status[index].name));
-            DEBUG_MSG_P(PSTR("[MODULES] %s not placed: %s\n"), entry.name, error);
+        if (changed && !writeDirectory(dir)) {
+            DEBUG_MSG_P(PSTR("[MODULES] Directory write failed\n"));
         }
     }
 
@@ -2630,17 +2706,11 @@ void modulesSetup() {
     }
 
     bool done[DirectoryEntries] {};
-    bool changed = false;
     for (size_t index = 0; index < dir.count; ++index) {
-        auto& entry = dir.entries[index];
+        const auto& entry = dir.entries[index];
         if (entry.flags & EntryDisabled) {
-            // off: its RAM back to the arenas (still placed when it was switched off while it ran)
-            changed = giveBack(entry) || changed;
             status[index] = Status{State::Disabled, nullptr, entry.offset, entry.crc32};
             std::memcpy(status[index].name, entry.name, sizeof(status[index].name));
-            done[index] = true;
-        } else if (unplaced[index]) {
-            // not placed above: Broken with its reason already
             done[index] = true;
         } else {
             status[index] = Status{};
@@ -2665,28 +2735,11 @@ void modulesSetup() {
             }
             done[index] = true;
             started_any = true;
-            auto& target = dir.entries[index];
-            if (changed) {
-                writeDirectory(dir);
-                changed = false;
-            }
-            const auto* error = placeNow(dir, target);
-            if (error) {
-                status[index] = Status{State::Broken, error, target.offset, target.crc32};
-                std::memcpy(status[index].name, target.name, sizeof(status[index].name));
-                DEBUG_MSG_P(PSTR("[MODULES] %s not started: %s\n"), target.name, error);
-                continue;
-            }
-            startEntry(target);
+            startEntry(dir.entries[index]);
         }
         if (!started_any) {
             break;
         }
-    }
-
-    // RAM given back by the modules that are off
-    if (changed) {
-        writeDirectory(dir);
     }
 
     // what is left needs a module that is not installed, off, or did not start
@@ -2722,7 +2775,7 @@ bool modulesEnabled(const char* name) {
     return false;
 }
 
-void modulesOnHome(AsyncWebServerRequest* request) {
+void modulesOnHome(WebRequest& request) {
     using namespace espurna::modules;
     if (!authenticated(request)) {
         return;
@@ -2730,20 +2783,16 @@ void modulesOnHome(AsyncWebServerRequest* request) {
 
     for (size_t index = 0; index < data_count; ++index) {
         if (std::strcmp(data[index].name, "webui") == 0) {
-            auto* response = request->beginResponse_P(200, String(F("text/html")), data[index].data, data[index].size);
-            response->addHeader(String(F("Content-Encoding")), String(F("gzip")));
-            request->send(response);
+            sendFlash(request, reinterpret_cast<const uint8_t*>(data[index].data), data[index].size, true);
             return;
         }
     }
 
-    if (!arch::page(request)) {
-        request->send(404, String(F("text/plain")), String(F("no WebUI module")));
-    }
+    headPage(request);
 }
 
 void modulesForget() {
     espurna::modules::eraseDirectory();
 }
 
-#endif // MODULES_SUPPORT && MODULES_CORE
+#endif // MODULES_SUPPORT

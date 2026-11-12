@@ -1,4 +1,4 @@
-import { safeHref } from './net.mjs';
+import { fetchOk, safeHref } from './net.mjs';
 import { listenAppConnected } from './connection.mjs';
 import { applyHardware, HARDWARE_KEYS, PIN_KEYS } from './applyHardware.mjs';
 import { notifyError } from './notify.mjs';
@@ -426,7 +426,7 @@ export function githubTemplates(entries, arch, mcu) {
                 name: entry.name,
                 model: entry.model ?? '',
                 category: entry.category ?? '',
-                link: entry.link ?? '',
+                link: safeHref(entry.link),
                 settings,
                 names: names(sysManufacturer ?? '', sysDevice ?? ''),
                 image: entry.image ?? '',
@@ -667,12 +667,7 @@ async function loadRemote({url, load}) {
     }
 
     try {
-        const response = await fetch(url);
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        const templates = await load(response);
+        const templates = await load(await fetchOk(url));
         state.cache.set(url, templates);
         state.failed.delete(url);
         return templates;
@@ -800,14 +795,7 @@ async function exportText() {
         throw new Error('not connected');
     }
 
-    const response = await fetch(state.config.href, {
-        credentials: 'same-origin',
-        cache: 'no-store',
-    });
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-    }
-
+    const response = await fetchOk(state.config.href, {credentials: 'same-origin'});
     const entry = exportTemplate(parseSettingsBackup(await response.text()), {
         arch: state.arch,
         mcu: state.mcu,

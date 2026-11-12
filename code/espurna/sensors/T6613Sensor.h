@@ -152,4 +152,3 @@ class T6613Sensor : public BaseSensor {
 };
 
 #endif // SENSOR_SUPPORT && T6613_SUPPORT
-

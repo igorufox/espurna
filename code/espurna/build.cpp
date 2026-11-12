@@ -141,9 +141,6 @@ alignas(4) static constexpr char Modules[] PROGMEM_STRING_ATTR =
 #if OTA_WEB_SUPPORT
     "OTA_WEB "
 #endif
-#if (OTA_CLIENT != OTA_CLIENT_NONE)
-    "OTA_CLIENT "
-#endif
 #if PROMETHEUS_SUPPORT
     "METRICS "
 #endif

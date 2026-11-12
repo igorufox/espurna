@@ -50,3 +50,8 @@ bool uartClaim(size_t index, const __FlashStringHelper* owner);
 // Owner of the port, nullptr when it is free
 const __FlashStringHelper* uartClaimed(size_t index);
 
+// The port of these settings opened now when it is not yet (a module that set the uartTx<n> / uartRx<n> keys after
+// the boot), and another speed for an open hardware port (false: none there, or a software port)
+espurna::driver::uart::PortPtr uartOpen(size_t index);
+bool uartBaud(size_t index, uint32_t value);
+

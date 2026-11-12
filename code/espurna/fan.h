@@ -28,4 +28,3 @@ void fanSpeed(FanSpeed);
 FanSpeed fanSpeed();
 
 void fanSetup();
-

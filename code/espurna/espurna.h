@@ -37,7 +37,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "uart.h"
 #include "utils.h"
 #include "espurna_network.h"
-#include "wifi_orch.h"
+#include "espurna_wifi.h"
 
 #include <functional>
 #include <algorithm>

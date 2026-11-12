@@ -45,6 +45,25 @@ String image();
 String core_version();
 String core_revision();
 
+// A long blocking call inside of loop() (e.g. the garland strip output), the watchdog that watches loop()
+// must not fire. esp8266: the soft WDT is off in between, the others feed the loop watchdog once it is done
+void wdt_pause();
+void wdt_resume();
+
+// Defaults of the low heap guard of the web server and telnet (web_guard.cpp, settings webGuardHeap, webGuardBlock,
+// webGuardLwip, webGuardConns), 0 = not checked
+struct WebGuard {
+    uint32_t heap;
+    uint32_t block;
+    uint32_t lwip;
+    uint32_t conns;
+};
+
+WebGuard web_guard();
+
+// the SPI clock divider of the RFM69 radio (rfm69.cpp, the select() of the RFM69 library): the chip's SPI speed
+uint32_t rfm69_spi_divider();
+
 // IPv4 part of the lwIP address
 IPAddress address(const ip_addr_t* addr);
 

@@ -27,7 +27,7 @@ Included before hardware.h / general.h: their #ifndef defaults do not apply to w
    The chip's ini adds its own objects to a module (custom_modules: a line of the same name, its objects go first),
    its own modules (a line of a new name) and leaves out the modules it does not build (custom_modules_skip).
 
-sensors | sensor.cpp.o module_sensors.cpp.o | i2c.cpp.o driver_onewire.cpp.o uart.cpp.o | magnitudeCount magnitudeInfo magnitudeTypeTopic magnitudeUnitsName sensorReady sensorWebSocketMagnitudes sensorOnMagnitudeRead sensorOnMagnitudeReport magnitudeValue magnitudeReportValue magnitudeReadValue magnitudeType magnitudeIndex magnitudeTopic
+sensors | sensor.cpp.o module_sensors.cpp.o | i2c.cpp.o driver_onewire.cpp.o | magnitudeCount magnitudeInfo magnitudeTypeTopic magnitudeUnitsName sensorReady sensorWebSocketMagnitudes sensorOnMagnitudeRead sensorOnMagnitudeReport magnitudeValue magnitudeReportValue magnitudeReadValue magnitudeType magnitudeIndex magnitudeTopic
 scheduler | scheduler.cpp.o module_scheduler.cpp.o | |
 alexa | alexa.cpp.o module_alexa.cpp.o | | alexaPause
 mdns | mdns.cpp.o module_mdns.cpp.o | | mdnsRunning mdnsServiceQuery
@@ -38,15 +38,22 @@ thingspeak | thingspeak.cpp.o module_thingspeak.cpp.o | | tspkEnqueueMagnitude
 light | light.cpp.o module_light.cpp.o | pwm.cpp.o | lightBlue lightBrightness lightBrightnessPercent lightChannel lightChannels lightColdWhite lightColor lightGreen lightHasColdWhite lightHasColor lightHasWarmWhite lightHasWhite lightHs lightHsv lightMiredsRange lightOnReport lightRed lightRgb lightState lightTemperature lightTransitionStep lightTransitionTime lightUpdate lightUseRGB lightWarmWhite
 rf | rfbridge.cpp.o module_rf.cpp.o | |
 matter | matter.cpp.o module_matter.cpp.o | |
-nspanel | nspanel.cpp.o module_nspanel.cpp.o | |
+nspanel | nspanel.cpp.o nspanel_config.cpp.o nspanel_storage.cpp.o nspanel_net.cpp.o nspanel_link.cpp.o nspanel_flash.cpp.o nspanel_web.cpp.o nspanel_lovelace.cpp.o nspanel_ohpanel.cpp.o module_nspanel.cpp.o | | | uart tls
+uart | uart.cpp.o module_uart.cpp.o | | uartPort uartClaim uartClaimed uartOnClaim uartOpen uartBaud
+tls | module_tls.cpp.o | |
 captive | captive.cpp.o module_captive.cpp.o | |
+test | module_test.cpp.o | |
 
 ESPURNA_MODULES */
 
-// Modules on out of the box (names, space separated): the head image carries them switched on, the full image places
-// them switched on; everything else is off until the user switches it on. Read by the image scripts of every chip
-// (scripts/<chip>_full_image.py, a regex on this line)
+// Modules on out of the box (names, space separated): the initial image of every chip carries them as a modules file
+// at the start of the module area, the first boot installs them by the Apply; everything else comes by the Apply from
+// the .ota. Read by scripts/module_initial_image.py (a regex on this line)
 #define MODULES_ON_BY_DEFAULT       "captive"
+
+#ifndef UART_MODULE
+#define UART_MODULE                 0
+#endif
 
 #ifndef MODULE_BUILD
 #define MODULE_BUILD                0
@@ -61,6 +68,10 @@ ESPURNA_MODULES */
 
 #undef MQTT_MODULE
 #define MQTT_MODULE                 0
+
+#undef UART_MODULE
+#define UART_MODULE                 0
+#define UART_SUPPORT                1
 
 #define MQTT_SUPPORT                1
 #define MDNS_SERVER_SUPPORT         1
@@ -111,6 +122,11 @@ ESPURNA_MODULES */
 // MQTT: forwarders only, the client is the mqtt module
 #define MQTT_SUPPORT                1
 #define MQTT_MODULE                 1
+
+// UART: forwarders only, the ports are the uart module (the serial log, the relays of a UART board and the modules
+// that need it take the port when it starts)
+#define UART_SUPPORT                1
+#define UART_MODULE                 1
 
 // modules
 #define MDNS_SERVER_SUPPORT         0

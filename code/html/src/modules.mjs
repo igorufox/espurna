@@ -1,12 +1,14 @@
-// MODULES panel: the parts of the ESP8266 1 MB firmware that are added to the free flash behind the head
-// (docs/modules.md). The board answers /modules with what it has; the modules themselves come from the modules
-// file of the running release (espurna-esp8266-1m-modules.bin, from the disk or from the release list). Switching a
-// module on uploads its package to /modules/upload, off: /modules/remove. Both apply at the next restart.
+// MODULES panel, every chip: the parts of the firmware in the free flash behind the head (docs/modules.md). The board
+// answers /modules with what it has; the modules themselves come from the install image (.ota) of the release (from
+// the disk or from the release list). Nothing starts or stops while the board runs: tick, then Apply (install.mjs,
+// the same install as the firmware panel's: the head of the image first when the board runs another head build, then
+// the ticked modules, restarts). Only switching off goes without the image: flag off, out of the directory, restart.
 // The head has its own small page with the same switches (/modules.html), it works without this WebUI.
 
-import { fetchJson, post as netPost, wait } from './net.mjs';
+import { fetchBytes, fetchJson, post as netPost, wait } from './net.mjs';
+import { installImage, modulesFileOf, modulesHeadId, names, parseContainer, runningNames, waitModules } from './install.mjs';
 import { listenAppConnected } from './connection.mjs';
-import { FIRMWARE_URL, modulesFileUrl } from './fwinstall.mjs';
+import { FIRMWARE_URL, installFileOf } from './fwinstall.mjs';
 import { pageReloadIn, styleInject } from './core.mjs';
 
 // <link> stylesheets are not stripped per-module by the build, keep the rules here
@@ -143,83 +145,19 @@ export function groupOf(name) {
 // From this share on a meter is yellow: everything is taken, but the board still lives
 export const TIGHT = 0.85;
 const SECTOR = 4096;
-const CONTAINER_MAGIC = 0x32434d45; // "EMC2"
-const CONTAINER_ENTRY = 72;
-const FULL_MODULES = 0x100000;
-
-// the install image espurna-<chip>.ota (scripts/module_ota.py): "EOT1", count, entries of kind, name[16], offset, size,
-// crc32; kind 1 a head, 2 the modules file
-const OTA_MAGIC = 0x31544f45; // "EOT1"
-const OTA_ENTRY = 32;
-export const OTA_HEAD = 1;
-export const OTA_MODULES = 2;
-
-/**
- * The parts of an install image
- * @param {ArrayBuffer} buffer
- * @returns {{kind: number, name: string, data: Uint8Array}[] | null} null: not an install image
- */
-export function otaParts(buffer) {
-    const view = new DataView(buffer);
-    if ((buffer.byteLength < 8) || (view.getUint32(0, true) !== OTA_MAGIC)) {
-        return null;
-    }
-
-    const count = view.getUint32(4, true);
-    const out = [];
-    for (let index = 0; index < count; ++index) {
-        const at = 8 + (OTA_ENTRY * index);
-        if (at + OTA_ENTRY > buffer.byteLength) {
-            throw new Error("the install image is cut short");
-        }
-
-        const offset = view.getUint32(at + 20, true);
-        const size = view.getUint32(at + 24, true);
-        if (offset + size > buffer.byteLength) {
-            throw new Error("the install image is cut short");
-        }
-
-        out.push({
-            kind: view.getUint32(at, true),
-            name: text(view, at + 4, 16),
-            data: new Uint8Array(buffer, offset, size),
-        });
-    }
-
-    return out;
-}
-
-/**
- * The modules file (EMC2) out of an install image, or the buffer as it is
- * @param {ArrayBuffer} buffer
- * @returns {ArrayBuffer}
- */
-export function modulesFileOf(buffer) {
-    const parts = otaParts(buffer);
-    if (!parts) {
-        return buffer;
-    }
-
-    const modules = parts.find((part) => part.kind === OTA_MODULES);
-    if (!modules) {
-        throw new Error("the install image has no modules file");
-    }
-
-    return modules.data.slice().buffer;
-}
 
 /** @typedef {{name: string, size: number, offset: number, ram: number, ram_in: string, iram: number, state: string, enabled?: number, requires?: string}} Installed */
-/** @typedef {{image: number, ram: number, iram: number, requires: string[], data: Uint8Array}} Package */
+/** @typedef {import('./install.mjs').Package} Package */
 
 /**
  * @typedef {{
- *   version: string, image: string, list: string, off: string, modules: Installed[],
+ *   version: string, image: string, md5?: string, list: string, off: string, modules: Installed[],
  *   area: number, head: number, free: number, free_max: number,
  *   ram_arena: number, ram_used: number, ram_max: number,
  *   iram_arena: number, iram_used: number, iram_max: number,
  *   iram_data: number, iram_data_used: number, iram_data_max: number,
  *   ram_dynamic?: number, pool?: string, iram_code?: number,
- *   heap: number, heap_boot: number, chip?: number, file?: number,
+ *   heap: number, heap_boot: number, chip?: number, oom?: number,
  * }} Status
  */
 
@@ -241,33 +179,6 @@ export function sizeText(size) {
     }
 
     return `${(size / 1024).toFixed(1)} KB`;
-}
-
-/**
- * @param {DataView} view
- * @param {number} at
- * @param {number} size
- * @returns {string} the bytes up to the first 0
- */
-function text(view, at, size) {
-    let out = "";
-    for (let offset = 0; offset < size; ++offset) {
-        const code = view.getUint8(at + offset);
-        if (!code) {
-            break;
-        }
-        out += String.fromCharCode(code);
-    }
-
-    return out;
-}
-
-/**
- * @param {string} list comma separated
- * @returns {string[]}
- */
-export function names(list) {
-    return list.split(",").map((x) => x.trim()).filter((x) => x.length > 0);
 }
 
 /**
@@ -433,55 +344,6 @@ export function dependentsOf(name, status, packages, onlyOn) {
 }
 
 /**
- * The modules file (EMC2): magic, count, 72-byte entries (name16, offset, size, image, ram, iram, requires32,
- * 4 reserved), then the packages
- * @param {ArrayBuffer} buffer
- * @returns {Map<string, Package>}
- */
-export function parseContainer(buffer) {
-    const view = new DataView(buffer);
-
-    // the full image (espurna-esp8266-1m-full.bin): an ESP image at 0x0, the modules file behind its first 1 MB
-    let base = 0;
-    if ((buffer.byteLength > FULL_MODULES + 8) && (view.getUint8(0) === 0xE9)
-        && (view.getUint32(FULL_MODULES, true) === CONTAINER_MAGIC))
-    {
-        base = FULL_MODULES;
-    }
-
-    if ((buffer.byteLength < base + 8) || (view.getUint32(base, true) !== CONTAINER_MAGIC)) {
-        throw new Error("not a modules file (or the full image)");
-    }
-
-    const out = new Map();
-    const count = view.getUint32(base + 4, true);
-    for (let index = 0; index < count; ++index) {
-        const at = base + 8 + (CONTAINER_ENTRY * index);
-        if (at + CONTAINER_ENTRY > buffer.byteLength) {
-            throw new Error("the modules file is cut short");
-        }
-
-        const name = text(view, at, 16);
-
-        const offset = base + view.getUint32(at + 16, true);
-        const size = view.getUint32(at + 20, true);
-        if (offset + size > buffer.byteLength) {
-            throw new Error(`${name}: the modules file is cut short`);
-        }
-
-        out.set(name, {
-            image: view.getUint32(at + 24, true),
-            ram: view.getUint32(at + 28, true),
-            iram: view.getUint32(at + 32, true),
-            requires: names(text(view, at + 36, 32)),
-            data: new Uint8Array(buffer, offset, size),
-        });
-    }
-
-    return out;
-}
-
-/**
  * @typedef {{
  *   name: string, installed: Installed | null, package: Package | null,
  *   flash: number, ram: number, iram: number, ramIn: string,
@@ -641,7 +503,9 @@ const state = {
     status: null,
     /** @type {Map<string, Package>} */
     packages: new Map(),
-    /** @type {ArrayBuffer | null} the modules file the packages come from: *Apply* sends it to the board whole */
+    /** @type {ArrayBuffer | null} the install image (.ota) or the modules file the packages come from: *Apply* installs it */
+    image: null,
+    /** @type {ArrayBuffer | null} the modules file of it */
     file: null,
     /** @type {Set<string> | null} the ticked modules; null - as the board runs them */
     selected: null,
@@ -712,9 +576,6 @@ async function load() {
 
             state.status = /** @type {Status} */(JSON.parse(text));
             draw();
-            if (state.status.file && !state.packages.size) {
-                await fromBoard();
-            }
             return;
         } catch (error) {
             last = `${error}`;
@@ -722,19 +583,6 @@ async function load() {
     }
 
     throw new Error(`the board did not answer /modules (${last || "empty"}), low on memory? Press Refresh`);
-}
-
-// 4 MB boards flashed with the full image carry the modules file at 1 MB: no file to pick
-async function fromBoard() {
-    const response = await fetch(url("modules/file"), {cache: "no-store", credentials: "same-origin"});
-    if (!response.ok) {
-        return;
-    }
-
-    state.file = await response.arrayBuffer();
-    state.packages = parseContainer(state.file);
-    message(`Modules file: on this board (${[...state.packages.keys()].join(", ")})`);
-    draw();
 }
 
 function loadAndShow() {
@@ -834,7 +682,7 @@ function chip(text, short = false) {
 function cardElement(status, row) {
     const removed = state.removed.has(row.name);
     const installed = row.installed;
-    // installed and switched on; an installed module switched off stays in flash (on again: no upload, no restart)
+    // installed and switched on; an installed module switched off stays in flash (on again: the Apply, a restart)
     const on = !!installed && (installed.enabled !== 0);
     const offRunning = !!installed && !on && (installed.state === "running");
 
@@ -932,7 +780,7 @@ function cardElement(status, row) {
     }
 
     if (row.ram && status.iram_data) {
-        sizes.append(chip(on ? `RAM in ${(row.ramIn === "iram") ? (status.pool ?? "IRAM") : "the heap"}` : "RAM placed by Apply"));
+        sizes.append(chip(on ? `RAM in ${(row.ramIn === "iram") ? (status.pool ?? "IRAM") : "the heap"}` : "the Apply picks its RAM"));
     }
 
     card.append(head, desc, sizes);
@@ -1035,9 +883,12 @@ function draw() {
         if (text) {
             const adds = pending.some((x) => x.startsWith("+"));
             const keeps = selection(status).size > 0;
+            const headId = state.file ? modulesHeadId(state.file) : "";
+            const newHead = !!(status.md5 && headId && (headId !== status.md5));
             text.textContent = (state.file || !keeps)
                 ? `${pending.join(", ")}: Apply writes the ticked modules anew, packed, and restarts the board`
                     + " (twice: without modules, then with them). This frees the flash of the modules switched off."
+                    + (newHead ? " The file is for another head build: Apply puts its head on first (one more restart)." : "")
                 : adds
                     ? `${pending.join(", ")}: adding a module needs the install image (.ota): pick it below.`
                     : `${pending.join(", ")}: Apply switches them off and restarts the board, no file needed.`
@@ -1064,7 +915,7 @@ function selection(status) {
  * @returns {Set<string>}
  */
 export function runningSet(status) {
-    return new Set(status.modules.filter((x) => x.enabled !== 0).map((x) => x.name));
+    return new Set(runningNames(status));
 }
 
 /**
@@ -1079,28 +930,6 @@ function changes(status) {
         ...[...ticked].filter((name) => !now.has(name)).map((name) => `+${name}`),
         ...[...now].filter((name) => !ticked.has(name)).map((name) => `-${name}`),
     ];
-}
-
-/**
- * Waits until the board answers /modules again (it restarted)
- * @param {number} timeout ms
- */
-async function waitBoard(timeout = 90000) {
-    const start = Date.now();
-    await wait(4000);
-    while ((Date.now() - start) < timeout) {
-        try {
-            const response = await fetch(url("modules"), {cache: "no-store", credentials: "same-origin"});
-            if (response.ok) {
-                return /** @type {Status} */(await response.json());
-            }
-        } catch {
-            // restarting
-        }
-        await wait(2000);
-    }
-
-    throw new Error(`the board did not come back in ${Math.round(timeout / 1000)} s`);
 }
 
 let applying = false;
@@ -1161,34 +990,6 @@ function dialogHide() {
 }
 
 /**
- * A form POST with the upload progress (fetch has none)
- * @param {string} path
- * @param {FormData} body
- * @param {(fraction: number) => void} progress
- * @returns {Promise<string>}
- */
-function postWithProgress(path, body, progress) {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", path);
-        xhr.upload.addEventListener("progress", (event) => {
-            if (event.lengthComputable) {
-                progress(event.loaded / event.total);
-            }
-        });
-        xhr.addEventListener("load", () => {
-            if ((xhr.status >= 200) && (xhr.status < 300)) {
-                resolve(xhr.responseText);
-            } else {
-                reject(new Error(xhr.responseText || `${xhr.status}`));
-            }
-        });
-        xhr.addEventListener("error", () => reject(new Error("the upload broke off")));
-        xhr.send(body);
-    });
-}
-
-/**
  * An Apply runs: the page waits for the restarts itself (index.mjs: no reload question on the closed socket)
  * @returns {boolean}
  */
@@ -1197,8 +998,8 @@ export function modulesApplyRunning() {
 }
 
 /**
- * *Apply*: the board restarts without module code, then gets the modules file with the ticked names, writes them
- * into the empty area one after another and restarts with them
+ * *Apply*: the install image (install.mjs installImage, as the firmware panel): its head first when the board runs
+ * another head build, then the board restarts without modules, writes the ticked ones packed and restarts with them
  */
 async function applyNow() {
     applying = true;
@@ -1227,7 +1028,7 @@ async function applySteps() {
     const running = runningSet(status);
     const removed = [...running].filter((name) => !selection(status).has(name));
     const added = names.filter((name) => !running.has(name));
-    if (!state.file && names.length && !added.length && removed.length) {
+    if (!state.image && names.length && !added.length && removed.length) {
         state.busy = true;
         draw();
         for (const name of removed) {
@@ -1243,35 +1044,30 @@ async function applySteps() {
         }
         message("Restarting...");
         await post("modules/restart", new FormData());
-        await waitBoard();
+        await waitModules(url("./"));
         state.selected = null;
         message(`Switched off: ${removed.join(", ")}. Their flash is a gap until an Apply with the install image (.ota)`);
         return;
     }
 
-    if (names.length && !state.file) {
-        throw new Error("pick the install image (.ota) or the modules file first, or take it From GitHub");
+    if (names.length && !state.image) {
+        throw new Error("pick the install image (.ota) first, or take it From GitHub");
     }
 
     state.busy = true;
     draw();
 
-    message("Restarting without modules...");
-    await post("modules/off", new FormData());
-    await waitBoard();
-
-    if (names.length && state.file) {
-        message(`Writing ${names.join(", ")}...`);
-        // the names before the file: the board reads them when the file starts
-        const form = new FormData();
-        form.append("names", names.join(","));
-        form.append("modules", new Blob([state.file]), "modules.bin");
-        const size = sizeText(state.file.byteLength);
-        const text = await postWithProgress(url("modules/apply").href, form, (fraction) => {
-            dialogStep(`Writing ${names.join(", ")}: ${Math.round(100 * fraction)} % of ${size}`, fraction);
+    const root = url("./");
+    if (state.image) {
+        await installImage(root, state.image, status, names, (text, fraction) => {
+            message(text);
+            dialogStep(text, fraction ?? null);
         });
-        message(`${text}...`);
-        await waitBoard();
+    } else {
+        // nothing ticked, no image: the board restarts without modules
+        message("Restarting without modules...");
+        await post("modules/off", new FormData());
+        await waitModules(root);
     }
 
     state.selected = null;
@@ -1306,9 +1102,11 @@ async function removeModule(row) {
  * @param {ArrayBuffer} buffer
  */
 function usePackages(buffer) {
-    // the install image (.ota) carries the modules file next to the head(s)
-    state.file = modulesFileOf(buffer);
-    state.packages = parseContainer(state.file);
+    // the install image (.ota): its head goes on first when the board runs another head build (installImage)
+    const file = modulesFileOf(buffer);
+    state.packages = parseContainer(file);
+    state.file = file;
+    state.image = buffer;
     message(`Modules file: ${[...state.packages.keys()].join(", ")}`);
     draw();
 }
@@ -1323,19 +1121,12 @@ async function fromGithub() {
     message(`Looking for the modules of ${commit || status.version}...`);
 
     const base = status.list || FIRMWARE_URL;
-    const found = modulesFileUrl(await fetchJson(base), {image: status.image, commit, base});
-
+    const found = installFileOf(await fetchJson(base, {}, base), {image: status.image, commit, base});
     if (!found) {
-        throw new Error(`no modules file of ${commit || status.version} in the release list, pick the file from the disk`);
+        throw new Error(`no install image of ${commit || status.version} in the release list, pick the file from the disk`);
     }
 
-    message(`Downloading ${found}...`);
-    const response = await fetch(found);
-    if (!response.ok) {
-        throw new Error(`${found}: ${response.status}`);
-    }
-
-    usePackages(await response.arrayBuffer());
+    usePackages(await fetchBytes(found.url, found, (text) => message(text)));
 }
 
 function restartNow() {

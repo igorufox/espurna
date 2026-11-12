@@ -32,7 +32,8 @@ constexpr uint16_t libretiny_config(Config config) {
 }
 
 // no inverted levels
-inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool) {
+// LibreTiny's receive buffer has a fixed size: rx_buffer is not taken
+inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool, size_t) {
     const auto pins = [&](uint8_t port_tx, uint8_t port_rx) {
         return ((tx == port_tx) || (tx == GPIO_NONE))
             && ((rx == port_rx) || (rx == GPIO_NONE))
@@ -61,8 +62,24 @@ inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, boo
     return Opened{ptr, (number == 1) ? Type::Uart0 : Type::Uart1};
 }
 
+// another speed for a hardware port (LibreTiny reconfigures it, 8N1)
+inline bool baud(Stream* stream, Type type, uint32_t value) {
+    if ((type != Type::Uart0) && (type != Type::Uart1)) {
+        return false;
+    }
+
+    auto* serial = static_cast<SerialClass*>(stream);
+    serial->flush();
+    serial->configure(value);
+    return true;
+}
+
 // SDK owns its log UART
 inline void disable_uart0_rx() {
+}
+
+// SDK log goes to its own UART, nothing to switch
+inline void sdk_log(Type) {
 }
 
 } // namespace hardware

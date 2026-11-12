@@ -13,4 +13,3 @@ void curtainSetup();
 
 size_t curtainCount();
 void curtainUpdate(size_t id, int value);
-

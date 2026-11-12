@@ -11,4 +11,3 @@ void garlandEnabled(bool);
 bool garlandEnabled();
 void garlandDisable();
 void garlandSetup();
-

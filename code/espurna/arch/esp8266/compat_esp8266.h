@@ -9,6 +9,9 @@ esp8266 Core shims (ref. the common compat.h, which includes this one). The othe
 #include <Arduino.h>
 #include <pgmspace.h>
 
+#include <core_version.h>
+#include <spi_flash.h>
+
 // -----------------------------------------------------------------------------
 // Core version 2.4.2 and higher changed the cont_t structure to a pointer:
 // https://github.com/esp8266/Arduino/commit/5d5ea92a4d004ab009d5f642629946a0cb8893dd#diff-3fa12668b289ccb95b7ab334833a4ba8L35
@@ -89,4 +92,47 @@ using std::min;
 using std::max;
 using std::isinf;
 using std::isnan;
+#endif
+
+// -----------------------------------------------------------------------------
+// PROGMEM_STRING / STRING_VIEW (ref. types.h) strings in their own sections,
+// the .irom0.pstr section is specific to the esp8266 linker script
+// -----------------------------------------------------------------------------
+
+#ifndef PROGMEM_STRING_ATTR
+#define PROGMEM_STRING_ATTR __attribute__((section( "\".irom0.pstr." __FILE__ "." __STRINGIZE(__LINE__) "."  __STRINGIZE(__COUNTER__) "\", \"aSM\", @progbits, 1 #")))
+#endif
+
+// -----------------------------------------------------------------------------
+// Core 2.7.4 String lacks these
+// -----------------------------------------------------------------------------
+
+#if defined(ARDUINO_ESP8266_RELEASE_2_7_4)
+namespace espurna {
+
+inline String operator+(const String& lhs, const String& rhs) {
+    String out;
+    out.reserve(lhs.length() + rhs.length());
+
+    out += lhs;
+    out += rhs;
+
+    return out;
+}
+
+inline String operator+(String&& lhs, const String& rhs) {
+    String out(std::move(lhs));
+    out += rhs;
+    return out;
+}
+
+inline String operator+(const String& lhs, const __FlashStringHelper* rhs) {
+    return lhs + String(rhs);
+}
+
+inline String operator+(String&& lhs, const __FlashStringHelper* rhs) {
+    return std::move(lhs) + String(rhs);
+}
+
+} // namespace espurna
 #endif

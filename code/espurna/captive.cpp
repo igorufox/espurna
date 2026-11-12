@@ -21,7 +21,6 @@ The DNS server is lib/DNSServer (on its EspurnaUdp, asynchronous: no loop pollin
 #include "utils.h"
 #include "web.h"
 
-#include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
 
 namespace espurna {
@@ -64,33 +63,27 @@ void onWifiEvent(wifi::Event event) {
     }
 }
 
-void onRequest(AsyncWebServerRequest* request) {
-    // no settings and no module state, only WiFi mode and AP address (thread-safe IDF calls),
-    // proceeds without the lock when busy
-    espurna::system::AsyncGuard guard;
+// to the page of the access point while it is on, else 404
+void onRequest(WebRequest& request) {
     if (wifiConnectable()) {
-        auto* response = request->beginResponse(302);
-
-        STRING_VIEW_INLINE(Prefix, "http://");
-        response->addHeader(STRING_VIEW("Location").toString(), Prefix.toString() + ipToString(wifiApIp()));
-        response->addHeader(STRING_VIEW("Connection").toString(), STRING_VIEW("close").toString());
-
-        request->send(response);
+        const String location = String(F("http://")) + ipToString(wifiApIp());
+        request.addHeader("Location", location.c_str());
+        request.send(302, "", "");
         return;
     }
 
-    request->send(404);
+    request.send(404, "text/plain", "Not Found");
 }
 
 } // namespace
 
 void setup() {
     auto& server = webServer();
-    server.on("/generate_204", onRequest);
-    server.on("/fwlink", onRequest);
+    server.on("/generate_204", WebMethod::Any, onRequest);
+    server.on("/fwlink", WebMethod::Any, onRequest);
     // Windows 10+ and Apple connectivity checks, any other host name gets 404 while the AP is on
-    server.on("/connecttest.txt", onRequest);
-    server.on("/hotspot-detect.html", onRequest);
+    server.on("/connecttest.txt", WebMethod::Any, onRequest);
+    server.on("/hotspot-detect.html", WebMethod::Any, onRequest);
 
     wifiRegister(onWifiEvent);
     espurnaRegisterReload(update);

@@ -62,6 +62,6 @@ row, the module has no supply voltage measurement.
 
 Relay, both buttons, LED, the 433 MHz remote, Wi-Fi, web UI (direct and behind a reverse proxy), MQTT, HTTP API, NTP,
 serial and telnet terminal, settings kept across reboots and updates. Matter with two controllers (the speaker hub and
-python-matter-server). Updates from the WebUI release list, all three uploads of the 2 MiB layout, including the one
-refused while Matter runs. Twice the network went deaf on the boot right after the Matter code was written; the
+python-matter-server). Updates from the WebUI release list of the older releases (Matter code in the update partition,
+before the modules), all three uploads of the 2 MiB layout, including the one refused while Matter runs. Twice the network went deaf on the boot right after the Matter code was written; the
 [network watchdog](README.md#8-known-limitations) restarted the board after about 2.5 minutes both times.

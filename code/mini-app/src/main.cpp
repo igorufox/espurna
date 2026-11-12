@@ -29,24 +29,22 @@ every byte counts (the gzip of this image has to fit next to the biggest full im
   the access point again
 - log on the serial TX pin (GPIO1, 115200), written to the UART registers (no Serial, no printf of newlib)
 
-TLS (MINI_TLS=1): raw BearSSL, TLS 1.2, static RSA key exchange + AES-128-GCM (what GitHub Pages offers that takes the
-least code), the client of ota_fetch.cpp. The server certificate is not validated (no CA store, no clock): only its
-RSA key is taken, the file is checked against its SHA-256 instead, which the browser took from firmware.json over
-validated https. SHA-256 is required. MINI_TLS=0: http:// only (26 KB less of the .bin, 20 KB less of the .bin.gz)
+The download client and the web server are the ones of ESPurna (espurna/libs/net_impl.h, every chip, lwIP), their
+one implementation compiled here: TLS is raw BearSSL, TLS 1.2, static RSA key exchange + AES-128-GCM (the head's
+part, what GitHub Pages offers that takes the least code; no tls module here). The server certificate is not
+validated (no CA store, no clock): only its RSA key is taken, the file is checked against its SHA-256 instead, which
+the browser took from firmware.json over validated https. SHA-256 is required. The checks of the request
+(URL, SHA-256) are espurna/libs/fetch_check.h, the same as ESPurna and the ESP32 safeboot; the settings records are
+read with espurna/libs/embedis_records.h, the same as code/safeboot-app
 
 */
 
 #include <Arduino.h>
 #include <EEPROM_Rotate.h>
 #include <ESP8266WiFi.h>
-#include <MD5Builder.h>
 #include <eboot_command.h>
 #include <spi_flash.h>
 #include <lwip/ip4_addr.h>
-
-#ifndef MINI_TLS
-#define MINI_TLS 1
-#endif
 
 #ifndef MINI_LOG
 #define MINI_LOG 1
@@ -54,11 +52,11 @@ validated https. SHA-256 is required. MINI_TLS=0: http:// only (26 KB less of th
 
 #include <bearssl/bearssl.h>
 
-#if MINI_TLS
-#include <StackThunk.h>
-#endif
-
 #include <memory>
+
+#include "../../espurna/libs/embedis_records.h"
+#include "../../espurna/libs/fetch_check.h"
+#include "../../espurna/libs/text.h"
 
 // -----------------------------------------------------------------------------
 // log
@@ -111,6 +109,37 @@ extern "C" int vsnprintf(char* buffer, size_t size, const char* fmt, va_list arg
     return ets_vsnprintf(buffer, size, fmt, args);
 }
 
+// the one http:// and https:// client of ESPurna (ota_fetch.cpp, nspanel), every chip: its one implementation. One
+// thread here, no lock
+namespace mini {
+struct NoLock {
+    void lock() {}
+    void unlock() {}
+};
+} // namespace mini
+
+#define HTTP_CLIENT_AGENT "ESPurna-mini"
+#define NET_LOG(fmt, ...) LOG(fmt, ##__VA_ARGS__)
+#define NET_LOCK ::mini::NoLock
+#include "../../espurna/libs/net_impl.h"
+
+// no modules here: the head's TLS of the client only (static RSA + AES-128-GCM, what GitHub Pages offers)
+namespace espurna {
+namespace http {
+namespace tls {
+
+bool extend(br_ssl_client_context*) {
+    return false;
+}
+
+void* key(const uint8_t*, size_t, br_x509_pkey*) {
+    return nullptr;
+}
+
+} // namespace tls
+} // namespace http
+} // namespace espurna
+
 namespace {
 
 constexpr char Image[] = "esp8266-1m-mini";
@@ -120,7 +149,6 @@ constexpr char DefaultManifest[] = "https://igorufox.github.io/espurna/firmware.
 constexpr unsigned long ConnectWindow { 30000 };
 constexpr unsigned long RequestConnectWindow { 3 * 60 * 1000 };
 constexpr unsigned long FallbackAfter { 5 * 60 * 1000 };
-constexpr unsigned long Timeout { 20000 };
 
 namespace keys {
 
@@ -130,35 +158,17 @@ constexpr char Result[] = "otaFetchResult";
 
 } // namespace keys
 
-// decimal, after spaces (atoi of newlib links strtol and errno)
-long number(const char* text) {
-    while (*text == ' ') {
-        ++text;
-    }
+using espurna::fetch_check::validSha256;
+using espurna::fetch_check::validUrl;
+using espurna::http::number;
 
-    long out { 0 };
-    while ((*text >= '0') && (*text <= '9')) {
-        out = (out * 10) + (*text++ - '0');
-    }
-
-    return out;
-}
-
-int digit(char c) {
-    return (c <= '9') ? (c - '0') : ((c | 0x20) - 'a' + 10);
-}
-
+// lower case hex of up to 32 bytes (a SHA-256), espurna::http::hex() into a String
 String hex(const uint8_t* data, size_t len) {
-    static const char Digits[] = "0123456789abcdef";
-    String out;
-    out.reserve(len * 2);
-    for (size_t index = 0; index < len; ++index) {
-        out += Digits[data[index] >> 4];
-        out += Digits[data[index] & 15];
-    }
-
-    return out;
+    char out[2 * 32 + 1];
+    espurna::http::hex(data, std::min<size_t>(len, 32), out);
+    return String(out);
 }
+
 
 // -----------------------------------------------------------------------------
 // ESPurna settings
@@ -166,20 +176,13 @@ String hex(const uint8_t* data, size_t len) {
 
 // One 4 KB sector of the EEPROM_Rotate pool (storage_eeprom.h, arch/esp8266/storage_eeprom_esp8266.cpp): sum and
 // counter of EEPROM_Rotate at 11..13, the crash record up to 256 (crash.cpp), the Embedis records from the end of the
-// sector down to 256 (settings.cpp). A record, in the address order: value, value length (2 bytes, big endian), key,
-// key length; 0xffff instead of the key length is the free space
+// sector down to 256 (settings.cpp), read and walked with espurna/libs/embedis_records.h
 constexpr uint16_t RotateOffset { 11 };
 constexpr uint16_t ReservedEnd { RotateOffset + 3 };
 constexpr uint16_t KvBegin { 256 };
 constexpr uint16_t KvEnd { SPI_FLASH_SEC_SIZE };
 
-struct Record {
-    uint16_t begin;
-    uint16_t end;
-    uint16_t key;
-    uint16_t key_len;
-    uint16_t value_len;
-};
+using Record = espurna::embedis_records::Record;
 
 struct Pair {
     const char* key;
@@ -199,14 +202,9 @@ public:
 
     String get(const char* key) const {
         String out;
-        uint16_t pos { KvEnd };
         Record record;
-        bool clean;
-        while (_valid && next(pos, record, clean)) {
-            if (match(record, key)) {
-                out.concat(reinterpret_cast<const char*>(_data + record.begin), record.value_len);
-                break;
-            }
+        if (_valid && espurna::embedis_records::find(_data, KvBegin, KvEnd, key, record)) {
+            out.concat(reinterpret_cast<const char*>(_data + record.value), record.value_len);
         }
 
         return out;
@@ -235,7 +233,7 @@ public:
         };
 
         // nothing is changed unless the records end with the free space marker and the new ones fit
-        uint16_t pos { KvEnd };
+        size_t pos { KvEnd };
         size_t kept { 0 };
         Record record;
         bool clean { false };
@@ -255,12 +253,12 @@ public:
             return false;
         }
 
-        const uint16_t low { pos };
-        uint16_t out { KvEnd };
+        const size_t low { pos };
+        size_t out { KvEnd };
         pos = KvEnd;
         while (next(pos, record, clean)) {
             if (!dropped(record)) {
-                const uint16_t size = record.end - record.begin;
+                const size_t size = record.end - record.begin;
                 memmove(_data + out - size, _data + record.begin, size);
                 out -= size;
             }
@@ -299,46 +297,13 @@ public:
     }
 
 private:
-    uint16_t length(uint16_t pos) const {
-        return (_data[pos - 2] << 8) | _data[pos - 1];
-    }
-
     bool match(const Record& record, const char* key) const {
-        const size_t len = strlen(key);
-        return (record.key_len == len) && (memcmp(_data + record.key, key, len) == 0);
+        return espurna::embedis_records::match(_data, record, key);
     }
 
     // the record below `pos`. false at the end: `clean` when it is the free space marker
-    bool next(uint16_t& pos, Record& out, bool& clean) const {
-        clean = false;
-        if (pos < (KvBegin + 2)) {
-            return false;
-        }
-
-        const uint16_t key_len = length(pos);
-        if (key_len == 0xffff) {
-            clean = true;
-            return false;
-        }
-
-        if (!key_len || ((pos - KvBegin) < (key_len + 4))) {
-            return false;
-        }
-
-        const uint16_t key = pos - 2 - key_len;
-        const uint16_t value_len = length(key);
-        if ((value_len == 0xffff) || ((key - 2 - KvBegin) < value_len)) {
-            return false;
-        }
-
-        out.end = pos;
-        out.key = key;
-        out.key_len = key_len;
-        out.value_len = value_len;
-        out.begin = key - 2 - value_len;
-        pos = out.begin;
-
-        return true;
+    bool next(size_t& pos, Record& out, bool& clean) const {
+        return espurna::embedis_records::next(_data, KvBegin, pos, out, clean);
     }
 
     bool _valid { false };
@@ -369,34 +334,6 @@ void storeResult(const String& value) {
     LOG("Result: %s", value.c_str());
 }
 
-bool validUrl(const String& url) {
-    if ((url.length() < 12) || (url.length() > 240) || (!url.startsWith("https://") && !url.startsWith("http://"))) {
-        return false;
-    }
-
-    for (const auto c : url) {
-        if ((c <= ' ') || (c == '"') || (c == '\\') || (c == '<') || (c == '>') || (c > '~')) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool validSha256(const String& value) {
-    if (value.length() != 64) {
-        return false;
-    }
-
-    for (const auto c : value) {
-        if (!(((c >= '0') && (c <= '9')) || ((c >= 'a') && (c <= 'f')))) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 // -----------------------------------------------------------------------------
 // image writer
 // -----------------------------------------------------------------------------
@@ -411,10 +348,31 @@ namespace {
 // command: the file goes to the end of the free space (right below the EEPROM sector 251, over 250), sector by sector,
 // SHA-256 on the way. end() reads the written file back and compares its SHA-256 (a staged image with holes in flash
 // once bricked a 1 MB board, the stream checksum had said OK), only then eboot is told to copy it (gzip unpacked)
-class Writer {
+class Writer : public espurna::http::Sink {
 public:
+    explicit Writer(const String& sha256) :
+        _sha256(sha256)
+    {}
+
+    // the head: 200 with its length, else the error
+    const char* begin(const espurna::http::Head& head) override {
+        if (head.status != 200) {
+            return "the server did not answer 200";
+        }
+
+        if (head.length <= 0) {
+            return "no Content-Length in the response";
+        }
+
+        return start(static_cast<size_t>(head.length));
+    }
+
+    const char* end() override {
+        return finish(_sha256);
+    }
+
     // nullptr or the error
-    const char* begin(size_t size) {
+    const char* start(size_t size) {
         const uint32_t end = reinterpret_cast<uint32_t>(&_FS_start) - 0x40200000;
         const uint32_t used = (ESP.getSketchSize() + SPI_FLASH_SEC_SIZE - 1) & ~(SPI_FLASH_SEC_SIZE - 1);
         const uint32_t rounded = (size + SPI_FLASH_SEC_SIZE - 1) & ~(SPI_FLASH_SEC_SIZE - 1);
@@ -436,7 +394,7 @@ public:
         return nullptr;
     }
 
-    const char* write(const uint8_t* data, size_t len) {
+    const char* write(const uint8_t* data, size_t len) override {
         if (done + len > _size) {
             return "more data than announced";
         }
@@ -461,7 +419,7 @@ public:
     }
 
     // the whole file arrived (and its SHA-256 is `sha256`, when given)
-    const char* end(const String& sha256) {
+    const char* finish(const String& sha256) {
         uint8_t digest[br_sha256_SIZE];
         br_sha256_out(&_sha, digest);
         if ((done != _size) || (sha256.length() && !sha256.equals(hex(digest, sizeof(digest))))) {
@@ -525,6 +483,7 @@ private:
         return ok ? nullptr : "flash write failed";
     }
 
+    String _sha256;
     std::unique_ptr<uint8_t[]> _buffer;
     br_sha256_context _sha;
     uint32_t _start { 0 };
@@ -534,620 +493,25 @@ private:
     uint8_t _mode { 0 };
 };
 
-// -----------------------------------------------------------------------------
-// http:// and https:// client (ota_fetch.cpp of ESPurna)
-// -----------------------------------------------------------------------------
+// The download (espurna/libs/http_client.h) into the writer. The client is asynchronous; the mini does nothing else
+// meanwhile, so it drives it here until it is done
+bool download(const String& url, const String& sha256, String& result) {
+    Writer writer(sha256);
+    espurna::http::Client client;
+    bool finished { false };
+    bool ok { false };
+    client.start(url.c_str(), sha256.c_str(), writer, [&](const espurna::http::Result& out) {
+        finished = true;
+        ok = out.ok;
+        result = out.message;
+    });
 
-struct Target {
-    bool https { false };
-    String host;
-    uint16_t port { 80 };
-    String path;
-};
-
-bool parse(const String& url, Target& out) {
-    out.https = url.startsWith("https://");
-    if (!out.https && !url.startsWith("http://")) {
-        return false;
+    while (!finished) {
+        client.loop();
+        yield();
     }
 
-    out.port = out.https ? 443 : 80;
-    const int pos = out.https ? 8 : 7;
-
-    int slash = url.indexOf('/', pos);
-    if (slash < 0) {
-        slash = url.length();
-    }
-
-    out.host = url.substring(pos, slash);
-    out.path = url.substring(slash);
-    if (!out.path.length()) {
-        out.path = "/";
-    }
-
-    const int colon = out.host.indexOf(':');
-    if (colon >= 0) {
-        const auto port = number(out.host.c_str() + colon + 1);
-        if ((port <= 0) || (port > 65535)) {
-            return false;
-        }
-        out.port = port;
-        out.host.remove(colon);
-    }
-
-    return out.host.length() > 0;
-}
-
-} // namespace
-
-#if MINI_TLS
-
-// BearSSL needs more stack than the 4 KB of the loop, the engine steps go to the second stack of the Core
-// (StackThunk, 6 KB on the heap while a connection is open). Own thunks: the ones of BearSSLHelpers.cpp would link
-// its RSA and EC verifiers
-extern "C" {
-
-void mini_sendrec_ack(br_ssl_engine_context* cc, size_t len) {
-    br_ssl_engine_sendrec_ack(cc, len);
-}
-
-void mini_recvrec_ack(br_ssl_engine_context* cc, size_t len) {
-    br_ssl_engine_recvrec_ack(cc, len);
-}
-
-void mini_sendapp_ack(br_ssl_engine_context* cc, size_t len) {
-    br_ssl_engine_sendapp_ack(cc, len);
-}
-
-void mini_recvapp_ack(br_ssl_engine_context* cc, size_t len) {
-    br_ssl_engine_recvapp_ack(cc, len);
-}
-
-void mini_flush(br_ssl_engine_context* cc, int force) {
-    br_ssl_engine_flush(cc, force);
-}
-
-void thunk_mini_sendrec_ack(br_ssl_engine_context*, size_t);
-void thunk_mini_recvrec_ack(br_ssl_engine_context*, size_t);
-void thunk_mini_sendapp_ack(br_ssl_engine_context*, size_t);
-void thunk_mini_recvapp_ack(br_ssl_engine_context*, size_t);
-void thunk_mini_flush(br_ssl_engine_context*, int);
-
-} // extern "C"
-
-make_stack_thunk(mini_sendrec_ack);
-make_stack_thunk(mini_recvrec_ack);
-make_stack_thunk(mini_sendapp_ack);
-make_stack_thunk(mini_recvapp_ack);
-make_stack_thunk(mini_flush);
-
-#endif
-
-namespace {
-
-#if MINI_TLS
-
-// The certificate chain is not validated. The server certificate (the first one) is kept, its RSA key is taken from
-// SubjectPublicKeyInfo: the rsaEncryption OID, then BIT STRING { SEQUENCE { INTEGER n, INTEGER e } }. Smaller than
-// the X.509 decoder of BearSSL
-constexpr size_t CertMax { 4096 };
-
-struct Insecure {
-    const br_x509_class* vtable;
-    uint8_t* cert;
-    size_t size;
-    size_t len;
-    br_x509_pkey pkey;
-};
-
-bool tag(const uint8_t* der, size_t len, size_t& pos, uint8_t type, size_t& out) {
-    if ((pos + 2 > len) || (der[pos] != type)) {
-        return false;
-    }
-
-    out = der[pos + 1];
-    pos += 2;
-    if (out & 0x80) {
-        size_t bytes = out & 0x7f;
-        if ((bytes > 2) || (pos + bytes > len)) {
-            return false;
-        }
-
-        out = 0;
-        while (bytes--) {
-            out = (out << 8) | der[pos++];
-        }
-    }
-
-    return pos + out <= len;
-}
-
-bool rsaKey(const uint8_t* der, size_t len, br_rsa_public_key& out) {
-    static const uint8_t Oid[] { 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
-    for (size_t pos = 0; pos + sizeof(Oid) < len; ++pos) {
-        if (memcmp(der + pos, Oid, sizeof(Oid)) != 0) {
-            continue;
-        }
-
-        pos += sizeof(Oid);
-        if ((pos + 2 <= len) && (der[pos] == 0x05) && !der[pos + 1]) {
-            pos += 2;
-        }
-
-        size_t size;
-        if (!tag(der, len, pos, 0x03, size) || der[pos++] || !tag(der, len, pos, 0x30, size)
-            || !tag(der, len, pos, 0x02, size))
-        {
-            return false;
-        }
-
-        out.n = const_cast<uint8_t*>(der + pos);
-        out.nlen = size;
-        pos += size;
-        while (out.nlen && !*out.n) {
-            ++out.n;
-            --out.nlen;
-        }
-
-        if (!tag(der, len, pos, 0x02, size)) {
-            return false;
-        }
-
-        out.e = const_cast<uint8_t*>(der + pos);
-        out.elen = size;
-        return out.nlen && size;
-    }
-
-    return false;
-}
-
-void insecureStartChain(const br_x509_class** ctx, const char*) {
-    auto* self = reinterpret_cast<Insecure*>(ctx);
-    self->size = 0;
-    self->len = 0;
-}
-
-void insecureStartCert(const br_x509_class** ctx, uint32_t length) {
-    auto* self = reinterpret_cast<Insecure*>(ctx);
-    if (!self->size && !self->cert && (length <= CertMax)) {
-        self->cert = static_cast<uint8_t*>(malloc(length));
-        self->size = self->cert ? length : 0;
-    }
-}
-
-void insecureAppend(const br_x509_class** ctx, const unsigned char* buf, size_t len) {
-    auto* self = reinterpret_cast<Insecure*>(ctx);
-    if (self->cert && (self->len + len <= self->size)) {
-        memcpy(self->cert + self->len, buf, len);
-        self->len += len;
-    }
-}
-
-void insecureEndCert(const br_x509_class**) {
-}
-
-unsigned insecureEndChain(const br_x509_class** ctx) {
-    auto* self = reinterpret_cast<Insecure*>(ctx);
-    self->pkey.key_type = BR_KEYTYPE_RSA;
-    return (self->cert && (self->len == self->size) && rsaKey(self->cert, self->len, self->pkey.key.rsa))
-        ? 0 : BR_ERR_X509_UNSUPPORTED;
-}
-
-const br_x509_pkey* insecureGetPkey(const br_x509_class* const* ctx, unsigned* usages) {
-    if (usages) {
-        *usages = BR_KEYTYPE_KEYX | BR_KEYTYPE_SIGN;
-    }
-
-    return &reinterpret_cast<const Insecure*>(ctx)->pkey;
-}
-
-const br_x509_class InsecureClass PROGMEM {
-    sizeof(Insecure),
-    insecureStartChain,
-    insecureStartCert,
-    insecureAppend,
-    insecureEndCert,
-    insecureEndChain,
-    insecureGetPkey,
-};
-
-// GitHub Pages (Fastly, 2026-11): TLS 1.2, RSA certificate, AES-GCM and ChaCha20 suites, static RSA key exchange too
-const uint16_t Suites[] PROGMEM {
-    BR_TLS_RSA_WITH_AES_128_GCM_SHA256,
-};
-
-struct Tls {
-    ~Tls() {
-        free(x509.cert);
-    }
-
-    br_ssl_client_context sc;
-    Insecure x509;
-};
-
-constexpr size_t InputSize { BR_SSL_BUFSIZE_INPUT };
-constexpr size_t OutputSize { 837 };
-
-#endif
-
-class Link {
-public:
-    Link() = default;
-    Link(const Link&) = delete;
-    Link& operator=(const Link&) = delete;
-
-    ~Link() {
-        _tcp.stop();
-#if MINI_TLS
-        if (_tls) {
-            stack_thunk_del_ref();
-        }
-#endif
-    }
-
-    bool open(const Target& target, String& error) {
-        _tcp.setTimeout(Timeout);
-        if (!_tcp.connect(target.host.c_str(), target.port)) {
-            error = String("cannot connect to ") + target.host;
-            return false;
-        }
-
-        if (!target.https) {
-            return true;
-        }
-
-#if MINI_TLS
-        _buffers.reset(new (std::nothrow) unsigned char[InputSize + OutputSize]);
-        _tls.reset(_buffers ? new (std::nothrow) Tls() : nullptr);
-        if (!_tls) {
-            error = "out of memory for TLS";
-            return false;
-        }
-
-        stack_thunk_add_ref();
-
-        auto* eng = &_tls->sc.eng;
-        br_ssl_client_zero(&_tls->sc);
-        br_ssl_engine_set_versions(eng, BR_TLS12, BR_TLS12);
-
-        uint16_t suites[sizeof(Suites) / sizeof(Suites[0])];
-        memcpy_P(suites, Suites, sizeof(Suites));
-        br_ssl_engine_set_suites(eng, suites, sizeof(suites) / sizeof(suites[0]));
-
-        br_ssl_client_set_default_rsapub(&_tls->sc);
-        br_ssl_engine_set_hash(eng, br_sha256_ID, &br_sha256_vtable);
-        br_ssl_engine_set_prf_sha256(eng, &br_tls12_sha256_prf);
-
-        // the smallest AES and GHASH of BearSSL
-        br_ssl_engine_set_gcm(eng, &br_sslrec_in_gcm_vtable, &br_sslrec_out_gcm_vtable);
-        br_ssl_engine_set_aes_ctr(eng, &br_aes_small_ctr_vtable);
-        br_ssl_engine_set_ghash(eng, &br_ghash_ctmul);
-
-        _tls->x509.vtable = &InsecureClass;
-        br_ssl_engine_set_x509(eng, &_tls->x509.vtable);
-        br_ssl_engine_set_buffers_bidi(eng,
-            _buffers.get(), InputSize,
-            _buffers.get() + InputSize, OutputSize);
-
-        uint8_t seed[32];
-        ESP.random(seed, sizeof(seed));
-        br_ssl_engine_inject_entropy(eng, seed, sizeof(seed));
-
-        if (!br_ssl_client_reset(&_tls->sc, target.host.c_str(), 0) || (pump(BR_SSL_SENDAPP) != Pump::Ready)) {
-            error = String("TLS handshake failed, BearSSL error ") + br_ssl_engine_last_error(eng);
-            return false;
-        }
-
-        return true;
-#else
-        error = "https needs MINI_TLS=1";
-        return false;
-#endif
-    }
-
-    bool write(const char* data, size_t len) {
-#if MINI_TLS
-        if (_tls) {
-            auto* eng = &_tls->sc.eng;
-            while (len) {
-                if (pump(BR_SSL_SENDAPP) != Pump::Ready) {
-                    return false;
-                }
-
-                size_t avail;
-                auto* buf = br_ssl_engine_sendapp_buf(eng, &avail);
-                const size_t size = std::min(avail, len);
-                memcpy(buf, data, size);
-                thunk_mini_sendapp_ack(eng, size);
-                data += size;
-                len -= size;
-            }
-
-            thunk_mini_flush(eng, 0);
-            return pump(BR_SSL_SENDAPP) == Pump::Ready;
-        }
-#endif
-        return _tcp.write(reinterpret_cast<const uint8_t*>(data), len) == len;
-    }
-
-    // > 0 bytes read, 0 - the server closed the connection, < 0 - timeout or error
-    int read(uint8_t* out, size_t len) {
-#if MINI_TLS
-        if (_tls) {
-            switch (pump(BR_SSL_RECVAPP)) {
-            case Pump::Ready:
-                break;
-            case Pump::Closed:
-                return 0;
-            case Pump::Failed:
-                return -1;
-            }
-
-            auto* eng = &_tls->sc.eng;
-            size_t avail;
-            auto* buf = br_ssl_engine_recvapp_buf(eng, &avail);
-            const size_t size = std::min(avail, len);
-            memcpy(out, buf, size);
-            thunk_mini_recvapp_ack(eng, size);
-
-            return size;
-        }
-#endif
-        const auto start = millis();
-        for (;;) {
-            const int avail = _tcp.available();
-            if (avail > 0) {
-                return _tcp.read(out, std::min(len, static_cast<size_t>(avail)));
-            }
-
-            if (!_tcp.connected()) {
-                return 0;
-            }
-
-            if (millis() - start > Timeout) {
-                return -1;
-            }
-
-            delay(1);
-        }
-    }
-
-private:
-#if MINI_TLS
-    enum class Pump {
-        Ready,
-        Closed,
-        Failed,
-    };
-
-    // runs the engine until it is in the `target` state, sending and receiving records
-    Pump pump(unsigned target) {
-        auto* eng = &_tls->sc.eng;
-        auto last = millis();
-
-        for (;;) {
-            const auto state = br_ssl_engine_current_state(eng);
-            if (state & BR_SSL_CLOSED) {
-                return (br_ssl_engine_last_error(eng) == BR_ERR_OK) ? Pump::Closed : Pump::Failed;
-            }
-
-            if (state & BR_SSL_SENDREC) {
-                size_t len;
-                auto* buf = br_ssl_engine_sendrec_buf(eng, &len);
-                const auto sent = _tcp.write(buf, len);
-                if (sent) {
-                    thunk_mini_sendrec_ack(eng, sent);
-                    last = millis();
-                    continue;
-                }
-            } else if (state & target) {
-                return Pump::Ready;
-            } else if (state & BR_SSL_RECVREC) {
-                const int avail = _tcp.available();
-                if (avail > 0) {
-                    size_t len;
-                    auto* buf = br_ssl_engine_recvrec_buf(eng, &len);
-                    const int got = _tcp.read(buf, std::min(len, static_cast<size_t>(avail)));
-                    if (got > 0) {
-                        thunk_mini_recvrec_ack(eng, got);
-                        last = millis();
-                        continue;
-                    }
-                }
-
-                // closed without close_notify: the end of the body is checked with Content-Length
-                if (!_tcp.connected()) {
-                    return Pump::Closed;
-                }
-            }
-
-            if (!_tcp.connected() || (millis() - last > Timeout)) {
-                return Pump::Failed;
-            }
-
-            delay(1);
-        }
-    }
-
-    std::unique_ptr<unsigned char[]> _buffers;
-    std::unique_ptr<Tls> _tls;
-#endif
-    WiFiClient _tcp;
-};
-
-// Buffered reader of the response, the rest of the buffer after the head is the beginning of the body
-class Reader {
-public:
-    explicit Reader(Link& link) :
-        _link(link)
-    {}
-
-    // a line without CR LF into `out`, false when longer
-    bool line(char* out, size_t size) {
-        size_t len { 0 };
-        for (;;) {
-            if ((_pos >= _len) && !fill()) {
-                return false;
-            }
-
-            const char c = _buffer[_pos++];
-            if (c == '\n') {
-                if (len && (out[len - 1] == '\r')) {
-                    --len;
-                }
-                out[len] = '\0';
-                return true;
-            }
-
-            if (len + 1 >= size) {
-                return false;
-            }
-
-            out[len++] = c;
-        }
-    }
-
-    int read(uint8_t* out, size_t len) {
-        if (_pos < _len) {
-            const size_t size = std::min(len, _len - _pos);
-            memcpy(out, _buffer + _pos, size);
-            _pos += size;
-            return size;
-        }
-
-        return _link.read(out, len);
-    }
-
-private:
-    bool fill() {
-        const int got = _link.read(_buffer, sizeof(_buffer));
-        if (got <= 0) {
-            return false;
-        }
-
-        _pos = 0;
-        _len = got;
-        return true;
-    }
-
-    Link& _link;
-    uint8_t _buffer[256];
-    size_t _pos { 0 };
-    size_t _len { 0 };
-};
-
-// The body goes to the writer, which boots nothing unless the whole file arrived with the right SHA-256
-bool body(Reader& reader, size_t length, const String& sha256, String& result) {
-    Writer writer;
-    const char* error = writer.begin(length);
-
-    uint8_t buffer[512];
-    while (!error && (writer.done < length)) {
-        const int got = reader.read(buffer, std::min(sizeof(buffer), length - writer.done));
-        if (got <= 0) {
-            result = String((got < 0) ? "timeout" : "connection closed") + " after " + writer.done + " of " + length
-                + " bytes";
-            return false;
-        }
-
-        error = writer.write(buffer, got);
-        if (!(writer.done & 0xffff)) {
-            LOG("%d of %d bytes", writer.done, length);
-        }
-    }
-
-    if (!error) {
-        error = writer.end(sha256);
-    }
-
-    if (error) {
-        result = error;
-        return false;
-    }
-
-    result = String("downloaded ") + length + " bytes, SHA-256 checked";
-    return true;
-}
-
-bool download(String url, const String& sha256, String& result) {
-    char line[256];
-    for (int redirects = 0; redirects < 4; ++redirects) {
-        Target target;
-        if (!parse(url, target)) {
-            result = "invalid URL";
-            return false;
-        }
-
-        LOG("Downloading %s, heap %d", url.c_str(), ESP.getFreeHeap());
-
-        Link link;
-        if (!link.open(target, result)) {
-            return false;
-        }
-
-        const String request = String("GET ") + target.path + " HTTP/1.1\r\nHost: " + target.host
-            + "\r\nUser-Agent: ESPurna-mini\r\nConnection: close\r\n\r\n";
-        if (!link.write(request.c_str(), request.length())) {
-            result = "cannot send the request";
-            return false;
-        }
-
-        Reader reader(link);
-        if (!reader.line(line, sizeof(line)) || strncmp(line, "HTTP/1.", 7)) {
-            result = "no HTTP response";
-            return false;
-        }
-
-        const char* space = strchr(line, ' ');
-        const int status = space ? number(space + 1) : 0;
-        long length { -1 };
-        String location;
-        for (;;) {
-            if (!reader.line(line, sizeof(line))) {
-                result = "no HTTP response";
-                return false;
-            }
-
-            if (!line[0]) {
-                break;
-            }
-
-            if (!strncasecmp_P(line, PSTR("content-length:"), 15)) {
-                length = number(line + 15);
-            } else if (!strncasecmp_P(line, PSTR("location:"), 9)) {
-                location = line + 9;
-                location.trim();
-            } else if (!strncasecmp_P(line, PSTR("transfer-encoding:"), 18)) {
-                // never for static files, the length is needed for the update
-                length = -1;
-            }
-        }
-
-        if ((status >= 300) && (status < 400) && location.length()) {
-            // absolute, or a path on the same server
-            if (location[0] == '/') {
-                location = String(target.https ? "https://" : "http://") + target.host + ':' + target.port
-                    + location;
-            }
-            url = location;
-            continue;
-        }
-
-        if (status != 200) {
-            result = String("HTTP ") + status;
-            return false;
-        }
-
-        if (length <= 0) {
-            result = "no Content-Length in the response";
-            return false;
-        }
-
-        return body(reader, length, sha256, result);
-    }
-
-    result = "too many redirects";
-    return false;
+    return ok;
 }
 
 // -----------------------------------------------------------------------------
@@ -1244,218 +608,37 @@ void accessPoint() {
 // web
 // -----------------------------------------------------------------------------
 
-WiFiServer server(80);
-char nonce[33];
-char ha1[33];
+// The one HTTP server of ESPurna (espurna/libs/http_server.h): Digest as the ESPurna WebUI (realm = hostname); a
+// nonce of another boot or of ESPurna itself is answered stale, the browser repeats with the new one without asking
+using WebRequest = espurna::http::server::Request;
+using WebMethod = espurna::http::server::Method;
+espurna::http::server::Server server;
 bool restart { false };
 unsigned long last_activity { 0 };
 
-// the request head: line buffer, then what is kept of it
-char line[512];
-char method[8];
-char target[256];
-char auth[512];
-char type[160];
-long length;
-
-// a line without its CR LF; `raw` - bytes taken from the connection. false on timeout or a too long line
-bool readLine(WiFiClient& client, size_t& raw) {
-    size_t len { 0 };
-    raw = 0;
-
-    const auto start = millis();
-    for (;;) {
-        const int c = client.read();
-        if (c < 0) {
-            if (!client.connected() || (millis() - start > 5000)) {
-                return false;
-            }
-            delay(1);
-            continue;
-        }
-
-        ++raw;
-        if (c == '\n') {
-            if (len && (line[len - 1] == '\r')) {
-                --len;
-            }
-            line[len] = '\0';
-            return true;
-        }
-
-        if (len + 1 >= sizeof(line)) {
-            return false;
-        }
-
-        line[len++] = c;
-    }
-}
-
-void copyValue(char* out, size_t size, const char* value) {
-    while (*value == ' ') {
-        ++value;
+bool authorized(WebRequest& request) {
+    last_activity = millis();
+    if (request.authenticate("admin", config.password.c_str(), config.hostname.c_str())) {
+        return true;
     }
 
-    strncpy(out, value, size - 1);
-    out[size - 1] = '\0';
+    request.requestAuthentication(config.hostname.c_str());
+    return false;
 }
 
-bool readHead(WiFiClient& client) {
-    size_t raw;
-    auth[0] = type[0] = '\0';
-    length = -1;
-    if (!readLine(client, raw)) {
-        return false;
-    }
-
-    char* path = strchr(line, ' ');
-    if (!path || ((path - line) >= static_cast<int>(sizeof(method)))) {
-        return false;
-    }
-    *path++ = '\0';
-    strcpy(method, line);
-
-    char* version = strchr(path, ' ');
-    if (version) {
-        *version = '\0';
-    }
-    copyValue(target, sizeof(target), path);
-
-    for (;;) {
-        if (!readLine(client, raw)) {
-            return false;
-        }
-
-        if (!line[0]) {
-            return true;
-        }
-
-        if (!strncasecmp_P(line, PSTR("authorization:"), 14)) {
-            copyValue(auth, sizeof(auth), line + 14);
-        } else if (!strncasecmp_P(line, PSTR("content-length:"), 15)) {
-            length = number(line + 15);
-        } else if (!strncasecmp_P(line, PSTR("content-type:"), 13)) {
-            copyValue(type, sizeof(type), line + 13);
-        }
-    }
+void respond(WebRequest& request, int code, const char* type, const String& body) {
+    request.addHeader("Cache-Control", "no-store");
+    request.send(code, type, reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
 }
 
-bool isPath(const char* path) {
-    const size_t len = strlen(path);
-    return !strncmp(target, path, len) && (!target[len] || (target[len] == '?'));
+void text(WebRequest& request, int code, const String& body) {
+    respond(request, code, "text/plain", body);
 }
 
-// name=value or name="value" of a Digest header or of Content-Type parameters, into `line`
-const char* param(const char* header, const char* name) {
-    const size_t len = strlen(name);
-    for (const char* pos = header; (pos = strstr(pos, name)); pos += len) {
-        const char before = (pos == header) ? ' ' : pos[-1];
-        if (((before != ' ') && (before != ',') && (before != ';')) || (pos[len] != '=')) {
-            continue;
-        }
 
-        const char* value = pos + len + 1;
-        const bool quoted = (*value == '"');
-        value += quoted;
-
-        size_t out { 0 };
-        while (*value && (out + 1 < sizeof(line)) && (quoted ? (*value != '"') : ((*value != ',') && (*value != ' ')))) {
-            line[out++] = *value++;
-        }
-        line[out] = '\0';
-        return line;
-    }
-
-    line[0] = '\0';
-    return line;
-}
-
-void md5Add(MD5Builder& md5, const char* value) {
-    md5.add(value);
-    md5.add(":");
-}
-
-// lower case hex, as getChars() (which formats with sprintf)
-void md5Hex(MD5Builder& md5, char* out) {
-    uint8_t digest[16];
-    md5.calculate();
-    md5.getBytes(digest);
-    strcpy(out, hex(digest, sizeof(digest)).c_str());
-}
-
-// Digest as the ESPurna WebUI (realm = hostname, qop=auth). `stale`: the right password with the nonce of another
-// boot or of ESPurna itself, the browser repeats the request with the new nonce without asking
-bool authorized(bool& stale) {
-    stale = false;
-    if (strncmp(auth, "Digest ", 7) || strcmp(param(auth, "username"), "admin") || strcmp(param(auth, "uri"), target)) {
-        return false;
-    }
-
-    char ha2[33];
-    MD5Builder md5;
-    md5.begin();
-    md5Add(md5, method);
-    md5.add(target);
-    md5Hex(md5, ha2);
-
-    md5.begin();
-    md5Add(md5, ha1);
-    md5Add(md5, param(auth, "nonce"));
-    stale = strcmp(line, nonce) != 0;
-    if (param(auth, "qop")[0]) {
-        md5Add(md5, param(auth, "nc"));
-        md5Add(md5, param(auth, "cnonce"));
-        md5Add(md5, param(auth, "qop"));
-    }
-    md5.add(ha2);
-    md5Hex(md5, ha2);
-
-    const bool ok = !strcasecmp(param(auth, "response"), ha2);
-    stale = stale && ok;
-    return ok && !stale;
-}
-
-// Connection: close, the body ends with the connection (no Content-Length)
-void respond(WiFiClient& client, const char* status, const char* content, const String& body, int challenge = 0) {
-    String head("HTTP/1.1 ");
-    head += status;
-    head += "\r\nContent-Type: ";
-    head += content;
-    head += "\r\nCache-Control: no-store\r\nConnection: close\r\n";
-    if (challenge) {
-        head += "WWW-Authenticate: Digest realm=\"";
-        head += config.hostname;
-        head += "\", qop=\"auth\", nonce=\"";
-        head += nonce;
-        head += (challenge > 1) ? "\", stale=TRUE\r\n" : "\"\r\n";
-    }
-    head += "\r\n";
-    head += body;
-
-    client.write(head.c_str(), head.length());
-}
-
-void text(WiFiClient& client, const char* status, const String& body) {
-    respond(client, status, "text/plain", body);
-}
-
-constexpr char Ok[] = "200 OK";
-constexpr char BadRequest[] = "400 Bad Request";
-
+// also used inside <script>: the one escaping of ESPurna (espurna/libs/text.h)
 void json(String& out, const String& value) {
-    out += '"';
-    for (const auto c : value) {
-        if ((c == '"') || (c == '\\')) {
-            out += '\\';
-            out += c;
-        } else if ((c == '<') || (c == '>') || (static_cast<unsigned char>(c) < 0x20)) {
-            // also used inside <script>
-            out += ' ';
-        } else {
-            out += c;
-        }
-    }
-    out += '"';
+    espurna::text::jsonString(out, value);
 }
 
 // the /ota/status of the full image (ota_fetch.cpp): fwinstall.mjs tells the images apart by "image"
@@ -1509,7 +692,11 @@ const char PageScript[] PROGMEM =
     "if(!d.childNodes.length)d.textContent='No 1 MB image that fits in '+F+' bytes in '+M})"
     ".catch(e=>$('rel').textContent='Cannot read '+M+': '+e)</script></body></html>";
 
-void onRoot(WiFiClient& client) {
+void onRoot(WebRequest& request) {
+    if (!authorized(request)) {
+        return;
+    }
+
     String body(FPSTR(PageHead));
     body += "const S=";
     body += status();
@@ -1521,61 +708,28 @@ void onRoot(WiFiClient& client) {
     json(body, wifiText());
     body += ';';
     body += FPSTR(PageScript);
-    respond(client, Ok, "text/html", body);
+    respond(request, 200, "text/html", body);
 }
 
-// application/x-www-form-urlencoded or multipart/form-data (FormData of fwinstall.mjs)
-String formField(const char* body, bool multipart, const char* name) {
-    String out;
-    const size_t len = strlen(name);
-    for (const char* pos = body; (pos = strstr(pos, name)); pos += len) {
-        if (multipart) {
-            if ((pos < body + 6) || strncmp(pos - 6, "name=\"", 6) || (pos[len] != '"')) {
-                continue;
-            }
-
-            const char* value = strstr(pos, "\r\n\r\n");
-            const char* end = value ? strstr(value + 4, "\r\n--") : nullptr;
-            if (end) {
-                out.concat(value + 4, end - value - 4);
-            }
-            break;
-        }
-
-        if (((pos != body) && (pos[-1] != '&')) || (pos[len] != '=')) {
-            continue;
-        }
-
-        for (const char* value = pos + len + 1; *value && (*value != '&'); ++value) {
-            if ((*value == '%') && value[1] && value[2]) {
-                out += static_cast<char>((digit(value[1]) << 4) | digit(value[2]));
-                value += 2;
-            } else {
-                out += (*value == '+') ? ' ' : *value;
-            }
-        }
-        break;
+void onStatus(WebRequest& request) {
+    if (authorized(request)) {
+        respond(request, 200, "application/json", status());
     }
-
-    return out;
 }
 
-// url + sha256, the same checks as the full image. Stored, then the reboot takes it (one attempt)
-void onFetch(WiFiClient& client) {
-    std::unique_ptr<char[]> body((length > 0) && (length < 1024) ? new (std::nothrow) char[length + 1] : nullptr);
-    if (!body) {
-        text(client, BadRequest, "ERROR: Invalid request");
+// url + sha256 (a form, or the FormData of fwinstall.mjs), the same checks as the full image. Stored, then the reboot
+// takes it (one attempt)
+void onFetch(WebRequest& request) {
+    if (!authorized(request)) {
         return;
     }
 
-    const auto got = client.readBytes(body.get(), length);
-    body[got] = '\0';
-
-    const bool multipart = !strncmp(type, "multipart/form-data", 19);
-    const auto url = formField(body.get(), multipart, "url");
-    const auto sha256 = formField(body.get(), multipart, "sha256");
+    const char* url_param = request.param("url");
+    const char* sha_param = request.param("sha256");
+    const String url(url_param ? url_param : "");
+    const String sha256(sha_param ? sha_param : "");
     if (!validUrl(url) || !validSha256(sha256)) {
-        text(client, BadRequest, "ERROR: invalid URL or SHA-256");
+        text(request, 400, "ERROR: invalid URL or SHA-256");
         return;
     }
 
@@ -1584,113 +738,78 @@ void onFetch(WiFiClient& client) {
         {keys::Sha256, sha256},
     };
     if (!storage.write(pairs, 2, keys::Result)) {
-        text(client, "500 Internal Server Error", "ERROR: cannot write the settings");
+        text(request, 500, "ERROR: cannot write the settings");
         return;
     }
 
     last_result = String();
-    text(client, Ok, "OK, fetch");
+    text(request, 200, "OK, fetch");
     restart = true;
 }
 
-// .bin or .bin.gz: the file as the body (page of this image), or multipart/form-data as ESPurna's /upgrade
-// (scripts, "--boundary" part head, then the file, then "\r\n--boundary--\r\n")
-void onUpgrade(WiFiClient& client) {
-    size_t left = (length > 0) ? length : 0;
-    size_t size = left;
-
-    String boundary;
-    if (!strncmp(type, "multipart/form-data", 19)) {
-        boundary = param(type, "boundary");
-    }
-
-    if (boundary.length()) {
-        // part head: --boundary, headers, empty line
-        for (bool first = true;; first = false) {
-            size_t raw;
-            if (!readLine(client, raw) || (raw > left)
-                || (first && ((line[0] != '-') || (line[1] != '-') || strcmp(line + 2, boundary.c_str()))))
-            {
-                left = 0;
-                break;
-            }
-
-            left -= raw;
-            if (!first && !line[0]) {
-                break;
-            }
-        }
-
-        const size_t tail = boundary.length() + 8;
-        size = (left > tail) ? (left - tail) : 0;
-    }
-
-    LOG("Upload of %d bytes", size);
+// .bin or .bin.gz: the file as the body (page of this image), or the file of a form as ESPurna's /upgrade
+struct Upload {
+    Upload() :
+        writer(String())
+    {}
 
     Writer writer;
-    const char* error = size ? writer.begin(size) : "invalid request";
+    const char* error { nullptr };
+    size_t size { 0 };
+};
 
-    uint8_t buffer[512];
-    while (!error && (writer.done < size)) {
-        const auto got = client.readBytes(buffer, std::min(sizeof(buffer), size - writer.done));
-        error = got ? writer.write(buffer, got) : "connection lost";
-    }
-
-    if (!error && boundary.length()) {
-        const auto got = client.readBytes(buffer, 4 + boundary.length());
-        if ((got != (4 + boundary.length())) || memcmp(buffer, "\r\n--", 4)
-            || memcmp(buffer + 4, boundary.c_str(), boundary.length()))
-        {
-            error = "the upload does not end with its boundary";
+void onUpgradeBody(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool) {
+    auto* upload = static_cast<Upload*>(request.context());
+    if (!index) {
+        if (!request.authenticate("admin", config.password.c_str(), config.hostname.c_str())) {
+            return;
         }
+
+        upload = new (std::nothrow) Upload();
+        if (!upload) {
+            return;
+        }
+        request.setContext(upload, [](void* ptr) {
+            delete static_cast<Upload*>(ptr);
+        });
+
+        // placed at the end of the free space: its size first
+        upload->size = request.fileSize();
+        LOG("Upload of %d bytes", upload->size);
+        upload->error = upload->size ? upload->writer.start(upload->size) : "invalid request";
     }
 
+    if (!upload || upload->error) {
+        return;
+    }
+
+    upload->error = upload->writer.write(data, len);
+}
+
+void onUpgrade(WebRequest& request) {
+    if (!authorized(request)) {
+        return;
+    }
+
+    auto* upload = static_cast<Upload*>(request.context());
+    const char* error = upload ? upload->error : "invalid request";
+    if (!error && (upload->writer.done != upload->size)) {
+        error = "the upload is incomplete";
+    }
     if (!error) {
-        error = writer.end(String());
+        error = upload->writer.finish(String());
     }
 
     if (error) {
         LOG("Upload failed: %s", error);
-        text(client, BadRequest, String("ERROR: ") + error);
+        text(request, 400, String("ERROR: ") + error);
         return;
     }
 
     // the full image shows it in /ota/status instead of an earlier failure
-    storeResult(String("ok: uploaded ") + size + " bytes");
-    text(client, Ok, "OK");
+    storeResult(String("ok: uploaded ") + upload->size + " bytes");
+    text(request, 200, "OK");
     restart = true;
-}
-
-void handle(WiFiClient& client) {
-    client.setTimeout(15000);
-    if (!readHead(client)) {
-        text(client, BadRequest, "ERROR: Invalid request");
-        return;
-    }
-
-    const bool get = !strcmp(method, "GET");
-    const bool post = !strcmp(method, "POST");
-
-    bool stale;
-    if (!authorized(stale)) {
-        respond(client, "401 Unauthorized", "text/plain", "Authentication required", stale ? 2 : 1);
-    } else if (get && isPath("/")) {
-        onRoot(client);
-    } else if (get && isPath("/ota/status")) {
-        respond(client, Ok, "application/json", status());
-    } else if (post && isPath("/ota/fetch")) {
-        onFetch(client);
-    } else if (post && isPath("/upgrade")) {
-        onUpgrade(client);
-    } else {
-        text(client, "404 Not Found", "Not found");
-    }
-
-    // what is left of a short body, so that the client reads the answer instead of a reset
-    const auto start = millis();
-    while (client.connected() && client.available() && (millis() - start < 500)) {
-        client.read();
-    }
 }
 
 // The request of the full image, taken once: erased before anything else (a power cut or a crash during the
@@ -1768,19 +887,6 @@ void setup() {
         config.manifest = DefaultManifest;
     }
 
-    {
-        uint8_t random[16];
-        ESP.random(random, sizeof(random));
-        strcpy(nonce, hex(random, sizeof(random)).c_str());
-
-        MD5Builder md5;
-        md5.begin();
-        md5Add(md5, "admin");
-        md5Add(md5, config.hostname.c_str());
-        md5.add(config.password);
-        md5Hex(md5, ha1);
-    }
-
     WiFi.persistent(false);
     WiFi.setSleepMode(WIFI_NONE_SLEEP);
 
@@ -1791,22 +897,26 @@ void setup() {
         accessPoint();
     }
 
-    server.begin();
+    server.on("/", WebMethod::Get, onRoot);
+    server.on("/ota/status", WebMethod::Get, onStatus);
+    server.on("/ota/fetch", WebMethod::Post, onFetch);
+    server.on("/upgrade", WebMethod::Post, onUpgrade, onUpgradeBody);
+    server.begin(80);
     last_activity = millis();
     LOG("Web page on port 80, heap %d", ESP.getFreeHeap());
 }
 
 void loop() {
-    if (restart) {
-        delay(500);
-        ESP.restart();
-    }
+    server.loop();
 
-    auto client = server.accept();
-    if (client) {
-        handle(client);
-        client.stop();
-        last_activity = millis();
+    // the answer goes out first: the server runs a little longer
+    if (restart) {
+        const auto start = millis();
+        while (server.active() && (millis() - start < 500)) {
+            server.loop();
+            yield();
+        }
+        ESP.restart();
     }
 
     const auto now = millis();

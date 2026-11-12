@@ -295,4 +295,3 @@ private:
 };
 
 #endif // SENSOR_SUPPORT && EMON_ADS1X15_SUPPORT
-

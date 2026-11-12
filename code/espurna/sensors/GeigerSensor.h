@@ -229,4 +229,3 @@ constexpr BaseSensor::Magnitude GeigerSensor::Magnitudes[];
 #endif
 
 #endif // SENSOR_SUPPORT && GEIGER_SUPPORT
-

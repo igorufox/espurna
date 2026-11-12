@@ -16,9 +16,6 @@ Copyright (C) 2020-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #endif
 
 #if WEB_SUPPORT
-#if defined(ESP8266)
-#include <ESPAsyncTCP.h>
-#endif
 #include <ArduinoJson.h>
 
 #include "web.h"
@@ -291,14 +288,8 @@ STRING_VIEW_INLINE(Form, "application/x-www-form-urlencoded");
 } // namespace content_type
 
 StringView Request::param(const String& name) {
-    const auto* result = _request.getParam(name, HTTP_PUT == _request.method());
-
-    espurna::StringView out;
-    if (result) {
-        out = result->value();
-    }
-
-    return out;
+    const char* value = _request.param(name.c_str());
+    return value ? StringView(value) : StringView();
 }
 
 void Request::send(const String& payload) {
@@ -308,81 +299,82 @@ void Request::send(const String& payload) {
 
     _done = true;
     if (payload.length()) {
-        _request.send(200,
-            content_type::Text.toString(),
-            payload);
+        webSend(_request, 200, "text/plain", payload);
     } else {
-        _request.send(204);
+        _request.send(204, "", "");
     }
 }
 
 namespace {
 
-bool accepts(AsyncWebServerRequest* request, StringView pattern) {
-    STRING_VIEW_INLINE(Accept, "Accept");
-    auto* header = request->getHeader(Accept.toString());
+bool accepts(WebRequest& request, StringView pattern) {
+    const char* header = request.header("Accept");
     if (!header) {
         return true;
     }
 
-    return (header->value().indexOf(
-                StringView(content_type::Anything).toString()) >= 0)
-        || (header->value().indexOf(pattern.toString()) >= 0);
+    const String value(header);
+    return (value.indexOf(StringView(content_type::Anything).toString()) >= 0)
+        || (value.indexOf(pattern.toString()) >= 0);
 }
 
-bool accepts_text(AsyncWebServerRequest* request) {
+bool accepts_text(WebRequest& request) {
     return accepts(request, content_type::Text);
 }
 
-bool accepts_json(AsyncWebServerRequest* request) {
+bool accepts_json(WebRequest& request) {
     return accepts(request, content_type::Json);
 }
 
-bool is_content_type(AsyncWebServerRequest* request, StringView value) {
-    return value == request->contentType();
+bool is_content_type(WebRequest& request, StringView value) {
+    return String(request.contentType()).startsWith(value.toString());
 }
 
-bool is_form_data(AsyncWebServerRequest* request) {
+bool is_form_data(WebRequest& request) {
     return is_content_type(request, content_type::Form);
 }
 
-bool is_json(AsyncWebServerRequest* request) {
+bool is_json(WebRequest& request) {
     return is_content_type(request, content_type::Json);
 }
 
-// Because the webserver request is split between multiple separate function invocations, we need to preserve some state.
-// TODO: in case we are dealing with multicore, perhaps enforcing static-size data structs instead of the vector would we better,
-//       to avoid calling generic malloc when paths are parsed?
-//
-// Some quirks to deal with:
-// - handleBody is called before handleRequest, and there's no way to signal completion / success of both callbacks to the server
-// - Server never checks for request closing in filter or canHandle, so if we don't want to handle large content-length, it
-//   will still flow through the lwip backend.
-// - `request->_tempObject` is used to keep API request state, but it's just a plain void pointer
-// - `request->send(..., payload)` creates a heap-allocated `response` object that will copy the payload and tracks it by a basic pointer.
-//   In case we call `request->send` a 2nd time (regardless of the type of the send()), it creates a 2nd object without de-allocating the 1st one.
-// - espasyncwebserver will `free(_tempObject)` when request is disconnected, but only after this callbackhandler is done.
-//   make sure it's set to nullptr via `AsyncWebServerRequest::onDisconnect`
-// - ALL headers are parsed (and we could access those during filter and canHandle callbacks), but we need to explicitly
-//   request them to stay in memory so that the actual handler can work with them
+class BaseWebHandler;
 
-void attach_helper(AsyncWebServerRequest& request, RequestHelper&& helper) {
-    request._tempObject = new RequestHelper(std::move(helper));
-    request.onDisconnect(
-        [&]() {
-            auto* ptr = reinterpret_cast<RequestHelper*>(request._tempObject);
-            delete ptr;
-            request._tempObject = nullptr;
+// The state of an API request between its body pieces and its handler (the request's context, freed with it): the
+// handler that took it and the path parts of the request
+struct Context {
+    BaseWebHandler* handler { nullptr };
+    bool resolved { false };
+    std::unique_ptr<RequestHelper> helper;
+};
+
+Context* context(WebRequest& request) {
+    auto* out = static_cast<Context*>(request.context());
+    if (!out) {
+        out = new (std::nothrow) Context();
+        request.setContext(out, [](void* ptr) {
+            delete static_cast<Context*>(ptr);
         });
-    request.addInterestingHeader(
-        STRING_VIEW("Api-Key").toString());
-    request.addInterestingHeader(
-        STRING_VIEW("Accept").toString());
+    }
+    return out;
 }
 
-class BaseWebHandler : public AsyncWebHandler {
+void attach_helper(WebRequest& request, RequestHelper&& helper) {
+    auto* ctx = context(request);
+    if (ctx) {
+        ctx->helper.reset(new (std::nothrow) RequestHelper(std::move(helper)));
+    }
+}
+
+RequestHelper* helper_of(WebRequest& request) {
+    auto* ctx = static_cast<Context*>(request.context());
+    return (ctx && ctx->helper) ? ctx->helper.get() : nullptr;
+}
+
+class BaseWebHandler {
 public:
     BaseWebHandler() = delete;
+    virtual ~BaseWebHandler() = default;
 
     BaseWebHandler(const BaseWebHandler&) = delete;
     BaseWebHandler& operator=(const BaseWebHandler&) = delete;
@@ -407,6 +399,13 @@ public:
         return _parts;
     }
 
+    // takes the request (and attaches its helper)
+    virtual bool canHandle(WebRequest& request) = 0;
+    // a piece of a body that is not a small form (JSON)
+    virtual void handleBody(WebRequest&, const uint8_t*, size_t, size_t, size_t) {
+    }
+    virtual void handleRequest(WebRequest& request) = 0;
+
 private:
     String _pattern;
     PathParts _parts;
@@ -414,17 +413,13 @@ private:
 
 // 'Modernized' API configuration:
 // - `Api-Key` header for both GET and PUT
-// - Parse request body as JSON object. Limited to LWIP internal buffer size, and will also break when client
-//   does weird stuff and PUTs data in multiple packets b/c only the initial packet is parsed.
+// - the request body parsed as a JSON object, up to BodyMax bytes
 // - Same as the text/plain, when ApiRequest::handle was not called it will then call GET
-//
-// TODO: bump to arduinojson v6 to handle partial / broken data payloads
-// TODO: somehow detect partial data and buffer (optionally)
-// TODO: POST instead of PUT?
 
 class JsonWebHandler final : public BaseWebHandler {
 public:
     static constexpr size_t BufferSize { API_JSON_BUFFER_SIZE };
+    static constexpr size_t BodyMax { 1024 };
 
     JsonWebHandler() = delete;
 
@@ -441,29 +436,22 @@ public:
         _put(std::forward<Put>(put))
     {}
 
-    bool isRequestHandlerTrivial() const override {
-        return true;
-    }
-
-    bool canHandle(AsyncWebServerRequest* request) const override {
+    bool canHandle(WebRequest& request) override {
         if (!apiEnabled()) {
             return false;
         }
 
-        auto helper = RequestHelper(*request, parts());
+        auto helper = RequestHelper(request, parts());
         if (helper.match() && apiAuthenticate(request)) {
-            switch (request->method()) {
-            case HTTP_HEAD:
-                return true;
-            case HTTP_PUT:
-                if (!is_json(request)) {
+            switch (request.method()) {
+            case WebMethod::Head:
+                break;
+            case WebMethod::Put:
+                if (!is_json(request) || !_put || !_get) {
                     return false;
                 }
-                if (!_put) {
-                    return false;
-                }
-                // fallthrough!
-            case HTTP_GET:
+                break;
+            case WebMethod::Get:
                 if (!_get) {
                     return false;
                 }
@@ -471,130 +459,113 @@ public:
             default:
                 return false;
             }
-            attach_helper(*request, std::move(helper));
+            attach_helper(request, std::move(helper));
             return true;
         }
 
         return false;
     }
 
-    void _handleGet(AsyncWebServerRequest* request, Request& apireq) {
+    void _handleGet(WebRequest& request, Request& apireq) {
         DynamicJsonBuffer jsonBuffer(BufferSize);
         JsonObject& root = jsonBuffer.createObject();
         if (!_get(apireq, root)) {
-            request->send(500);
+            request.send(500, "text/plain", "");
             return;
         }
 
         if (!apireq.done()) {
-            auto* response = request->beginResponseStream(
-                content_type::Json.toString(), root.measureLength() + 1);
-            root.printTo(*response);
-            request->send(response);
+            String out;
+            root.printTo(out);
+            webSend(request, 200, "application/json", out);
             return;
         }
 
-        request->send(500);
+        if (!request.answered()) {
+            request.send(500, "text/plain", "");
+        }
     }
 
-    void _handlePut(AsyncWebServerRequest* request, const uint8_t* data, size_t size) {
-        // XXX: arduinojson v5 de-serializer will happily read garbage from raw ptr, since there's no length limit
-        //      this is fixed in v6 though. for now, use a wrapper, but be aware that this actually uses more mem for the jsonbuffer
+    void _handlePut(WebRequest& request, const uint8_t* data, size_t size) {
         auto* ptr = reinterpret_cast<const char*>(data);
         auto reader = StringView(ptr, ptr + size);
 
         DynamicJsonBuffer jsonBuffer(BufferSize);
         JsonObject& root = jsonBuffer.parseObject(reader);
         if (!root.success()) {
-            request->send(500);
+            request.send(500, "text/plain", "");
             return;
         }
 
-        auto& helper = *reinterpret_cast<RequestHelper*>(request->_tempObject);
+        auto* helper = helper_of(request);
+        if (!helper) {
+            request.send(500, "text/plain", "");
+            return;
+        }
 
-        auto apireq = helper.request();
+        auto apireq = helper->request();
         if (!_put(apireq, root)) {
-            request->send(500);
+            if (!request.answered()) {
+                request.send(500, "text/plain", "");
+            }
             return;
         }
 
         if (!apireq.done()) {
             _handleGet(request, apireq);
         }
-
-        return;
     }
 
-    void handleBody(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) override {
-        static constexpr auto BufferSize = size_t{ 1024 };
-        if (BufferSize > total) {
+    void handleBody(WebRequest& request, const uint8_t* data, size_t len, size_t index, size_t total) override {
+        auto* helper = helper_of(request);
+        if (!helper || (total > BodyMax)) {
             return;
         }
 
-        // buffer belongs to the request, only the setter itself needs the lock
-        auto& helper = *reinterpret_cast<RequestHelper*>(request->_tempObject);
-        if (total != (len + index)) {
-            auto& buffer = helper.reserved_buffer(BufferSize);
-            buffer.append(data, len);
-            return;
+        auto& buffer = helper->reserved_buffer(total);
+        if (!index) {
+            buffer = RequestBuffer();
+            buffer.reserve(total);
         }
-
-        // Setters are bound to the request (params, path, response), they cannot run later
-        // from loop(). Without the lock, nothing is changed and the client should retry.
-        espurna::system::AsyncGuard guard;
-        if (!guard.locked()) {
-            webSendBusy(request);
-            return;
-        }
-
-        if (helper.buffering()) {
-            const auto& buffer = helper.buffer();
-            _handlePut(request, buffer.data(), buffer.size());
-        } else {
-            _handlePut(request, data, total);
-        }
+        buffer.append(data, len);
     }
 
-    void handleRequest(AsyncWebServerRequest* request) override {
-        espurna::system::AsyncGuard guard;
+    void handleRequest(WebRequest& request) override {
         if (!accepts_json(request)) {
-            request->send(406,
-                content_type::Text.toString(),
-                content_type::Json.toString());
+            webSend(request, 406, "text/plain", content_type::Json.toString());
             return;
         }
 
-        auto& helper = *reinterpret_cast<RequestHelper*>(request->_tempObject);
+        auto* helper = helper_of(request);
+        if (!helper) {
+            request.send(500, "text/plain", "");
+            return;
+        }
 
-        switch (request->method()) {
-        case HTTP_HEAD:
-            request->send(204);
+        switch (request.method()) {
+        case WebMethod::Head:
+            request.send(204, "", "");
             return;
 
-        case HTTP_GET: {
-            // getters read module state and settings, 503 when busy
-            if (!guard.locked()) {
-                webSendBusy(request);
-                return;
-            }
-
-            auto apireq = helper.request();
+        case WebMethod::Get: {
+            auto apireq = helper->request();
             _handleGet(request, apireq);
             return;
         }
 
-        // see handleBody()
-        case HTTP_PUT:
-            break;
+        case WebMethod::Put:
+            if (!helper->buffering() || !helper->buffer().size()) {
+                request.send(400, "text/plain", "");
+                return;
+            }
+            _handlePut(request, helper->buffer().data(), helper->buffer().size());
+            return;
 
         default:
-            request->send(405);
+            request.send(405, "text/plain", "");
             break;
         }
     }
-
-    using BaseWebHandler::pattern;
-    using BaseWebHandler::parts;
 
 private:
     JsonHandler _get;
@@ -603,9 +574,7 @@ private:
 
 // ESPurna legacy API configuration
 // - ?apikey=... to authorize in GET or PUT
-// - ?anything=... for input data (common key is "value")
-// MUST correctly override isRequestHandlerTrivial() to allow auth with PUT
-// (i.e. so that ESPAsyncWebServer parses the body and adds form-data to request params list)
+// - ?anything=... for input data (common key is "value"), the query or a form body
 
 class BasicWebHandler final : public BaseWebHandler {
 public:
@@ -616,20 +585,16 @@ public:
         _put(std::forward<Put>(put))
     {}
 
-    bool isRequestHandlerTrivial() const override {
-        return false;
-    }
-
-    bool canHandle(AsyncWebServerRequest* request) const override {
+    bool canHandle(WebRequest& request) override {
         if (!apiEnabled()) {
             return false;
         }
 
-        switch (request->method()) {
-        case HTTP_HEAD:
-        case HTTP_GET:
+        switch (request.method()) {
+        case WebMethod::Head:
+        case WebMethod::Get:
             break;
-        case HTTP_PUT:
+        case WebMethod::Put:
             if (!is_form_data(request)) {
                 return false;
             }
@@ -638,54 +603,48 @@ public:
             return false;
         }
 
-        auto helper = RequestHelper(*request, parts());
+        auto helper = RequestHelper(request, parts());
         if (helper.match()) {
-            attach_helper(*request, std::move(helper));
+            attach_helper(request, std::move(helper));
             return true;
         }
 
         return false;
     }
 
-    void handleRequest(AsyncWebServerRequest* request) override {
-        // Authentication reads settings, and both setters and getters are bound to the request,
-        // so they cannot be handed over to loop(). 503 when busy, client should retry.
-        espurna::system::AsyncGuard guard;
-        if (!guard.locked()) {
-            webSendBusy(request);
-            return;
-        }
-
+    void handleRequest(WebRequest& request) override {
         if (!apiAuthenticate(request)) {
-            request->send(403);
+            request.send(403, "text/plain", "");
             return;
         }
 
         if (!accepts_text(request)) {
-            request->send(406,
-                content_type::Text.toString(),
-                content_type::Text.toString());
+            webSend(request, 406, "text/plain", content_type::Text.toString());
             return;
         }
 
-        const auto method = request->method();
+        const auto method = request.method();
         const auto is_put =
-            (!apiRestFul() || (HTTP_PUT == method))
+            (!apiRestFul() || (WebMethod::Put == method))
             && _check_unhandled_params(request);
 
         switch (method) {
-        case HTTP_HEAD:
-            request->send(204);
+        case WebMethod::Head:
+            request.send(204, "", "");
             return;
 
-        case HTTP_GET:
-        case HTTP_PUT: {
-            auto& helper = *reinterpret_cast<RequestHelper*>(request->_tempObject);
+        case WebMethod::Get:
+        case WebMethod::Put: {
+            auto* helper = helper_of(request);
+            if (!helper) {
+                request.send(500, "text/plain", "");
+                return;
+            }
 
-            auto apireq = helper.request();
+            auto apireq = helper->request();
             if (is_put) {
                 if (!_put(apireq)) {
-                    request->send(500);
+                    request.send(500, "text/plain", "");
                     return;
                 }
 
@@ -695,12 +654,14 @@ public:
             }
 
             if (!_get(apireq)) {
-                request->send(500);
+                if (!request.answered()) {
+                    request.send(500, "text/plain", "");
+                }
                 return;
             }
 
             if (!apireq.done()) {
-                request->send(204);
+                request.send(204, "", "");
                 return;
             }
 
@@ -708,7 +669,7 @@ public:
         }
 
         default:
-            request->send(405);
+            request.send(405, "text/plain", "");
             break;
         }
     }
@@ -721,15 +682,11 @@ public:
         return _put;
     }
 
-    using BaseWebHandler::pattern;
-    using BaseWebHandler::parts;
-
 private:
-    bool _check_unhandled_params(AsyncWebServerRequest* request) {
-        const auto params = request->params();
+    bool _check_unhandled_params(WebRequest& request) {
+        const auto params = request.params();
         for (size_t param = 0; param < params; ++param) {
-            const auto* value = request->getParam(param);
-            if (!apiReservedParam(value->name())) {
+            if (!apiReservedParam(StringView(request.paramName(param)))) {
                 return true;
             }
         }
@@ -758,6 +715,8 @@ struct Pending {
 std::forward_list<Pending<BasicHandler>> pending_basic;
 std::forward_list<Pending<JsonHandler>> pending_json;
 
+bool routed { false };
+
 } // namespace internal
 
 namespace simple {
@@ -778,8 +737,51 @@ bool error(ApiRequest& request) {
 
 STRING_VIEW_INLINE(BasePath, API_BASE_PATH);
 
+// the handler that takes this request, found once (in registration order)
+BaseWebHandler* resolve(WebRequest& request) {
+    auto* ctx = context(request);
+    if (!ctx) {
+        return nullptr;
+    }
+
+    if (!ctx->resolved) {
+        ctx->resolved = true;
+        for (auto* handler : internal::list) {
+            if (handler->canHandle(request)) {
+                ctx->handler = handler;
+                break;
+            }
+        }
+    }
+
+    return ctx->handler;
+}
+
+void onBody(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool) {
+    auto* handler = resolve(request);
+    if (handler) {
+        handler->handleBody(request, data, len, index, request.contentLength());
+    }
+}
+
+void onRequest(WebRequest& request) {
+    auto* handler = resolve(request);
+    if (!handler) {
+        request.send(404, "text/plain", "Not Found");
+        return;
+    }
+
+    handler->handleRequest(request);
+}
+
 void add(BaseWebHandler* ptr) {
-    webServer().addHandler(ptr);
+    // one route of the web server for every API path
+    if (!internal::routed) {
+        internal::routed = true;
+        const auto prefix = BasePath.toString() + '*';
+        webServer().on(prefix.c_str(), WebMethod::Any, onRequest, onBody);
+    }
+
     internal::list.emplace_front(ptr);
 }
 

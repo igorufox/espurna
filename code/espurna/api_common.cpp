@@ -98,11 +98,10 @@ void setup() {
         .onKeyCheck(onKeyCheck);
 }
 
-bool authenticate_header(AsyncWebServerRequest* request, const String& key) {
-    STRING_VIEW_INLINE(Header, "Api-Key");
+bool authenticate_header(WebRequest& request, const String& key) {
     if (settings::enabled() && key.length()) {
-        auto* header = request->getHeader(Header.toString());
-        if (header && (key == header->value())) {
+        const char* header = request.header("Api-Key");
+        if (header && key.equals(header)) {
             return true;
         }
     }
@@ -110,13 +109,13 @@ bool authenticate_header(AsyncWebServerRequest* request, const String& key) {
     return false;
 }
 
-bool authenticate_param(AsyncWebServerRequest* request, const String& key) {
+bool authenticate_param(WebRequest& request, const String& key) {
     const auto name = espurna::api::param::Key.toString();
-    const auto* param = request->getParam(name, (request->method() == HTTP_PUT));
-    return param && (key == param->value());
+    const char* param = request.param(name.c_str());
+    return param && key.equals(param);
 }
 
-bool authenticate(AsyncWebServerRequest* request) {
+bool authenticate(WebRequest& request) {
     const auto key = apiKey();
     if (key.length()) {
         return authenticate_header(request, key)
@@ -134,15 +133,15 @@ bool authenticate(AsyncWebServerRequest* request) {
 } // namespace espurna
 
 #if WEB_SUPPORT
-bool apiAuthenticateHeader(AsyncWebServerRequest* request, const String& key) {
+bool apiAuthenticateHeader(WebRequest& request, const String& key) {
     return espurna::api::web::authenticate_header(request, key);
 }
 
-bool apiAuthenticateParam(AsyncWebServerRequest* request, const String& key) {
+bool apiAuthenticateParam(WebRequest& request, const String& key) {
     return espurna::api::web::authenticate_param(request, key);
 }
 
-bool apiAuthenticate(AsyncWebServerRequest* request) {
+bool apiAuthenticate(WebRequest& request) {
     return espurna::api::web::authenticate(request);
 }
 #endif
@@ -168,4 +167,3 @@ void apiCommonSetup() {
     espurna::api::web::setup();
 #endif
 }
-

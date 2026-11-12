@@ -329,4 +329,3 @@ constexpr PMSX003Sensor::Spec PMSX003Sensor::Specs[];
 #endif
 
 #endif // SENSOR_SUPPORT && PMSX003_SUPPORT
-

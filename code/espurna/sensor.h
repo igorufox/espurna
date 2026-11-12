@@ -325,4 +325,3 @@ bool sensorReady();
 
 espurna::StringView sensorList();
 void sensorSetup();
-

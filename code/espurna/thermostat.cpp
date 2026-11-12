@@ -866,4 +866,3 @@ void thermostatSetup() {
 }
 
 #endif // THERMOSTAT_SUPPORT
-

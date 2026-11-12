@@ -130,4 +130,3 @@ class AnimDolphins : public Anim {
 };
 
 #endif  // GARLAND_SUPPORT
-

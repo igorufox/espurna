@@ -11,8 +11,10 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #if WEB_SUPPORT
 
 #include <algorithm>
-#include <atomic>
 #include <mutex>
+#include <cstring>
+#include <memory>
+#include <new>
 #include <queue>
 #include <vector>
 
@@ -22,14 +24,15 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include "espurna_tasks.h"
 #include "utils.h"
 #include "web.h"
-#include "wifi_orch.h"
+#include "espurna_wifi.h"
 
 #include "ws.h"
 #include "ws_internal.h"
 
-#include "libs/WebSocketIncomingBuffer.h"
+#include "libs/websocket.h"
 
 #include "espurna_chip.h"
+#include "adc_driver.h"
 
 // -----------------------------------------------------------------------------
 // Helpers / utility functions
@@ -38,37 +41,6 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 namespace espurna {
 namespace web {
 namespace ws {
-
-// Non-string-based printer implementation. Write char data directly, without '\0' at the end
-class AsyncWebSocketPrint {
-public:
-    AsyncWebSocketPrint(::AsyncWebSocketMessageBuffer& out) :
-        _end(reinterpret_cast<char*>(out.get() + out.length())),
-        _ptr(reinterpret_cast<char*>(out.get()))
-    {}
-
-    size_t print(char c) {
-        if (_ptr < _end) {
-            *_ptr++ = c;
-            return 1;
-        }
-
-        return 0;
-    }
-
-    size_t print(const char *s) {
-        const auto* start = _ptr;
-        while (_ptr < _end && *s) {
-            *_ptr++ = *s++;
-        }
-
-        return size_t(_ptr - start);
-    }
-
-private:
-    char* _end;
-    char* _ptr;
-};
 
 Callbacks& Callbacks::onVisible(Callbacks::OnSend cb, Callbacks::Prepend) {
     on_visible.insert(on_visible.begin(), cb);
@@ -548,7 +520,7 @@ void _wsUpdateStats(JsonObject& root) {
     root[F("rssi")] = WiFi.RSSI();
     root[F("loadaverage")] = systemLoadAverage();
 #if ADC_MODE_VALUE == ADC_VCC
-    root[F("vcc")] = ESP.getVcc();
+    root[F("vcc")] = espurna::adc::chip::vcc();
 #endif
 }
 
@@ -608,7 +580,8 @@ namespace {
 
 bool _ws_auth { espurna::web::ws::build::authentication() };
 
-AsyncWebSocket _ws("/ws");
+// the one WebSocket server of ESPurna (libs/websocket.h), /ws of the web server
+espurna::websocket::Server _ws;
 
 std::queue<espurna::web::ws::PostponedCallback> _ws_queue;
 espurna::web::ws::Callbacks _ws_callbacks;
@@ -763,13 +736,14 @@ constexpr espurna::duration::Seconds WsTimeout { WS_TIMEOUT };
 
 WsTicket _ws_tickets[WsMaxClients];
 
-void _onAuth(AsyncWebServerRequest* request) {
-    espurna::system::AsyncGuard guard;
+// a ticket for the address of a logged in browser: its WebSocket is taken then
+void _onAuth(WebRequest& request) {
     if (!webApModeRequest(request) && !webAuthenticate(request)) {
-        return request->requestAuthentication();
+        webRequestAuthentication(request);
+        return;
     }
 
-    auto ip = request->client()->remoteIP();
+    const IPAddress ip(request.remoteIp());
     auto now = WsTicket::TimeSource::now();
 
     auto it = std::begin(_ws_tickets);
@@ -785,15 +759,14 @@ void _onAuth(AsyncWebServerRequest* request) {
     if (it != std::end(_ws_tickets)) {
         (*it).ip = ip;
         (*it).timestamp = now;
-        request->send(200, "text/plain", "OK");
+        request.send(200, "text/plain", "OK");
         return;
     }
 
-    request->send(429);
+    request.send(429, "text/plain", "Too many sessions");
 }
 
-void _wsAuthUpdate(AsyncWebSocketClient* client) {
-    IPAddress ip = client->remoteIP();
+void _wsAuthUpdate(const IPAddress& ip) {
     for (auto& ticket : _ws_tickets) {
         if (ticket.ip == ip) {
             ticket.timestamp = WsTicket::TimeSource::now();
@@ -802,8 +775,7 @@ void _wsAuthUpdate(AsyncWebSocketClient* client) {
     }
 }
 
-bool _wsAuth(AsyncWebSocketClient* client) {
-    IPAddress ip = client->remoteIP();
+bool _wsAuth(const IPAddress& ip) {
     auto now = WsTicket::TimeSource::now();
 
     for (auto& ticket : _ws_tickets) {
@@ -895,7 +867,8 @@ void _wsPostParse(uint32_t client_id, bool save, bool reload) {
     });
 }
 
-void _wsParseImpl(AsyncWebSocketClient* client, uint8_t* payload, size_t length) {
+// by the client id and address: a deferred message is parsed in the loop, the client may be gone by then
+void _wsParseImpl(uint32_t client_id, const IPAddress& ip, uint8_t* payload, size_t length) {
     //DEBUG_MSG_P(PSTR("[WEBSOCKET] Parsing: %.*s\n"),
     //    length, reinterpret_cast<cont char*>(payload));
 
@@ -911,7 +884,6 @@ void _wsParseImpl(AsyncWebSocketClient* client, uint8_t* payload, size_t length)
     // Notice that the buffer payload above *is null terminated*!
     // JSON parser should be pretty efficient with the non-const payload,
     // most of the space is taken by the object key references
-    const auto client_id = client->id();
     auto* ptr = reinterpret_cast<char*>(payload);
 
     DynamicJsonBuffer jsonBuffer(512);
@@ -931,7 +903,7 @@ void _wsParseImpl(AsyncWebSocketClient* client, uint8_t* payload, size_t length)
             wsPost(client_id, [](JsonObject& root) {
                 root["pong"] = 1;
             });
-            _wsAuthUpdate(client);
+            _wsAuthUpdate(ip);
             return;
         }
 
@@ -1000,55 +972,13 @@ void _wsParseImpl(AsyncWebSocketClient* client, uint8_t* payload, size_t length)
     _wsPostParse(client_id, save, reload);
 }
 
-// AsyncWebSocket frees a client in the AsyncTCP task as soon as it disconnects, so loop() never keeps a client
-// pointer across calls, it goes through the client id. Ids of the connected clients, for the pending output check
-espurna::system::ConnectionIds _ws_ids;
+} // namespace
 
-// Any connected client with queued messages, or with sent data the peer did not acknowledge yet
+namespace {
+
+// Any connected client with queued messages
 bool _wsOutputPending() {
-    for (const auto id : _ws_ids.copy()) {
-        auto* client = _ws.client(id);
-        if (!client) {
-            continue;
-        }
-
-        if (client->queueLen()) {
-            return true;
-        }
-
-        // tcp_sndbuf() only goes back to its initial size once all of the sent data is acked
-        // (ESPAsyncTCP connected() and space() are not const)
-        auto* tcp = client->client();
-        if (tcp && tcp->connected() && (tcp->space() < TCP_SND_BUF)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-// WS events run in the AsyncTCP task on chips with parallel network tasks. When _wsEvent() could not
-// take the loop lock in time (ref. AsyncGuard), parsing (which touches settings and _ws_queue) is
-// handed over to loop() instead, in order with the following messages (ref. Deferred in espurna_tasks.h)
-espurna::system::Deferred _ws_parse_deferred;
-
-void _wsParse(AsyncWebSocketClient* client, uint8_t* payload, size_t length) {
-    if (!_ws_parse_deferred.defer()) {
-        _wsParseImpl(client, payload, length);
-        return;
-    }
-
-    // payload is only valid during this call, loop() gets a (null-terminated) copy
-    std::vector<uint8_t> copy(payload, payload + length);
-    copy.push_back('\0');
-
-    const auto client_id = client->id();
-    _ws_parse_deferred.run([client_id, copy]() mutable {
-        auto* client = _ws.client(client_id);
-        if (client) {
-            _wsParseImpl(client, copy.data(), copy.size() - 1);
-        }
-    });
+    return _ws.pending();
 }
 
 bool _wsOnKeyCheck(espurna::StringView key, const JsonVariant&) {
@@ -1110,90 +1040,42 @@ void _wsConnected(uint32_t client_id) {
     wsPostSequence(client_id, _ws_callbacks.on_data);
 }
 
-void _wsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type, void* arg, uint8_t* data, size_t len) {
-    espurna::system::AsyncGuard guard;
-    switch (type) {
-    case WS_EVT_CONNECT:
-    {
-        _ws_ids.add(client->id());
-        const auto ip = ipToString(client->remoteIP());
+// in the loop: the WebSocket server runs there (libs/websocket.h)
+void _wsEvent(espurna::websocket::Event event, uint32_t id, uint32_t ip, const uint8_t* data, size_t len) {
+    using espurna::websocket::Event;
 
+    const IPAddress address(ip);
+    switch (event) {
+    case Event::Connect:
 #ifndef NOWSAUTH
-        if (_ws_auth && !_wsAuth(client)) {
-            DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u session expired for %s\n"),
-                client->id(), ip.c_str());
-            client->close();
+        if (_ws_auth && !_wsAuth(address)) {
+            DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u session expired for %s\n"), id, ipToString(address).c_str());
+            _ws.close(id);
             return;
         }
 #endif
-
-        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u connected, ip: %s, url: %s\n"),
-            client->id(), ip.c_str(), server->url());
-
-        // _ws_queue and the update timer belong to loop(), don't touch them unlocked
-        if (guard.locked()) {
-            _wsConnected(client->id());
-            _wsResetUpdateTimer();
-        } else {
-            const auto client_id = client->id();
-            systemRunInLoop([client_id]() {
-                _wsConnected(client_id);
-                _wsResetUpdateTimer();
-            });
-        }
-
-        client->_tempObject = new WebSocketIncomingBuffer(_wsParse);
-        break;
-    }
-
-    case WS_EVT_DISCONNECT:
-        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u disconnected\n"), client->id());
-        _ws_ids.remove(client->id());
-        if (client->_tempObject) {
-            auto* ptr = reinterpret_cast<WebSocketIncomingBuffer*>(client->_tempObject);
-            delete ptr;
-            client->_tempObject = nullptr;
-        }
-        if (guard.locked()) {
-            wifiApCheck();
-        } else {
-            systemRunInLoop(wifiApCheck);
-        }
+        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u connected, ip: %s\n"), id, ipToString(address).c_str());
+        _wsConnected(id);
+        _wsResetUpdateTimer();
         break;
 
-    case WS_EVT_ERROR:
-    {
-        uint16_t code;
-        std::memcpy(&code, arg, 2);
-        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u error(%hu)\n"), client->id(), code);
-        break;
-    }
-
-    case WS_EVT_PONG:
+    case Event::Disconnect:
+        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u disconnected\n"), id);
+        wifiApCheck();
         break;
 
-    case WS_EVT_DATA:
-        if (client->_tempObject) {
-            auto *buffer = reinterpret_cast<WebSocketIncomingBuffer*>(client->_tempObject);
-            AwsFrameInfo * info = (AwsFrameInfo*)arg;
-            auto scope = _ws_parse_deferred.scope(guard);
-            buffer->data_event(client, info, data, len);
-        }
+    case Event::Message:
+        // `data` ends with 0 after `len` (libs/websocket.h); the parser takes it in place
+        _wsParseImpl(id, address, const_cast<uint8_t*>(data), len);
         break;
-
     }
 }
 
-// ESP32 and Beken: contiguous heap kept free next to a WebSocket message (the AsyncWebSocket buffer, lwIP). There `new`
-// throws on a failed allocation and the board aborts: ESP32 with Matter (free heap 24 KB, lowest 632 B) restarted in
-// AsyncWebSocket::makeBuffer 15 s after the start (11-11). The ESP8266 keeps upstream's behaviour (decision 11-10)
-#if !defined(ESP8266)
-#define WS_HEAP_GUARD 1
+// Contiguous heap kept free next to a WebSocket message (the message block, lwIP), on every chip. A failed
+// allocation aborts the board: ESP32 with Matter (free heap 24 KB, lowest 632 B) restarted in
+// AsyncWebSocket::makeBuffer 15 s after the start (11-11); the ESP8266 runs as low on heap with every module on
 constexpr size_t WsSendHeadroom { 1536 };
 constexpr size_t WsMessageHeadroom { 512 };
-#else
-#define WS_HEAP_GUARD 0
-#endif
 
 void _wsHandlePostponedCallbacks(bool connected) {
     // TODO: make this generic loop method to queue important ws messages?
@@ -1235,12 +1117,10 @@ void _wsHandlePostponedCallbacks(bool connected) {
         }
     }
 
-#if WS_HEAP_GUARD
     // the JSON buffer and then the message need that much contiguous heap: wait for it instead of aborting
     if (systemHeapStats().usable < (callbacks.buffer_hint() + WsSendHeadroom)) {
         return;
     }
-#endif
 
     // XXX: block allocation will try to create *2 next time,
     // likely failing and causing wsSend to reference empty objects
@@ -1273,6 +1153,7 @@ void _wsHandlePostponedCallbacks(bool connected) {
 }
 
 void _wsLoop() {
+    _ws.loop();
     const auto connected = wsConnected();
     _wsDoUpdate(connected);
     _wsHandlePostponedCallbacks(connected);
@@ -1281,14 +1162,17 @@ void _wsLoop() {
 } // namespace
 
 // -----------------------------------------------------------------------------
-// ArduinoJson <-> WS printer
+// ArduinoJson <-> WS: the message printed into one block, sent as one frame
 // -----------------------------------------------------------------------------
 
 namespace {
 
-void _wsPrintTo(JsonObject& root, ::AsyncWebSocketMessageBuffer* buffer) {
-    auto wrapper = espurna::web::ws::AsyncWebSocketPrint(*buffer);
-    root.printTo(wrapper);
+std::unique_ptr<char[]> _wsPrint(JsonObject& root, size_t len) {
+    std::unique_ptr<char[]> out(new (std::nothrow) char[len + 1]);
+    if (out) {
+        root.printTo(out.get(), len + 1);
+    }
+    return out;
 }
 
 } // namespace
@@ -1346,17 +1230,13 @@ espurna::web::ws::Callbacks& wsRegister() {
 
 void wsSend(JsonObject& root) {
     const auto len = root.measureLength();
-#if WS_HEAP_GUARD
     if (systemHeapStats().usable < (len + WsMessageHeadroom)) {
         DEBUG_MSG_P(PSTR("[WEBSOCKET] No heap for %u bytes, message dropped\n"), len);
         return;
     }
-#endif
-    auto* buffer = _ws.makeBuffer(len);
-
+    auto buffer = _wsPrint(root, len);
     if (buffer) {
-        _wsPrintTo(root, buffer);
-        _ws.textAll(buffer);
+        _ws.textAll(buffer.get(), len);
     }
 }
 
@@ -1366,17 +1246,13 @@ void wsSend(uint32_t client_id, JsonObject& root) {
     }
 
     const auto len = root.measureLength();
-#if WS_HEAP_GUARD
     if (systemHeapStats().usable < (len + WsMessageHeadroom)) {
         DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u no heap for %u bytes, message dropped\n"), client_id, len);
         return;
     }
-#endif
-    auto* buffer = _ws.makeBuffer(len);
-
+    auto buffer = _wsPrint(root, len);
     if (buffer) {
-        _wsPrintTo(root, buffer);
-        _ws.text(client_id, buffer);
+        _ws.text(client_id, buffer.get(), len);
     }
 }
 
@@ -1392,7 +1268,7 @@ void wsSend(espurna::web::ws::OnSend callback) {
 
 void wsSend(const char * payload) {
     if (_ws.count() > 0) {
-        _ws.textAll(payload);
+        _ws.textAll(payload, strlen(payload));
     }
 }
 
@@ -1406,15 +1282,24 @@ void wsSend(uint32_t client_id, espurna::web::ws::OnSend callback) {
 }
 
 void wsSend(uint32_t client_id, const char* payload) {
-    _ws.text(client_id, payload);
+    _ws.text(client_id, payload, strlen(payload));
 }
 
 void wsSetup() {
+    _ws.clientsMax(WsMaxClients);
     _ws.onEvent(_wsEvent);
-    webServer().addHandler(&_ws);
+
+    // /ws of the web server: the WebSocket server takes the connection
+    webServer().onUpgrade([](WebRequest& request) {
+        if (strcmp(request.url(), "/ws") != 0) {
+            request.send(404, "text/plain", "Not Found");
+            return;
+        }
+        _ws.accept(request);
+    });
 
     _ws_auth = espurna::web::ws::settings::authentication();
-    webServer().on("/auth", HTTP_GET, _onAuth);
+    webServer().on("/auth", WebMethod::Get, _onAuth);
 
     wsRegister()
         .onConnected(_wsOnConnected)

@@ -82,7 +82,7 @@ plus the manage sector was installed by the bootloader, which encrypts and adds 
 steps and continues after a reset; leave the board alone for a few minutes after writing the manage sector.
 
 ESPurna does not make such packages: on this bootloader a firmware update over Wi-Fi is refused (`info` shows
-`Tuya bootloader 3.00, no firmware OTA`), the Matter code can still be uploaded over Wi-Fi. **Replace the bootloader**
+`Tuya bootloader 3.00, no firmware OTA`), and its update partition is not ours for the modules either. **Replace the bootloader**
 with the standard Tuya one instead (CRC32 `f684a1dc`, the first `0x11000` bytes of a stock dump of another Tuya BK7231N
 board such as the CB3S or CBU ones on these pages). That is safe on the BK7231N: the UART flashing protocol is in the
 chip's ROM, a broken bootloader is rewritten over UART. One write from `0x0` (bootloader + `image_bk7231n_app.0x011000.crc`

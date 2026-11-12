@@ -4,10 +4,16 @@ MATTER MODULE
 
 (espurna_matter.h, not matter.h: on a case-insensitive file system <Matter.h> of Arduino-ESP32 found this one)
 
-Matter On/Off plug endpoints for the relays. The shared part (matter.cpp) keeps settings, the terminal commands, the
-WebUI panel and the relay link; a backend per architecture runs the Matter stack:
-- arch/beken/matter_beken.cpp: libMatterApp.a, connectedhomeip built for the BK7231N (matter-bk7231n)
-- arch/esp32/matter_esp32.cpp: the Matter library of Arduino-ESP32 core 3.x (esp_matter)
+Matter On/Off plug endpoints for the relays. One Matter layer for both chips:
+- matter.cpp: everything the chips share. Settings, the start (`matterAuto` / `matterDelay`), the relay link both ways,
+  the plug names of a bridge, the controller (fabric) list and removal, the pairing window, the pairing codes, the quiet
+  mode while a controller commissions, the log of the Matter task, the terminal commands and the MATTER panel
+- the Matter application C API below (`matter_app_*`, `matter_*`): the same functions on both chips, matter.cpp knows
+  only them. Beken: libMatterApp.a of matter-bk7231n (connectedhomeip for the BK7231N, matter_app.cpp there);
+  ESP32: arch/esp32/matter_esp32.cpp on the Matter library of Arduino-ESP32 core 3.x (esp_matter)
+- the callbacks of that API (`matter_onoff_changed`, `matter_commissioning` ...): defined once, in matter.cpp
+- backend::* below: what the SDK of the chip forces and nothing else (Beken: the bk_* platform API, factory identity,
+  FlashDB key-value store, watchdog; ESP32: IPv6 on, own identity in NVS)
 
 */
 
@@ -16,58 +22,93 @@ WebUI panel and the relay link; a backend per architecture runs the Matter stack
 #include <Arduino.h>
 
 #include <cstddef>
+#include <cstdint>
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The Matter application (the chip's implementation). Called from the loop. `endpoint` is the plug endpoint, relay + 1
+
+extern "C" {
+
+// 0 = the stack runs
+int matter_app_start(void);
+// plug endpoints the data model can have (1..4). Weak: Beken libraries before multi-plug have only endpoint 1
+uint8_t matter_app_plugs(void) __attribute__((weak));
+void matter_set_onoff(uint8_t endpoint, bool on);
+bool matter_onboarding_codes(char* manual, size_t manual_size, char* qr, size_t qr_size);
+int matter_fabric_count(void);
+// controller n (0..) of the fabric table; false after the last one. Weak: older Beken libraries do not have these
+bool matter_fabric_info(int n, uint8_t* index, uint16_t* vendor, uint64_t* node, char* label, size_t label_size)
+    __attribute__((weak));
+// what the RemoveFabric command of a controller does
+bool matter_remove_fabric(uint8_t index) __attribute__((weak));
+// the basic pairing window, when none is open
+void matter_open_window(void);
+// a work item through the Matter task, answered with matter_pong()
+void matter_ping(void);
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Callbacks of the Matter application (matter.cpp). From the Matter task unless said otherwise: applied in the loop
+
+void matter_onoff_changed(uint8_t endpoint, bool on);
+void matter_commissioning(bool active);
+void matter_window(bool open);
+void matter_pong(void);
+// one log line of the Matter stack
+void matter_log(const char* line);
+
+// Filled in the loop before matter_app_start(), constant while Matter runs (settings are not read from the Matter task)
+const char* matter_node_label(void);
+const char* matter_serial_number(void);
+const char* matter_product_label(void);
+// plug endpoints in use (the relays)
+uint8_t matter_plug_count(void);
+// device type of the plug endpoints, 0 = On/Off Plug-in Unit
+uint16_t matter_device_type(void);
+// bridged plug name (relay name `relayName<n>`, else "<hostname> <n>") and unique id ("<chip id>-<n>"), plug = relay + 1
+bool matter_plug_name(uint8_t plug, char* label, size_t label_size, char* unique, size_t unique_size);
+
+} // extern "C"
+
+// ---------------------------------------------------------------------------------------------------------------------
 
 namespace espurna {
 namespace matter {
-
-// From the backend, any task: applied in the loop
-void onoff_changed(size_t index, bool on);
-void commissioning(bool active);
-void pong();
-// pairing (commissioning) window opened / closed
-void window(bool open);
-
-// From the backend, any task: one log line (the shared part prints it from the loop)
-void log_line(const char* line);
-
-// Name of the plug of a relay when the device is a bridge (relay name `relayName<n>`, else "<hostname> <n>" counted
-// from 1) and its unique id ("<chip id>-<n>"). From the loop: settings
-void plug_name(size_t index, char* label, size_t label_size, char* unique, size_t unique_size);
-
 namespace backend {
 
-// Relays that get an endpoint (index 0 -> endpoint 1, ...)
-size_t endpoints();
+// What only the chip has, called from the loop
 
 // Default `matterDelay`, seconds between the station address and the automatic start
 uint32_t start_delay();
 
 void setup();
-bool start();
+
+// Before matter_app_start(): storage and identity of the chip. false: Matter cannot start
+bool prepare();
+
+// Device type of the plug endpoints the identity of the board asks for (0 = plug), after prepare()
+uint16_t device_type();
+
+// Station got / lost its address
 void network(bool up);
 
-void set_onoff(size_t index, bool on);
-bool codes(char* manual, size_t manual_size, char* qr, size_t qr_size);
-int fabrics();
+// From the Matter task (matter_commissioning()): what the chip needs while a controller commissions
+void commissioning(bool active);
 
-// Controllers the device was added to (fabrics): for the WebUI list, and to remove one that the controller app forgot
-// (deleting a device in the hub's phone app does not tell the device; adding it to the same app again then fails)
-struct Controller {
-    uint8_t index;
-    uint16_t vendor;
-    uint64_t node;
-    char label[33];
+// Where the device attestation comes from, no secrets
+struct Identity {
+    String vendor;
+    uint16_t vendor_id { 0 };
+    String product;
+    uint16_t product_id { 0 };
+    String source;
+    String details;
 };
 
-size_t controllers(Controller* out, size_t size);
-bool remove_controller(uint8_t index);
-void open_window();
-void ping();
+void describe(Identity& out);
 
-// "vendor (0xVID) / product (0xPID)" for the panel and the status command
-String product();
+// Forget every controller (fabrics, ACL), keep the own identity and its pairing code. Only while Matter is stopped
+bool reset();
 
-size_t heap();
 size_t heap_min();
 
 } // namespace backend
@@ -77,4 +118,3 @@ size_t heap_min();
 void matterSetup();
 
 bool matterStarted();
-

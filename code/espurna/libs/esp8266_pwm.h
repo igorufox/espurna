@@ -45,4 +45,3 @@ void set_pwm_debug_en(uint8_t print_en);
 #ifdef __cplusplus
 }
 #endif
-

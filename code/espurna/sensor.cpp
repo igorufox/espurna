@@ -3420,7 +3420,7 @@ void migrate(int version) {
 	// Also update PZEM004T energy total across multiple devices
     if (version < 5) {
         moveSetting(F("eneTotal"), firstKey(MAGNITUDE_ENERGY, suffix::Total));
-        moveSettings(F("pzEneTotal"), prefix::get(MAGNITUDE_ENERGY).toString() + StringView(suffix::Total));
+        moveSettings(F("pzEneTotal"), prefix::get(MAGNITUDE_ENERGY).toString() + StringView(suffix::Total).toString());
     }
 
     // Unit ID is no longer shared, drop when equal to Min_ or None

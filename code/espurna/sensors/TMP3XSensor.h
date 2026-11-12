@@ -90,4 +90,3 @@ class TMP3XSensor : public AnalogSensor {
 };
 
 #endif // SENSOR_SUPPORT && TMP3X_SUPPORT
-

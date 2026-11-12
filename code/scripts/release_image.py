@@ -1,15 +1,17 @@
 # Release images, every chip: the file names that the release, the WebUI release list and the boards know
-# (espurna-<name>..., ref. .github/workflows/esp32.yml), the version string of the build, the image files written next
+# (espurna-<name>..., ref. .github/workflows/esp32.yml), the image files written next
 # to the firmware and the listing of what a build made (name, size, md5).
 #
-# The chip parts stay extra scripts of their own (the ini files name them), each with what only that chip has:
-#   esp32_merge.py         ESP32: the merged image (bootloader, partitions, boot_app0, ESPurna, safeboot)
-#   beken_matter_tail.py   Beken: the link through beken_link_tail.py, the Tuya .uf2 under its release name
-#   beken_link_tail.py     Beken: the Matter tail, the OTA file of both bootloaders, the Quectel .uf2
-#   beken_version.py       Beken: the version string (ESP8266: pio_main.py)
-#   esp8266_full_image.py  ESP8266: the initial (.bin + .gz) and full images of the head + modules build
+# The release files of every chip: the initial image (module_initial_image.py: the head + the modules on by default at
+# the start of the module area; espurna-esp8266.bin(.gz), espurna-esp32.bin, espurna-beken-tuya.uf2 and
+# espurna-beken-quectel.uf2), the modules file espurna-<chip>-modules.bin and the install image espurna-<chip>.ota
+# (module_ota.py: the head(s) and every module package), all written by module_link.py and the chip's link script.
+# What only a chip has stays in a script of its own:
+#   esp32_merge.py           ESP32: the merged image (bootloader, partitions, boot_app0, ESPurna, safeboot)
+#   beken_quectel_image.py   Beken: the head for the Quectel bootloader
+# The version string of the build (APP_VERSION with the git revision): pio_main.py, the post: script of every chip.
 #
-# No SCons here: beken_link_tail.py runs under ltchiptool's python, esp8266_full_image.py also alone.
+# No SCons here: beken_quectel_image.py runs under ltchiptool's python.
 
 import gzip
 import hashlib
@@ -53,14 +55,6 @@ def quote(target):
 def enabled(env, option):
     """`<option> = yes` in the env"""
     return env.GetProjectOption(option, "no") in ("yes", "true", "1")
-
-
-def inject_version(projenv):
-    """APP_VERSION with the git revision (26.11.0-git<sha>): the WebUI release list (html/src/fwinstall.mjs) finds the
-    release the board runs by that revision"""
-    from espurna_utils import app_inject_version
-
-    app_inject_version(projenv)
 
 
 def listing(paths):

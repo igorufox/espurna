@@ -47,7 +47,6 @@ static_assert(PassphraseMax == sizeof(station_config::password), "");
 
 namespace build {
 
-static constexpr size_t PassphraseMin { 8ul };
 static constexpr int8_t RssiThreshold { -127 };
 
 static constexpr int Hidden { 0 };
@@ -355,16 +354,11 @@ bool sta_connect(const StaConnect& connect) {
 
     // The rest is related to the connection routine
     // SSID & Passphrase are u8 arrays, with 0 at the end when the string is less than it's size
-    // Perform checks earlier, before calling SDK config functions, since it would not reflect in the connection
-    // state correctly, and we would need to use the Event API once again.
+    // Lengths are checked by the common code before this call (ref. StaConnect)
 
     station_config config{};
 
     auto& ssid = connect.ssid;
-    if (!ssid.length() || (ssid.length() > SsidMax)) {
-        return false;
-    }
-
     std::copy(ssid.c_str(), ssid.c_str() + ssid.length(),
             reinterpret_cast<char*>(config.ssid));
     if (ssid.length() < SsidMax) {
@@ -373,9 +367,6 @@ bool sta_connect(const StaConnect& connect) {
 
     auto& pass = connect.passphrase;
     if (pass.length()) {
-        if ((pass.length() < build::PassphraseMin) || (pass.length() > PassphraseMax)) {
-            return false;
-        }
         config.threshold.authmode = AUTH_WPA_PSK;
         std::copy(pass.c_str(), pass.c_str() + pass.length(),
                 reinterpret_cast<char*>(config.password));
@@ -466,25 +457,6 @@ SoftApNetwork ap_current() {
 
 size_t ap_stations() {
     return WiFi.softAPgetStationNum();
-}
-
-bool garp_send() {
-    bool result { false };
-
-    for (netif* interface = netif_list; interface != nullptr; interface = interface->next) {
-        if (
-            (interface->flags & NETIF_FLAG_ETHARP)
-            && (interface->hwaddr_len == ETHARP_HWADDR_LEN)
-            && (!ip4_addr_isany_val(*netif_ip4_addr(interface)))
-            && (interface->flags & NETIF_FLAG_LINK_UP)
-            && (interface->flags & NETIF_FLAG_UP)
-        ) {
-            etharp_gratuitous(interface);
-            result = true;
-        }
-    }
-
-    return result;
 }
 
 size_t print_stations(Print& out) {

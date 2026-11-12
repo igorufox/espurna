@@ -311,4 +311,3 @@ private:
 };
 
 } // namespace espurna
-

@@ -23,4 +23,3 @@ class AnimRandCyc : public Anim {
 };
 
 #endif  // GARLAND_SUPPORT
-

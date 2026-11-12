@@ -18,6 +18,7 @@ Copyright (C) 2016-2017 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include <vector>
 
+#include "espurna_chip.h"
 #include "rfm69.h"
 #include "mqtt.h"
 #include "ws.h"
@@ -112,7 +113,7 @@ constexpr size_t node(size_t) {
 namespace settings {
 
 // Radio. Build values are the defaults; generic images have no CS pin (RFM69_CS_PIN GPIO_NONE) and the
-// module stays idle until rfm69CsGPIO is set. The radio uses the hardware SPI (GPIO12 / 13 / 14)
+// module stays idle until rfm69CsGPIO is set. The radio uses the hardware SPI (SCK / MISO / MOSI of the chip)
 uint8_t cs() {
     return getSetting("rfm69CsGPIO", build::cs());
 }
@@ -227,13 +228,7 @@ protected:
         SPI.setDataMode(SPI_MODE0);
         SPI.setBitOrder(MSBFIRST);
 
-#if defined(__arm__)
-        SPI.setClockDivider(SPI_CLOCK_DIV16);
-#elif defined(ARDUINO_ARCH_ESP8266)
-        SPI.setClockDivider(SPI_CLOCK_DIV2); // speeding it up for the ESP8266
-#else
-        SPI.setClockDivider(SPI_CLOCK_DIV4);
-#endif
+        SPI.setClockDivider(espurna::chip::rfm69_spi_divider());
 
         digitalWrite(_slaveSelectPin, LOW);
     }
@@ -500,8 +495,8 @@ void rfm69Setup() {
         return;
     }
 
-    // HSPI pins, chip select and the interrupt are no longer free for anything else
-    for (auto pin : {12, 13, 14}) {
+    // SPI pins of the chip (esp8266 HSPI: GPIO14 / 12 / 13), chip select and the interrupt are no longer free for anything else
+    for (uint8_t pin : {SCK, MISO, MOSI}) {
         gpioLock(pin);
     }
     if (!gpioLock(cs) || !gpioLock(irq)) {

@@ -95,21 +95,13 @@
                     <span class="pure-form-message">
                         Image of this board: <strong id="firmware-image">?</strong>.
                         The newest builds of <a href="https://github.com/igorufox/espurna/releases">igorufox/espurna</a>,
-                        files of this image only. <em>Install</em> downloads the file into this browser and uploads it to the board,
-                        same as <em>Upgrade</em>, and lists the steps ahead. ESP32 installs through safeboot, which may ask
-                        for the login: admin and the admin password.
-                    </span>
-                    <span class="pure-form-message">
-                        <strong>Why a Beken install can take several restarts.</strong> These boards are filled to the last
-                        byte. A 2 MiB Tuya board (CB2S, CB3S, CBU ...) has 1124 KiB for the firmware and 664 KiB for an
-                        update, while ESPurna with Matter is about 1.4 MiB. So the Matter code does not live in the firmware
-                        space but in the update space: an update overwrites it, the board restarts into the new firmware without
-                        Matter, and the same file goes up a second time to put its Matter code back. And while Matter runs,
-                        its code sits right where the update has to go, so the board first restarts without Matter. The
-                        install does all of it by itself, up to seven steps and three restarts. 4 MiB Quectel boards take the
-                        file in one go. Keep the board powered until the last step. When an install stops half-way, the board
-                        keeps running its firmware (at worst without Matter, which its MATTER page then says) and
-                        <em>Install</em> can simply be started again.
+                        files of this image only. <em>Install</em> takes the install image of the release
+                        (<code>espurna-&lt;chip&gt;.ota</code>, every chip the same way): this browser downloads it, the board
+                        restarts without modules and takes the head of the image (ESP32: through its safeboot, which may ask
+                        for the login: admin and the admin password), then the modules it runs now out of the same file,
+                        the same Apply as in MODULES. <em>Upgrade</em> above takes a <code>.ota</code> from the disk the same
+                        way. Keep the board powered until it is back; when an install stops half-way, <em>Install</em> can
+                        simply be started again.
                     </span>
                 </div>
 
@@ -117,8 +109,6 @@
                     <label>&nbsp;</label>
                     <span id="firmware-status"></span>
                 </div>
-
-                <ol id="firmware-steps" class="firmware-steps"></ol>
 
                 <ul id="firmware-releases"></ul>
             </fieldset>

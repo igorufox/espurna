@@ -12,4 +12,3 @@ https://github.com/esp8266/Arduino/issues/2283#issuecomment-299635604
 
 void ssdpSetup();
 
-

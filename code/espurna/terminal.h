@@ -34,4 +34,3 @@ void terminalRegisterCommand(espurna::terminal::Commands);
 
 void terminalWebApiSetup();
 void terminalSetup();
-

@@ -24,9 +24,9 @@ This fork adds the [ESP32 and Beken BK72xx ports](#this-fork) and [a page per ar
 
 This fork is maintained by **@igorufox**. ESPurna itself is the work of Xose Pérez (**@xoseperez**), Max Prokhorov (**@mcspr**) and the upstream contributors, credited below.
 
-It lives in the [`esp32-port`](https://github.com/igorufox/espurna/tree/esp32-port) branch: three architectures from the same source, a few generic images per chip instead of per-board builds (the board is picked after flashing, see [Picking the board](#picking-the-board)), and updates from the GitHub releases in the WebUI.
+It lives in the [`esp32-port`](https://github.com/igorufox/espurna/tree/esp32-port) branch: three architectures from the same source, one head image per chip instead of per-board builds (the board is picked after flashing, see [Picking the board](#picking-the-board)), the features as modules you tick on the board ([docs/modules.md](docs/modules.md)), and updates from the GitHub releases in the WebUI.
 
-- **ESP8266 / ESP8285** (Arduino core 3.1.2, NONOS SDK 3.0.5): four generic images instead of the 216 per-board builds, a two-step update through a mini image on 1 MB boards, lwIP and module memory tuned so that the WebUI and uploads fit in the heap, AC mains wall-switch inputs; builds in [`code/platformio_esp8266.ini`](code/platformio_esp8266.ini), [esp8266/README.md](esp8266/README.md);
+- **ESP8266 / ESP8285** (Arduino core 3.1.2, NONOS SDK 3.0.5): one head image instead of the 216 per-board builds, lwIP and memory tuned so that the WebUI and uploads fit in the heap, AC mains wall-switch inputs; builds in [`code/platformio_esp8266.ini`](code/platformio_esp8266.ini), [esp8266/README.md](esp8266/README.md);
 - **ESP32** (Arduino-ESP32 core 3 / ESP-IDF 5 via [pioarduino](https://github.com/pioarduino/platform-espressif32), PlatformIO Core 6.2 or newer; Matter On/Off plugs; safeboot flash layout with Tasmota's offsets, [`code/esp32_4mb_safeboot.csv`](code/esp32_4mb_safeboot.csv), and an own safeboot image, [`code/safeboot-app`](code/safeboot-app)), code under [`code/espurna/arch/esp32`](code/espurna/arch/esp32), [esp32/README.md](esp32/README.md);
 - **Beken BK7231N** (Tuya CB2S / CB3S / CBU and compatible modules, Tuya or Quectel bootloader) through [LibreTiny](https://docs.libretiny.eu/), Matter On/Off plugs, code under [`code/espurna/arch/beken`](code/espurna/arch/beken), builds in [`code/platformio_beken.ini`](code/platformio_beken.ini), [beken/README.md](beken/README.md).
 
@@ -34,32 +34,28 @@ How updates work on each chip, the releases and CI: [docs/updates.md](docs/updat
 
 ### Architectures
 
-One source, three architectures; every one has a page with its images, the boards run on it, their pages and its
-nuances. Boards run on the generic image of their chip; pins come from the device template (*ADMIN → Device Template*)
-or the settings, not from the build.
+One source, three architectures; every one has a page with its hardware (flash layout, bootloader, first flash by
+wire), the boards run on it and their pages. Every board runs the head image of its chip; pins come from the device
+template (*ADMIN → Device Template*) or the settings, the features from the modules ticked on the MODULES page.
 
-| Architecture | Images | Boards run on it | Page |
-|--------------|--------|------------------|------|
-| **ESP8266 / ESP8285** | `esp8266-1m`, `-1m-light`, `-1m-sensor`, `-4m` (+ the mini) | Sonoff Basic, Sonoff Mini R1/R2, Moes MS-104B, HW-622, LC-Tech ESP-12F relay x2 and x4 | [esp8266/README.md](esp8266/README.md) |
-| **ESP32** | `esp32-matter`, `esp32-matter-nspanel` (+ the safeboot) | LC-Tech ESP32 relay x2, Sonoff MINIR4, Sonoff NSPanel | [esp32/README.md](esp32/README.md) |
-| **Beken BK7231N** | `beken-matter` (+ two UART images) | Tuya TYWRA-RF (CB3S), Tuya 4-gang (CBU), Sparkleiot Mini (XH-CB2S), in-wall relay 86-TDQ (CB2S) and its bare-chip variant (QFN32), MOES MS-104B Matter (CBU) | [beken/README.md](beken/README.md) |
+| Architecture | Release files | Boards run on it | Page |
+|--------------|---------------|------------------|------|
+| **ESP8266 / ESP8285** | `espurna-esp8266.bin`, `.ota` (+ the mini for older images) | Sonoff Basic, Sonoff Mini R1/R2, Moes MS-104B, HW-622, LC-Tech ESP-12F relay x2 and x4 | [esp8266/README.md](esp8266/README.md) |
+| **ESP32** | `espurna-esp32.bin` (merged, with the safeboot), `.ota` | LC-Tech ESP32 relay x2, Sonoff MINIR4, Sonoff NSPanel | [esp32/README.md](esp32/README.md) |
+| **Beken BK7231N** | `espurna-beken-tuya.uf2`, `-quectel.uf2`, `.ota` | Tuya TYWRA-RF (CB3S), Tuya 4-gang (CBU), Sparkleiot Mini (XH-CB2S), in-wall relay 86-TDQ (CB2S) and its bare-chip variant (QFN32), MOES MS-104B Matter (CBU) | [beken/README.md](beken/README.md) |
 
-How updates work on each chip, the releases and CI: [docs/updates.md](docs/updates.md). A small head image with modules
-you switch on per board (ESP8266 1 MB, prototype): [docs/modules.md](docs/modules.md).
+The head, the modules, installing and updating them, recovery: [docs/modules.md](docs/modules.md), the same on every
+chip. The releases, CI and what each chip does below the install: [docs/updates.md](docs/updates.md).
 
 ### Download
 
-Every push to `esp32-port` is built by [GitHub Actions](https://github.com/igorufox/espurna/actions/workflows/esp32.yml) and published as one [release](https://github.com/igorufox/espurna/releases/latest) for all chips, tag `esp32-YYMMDD-<sha7>`; the newest 5 are kept. The same files with their SHA-256 are listed in [`firmware.json`](https://igorufox.github.io/espurna/firmware.json) on GitHub Pages, which the WebUI reads. The latest image is always at `https://github.com/igorufox/espurna/releases/latest/download/espurna-<image>...`, e.g. [espurna-esp32-matter.bin](https://github.com/igorufox/espurna/releases/latest/download/espurna-esp32-matter.bin). Which image and how to flash it the first time: the page of the architecture.
+Every push to `esp32-port` is built by [GitHub Actions](https://github.com/igorufox/espurna/actions/workflows/esp32.yml) and published as one [release](https://github.com/igorufox/espurna/releases/latest) for all chips, tag `esp32-YYMMDD-<sha7>`; the newest 5 are kept. The same files with their SHA-256 are listed in [`firmware.json`](https://igorufox.github.io/espurna/firmware.json) on GitHub Pages, which the WebUI reads. The latest file is always at `https://github.com/igorufox/espurna/releases/latest/download/espurna-<name>`, e.g. [espurna-esp32.bin](https://github.com/igorufox/espurna/releases/latest/download/espurna-esp32.bin). How to flash it the first time: the page of the architecture.
 
 ### Updating
 
-WebUI, *ADMIN*, OTA: *Upgrade* with a file as before, or *From GitHub*, *Show releases*: the kept releases with the files of the image the board runs, *Install*. The WebUI lists the steps ahead and goes through them by itself; the board restarts during the install.
+WebUI, *ADMIN*, OTA, *From GitHub*, *Show releases*, *Install*; or the MODULES page with the `.ota` of a release. Every chip the same way: the board restarts without modules, takes the new head when the release has another build, then the modules it had on are written again (the Apply). The WebUI lists the steps and goes through them by itself; the board restarts during the install. Only how the head reaches the flash differs: the ESP32 through its safeboot, the Beken into its bootloader's update partition, the ESP8266 behind the running image.
 
-- **ESP32**: through the safeboot, which downloads the image's `.bin` itself and writes its ESPurna part; two-slot boards are migrated on the way.
-- **Beken**: the browser uploads `espurna-beken-matter.bin`, the board writes the part for its bootloader; on 2 MiB Tuya boards in up to three uploads of the same file, because the Matter code lives in the update partition ([how](docs/updates.md#2-mib-tuya-boards-where-matter-lives)).
-- **ESP8266**: one upload on the 4 MB layout; on 1 MB boards the mini first, which downloads the compressed full image from GitHub Pages.
-
-Details, limits and what happens when an install stops half-way: [docs/updates.md](docs/updates.md).
+Details: [docs/modules.md](docs/modules.md#updating-the-head), [docs/updates.md](docs/updates.md).
 
 ### Picking the board
 
@@ -74,14 +70,14 @@ One env per chip: each build makes the head image, every module and the release 
 
 ```
 cd code
-pio run -c platformio_esp8266.ini -e esp8266         # ESP8266: espurna-esp8266.bin (.gz), -modules.bin, -full.bin
+pio run -c platformio_esp8266.ini -e esp8266         # ESP8266: espurna-esp8266.bin (.gz), .ota
 pio run -d safeboot-app                              # ESP32: the safeboot first (ESP-IDF project), then
-pio run -c platformio_esp32.ini -e esp32             #   espurna-esp32.bin (merged), -modules.bin
-py -3 -m platformio run -c platformio_beken.ini -e beken   # Beken: espurna-beken-tuya.uf2, -modules.bin
+pio run -c platformio_esp32.ini -e esp32             #   espurna-esp32.bin (merged), .ota
+py -3 -m platformio run -c platformio_beken.ini -e beken   # Beken: espurna-beken-tuya.uf2, -quectel.uf2, .ota
 pio run -d mini-app                                  # the mini, for 1 MB boards on a full image of an older release
 ```
 
-The files are in `code/.pio/build_<chip>/<chip>/`. Details per architecture on its page.
+The files are in `code/.pio/build_<chip>/<chip>/`.
 
 ---
 

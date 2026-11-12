@@ -235,4 +235,3 @@ class MHZ19Sensor : public BaseSensor {
 };
 
 #endif // SENSOR_SUPPORT && MHZ19_SUPPORT
-

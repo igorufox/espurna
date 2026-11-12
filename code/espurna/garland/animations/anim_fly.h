@@ -43,4 +43,3 @@ class AnimFly : public Anim {
 };
 
 #endif  // GARLAND_SUPPORT
-

@@ -425,4 +425,3 @@ class DHTSensor : public BaseSensor {
 };
 
 #endif // SENSOR_SUPPORT && DHT_SUPPORT
-

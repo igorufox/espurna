@@ -292,4 +292,3 @@ template<typename T>
 bool delSetting(const String& key, unsigned char index) {
     return delSetting({key, index});
 }
-

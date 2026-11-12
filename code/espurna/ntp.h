@@ -24,4 +24,3 @@ String ntpDateTime();
 bool ntpSynced();
 
 void ntpSetup();
-

@@ -1,195 +1,185 @@
 # Modules: a small head image and the parts you switch on
 
-**Status.** ESP8266 1 MB: prototype, works on two bench Sonoff Basic boards. ESP32 and Beken: in progress, see
-[ESP32](#esp32) and [Beken](#beken). One build per chip makes the head, every module and the release files; CI
-(`.github/workflows/esp32.yml`) builds the three and publishes them (see [Building](#building)). How it works inside: [How it works](#how-it-works).
-
-The rest of this page is the ESP8266; the ESP32 and Beken work the same way for the user (the same MODULES page, the
-same commands), the differences are in their sections.
+**Status: prototype.** One loader for ESP8266, ESP32 and Beken (`code/espurna/modules.cpp`, its interface
+`modules_core.h`); a chip adds only what its hardware forces ([Per chip](#per-chip-what-the-hardware-forces)). One build
+per chip makes the head, every module and the release files; CI (`.github/workflows/esp32.yml`) builds the three and
+publishes them ([docs/updates.md](updates.md)).
 
 ## What it is
 
-A board runs the **head**, a generic 1 MB image with what every board needs: Wi-Fi, relays, buttons, LEDs, the web
-server, MQTT, API, telnet, NTP, OTA. Everything else is a **module**: a separate piece of code, or the WebUI page, that
-the board writes into the free flash behind the head and starts at boot. You switch modules on and off on the board's
-MODULES page; nothing has to be built for a board.
+Every board runs the **head**, one image per chip with what every board needs: Wi-Fi, relays, buttons, LEDs, the web
+server with a small page of its own, the API, the terminal and telnet, NTP, OTA, the module loader, and the forwarders
+of the MQTT API (relays, buttons ... call MQTT as always, the `mqtt` module takes over when it is on). Everything else
+is a **module**: a separate piece of code, or data such as the WebUI, that the board writes into the free flash of its
+module area and starts at boot. You pick the modules on the board's MODULES page; nothing has to be built for a board.
 
-What it gives a 1 MB board:
+What it gives:
 
-- **updates without the mini.** The head is small enough for its `.bin.gz` to fit behind it, so one upload updates it
-  (the modules are removed first and put back after);
-- **one image** instead of `esp8266-1m`, `-1m-light` and `-1m-sensor`, and boards that needed two of them (light +
-  power meter, light + RF) get both;
-- **a board that always answers.** Without modules, with a module of another build, or after a module crashed it, the
-  board runs the head: relays, buttons, MQTT, API, telnet and its own small page keep working.
-
-## Where it is going
-
-The owner's rules for the design (2026-11-09); what is not done yet is marked so.
-
-- **One mechanism on every chip.** ESP8266, ESP32 and Beken share the loader core; a chip only adds its backend.
-- **Three builds, one per chip.** Each makes the head, every module and the release files; no feature variants.
-- **Two images per chip:** *initial* (the head) and *full* (the head with every module already in the flash).
-- **Everything off until someone needs it.** In *full* the modules lie in the flash switched off and take no RAM;
-  switching one on gives it its RAM then, without a download and without a restart. So the full image cannot fail on
-  RAM at build time. (ESP8266: built, the full image has its 11 modules off with no RAM taken and 40 KB of flash
-  free; switching on from it is not tested on a board yet. ESP32 and Beken: next.)
-- **An empty head.** Everything goes to modules; the head keeps relays, buttons, LEDs, Wi-Fi, web, MQTT, OTA and
-  what reaches a broken board: telnet, the API, NTP.
-- **Dependencies.** A module that needs another (Domoticz needs MQTT) switches it on with itself; a module cannot be
-  switched off or removed while one that is on needs it.
-- **Smaller modules.** `sensors` and `light` are to be split into many small ones; the Tuya dimmer becomes a module;
-  with many modules the panel groups them.
-- **4 MB boards** move to the new layout (the 1 MB head, settings carried over).
+- **one image per chip** instead of an image per feature set, and boards that needed two feature sets get both;
+- **head updates on small flash**: the head is small enough for its update to fit where the modules were;
+- **a board that always answers**: without modules, with modules of another build, or after a module crashed it, the
+  board runs the head: relays, buttons, the API, telnet and the head's own page keep working.
 
 ## Modules
 
-| Module | What it brings | Flash | RAM | IRAM code |
-|--------|----------------|------:|----:|----------:|
-| `webui` | the full WebUI (without it the head shows its own small page) | ~68 KB | | |
-| `sensors` | the sensor manager and the drivers of `esp8266-1m-sensor` (HLW8012, CSE7766, PZEM, DHT, Dallas, BMx280, analog, NTC, digital ...) | ~92 KB | 2.9 KB | 1.1 KB |
-| `light` | lights: PWM, my92xx | ~40 KB | 1.5 KB | |
-| `rf` | 433 MHz RF bridge (rc-switch) | ~16 KB | 1.3 KB | 0.8 KB |
-| `scheduler` | the scheduler | ~29 KB | 0.5 KB | |
-| `alexa` | Alexa (local, FauxmoESP) | ~22 KB | 0.6 KB | |
-| `mdns` | mDNS (`<hostname>.local`) | ~25 KB | 0.2 KB | |
-| `homeassistant` | Home Assistant MQTT discovery | ~15 KB | 0.3 KB | |
-| `domoticz` | Domoticz | ~8 KB | 0.2 KB | |
-| `thingspeak` | Thingspeak | ~7 KB | 0.2 KB | |
+One list for every chip ([`code/espurna/config/head.h`](../code/espurna/config/head.h), `ESPURNA_MODULES`); a chip
+leaves out only what cannot exist on it.
 
-Sizes of the 2026-11-08 build; every build differs a little.
+| Module | What it brings | Chips |
+|--------|----------------|-------|
+| `webui` | the full WebUI (data, no code: `code/html/build/index.html.gz` of `npx gulp build`); without it the head shows its own page | all |
+| `captive` | the captive portal of the board's access point; **on out of the box** | all |
+| `mqtt` | MQTT | all |
+| `homeassistant` | Home Assistant MQTT discovery (needs `mqtt`) | all |
+| `domoticz` | Domoticz (needs `mqtt`) | all |
+| `thingspeak` | Thingspeak | all |
+| `sensors` | the sensor manager and its drivers (power meters, DHT, Dallas, BMx280, analog, NTC, digital ...) | all |
+| `light` | lights: PWM, my92xx | all |
+| `rf` | 433 MHz receiver (rc-switch) | all |
+| `scheduler` | the scheduler | all |
+| `alexa` | Alexa (local, FauxmoESP) | all |
+| `mdns` | mDNS (`<hostname>.local`); not next to `matter`, whose stack answers mDNS itself | all |
+| `matter` | Matter On/Off plugs | ESP32, Beken |
+| `nspanel` | the Sonoff NSPanel display protocol, its pages, the TFT upload | ESP32 |
+| `test` | a tiny module for testing the loader | all |
 
-Modules that use each other do it through the head: Home Assistant, Domoticz and Thingspeak show the sensors' values
-when `sensors` is on, the scheduler and Alexa drive the lights when `light` is on. Without the other module they simply
+A module that needs another one (`requires`) cannot be switched on without it, and the other one cannot be switched off
+or removed while it is needed. Modules that use each other's functions do it through the head (Home Assistant shows the
+sensors when `sensors` is on, the scheduler drives the lights when `light` is on); without the other module they simply
 have less to show.
 
-The limit is RAM, not flash. Every module's variables come from two fixed areas of the head: the **RAM arena** (5 KB)
-and the **RAM in IRAM** (17.5 KB of the instruction RAM the head leaves free). The heap pays too: a module's start
-takes some (`sensors` ~0.5 KB, `alexa` ~0.8 KB, the others less), and every request to the web server costs several
-KB while it runs. The head alone has 15-17 KB of free heap at rest; with `sensors` and four more modules 6-9 KB: the
-WebUI works but slowly, one browser tab at a time. All ten modules fit the flash, not the heap. Switch on what the
-board needs.
+The limit is RAM, not flash. Every module's variables (`.data` + `.bss`) need room, and so do the allocations it makes
+when it starts; the MODULES page shows both against what the board has. Switch on what the board needs.
 
-## Files
+## Release files
 
-| File | What | For |
-|------|------|-----|
-| `espurna-esp8266.bin` / `.bin.gz` | the head ("initial"), the 1 MB layout on every chip size | serial at `0x0`, or the `.bin.gz` over the web from ESPurna (through the mini from a full image of an older release on a 1 MB board) |
-| `espurna-esp8266-full.bin` | the head with all modules already in the flash, and the modules file behind 1 MB (all of them off, no RAM taken until switched on) | serial at `0x0` on a 4 MB board, or anything that should have everything at once; also a source of modules for the MODULES page |
-| `espurna-esp8266-modules.bin` | the modules file: every module of the build | the source the MODULES page takes modules from |
+| Chip | Initial image (first flash by wire, and OTA of the head) | Install image (head + every module) |
+|------|-----------------------------------------------------------|-------------------------------------|
+| ESP8266 | `espurna-esp8266.bin` (serial at `0x0`; the WebUI takes its `.bin.gz` from GitHub Pages) | `espurna-esp8266.ota` |
+| ESP32 | `espurna-esp32.bin`, the merged image (serial at `0x0`) | `espurna-esp32.ota` |
+| Beken | `espurna-beken-tuya.uf2`, `espurna-beken-quectel.uf2` (one per bootloader) | `espurna-beken.ota` (both heads) |
 
-Modules belong to the head they were built with: a module of another build is not started (the page shows it as
-*stale*). After a head update, take the modules from the same build.
+- **The initial image** is the head and, at the start of the module area, a modules file of the modules that are on out
+  of the box (`MODULES_ON_BY_DEFAULT` of `head.h`: `captive`). At its first boot a head with no directory of its own
+  installs them with the same Apply as below, erases the file and restarts.
+- **The install image** (`.ota`, [`scripts/module_ota.py`](../code/scripts/module_ota.py)) holds the head (on the Beken
+  one per bootloader) and the modules file (`EMC2`, every module package of the build). It is not for a serial flash
+  tool: the WebUI takes it apart.
 
-## Switching modules on and off
+A module belongs to the head build it was linked against: a module of another build is not started (the page shows it
+as *stale*). The install image always carries the head and the modules of the same build.
 
-**MODULES** in the WebUI menu (between ADMIN and DEBUG). Without the `webui` module the head answers on `/` with
-its own page (`/modules.html`), which does the same.
+## Installing modules: Apply
 
-1. **Source.** Pick `espurna-esp8266-modules.bin` or `espurna-esp8266-full.bin` from the disk. A 4 MB board
-   flashed with `full` has the modules file in its own flash: the page takes it by itself. *From GitHub* takes the
-   file of the running build from the release list once CI publishes it.
-2. **Switch** a module on or off. The page shows what it takes of the flash, the RAM and the IRAM, and the meters
-   what is left: yellow from 85 %, red when it does not fit. Pointing at a module shows its share on the meters before
-   you switch it on.
-3. **RAM: DRAM or IRAM.** Each module's variables go to the RAM arena (DRAM) or to the RAM in IRAM. IRAM has much more
-   room but takes only 32-bit access; byte access is handled by the core, slower, and never from an interrupt: `light`
-   and `rf` (interrupt code) stay in DRAM. `sensors` in IRAM is the usual choice. The choice can be changed on a
-   module that is already on: the board writes a second copy next to the old one and switches over at the restart.
-4. **On** starts the module at once (a module that is not on the board yet is written into the free flash first),
-   together with the modules it needs. **Off** keeps it in flash and stops it at the next restart (the yellow bar
-   *Restart now*); it is refused while a module that is on needs it. **Remove** takes a module that is off out of the
-   flash. Changing the RAM of a running module also waits for the restart.
+**MODULES** in the WebUI menu; without the `webui` module the head answers on `/` with its own page (`/modules.html`,
+`modules_page.h`), which does the same.
 
-The board does the placing itself: the page (or any other client) only uploads the module, the board picks the free
-flash and RAM for it. No step needs GitHub or internet: the files can be on a PC.
+1. **Source.** The `.ota` of a release, from the disk or *From GitHub* (the release the board runs).
+2. **Tick** the modules. The page shows what each takes of the flash and the RAM, and the meters what is left.
+3. **Apply.** The WebUI ([`code/html/src/install.mjs`](../code/html/src/install.mjs), `installImage`) does:
+   1. when the board runs another head build than the modules of the file: the head first ([below](#updating-the-head));
+   2. `POST /modules/off`: the off mark in the directory, a restart without module code;
+   3. `POST /modules/apply` with the ticked names and the modules file: the board writes the ticked packages one after
+      another into the area from the top down, relocating each as it arrives, builds the new directory in memory and
+      writes it once at the end, then restarts;
+   4. the modules start at the next boot.
+
+The Apply plans the RAM of every module anew each time, no reserve kept: first the chip's fixed pool (ESP8266: the IRAM
+after the head's code; Beken: the free data TCM; ESP32: none), largest module first, then one heap block that the next
+boot takes before the modules start.
+
+An Apply that breaks off (power cut, the page closed) leaves the old directory with the off mark: the board comes up
+with the network and without modules, the page says why. Apply again; *Start the modules again* (`MODULES.ON`) brings
+the old ones back when their packages were not overwritten (a package that was is refused by its CRC).
+
+Without an Apply: `MODULES.ENABLE` / `MODULES.DISABLE` (or `POST /modules/enable`) mark an installed module on or off,
+in effect at the next restart; `MODULES.REMOVE` takes out a module that is off.
+
+The firmware panel (*ADMIN*, OTA, the release list, *Install*) runs the same `installImage` with the `.ota` of the
+release and keeps the modules the board has on.
 
 ## Updating the head
 
-While modules run, an update is refused (`409 modules installed, MODULES.OFF first`): it would overwrite the code the
-board is running.
+While module code runs, an update is refused (`409 modules installed, MODULES.OFF first`): it would overwrite what the
+board runs. So the head is always updated the same way: restart without modules, the head, then the Apply of the modules
+of the same build. The WebUI does it from the `.ota`; only how the head reaches the flash differs per chip
+(`HEAD_ROUTES` of `install.mjs`):
 
-1. `MODULES.OFF` in the terminal (DEBUG page, telnet or API): the board removes its modules and restarts on the head.
-2. Upload the new `espurna-esp8266-1m-initial.bin.gz` (ADMIN, upgrade): it fits behind the head, no mini step.
-   With little free heap the upload can answer `Out of memory` once (it needs a 4 KB buffer in one piece): upload
-   again.
-3. On the MODULES page, switch the modules on again from the modules file of the same build (they start at once).
+| Chip | Restart | The head goes to |
+|------|---------|------------------|
+| ESP8266 | `POST /modules/off` | `/upgrade`; written behind the head, into the module area, eboot copies it at the restart |
+| Beken | `POST /modules/off` | `/upgrade`, the head of the board's bootloader; written into the bootloader's `download` partition, which is the module area |
+| ESP32 | `POST /safeboot/switch`, the board restarts into its safeboot | the safeboot's `/upload`; it writes app0 and boots ESPurna |
 
-Relays, MQTT and the API work through the whole update; the WebUI is back with step 3 (until then the head's page).
+How each chip's update works below that (the safeboot, the bootloaders, the mini for older ESP8266 images):
+[docs/updates.md](updates.md).
 
 ## When a module goes wrong
 
-The board protects itself and turns the modules off. A watch on a 1-second SDK timer (it keeps running when the main
-loop hangs) restarts the board at once when, with module code running:
+The board protects itself and turns the modules off (the off mark in the directory, with the reason). While module code
+runs, a watch on a 1-second timer (it keeps running when the main loop hangs) restarts the board at once when:
 
 - free heap stays below 2 KB for 5 seconds;
 - memory allocations keep failing for 20 seconds;
 - the main loop has not come round for 20 seconds.
 
-Also after three boots in a row crashed within the first minute with the modules running.
+Also after three boots in a row crashed within their first 5 minutes with module code running. The count lives in the
+directory sector (a pair of words per boot, written without an erase), the same on every chip: the Beken bootloader
+clears the whole RAM at every reset, so nothing else survives a crash there.
 
-Before it comes to that, the head keeps a 1.5 KB heap reserve for the Wi-Fi SDK and for `new`: an allocation that
-fails gets the reserve and is tried again (without it the SDK wrote through a NULL pointer, or `new` aborted the
-board with *OOM*). New connections are refused while less than 5 KB is free or three are already open to the same
-port.
-
-The board then runs the head only. The MODULES page (or the head's page) says why, in red, with *Start the modules
-again*; the terminal command is `MODULES.ON`. ESPurna's unstable mode (after crashes) never starts modules either.
-
-| What happened | What the board does | Way back |
-|---------------|---------------------|----------|
-| No internet | head and modules keep running | modules from a file on a PC |
-| Module upload broken off, power cut | the module is not listed, or its check sum fails: not started | upload it again |
-| A module crashes the board | modules off after 3 crashed boots, head only | fix or leave that module off, *Start the modules again* |
-| Head updated, modules of the old build | not started, shown as stale | switch them on from the new build's file |
-| Head update stopped half-way | new head, no modules, the head's page on `/` | switch the modules on from the file |
-| Apply broken off (power cut, the page closed) | modules off with the reason (the old directory stays: the new one is written only at the very end), but the new packages may already lie over the old ones: those fail their check sum and are not started | Apply again |
-
-### Steps of a board in trouble, and the ways back without a soldering iron
+### Steps of a board in trouble
 
 The board goes down step by step and keeps the network as long as it can:
 
 1. **Normal**: network and modules.
-2. **Without modules**: network, WebUI, telnet and OTA, the modules off with the reason shown (the off mark of the
-   directory). The board gets here
-   - after crashes with the modules running (the guard above);
+2. **Without modules**: network, WebUI (the head's page), telnet and OTA; the modules off with the reason shown. The
+   board gets here
+   - after crashes with module code running (the guard above);
    - when a boot follows a crash and one more crash would make it unstable (`SYSTEM_CHECK_MAX`);
    - when the power was switched on three times in a row, each time for less than 10 seconds (the light switch of a
      board in a wall);
    - after the unstable mode (step 3) ends.
-3. **Unstable**: its own access point `ESPURNA-xxxxxx` (192.168.4.1) and telnet, no network, never any module. After
-   10 minutes without a crash it restarts into step 2, not into the modules.
+3. **Unstable**: ESPurna's own access point `ESPURNA-xxxxxx` (192.168.4.1) and telnet, no network, never any module.
+   After 10 minutes without a crash (`SYSTEM_CHECK_EXIT`) it restarts into step 2, not into the modules.
 
 Ways back, from the cheapest:
 
 - **Wait**: from the unstable mode the board comes back by itself after 10 minutes, with the network and without the
-  modules; the MODULES panel says why, *Start the modules again* or an Apply brings them back.
-- **The light switch** (a board in a wall): on and off three times, each time less than 10 seconds, then on: the board
-  comes up without the modules.
+  modules; *Start the modules again* or an Apply brings them back.
+- **The light switch** (a board in a wall): on and off three times, each time less than 10 seconds, then on.
 - **Its access point**: join `ESPURNA-xxxxxx`, telnet 192.168.4.1: `MODULES.OFF`, `reset`, or an OTA from there.
-- **ESP32**: the safeboot (its own small image in the factory partition) takes a new ESPurna over the network even
-  when ESPurna does not start; it opens its own access point when it cannot join the Wi-Fi.
-- **A wire**: only when nothing above works (no access point, no network at all).
+- **ESP32 only**: the safeboot (its own image in the factory partition) takes a new ESPurna over the network even when
+  ESPurna does not start ([docs/updates.md](updates.md#esp32-the-safeboot)).
+- **A wire**: only when nothing above works.
+
+| What happened | What the board does | Way back |
+|---------------|---------------------|----------|
+| No internet | head and modules keep running | the `.ota` from a PC |
+| A module crashes the board | modules off after 3 crashed boots, head only | Apply without that module, or *Start the modules again* |
+| Head of another build (an update without the Apply) | its modules are not started, shown as stale | Apply from the `.ota` of the head's build |
+| Apply broken off | modules off with the reason, the old directory kept | Apply again |
+| The bases of a module moved since the Apply (a flash map, the heap block at another address) | rewritten for this boot from its relocation maps; Beken: not started, *Apply again* | Beken: Apply again |
 
 ## Commands and endpoints
 
 | Terminal | |
 |----------|-|
-| `MODULES` | the module list: where each one is, its state, free flash, the arenas |
-| `MODULES.OFF` | remove all modules, restart (before a head update) |
-| `MODULES.ENABLE <name>` / `MODULES.DISABLE <name>` | switch a module (and what it needs) on at once / off at the next restart, it stays in flash |
-| `MODULES.REMOVE <name>` | take a module out of the flash |
-| `MODULES.ON` | start the modules again after the guard turned them off |
+| `MODULES` | the module list: where each one is, its state, free flash, the heap block and the fixed pool |
+| `MODULES.OFF` | modules off from the next boot (the off mark), restart; also from the unstable mode |
+| `MODULES.ON` | clear the off mark, restart with the modules |
+| `MODULES.ENABLE <name>` / `MODULES.DISABLE <name>` | an installed module (and what it needs) on / off at the next restart |
+| `MODULES.REMOVE <name>` | take a module that is off out of the directory |
+| `MODULES.TEST.LOWHEAP`, `MODULES.TEST.CRASH` | test the guard |
 
 | HTTP (Digest auth as `/upgrade`) | |
 |------|-|
-| `GET /modules` | JSON: modules, states, flash and RAM use, the guard's reason; heap: `heap` (measured inside the request, lower by its own cost), `heap_loop` (as the main loop sees it), `heap_low` (lowest of the last 1-2 minutes), per module the heap its start took; the reserve: `reserve`, `reserve_used`, `oom`, `refused` |
-| `POST /modules/upload` | a module package or the modules file (`?names=a,b` picks parts), `?ram=iram`, `?replace=1` (new copy of an installed module) |
-| `POST /modules/enable` | `name=`, `on=1` (start now, with what it needs) or `on=0` (off at the restart, stays in flash) |
-| `POST /modules/remove` | take a module out of the flash |
-| `POST /modules/on` | start the modules again |
+| `GET /modules` | JSON: head id (`md5`), image, the modules with their states and what they take, the off reason, flash and RAM meters, heap |
+| `POST /modules/off` | the off mark, restart (the first step of the Apply and of a head update) |
+| `POST /modules/apply` | `names=a,b,c`, then the modules file (EMC2): the Apply |
+| `POST /modules/on` | clear the off mark, restart |
+| `POST /modules/enable` | `name=`, `on=1` / `on=0`: at the next restart |
+| `POST /modules/remove` | `name=`: take out a module that is off |
 | `POST /modules/restart` | restart |
-| `GET /modules/file` | the modules file in the board's own flash (4 MB boards with `full`), 404 otherwise |
 | `GET /modules.html` | the head's page |
 
 ## Building
@@ -197,229 +187,113 @@ Ways back, from the cheapest:
 ```
 cd code
 pio run -c platformio_esp8266.ini -e esp8266
-pio run -c platformio_esp32.ini -e esp32           # the safeboot first: pio run -d safeboot-app
-pio run -c platformio_beken.ini -e beken
+pio run -d safeboot-app                        # ESP32: the safeboot first, then
+pio run -c platformio_esp32.ini -e esp32
+py -3 -m platformio run -c platformio_beken.ini -e beken
 ```
 
-One env per chip, one build: the env's own image is the head; the objects of `custom_modules` are compiled in the same
-build with `custom_module_flags` (into `mod-src/` next to the head's `src/`, the libraries only the modules use,
-`custom_module_libs`, into `libmod/`), then every module is linked against this head
+One env per chip, one build: the env's own image is the head; the module objects (`custom_modules` of the ini on top of
+the list in `head.h`) are compiled in the same build with `custom_module_flags` (into `mod-src/`, the libraries only the
+modules use, `custom_module_libs`, into `libmod/`), then every module is linked against this head
 ([`scripts/module_link.py`](../code/scripts/module_link.py) and the chip's `<chip>_module_link.py`). When a module needs
-a head function the head dropped, the link adds it to `custom_head_exports`, links the head again and the modules
-after it, in the same build. Output in `.pio/build_<chip>/<chip>/`: the release files, `module-<name>.module` /
-`.elf` / `.map`.
-
-### The ESP8266 flash layout
-
-One head image for every ESP8266: the 1 MB layout (`eagle.flash.1m.ld`) on every chip size, the settings in sectors
-251 / 250 (`0xFB000` / `0xFA000`), the module directory at `0xF9000`; behind 1 MB on bigger chips the modules file
-(`full`). Boards installed with the old 4 MB layout (`esp8266-4m` image, the HW-622 board build, 1.15 builds made for
-4 MB) keep their settings at the end of the 4 MB (sectors 1012-1019) and move them once: settings backup (WebUI,
-*ADMIN*, *Backup*), the update, restore. On those boards `0xF9000`-`0xFFFFF` was part of the old sketch area and may
-hold bytes of an older image: settings with a bad checksum start as defaults, but the SDK's RF calibration and system
-parameter sectors (`0xFC000`-`0xFFFFF`) are not checked. A serial flash of `espurna-esp8266-full.bin` sets the whole
-first 1 MB; the move over the web is not tested on a board yet.
-
-## ESP32
-
-**Status (2026-11-09): the head and all modules run on the lab board (LC-Tech ESP32 relay x2), installed by a
-script; the MODULES panel on the ESP32 is not tested yet.**
-
-What it is for: one ESP32 image instead of `esp32-matter` and `esp32-matter-nspanel`; Matter, the NSPanel and the
-integrations only on the boards that use them.
-
-- **The head** (`esp32`): relays, buttons, LEDs, Wi-Fi, the web server with the embedded WebUI (with the MODULES
-  panel, so no `webui` module on the ESP32), MQTT, API, telnet, mDNS, the safeboot, the module loader. 1.5 MB
-  (the image with Matter inside was 2.3 MB). Free heap without modules: 139 KB (38 KB with Matter in the image).
-- **Modules:**
-
-  | Module | Flash | RAM |
-  |--------|------:|----:|
-  | `matter` | 950 KB | 61.6 KB (the Matter stack's static pools) |
-  | `nspanel` (display protocol, pages, TFT upload) | 367 KB | 5.3 KB |
-  | `scheduler` | 51 KB | 0.2 KB |
-  | `sensors` | 38 KB | 0.4 KB |
-  | `alexa` | 25 KB | 0.2 KB |
-  | `homeassistant` | 17 KB | 0.2 KB |
-  | `thingspeak` | 9 KB | 0.3 KB |
-  | `domoticz` | 8 KB | 0.1 KB |
-  | `test` | 1 KB | 0.1 KB |
-
-- **Matter or the NSPanel, not both:** together they need more than the 64 KB RAM limit, and the heap would run out.
-  Tested: the six integrations + `nspanel`, 117 KB free; the six integrations + `matter`, Matter started with its
-  controllers kept, 31-37 KB free (lowest 12.8 KB).
-- **Where they live:** the free tail of the app partition behind the head (1.3 MB with this head), its last sector is
-  the module list. No partition change, so no safeboot migration.
-- **RAM:** one area taken from the heap at boot, as large as the installed modules need (64 KB at most), only when a
-  code module is installed. No IRAM choice.
-- **NSPanel pins** are settings now: `nspTx`, `nspRx`, `nspPower`, `nspBuzzer` (-1 = none; a pin a relay uses is not
-  taken); the defaults are the NSPanel's.
-- **Switching on:** the same endpoints as on the ESP8266 (an install takes 0.4-30 s, `matter` the longest), from the
-  modules file `espurna-esp32-modules.bin` (all 9 modules, 1.56 MB) picked from the disk. There is no modules
-  file in the board's flash (`/modules/file` answers 404).
-- **Head update:** through the safeboot, as every ESP32 update; it rewrites the app partition, so the modules are gone
-  or left stale afterwards: switch them on again from the same build's modules file.
-- **Build:** `pio run -c platformio_esp32.ini -e esp32` (the head `espurna-esp32.bin`, every module and the modules
-  file); output in `.pio/build_esp32/esp32/`.
-
-Tested on the lab board: install over `/modules/upload`, restart, every module *running*; the RAM area grows with the
-installed set and lands at another address, all modules were relocated for it and started; a module installed before
-there was an area moves into it at the next boot; a module of another head is *stale* and does not start; a removed
-module keeps its flash until the restart. The NSPanel module ran its display protocol and mounted its file system on
-a board without a display (relays untouched); a real panel is not tested.
-
-On the shared loader core (head 1.5 MB, 137.6 KB free heap, 1.3 MB for modules): `test`, `scheduler`, `alexa`,
-`homeassistant`, `domoticz`, `thingspeak` installed in 0.3-3 s each and started at once, all running after the
-restart with their RAM moved into the area, 130 KB free heap with the six; the WebUI MODULES panel reads the board
-without errors. Matter switches IPv6 on through the shared Wi-Fi code (`wifiIpv6()`). Not tested yet on the core:
-`sensors`, `matter`, `nspanel`, an install from the panel's switch, the guard on the ESP32.
-
-## Beken
-
-**Status (2026-11-09): the head and three modules, Matter among them, run on a bench board** (BK7231N, 2 MiB, Tuya bootloader, the
-[square relay](../beken/86-tdq.md#the-same-relay-with-the-chip-on-the-board-bare-bk7231n-qfn32)).
-
-What it is for: Matter as a module. The Matter code (~490 KB) does not fit next to ESPurna in the app partition of a
-2 MiB board; as a module it goes into the space behind the head.
-
-- **The head** (`beken`): all integrations except Thingspeak and Domoticz, RF, the embedded WebUI (with the
-  MODULES panel). Its update image is 624 KiB of the 664 KiB update partition: 40 KiB left to grow, after that the
-  WebUI or more integrations have to leave the head.
-- **Modules:** `thingspeak` (5.4 KB), `domoticz` (7.7 KB) and `matter`: the Matter stack and ESPurna's Matter code,
-  480 KB, RAM 36.8 KB, installs in about 14 s. The head carries what Matter needs from it: lwIP with IPv6 and the
-  Matter library's lwIP settings, no mDNS of its own (Matter's stack answers mDNS), a 38 KiB RAM area in the on-chip
-  RAM (the 4 KiB settings buffer moved to the main RAM for it); that head is 958 KB. All three modules: 136 KiB of
-  flash and 1.9 KiB of the RAM area left.
-- **Matter from the module** works as in the one-piece image: `MATTER.*` commands, `matterAuto 1` starts it after
-  the boot, its own identity (development attestation, serial = chip id) on boards without factory data. Free heap
-  27.7 KB with Matter running (lowest 17.7 KB), 38.9-40 KB after boot without it.
-- **Where they live:** the bootloader's update partition (656 KiB for modules), its last sector is the module list.
-- **RAM:** a fixed area of the head in the fast on-chip RAM (16 KiB, 38 KiB in the head for Matter); it costs the
-  heap nothing.
-- **Switching on:** the same endpoints and commands as on the ESP8266, from the modules file
-  `espurna-beken-modules.bin`; an install takes under a second. The WebUI panel on the Beken is not tested yet.
-- **Head update:** `/upgrade` answers 409 while modules run; `MODULES.OFF`, upload the new head's `.uf2`, switch the
-  modules of the new build on again. The head update goes into the space the modules had.
-- **Build:** `pio run -c platformio_beken.ini -e beken` (the head `espurna-beken-tuya.uf2`, every module and the modules
-  file; output in `.pio/build_beken/beken/`).
-
-Tested on the bench board: install over `/modules/upload`, both modules running after the restart (their WebUI keys,
-a relay change reaching Thingspeak), a second copy of a running module placed and started, a damaged package and a
-module of another head refused, the head update with `MODULES.OFF` and the modules of the new build installed again;
-the guard (twice, also on the shared loader core): three boots in a row crashed within 60 s with the modules running
-(the unstable mode in between included) turned them off with the reason in the module list, `MODULES.ON` brought them
-back. Matter from the module: commissioned with a matter-server controller (basic information, IPv4 and two IPv6
-addresses), On/Off both ways (the controller switches the relay, the relay reports back), started again by itself after
-a restart with `matterAuto 1`, the controller kept. Not tested: other Matter controllers, boards with the Quectel
-bootloader (4 MiB, no encryption), the MOES bootloader 3.00 (no update partition for us), a power cut during an
-install, the WebUI panel (the modules were installed by a script).
+a head function the head dropped, the link adds it to `custom_head_exports`, links the head again and the modules after
+it, in the same build. Then [`module_initial_image.py`](../code/scripts/module_initial_image.py) writes the initial
+image(s), [`module_ota.py`](../code/scripts/module_ota.py) the install image,
+[`release_image.py`](../code/scripts/release_image.py) names the release files. Output in
+`.pio/build_<chip>/<chip>/`: the release files, `module-<name>.module` / `.elf` / `.map`, `espurna-<chip>-modules.bin`.
 
 ## How it works
 
-One loader core for every chip (`espurna/modules.cpp`: the module list, upload and placing, `/modules`, the guard,
-the `MODULES*` commands) with a backend per chip (`modules_esp8266.cpp`, `arch/esp32/modules_esp32.cpp`,
-`arch/beken/modules_beken.cpp`: flash access, mapping, RAM areas), and one link script (`scripts/module_link.py`, a
-`Linker` class each chip extends). The parts below are per chip.
+### The module area and its directory
 
-### ESP8266 flash map (1 MB)
+Each chip has one module area in flash (where it lies: [per chip](#per-chip-what-the-hardware-forces)). Its last sector
+is the directory (`EDR6`: up to 16 entries, each with its slot, size, CRC, RAM offset, the three bases its words hold
+now, its flags; the off reason; a generation and a CRC), the sector under it a second copy: a write goes into the older
+copy, a read takes the newest whole one, so a power cut loses only that write. The second half of the directory sector
+holds the guard's boot marks (at 2048) and the power marks of the light switch (at 3072), written without an erase.
+Modules lie from the top of the area down, in whole sectors, each followed in its slot by its relocation maps.
 
-    0x000000  head (eboot + the image)                       grows up
-    ...       free
-    ...       modules, 4 KB aligned, best fit                grows down
-    0x0F8000  module list, second copy
-    0x0F9000  module list
-    0x0FA000  settings (EEPROM_Rotate pool), RF cal, SDK Wi-Fi
+### The package
 
-The module list is the sector under the settings' rotation pool, computed at runtime (`base() - size()` of
-EEPROM_Rotate): inside the pool a settings write erased it. It also holds the guard's reason, so the decision
-survives crashes and an older settings copy. Since 2026-11-09 evening it is written twice with a checksum, the second
-copy in the sector under it (not tested on a board yet).
+One format on every chip (version 4, `modules_core.h` `PackageVersion`): its header, then per 4 KiB chunk of the image
+a map of 2 bits per word (0 as is, 1 flash data view, 2 RAM, 3 code), a branch list (Beken's `BL` / `BLX` calls into the
+head, which are PC-relative and have to move with the module; empty on the other chips), then the chunk. The board
+relocates each chunk as it arrives and writes it; the CRC is checked over what was received and what was written.
 
-### Build: the head links alone, each module links against it
+### The build
 
-- **Head** first, the generic image without the module code; its identity is the MD5 of the image.
-- **Each module** is linked separately against the head (`--just-symbols=head.elf`, `--emit-relocs`, `--no-relax`) at
-  placeholder bases for its flash, RAM and IRAM. With `-mlongcalls` and no relaxation every call into the head goes
-  through an absolute literal, never a PC-relative `CALL0` that would break when the module moves. The package holds
-  the bytes and the word offsets that carry an address of the module itself (per kind: flash, RAM, IRAM).
-- **Head exports.** `--gc-sections` drops head functions only a module uses; the module link writes them to
-  `modules_exports.txt` and the head keeps them (one more build of the head, the link says so).
+- **Head** first, the generic image; its identity is the MD5 of the image (ESP8266, ESP32) or the first 16 bytes of its
+  GNU build id (Beken).
+- **Each module** is linked separately against the head (`--just-symbols`, `--emit-relocs`, no relaxation) twice, at two
+  sets of placeholder bases; the words that differ by the delta of one base are its relocations. Every call into the
+  head goes through an absolute address, except Beken's Thumb `BL`, which goes into the branch list.
 - **No second copy of stateful code.** A library member that the head links and that keeps state (interrupt table,
-  timer1, UART, the `MDNS` object) exists only in the head; other members may come with the module.
-- **Modules call each other through the head.** Functions one module provides to others (magnitudes of `sensors`,
-  33 light functions, `domoticzSendMagnitude` ...) are forwarders in the head to slots the provider fills at its start;
-  the provider's own symbols are renamed, so a call always lands in the head. Providers start first (priority).
+  timers, UART, the `MDNS` object) exists only in the head; other members may come with the module.
+- **Modules call each other through the head.** Functions one module provides to others are forwarders in the head to
+  slots the provider fills at its start; the provider's own symbols are renamed, so a call always lands in the head.
+  Providers start first.
 - Windows: the exports go to the linker as one script with `EXTERN()`, a long `-Wl,-u` list broke the command line.
 
-### Install and boot
+### Boot
 
-- The board takes the package as it arrives, picks the slot (best fit in the flash, in the RAM arena, in the IRAM
-  arena or the RAM in IRAM), adds the slot bases to the listed words on the way and writes sector by sector; CRC32
-  over what was received and what was written; the list entry is written last (the commit).
-- **Off without RAM** (flag `EntryUnplaced` in `modules_core.h`; ESP8266 built, not tested on a board yet): a module that
-  is off and not running gives its RAM back (`arch::placeable`); switching it on makes the core call `arch::place`,
-  which takes RAM for it and lays its image out again in its own slot from the package kept on the board. A module
-  switched off while running keeps its RAM until the restart. Backends without it (ESP32, Beken for now) keep the RAM
-  of every installed module.
-- At boot, before ESPurna's own setup: skip everything in unstable mode or with a guard reason; per entry the head's
-  MD5, the CRC, copy `.data` into the arena, zero `.bss`, IRAM code into its arena, run the module's own init array,
-  call its entry.
-- **Heap reserve** (`heap_reserve_esp8266.cpp`, head only): the SDK's allocators (`pvPortZalloc`,
-  `sdk3_pvPortMalloc`, `pvPortRealloc`) and `operator new` / `new[]` are wrapped with `--wrap`
-  (`scripts/esp8266_head_exports.py`); a `tcp_accept` gate drops new connections when the heap is short or a port
-  has three. The guard checks run on an SDK timer, not in `loop()`, and restart with `system_restart()` right away.
-- **RAM in IRAM**: the head runs the core's 48 KB IRAM layout with `NON32XFER_HANDLER`; the IRAM after its code takes
-  module variables. Only 32-bit access is native, the rest goes through the core's exception handler.
+Before ESPurna's own setup: the guard's marks, the power marks, the step before the unstable mode; nothing starts in
+the unstable mode or with an off mark. The heap block of the modules' statics is taken early, before the heap is cut
+up, as large as the directory says. Then per entry: the head id, the CRC; when its bases moved since the Apply, the module is rewritten in place from
+its maps (not on the Beken); `.data` copied, `.bss` zeroed, IRAM code copied (ESP8266), its init array run, its entry
+called. Data modules (the WebUI) are only registered.
+
+## Per chip: what the hardware forces
+
+### ESP8266
+
+    0x000000  head (eboot + the image)                       grows up
+    ...       module area: modules from the top down
+    0x0F8000  directory, second copy
+    0x0F9000  directory
+    0x0FA000  settings (EEPROM_Rotate pool), RF cal, SDK Wi-Fi
+
+- **Area:** from the end of the head to the directory, the sector under the settings' rotation pool (computed at runtime
+  from EEPROM_Rotate). A module runs from the flash mapped at `0x40200000`, 32-bit reads only.
+- **Fixed pool:** the IRAM after the head's code (the core's 48 KB IRAM layout, 16 KB flash cache): the Apply puts the
+  modules' IRAM code at its start, then statics. Only 32-bit access is native there; the core's `NON32XFER_HANDLER`
+  emulates the rest, slower and never from an interrupt, so a module whose statics take byte access from an interrupt
+  goes to the heap block. The head keeps 4 KB of heap for itself when the Apply sizes the block.
+- **Heap reserve** (`heap_reserve_esp8266.cpp`): the SDK's allocators and `operator new` are wrapped; a failing
+  allocation gets a 1.5 KB reserve and is tried again (without it the SDK wrote through a NULL pointer or `new` aborted
+  the board). New connections are refused while less than 5 KB is free or three are open to the same port.
+- **One layout for every chip size:** the 1 MB layout (`eagle.flash.1m.ld`), settings in sectors 251 / 250
+  (`0xFB000` / `0xFA000`). Boards installed with the old 4 MB layout (`esp8266-4m` image, the HW-622 board build,
+  1.15 builds for 4 MB) keep their settings at the end of the 4 MB (sectors 1012-1019) and move them once: settings
+  backup (WebUI, *ADMIN*, *Backup*), the update, restore. On those boards `0xF9000`-`0xFFFFF` was part of the old sketch
+  area and may hold bytes of an older image: settings with a bad checksum start as defaults, but the SDK's RF
+  calibration and system parameter sectors (`0xFC000`-`0xFFFFF`) are not checked.
 
 ### ESP32
 
-The modules sit in the tail of app0 and are mapped twice at boot, before anything else maps flash: once into the
-instruction bus, once into the data bus (`esp_partition_mmap` INST and DATA). A module is linked with three bases:
-data view (header, `.rodata`, the init image of `.data`), RAM (`.data` + `.bss`), instruction view (code). The maps
-land at the same addresses for a given head; each list entry keeps the bases its words hold, and when a map or the RAM
-area moved, the loader relocates the module again from the maps kept behind it in flash. The RAM area is taken from
-the heap at boot, sized for the installed modules (64 KB at most), only when a code module is installed. Package
-version 2 (the ESP8266 loader refuses it). Modules see only the symbols the head defines; the Matter module carries
-its own copy of `ErrorStr` (without `thread_local`); no module uses TLS.
+- **Area:** the tail of app0 behind the head (or a data partition named `modules`), the directory in its last sector.
+  The safeboot layout leaves app0 2880 KB ([docs/updates.md](updates.md#esp32-the-safeboot)).
+- **Maps:** the whole area is mapped twice at boot, before anything else of ESPurna maps flash: into the instruction bus
+  (code, kind 3) and the data bus (header, `.rodata`, the `.data` image, kind 1). When the maps come out at other
+  addresses at a boot, the modules are rewritten for them (the boot relocation above).
+- **No fixed pool:** the statics go into the heap block; the head keeps 32 KB of heap for itself (Wi-Fi, web, TLS).
+- Modules see only the symbols the head defines; no module uses TLS (the Matter module carries its own `ErrorStr`).
 
-### Beken
+### Beken (BK7231N)
 
-- **Flash format.** The CPU reads flash through the controller's mapping: logical address `L` is stored at flash
-  offset `L / 32 * 34`, every 32 bytes followed by their CRC-16, the words XORed with a pad made from `L` and the chip's
-  key. The board writes modules in that format itself. The key is found at boot by comparing a block of the running
-  app read raw with the same block read through the mapping (the Tuya key or the zero key of unencrypted boards); an
-  unknown key means no modules. A module takes whole sectors and starts at the first 32-byte boundary of its sector.
+- **Area:** the bootloader's `download` partition (Tuya 2 MiB: `0x12A000`, 664 KiB; Quectel 4 MiB: `0x286000`). Its
+  first sector stays free (the RBL header the bootloader looks at), its last sector is the directory. The head's own
+  OTA image goes there too, so a head update needs the modules off.
+- **Flash format.** The CPU reads flash through the controller's mapping (XIP): logical address `L` is stored at flash
+  offset `L / 32 * 34`, every 32 bytes followed by their CRC-16, the words encrypted with the chip's key. The board
+  writes modules in that format itself. The key is found at boot by comparing a block of the running app read raw with
+  the same block read through the mapping (the Tuya key, or the zero key of unencrypted boards); an unknown key means no
+  modules. A module starts at the first 32-byte boundary of its sectors.
+- **No rewrite at boot.** The 34-byte blocks cross the sectors, a rewrite in place needs the whole image in RAM: when a
+  module's bases moved since the Apply it stays off with *Apply again*.
 - **Read cache.** The mapping caches 16-32 KiB and nothing in the SDK flushes it: after writing a module the loader
   reads 64 KiB of the app before it checks the module through the mapping. A block with a bad CRC read through the
   mapping stalls the chip, so every check reads the blocks raw first.
-- **Update partition.** Its first sector stays free (the bootloader looks at it), its last sector is the module list
-  (also the guard's boot marks), modules from the top down in whole sectors.
-- **Relocation for Thumb.** The module is linked twice at two flash and two RAM bases; the package (version 3) holds the
-  words that hold an address of the module and a list of the `BL` / `BLX` calls into the head, which are PC-relative and
-  have to move when the module moves (taken from the relocation records and from the linker's interworking veneers).
-  The RAM area is fixed for a head build, so a module is relocated once, at the install.
-- **Head identity:** the first 16 bytes of the head's GNU build id.
-- **Guard.** The bootloader clears the RAM at every reset, so the crash count lives in the module list sector: a pair
-  of words per boot with module code (*started*, then *finished* after 60 s or a normal restart), cleared bit by bit
-  without an erase. Three unfinished boots in a row turn the modules off. The restart that ends the unstable mode does
-  not count as a clean end.
-- An upload takes about 8.6 KB of heap.
-
-## Long run (ESP8266)
-
-Sonoff Basic with the head and `scheduler`, `alexa`, `homeassistant`, `webui`, 2 h 5 min under load: `/modules` every
-minute, the WebSocket terminal (uptime, heap, a relay switch) every 5 minutes, the head's page every 15 minutes, the
-WebUI with the MODULES panel in a headless browser every 20 minutes, a module replaced (`replace=1`) every hour.
-
-- **No leak.** 124 heap readings as the main loop sees it: median 10.5 KB in the first half hour, 11.1 KB in the
-  last, the trend +29 bytes an hour (noise); lowest 6.3 KB, highest 16 KB.
-- No restart (2 h 5 min of uptime in a row), no crash, the guard never fired.
-- 18 failed allocations in 2 hours, the SDK reserve never needed, 2 connections refused.
-- The WebUI with the panel loaded 5 times of 6 (one took longer than 60 s); the module replacement worked 2 of 2.
-
-## Not tested yet (ESP8266)
-
-- a 4 MB board with `full` (no 4 MB bench board): flashing at `0x0` and the modules file from its own flash;
-- a power cut during a module upload;
-- Home Assistant, Domoticz and Thingspeak against real servers;
-- ArduinoOTA while modules run: it removes the module list and goes on (the module code runs until the restart).
+- **Fixed pool:** the data TCM the head leaves free (60 KiB TCM next to the 192 KiB main RAM; the Wi-Fi driver and the
+  head's `.bss` moved there by `scripts/beken_tcm.py` take the rest). The head keeps 8 KB of heap for itself.
+- **Matter as a module** needs from the head lwIP with IPv6 and the Matter library's lwIP options
+  ([beken/README.md](../beken/README.md#2-matter)).

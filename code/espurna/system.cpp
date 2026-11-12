@@ -5,7 +5,7 @@ SYSTEM MODULE
 Copyright (C) 2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 Common part, shared by every architecture. Chip specific parts are implemented
-in arch/<arch>/system_<arch>.cpp (ref. espurna::system::arch in system.h)
+in arch/<arch>/system_<arch>.cpp (ref. espurna::system::chip in system.h)
 
 */
 
@@ -41,56 +41,78 @@ in arch/<arch>/system_<arch>.cpp (ref. espurna::system::arch in system.h)
 #include <vector>
 
 // -----------------------------------------------------------------------------
-// DEFERRED CALLBACKS (ref. system.h systemRunInLoop())
+// DEFERRED CALLBACKS (ref. espurna_tasks.h runInLoop())
 // -----------------------------------------------------------------------------
 
 // Network handlers that could not take the loop lock in time (ref. AsyncGuard) hand
 // their work over to the loop task. Queue is only ever touched under the mutex (no-op on esp8266,
 // where everything runs in the same context), callbacks themselves run outside of it, in the order
-// they were queued.
+// they were queued. Bounded: a stuck loop() must not take the heap with it (copies of MQTT messages, WS frames)
 namespace run_in_loop {
 namespace {
 
 espurna::system::Mutex mutex;
 std::vector<std::function<void()>> queue;
-
-// Normally only a few callbacks are queued between two loop() iterations. A lot more means
-// loop() is not keeping up with the network (or is stuck), which is reported once per burst.
-constexpr size_t QueueWarning { 32 };
+size_t bytes { 0 };
+size_t dropped { 0 };
 bool warned { false };
 
 } // namespace
 
-void push(std::function<void()> callback) {
-    size_t size;
+bool push(std::function<void()> callback, size_t size) {
+    using namespace espurna::system;
+
+    bool out { false };
     bool warn { false };
+    size_t count;
+    size_t lost;
     {
-        espurna::system::MutexLock lock(mutex);
-        queue.push_back(std::move(callback));
-        size = queue.size();
-        if (!warned && (size > QueueWarning)) {
-            warned = true;
-            warn = true;
+        MutexLock lock(mutex);
+        if (queue.empty()
+            || ((queue.size() < RunInLoopMax) && ((bytes + size) <= RunInLoopBytesMax)))
+        {
+            queue.push_back(std::move(callback));
+            bytes += size;
+            out = true;
+        } else {
+            ++dropped;
+            if (!warned) {
+                warned = true;
+                warn = true;
+            }
         }
+        count = queue.size();
+        lost = dropped;
     }
 
     // outside of the queue mutex, debug output from other tasks is queued as well
     if (warn) {
-        DEBUG_MSG_P(PSTR("[MAIN] Loop is falling behind, %u deferred callbacks queued\n"), size);
+        DEBUG_MSG_P(PSTR("[MAIN] Loop is falling behind, %u deferred callbacks queued, %u dropped\n"),
+            count, lost);
     }
+
+    return out;
 }
 
 void drain() {
     std::vector<std::function<void()>> current;
+    size_t lost { 0 };
     {
         espurna::system::MutexLock lock(mutex);
         if (queue.empty()) {
             return;
         }
         current.swap(queue);
-        if (current.size() <= QueueWarning) {
+        bytes = 0;
+        if (warned) {
             warned = false;
+            lost = dropped;
+            dropped = 0;
         }
+    }
+
+    if (lost) {
+        DEBUG_MSG_P(PSTR("[MAIN] %u deferred callbacks were dropped\n"), lost);
     }
 
     // anything queued while running goes into the next loop() iteration
@@ -101,10 +123,12 @@ void drain() {
 
 } // namespace run_in_loop
 
-void systemRunInLoop(std::function<void()> callback) {
-    if (callback) {
-        run_in_loop::push(std::move(callback));
+bool espurna::system::runInLoop(std::function<void()> callback, size_t bytes) {
+    if (!callback) {
+        return false;
     }
+
+    return run_in_loop::push(std::move(callback), bytes);
 }
 
 // -----------------------------------------------------------------------------
@@ -578,7 +602,7 @@ bool flag { true };
 } // namespace internal
 
 uint32_t system_reason() {
-    return system::arch::reset_reason();
+    return system::chip::reset_reason();
 }
 
 // prunes custom reason after accessing it once
@@ -1120,7 +1144,7 @@ void reset(CustomResetReason reason) {
 // always needs a reason, so it can be displayed in logs and / or trigger some actions on boot
 void pending_reset_loop() {
     if (internal::reset_reason != CustomResetReason::None) {
-        system::arch::restart();
+        system::chip::restart();
     }
 }
 
@@ -1144,7 +1168,7 @@ duration::Seconds uptime() {
 }
 
 void loop() {
-    system::arch::loop();
+    system::chip::loop();
     ::run_in_loop::drain();
     pending_reset_loop();
     load_average::loop();
@@ -1152,7 +1176,7 @@ void loop() {
 }
 
 void setup() {
-    system::arch::pre_setup();
+    system::chip::pre_setup();
 
     boot::hardware();
     boot::customReason();
@@ -1170,7 +1194,7 @@ void setup() {
     espurnaRegisterLoop(loop);
     heartbeat::init();
 
-    system::arch::setup();
+    system::chip::setup();
 }
 
 } // namespace

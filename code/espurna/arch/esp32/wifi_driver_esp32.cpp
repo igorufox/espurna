@@ -9,7 +9,7 @@ itself (events, link state, connection, scan, AP settings) is the shared one, wi
 
 #if defined(ARDUINO_ARCH_ESP32)
 
-#include "../../wifi_driver_rtos.h"
+#include "../rtos/wifi_driver_rtos.h"
 
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -107,21 +107,32 @@ void stop_station() {
 void dropped() {
 }
 
-// ESP-IDF reports the 802.11 reason of the AP
-bool synthetic_reasons() {
-    return false;
+// ESP-IDF reports the 802.11 reason and the AP as they are
+bool map_reason(int reported, const Mac& reported_bssid, const Mac&, LinkLost& out) {
+    out.reason = reported;
+    out.bssid = reported_bssid;
+    out.ours = false;
+    return true;
 }
 
-bool ap_changed_recently() {
-    return false;
+// only the late disconnect of the previous attempt is not about this one
+Attempt attempt_event(const AttemptDisconnect& disconnect, Mac& bssid) {
+    if (disconnect.stale) {
+        return Attempt::Ignored;
+    }
+
+    bssid = disconnect.bssid;
+    return Attempt::Failed;
 }
 
 const char* reason_name(int reason) {
     return WiFi.disconnectReasonName(static_cast<wifi_err_reason_t>(reason));
 }
 
-bool scan_done_event() {
-    return false;
+// WiFi.scanComplete(), keeps waiting past its own timeout until ours (ref. rtos::ScanTimeout)
+bool scan_finished(rtos::Scan& scan, int16_t& count) {
+    count = WiFi.scanComplete();
+    return (count >= 0) || rtos::expired(scan.at, rtos::ScanTimeout);
 }
 
 // WiFi.setHostname() only takes effect when the STA interface is created (before WiFi.mode(WIFI_STA)), so DHCP sent
@@ -134,14 +145,11 @@ void before_connect(const StaConnect& connect) {
     }
 }
 
-void ap_start(const char* ssid, const char* passphrase, uint8_t channel) {
-    const IPAddress ip(192, 168, 4, 1);
-    WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0));
-    if (!WiFi.softAP(ssid, passphrase, channel)) {
-        DEBUG_MSG_P(PSTR("[WIFI] SoftAP start failed\n"));
-    }
+uint8_t ap_prepare(uint8_t channel) {
+    return channel;
+}
 
-    apply_sleep();
+void ap_started() {
     apply_tx_power();
 }
 

@@ -411,4 +411,3 @@ constexpr BaseSensor::Magnitude V9261FSensor::Magnitudes[];
 #endif
 
 #endif // SENSOR_SUPPORT && V9261F_SUPPORT
-

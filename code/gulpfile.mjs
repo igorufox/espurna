@@ -417,7 +417,7 @@ function toOutput(options) {
             // make sure to include both type and data
             const output = [
                 '#pragma once',
-                '#include "pgmspace_orch.h"',
+                '#include <pgmspace.h>',
                 '#include <cstdint>',
                 `alignas(4) static constexpr char webui_last_modified[] PROGMEM = "${formatLastModified(source)}";`,
                 `alignas(4) static constexpr char webui_content_encoding[] PROGMEM = "${formatContentEncoding(options.compress)}";`,

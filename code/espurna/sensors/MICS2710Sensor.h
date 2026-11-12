@@ -135,4 +135,3 @@ class MICS2710Sensor : public AnalogSensor {
 };
 
 #endif // SENSOR_SUPPORT && MICS2710_SUPPORT
-

@@ -13,7 +13,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include "espurna_mdns.h"
 #include "nofuss.h"
 #include "terminal.h"
-#include "wifi_orch.h"
+#include "espurna_wifi.h"
 #include "ws.h"
 
 #include <NoFUSSClient.h>

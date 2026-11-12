@@ -124,9 +124,8 @@ String response() {
 }
 
 void setup() {
-    webServer().on("/description.xml", HTTP_GET, [](AsyncWebServerRequest* request) {
-        ::espurna::system::AsyncGuard guard;
-        request->send(200, "text/xml", response());
+    webServer().on("/description.xml", WebMethod::Get, [](WebRequest& request) {
+        webSend(request, 200, "text/xml", response());
     });
 
     SSDP.setSchemaURL("description.xml");

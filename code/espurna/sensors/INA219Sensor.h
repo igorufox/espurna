@@ -596,4 +596,3 @@ public:
 constexpr BaseSensor::Magnitude INA219Sensor::Magnitudes[];
 constexpr BaseSensor::Magnitude INA219Sensor::RatioSupport[];
 #endif
-

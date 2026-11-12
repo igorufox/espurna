@@ -10,6 +10,8 @@ CHIP DESCRIPTION AND LWIP GLUE, ESP32 part (ref. espurna_chip.h)
 
 #include "../../espurna_chip.h"
 
+#include <SPI.h>
+
 #include <esp_arduino_version.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -65,6 +67,20 @@ String image() {
     return F(ESPURNA_IMAGE);
 }
 
+// the RFM69 library's select(): DIV4
+uint32_t rfm69_spi_divider() {
+    return SPI_CLOCK_DIV4;
+}
+
+WebGuard web_guard() {
+    return WebGuard{
+        .heap = 16384,
+        .block = 4096,
+        .lwip = 0,
+        .conns = 8,
+    };
+}
+
 String core_version() {
     return ESP_ARDUINO_VERSION_STR;
 }
@@ -83,10 +99,5 @@ String core_revision() {
 
 } // namespace chip
 } // namespace espurna
-
-// Core IPAddress already has it, LibreTiny core provides the same function
-String ipToString(const IPAddress& ip) {
-    return ip.toString();
-}
 
 #endif

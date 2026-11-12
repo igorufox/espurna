@@ -23,10 +23,9 @@ The Beken head, `espurna-beken-quectel.uf2` ([beken/README.md](README.md#1-image
 the Quectel bootloader: app partition `0x11000` + `0x1A9000`, OTA (`download`) partition at `0x286000`, 4 MiB flash (from
 the partition table in the stock bootloader, also in
 [`code/boards_beken/xh-cb2s-bk7231m.json`](../code/boards_beken/xh-cb2s-bk7231m.json)). The first flash over UART takes
-`espurna-beken-quectel.uf2` of the [release](https://github.com/igorufox/espurna/releases/latest), or
-built from `code/` by the `beken-bk7231n` build of the older releases. The one build of the Beken now
-(`py -3 -m platformio run -c platformio_beken.ini -e beken`: the head and its modules) makes the Tuya-layout head only;
-a Quectel-layout head image is not built yet.
+`espurna-beken-quectel.uf2` of the [release](https://github.com/igorufox/espurna/releases/latest), or of the one build
+of the Beken (`py -3 -m platformio run -c platformio_beken.ini -e beken`, `code/scripts/beken_quectel_image.py`). The
+modules come from `espurna-beken.ota` (MODULES panel) into the `download` partition, the same as on every board.
 
 ## Wiring
 

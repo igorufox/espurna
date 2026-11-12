@@ -17,6 +17,13 @@ Copyright (C) 2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #include <IPAddress.h>
 
+#include <lwip/etharp.h>
+#include <lwip/netif.h>
+#include <lwip/stats.h>
+#if !NO_SYS
+#include <lwip/tcpip.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <list>
@@ -999,6 +1006,93 @@ StaNetwork current() {
     return driver::sta_current();
 }
 
+// --- lwIP, the same on every chip ----------------------------------------------------------------------------------
+//
+// lwIP is called in its own context: directly without an OS (the ESP8266 NONOS SDK, NO_SYS), else through the tcpip
+// thread (the loop would race with it). A full tcpip mailbox drops the call: the next one comes on the next tick
+namespace lwip {
+
+void call(void (*func)(void*)) {
+#if NO_SYS
+    func(nullptr);
+#else
+    tcpip_try_callback(func, nullptr);
+#endif
+}
+
+// gratuitous ARP on every interface that is up with an address (the ESP8266 code of upstream)
+void gratuitous(void*) {
+    for (netif* interface = netif_list; interface != nullptr; interface = interface->next) {
+        if ((interface->flags & NETIF_FLAG_ETHARP)
+            && (interface->hwaddr_len == ETHARP_HWADDR_LEN)
+            && !ip4_addr_isany_val(*netif_ip4_addr(interface))
+            && (interface->flags & NETIF_FLAG_LINK_UP)
+            && (interface->flags & NETIF_FLAG_UP))
+        {
+            etharp_gratuitous(interface);
+        }
+    }
+}
+
+// an ARP request to the gateway of the default interface
+void probe(void*) {
+    auto* netif = netif_default;
+    if (netif && netif_is_up(netif) && !ip4_addr_isany_val(*netif_ip4_gw(netif))) {
+        etharp_request(netif, netif_ip4_gw(netif));
+    }
+}
+
+} // namespace lwip
+
+// The Wi-Fi link can stay associated while the IP stack receives nothing at all: 10.0.5.116 (Beken) 2026-11-07, first
+// boot after the Matter code was written by an install, DHCP done, then no ARP / ping answers for 28 min. The loop kept
+// running and feeding the watchdog, so nothing reset it; a deauth from the AP did. Every Interval, while connected with
+// an address, whatever arrived (ARP + IPv4 + IPv6 packets) is compared with the last check. Nothing new => an ARP
+// request goes to the gateway (answers within ms, so a healthy stack always sees traffic by the next check); Misses
+// checks in a row without a single received packet => restart. The same on every chip; it needs lwIP's receive
+// counters (LWIP_STATS): an lwIP built without them has no netwatch
+namespace netwatch {
+
+#if LWIP_STATS && (ETHARP_STATS || IP_STATS || IP6_STATS)
+constexpr auto Interval = espurna::duration::Seconds(20);
+constexpr int Misses = 6;
+
+uint32_t last_rx { 0 };
+int misses { 0 };
+timer::SystemTimer timer;
+
+uint32_t received() {
+    uint32_t out { 0 };
+#if ETHARP_STATS
+    out += lwip_stats.etharp.recv;
+#endif
+#if IP_STATS
+    out += lwip_stats.ip.recv;
+#endif
+#if IP6_STATS
+    out += lwip_stats.ip6.recv;
+#endif
+    return out;
+}
+
+bool addressed() {
+    const auto* netif = netif_default;
+    return netif && netif_is_up(netif) && !ip4_addr_isany_val(*netif_ip4_addr(netif));
+}
+
+void check();
+
+void setup() {
+    last_rx = received();
+    timer.repeat(Interval, check);
+}
+#else
+void setup() {
+}
+#endif
+
+} // namespace netwatch
+
 #if WIFI_GRATUITOUS_ARP_SUPPORT
 namespace garp {
 namespace build {
@@ -1037,7 +1131,8 @@ bool wait { false };
 } // namespace internal
 
 bool send() {
-    return driver::garp_send();
+    lwip::call(lwip::gratuitous);
+    return true;
 }
 
 bool wait() {
@@ -1151,19 +1246,7 @@ bool start(Success&& success, Error&& error) {
         return false;
     }
 
-    // Note that esp8266 callback only reports the resulting status and will (always?) timeout all by itself
-    // Default values are an active scan with some unspecified channel times.
-    // (zeroed out scan_config struct or simply nullptr)
-
-    // For example, c/p config from the current esp32 Arduino Core wrapper which are close to the values mentioned here:
-    // https://github.com/espressif/ESP8266_NONOS_SDK/issues/103#issuecomment-383440370
-    // Which could be useful if scanning needs to be more aggressive or switched into PASSIVE scan type
-
-    //scan_config config{};
-    //config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
-    //config.scan_time.active.min = 100;
-    //config.scan_time.active.max = 300;
-
+    // scan parameters are the chip's, ref. driver::scan_start()
     if (driver::scan_start()) {
         internal::task = std::make_unique<Task>(std::move(success), std::move(error));
         internal::flag = true;
@@ -1291,6 +1374,20 @@ struct Task {
             auto& network = *_current;
             auto& ipsettings = network.ipSettings();
 
+            // what the SDK station config can hold, same limits on every chip
+            const auto& ssid = network.ssid();
+            if (!ssid.length() || (ssid.length() > driver::SsidMax)) {
+                return false;
+            }
+
+            const auto& passphrase = network.passphrase();
+            if (passphrase.length()
+                && ((passphrase.length() < driver::PassphraseMin)
+                 || (passphrase.length() > driver::PassphraseMax)))
+            {
+                return false;
+            }
+
             return driver::sta_connect(driver::StaConnect{
                 .hostname = _hostname,
                 .ssid = network.ssid(),
@@ -1339,6 +1436,7 @@ Networks preparedNetworks;
 
 bool connected { false };
 bool wait { false };
+time::SystemClock::time_point attempt_at{};
 
 // the AP that dropped us (deauth / disassoc from its side, e.g. a usteer kick), not a lost signal or our own leave.
 // The SDK cannot answer 802.11v requests, so a steering AP kicks the station, and the next scan most likely finds
@@ -1406,10 +1504,15 @@ bool next() {
     return internal::task->next();
 }
 
+// the SDK does not always report the end of an attempt (Beken, ESP32 seen; the ESP8266 SDK may stall too): the
+// attempt ends here after this long, on every chip
+constexpr auto AttemptTimeout = duration::Milliseconds{ 15000 };
+
 bool connect() {
     scan::internal::flag = true;
     if (internal::task->connect()) {
         internal::wait = true;
+        internal::attempt_at = time::SystemClock::now();
         return true;
     }
 
@@ -1422,6 +1525,12 @@ bool connect() {
 // Wait for the WiFi stack event instead (handled on setup with a static object) and continue after it is either connected or disconnected
 
 bool wait() {
+    if (internal::wait && ((time::SystemClock::now() - internal::attempt_at) >= AttemptTimeout)) {
+        DEBUG_MSG_P(PSTR("[WIFI] Connection attempt timed out\n"));
+        driver::sta_disconnect();
+        internal::wait = false;
+    }
+
     return internal::wait;
 }
 
@@ -1479,6 +1588,30 @@ bool connecting() {
     return connection::connecting();
 }
 
+#if LWIP_STATS && (ETHARP_STATS || IP_STATS || IP6_STATS)
+void netwatch::check() {
+    const auto now = received();
+    if (!connected() || !addressed() || (now != last_rx)) {
+        last_rx = now;
+        misses = 0;
+        return;
+    }
+
+    ++misses;
+    if (misses >= Misses) {
+        DEBUG_MSG_P(PSTR("[WIFI] Nothing received for %lu s while connected, restarting\n"),
+            static_cast<unsigned long>(Interval.count() * Misses));
+        timer.stop();
+        prepareReset(CustomResetReason::Network);
+        return;
+    }
+
+    DEBUG_MSG_P(PSTR("[WIFI] Nothing received for %lu s, asking the gateway\n"),
+        static_cast<unsigned long>(Interval.count() * misses));
+    lwip::call(lwip::probe);
+}
+#endif
+
 bool scanning() {
     return static_cast<bool>(scan::internal::task);
 }
@@ -1507,7 +1640,6 @@ void disconnected(const Mac& bssid, int reason) {
     connection::internal::connected = false;
 }
 
-// TODO timeout in case sdk ever stalls this event?
 void got_ip() {
     connection::internal::wait = false;
     connection::internal::connected = true;
@@ -1810,7 +1942,7 @@ namespace build {
 
 static constexpr size_t SsidMax { driver::SsidMax };
 
-static constexpr size_t PassphraseMin { 8u };
+static constexpr size_t PassphraseMin { driver::PassphraseMin };
 static constexpr size_t PassphraseMax { driver::PassphraseMax };
 
 PROGMEM_STRING(ApSsid, WIFI_AP_SSID);
@@ -2798,6 +2930,7 @@ void setup() {
     }
 
     internal::init();
+    sta::netwatch::setup();
 
     migrateVersion(settings::migrate);
     settings::query::setup();

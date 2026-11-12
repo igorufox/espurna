@@ -11,7 +11,7 @@ Updated secure client support by Niek van der Maas < mail at niekvandermaas dot 
 
 #if MQTT_SUPPORT && !MQTT_MODULE  // MQTT_MODULE: the head forwards to the mqtt module (modules_mqtt.h)
 
-#include <atomic>
+#include <cstring>
 #include <forward_list>
 #include <utility>
 #include <vector>
@@ -31,14 +31,29 @@ Updated secure client support by Niek van der Maas < mail at niekvandermaas dot 
 #include "mqtt_common.ipp"
 
 #if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-#if defined(ESP8266)
-#include <ESPAsyncTCP.h>
-#endif
+#include "espurna_asynctcp.h"
 #include <AsyncMqttClient.h>
 #elif MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
 #include <MQTTClient.h>
 #elif MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
 #include <PubSubClient.h>
+#endif
+
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+// AsyncMqttClient::disconnect() does nothing until the broker accepted the connection, there is no public call to
+// stop an attempt (TCP connect, or the CONNECT packet without an answer). Its AsyncClient is closed instead
+namespace espurna {
+namespace async {
+
+struct MqttClient {
+    using type = AsyncClient AsyncMqttClient::*;
+    friend type member(MqttClient);
+};
+
+template struct Member<MqttClient, &AsyncMqttClient::_client>;
+
+} // namespace async
+} // namespace espurna
 #endif
 
 // -----------------------------------------------------------------------------
@@ -1086,6 +1101,18 @@ void _mqttMdnsDiscovery() {
 
 void _mqttOnDisconnect();
 
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+// The attempt is given up (connect timeout, settings changed): its pcb is closed right here, so the next connect() does
+// not fail on the pcb still being there. Closing reports the disconnect through the library (onDisconnect, the usual
+// way); when there was no pcb (connect() failed without any callback, e.g. a DNS error) it is reported here
+void _mqttStopClient() {
+    (_mqtt.*member(espurna::async::MqttClient{})).close(true);
+    if (_mqtt_state == AsyncClientState::Connecting) {
+        _mqttOnDisconnect();
+    }
+}
+#endif
+
 struct MqttConfigureGuard {
     explicit MqttConfigureGuard(bool reschedule) {
         if (reschedule) {
@@ -1102,9 +1129,9 @@ struct MqttConfigureGuard {
                 mqttDisconnect();
             }
 #if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-            // Pending attempt still uses the old settings, same as the connect timeout instead of waiting for it
+            // Pending attempt still uses the old settings, stopped same as on the connect timeout instead of waiting for it
             else if (_mqtt_state == AsyncClientState::Connecting) {
-                _mqttOnDisconnect();
+                _mqttStopClient();
             }
 #endif
         }
@@ -1822,6 +1849,11 @@ void _mqttOnDisconnectAsync(AsyncMqttClientDisconnectReason reason) {
 
     }
 
+    // the attempt was already given up (ref. _mqttStopClient()), this is its pcb going away
+    if (_mqtt_state == AsyncClientState::Disconnected) {
+        return;
+    }
+
     _mqttOnDisconnect();
 }
 
@@ -2283,7 +2315,7 @@ void _mqttConnectTimeout() {
     {
         DEBUG_MSG_P(PSTR("[MQTT] Not connected after %u seconds, giving up\n"),
             static_cast<unsigned>(mqtt::build::ConnectTimeout.count()));
-        _mqttOnDisconnect();
+        _mqttStopClient();
     }
 }
 
@@ -2337,7 +2369,9 @@ void mqttSetup() {
         _mqtt.onMessage([](char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
             espurna::system::AsyncGuard guard;
             if (_mqtt_deferred.defer(guard)) {
-                _mqtt_deferred.run(MqttDeferredMessage(topic, payload, properties, len, index, total));
+                // a copy each, bounded by runInLoop() while the loop is busy
+                _mqtt_deferred.run(MqttDeferredMessage(topic, payload, properties, len, index, total),
+                    len + std::strlen(topic));
                 return;
             }
 

@@ -13,6 +13,7 @@ no layout at all: nothing is written to its partitions then (no OTA, no Matter c
 #if defined(LIBRETINY)
 
 #include "layout_beken.h"
+#include "../../libs/crc32_ieee.h"
 
 namespace espurna {
 namespace beken {
@@ -55,17 +56,7 @@ constexpr Known KnownLayouts[] {
         0x1EB000}},
 };
 
-uint32_t crc32(uint32_t crc, const uint8_t* data, size_t length) {
-    crc = ~crc;
-    for (size_t index = 0; index < length; ++index) {
-        crc ^= data[index];
-        for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc >> 1) ^ (0xEDB88320 & (0 - (crc & 1)));
-        }
-    }
-
-    return ~crc;
-}
+using ::espurna::crc32_ieee::crc32Update;
 
 FlashLayout detect() {
     FlashLayout out {};
@@ -77,7 +68,7 @@ FlashLayout detect() {
         if (lt_flash_read(offset, buffer, sizeof(buffer)) != sizeof(buffer)) {
             return out;
         }
-        crc = crc32(crc, buffer, sizeof(buffer));
+        crc = crc32Update(crc, buffer, sizeof(buffer));
     }
 
     for (const auto& known : KnownLayouts) {

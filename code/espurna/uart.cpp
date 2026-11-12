@@ -8,7 +8,8 @@ Copyright (C) 2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #include "espurna.h"
 
-#if UART_SUPPORT
+// the head with modules has only the forwarders of uart.h (UART_MODULE), the ports are the uart module
+#if UART_SUPPORT && !UART_MODULE
 
 #include "uart.h"
 #include "uart_driver.h"
@@ -62,19 +63,7 @@ namespace {
 namespace types {
 
 #if UART_SOFTWARE_SUPPORT
-#if defined(ARDUINO_ESP8266_RELEASE_2_7_2) \
-    || defined(ARDUINO_ESP8266_RELEASE_2_7_3) \
-    || defined(ARDUINO_ESP8266_RELEASE_2_7_4) \
-    || defined(ARDUINO_ESP8266_RELEASE_3_0_0) \
-    || defined(ARDUINO_ESP8266_RELEASE_3_0_1) \
-    || defined(ARDUINO_ESP8266_RELEASE_3_1_0) \
-    || defined(ARDUINO_ESP8266_RELEASE_3_1_1)
-using SoftwareConfig = ::SoftwareSerialConfig;
-#elif defined(ARDUINO_ESP8266_RELEASE_3_1_2)
 using SoftwareConfig = ::EspSoftwareSerial::Config;
-#else
-using SoftwareConfig = ::EspSoftwareSerial::Config;
-#endif
 #endif
 
 } // namespace types
@@ -152,6 +141,9 @@ PROGMEM_STRING(StopBits, "uartStopBits");
 PROGMEM_STRING(Parity, "uartParity");
 
 PROGMEM_STRING(Invert, "uartInv");
+
+// bytes of the receive buffer of a hardware port, 0 - the core's default
+PROGMEM_STRING(RxBuffer, "uartRxBuf");
 
 } // namespace keys
 
@@ -272,6 +264,10 @@ bool invert(size_t index) {
     return getSetting({keys::Invert, index}, build::invert(index));
 }
 
+size_t rx_buffer(size_t index) {
+    return getSetting({keys::RxBuffer, index}, size_t{ 0 });
+}
+
 } // namespace settings
 
 using StreamPtr = std::unique_ptr<Stream>;
@@ -299,9 +295,9 @@ UartClaimRelease on_claim[4] {};
 
 // chip UART of these pins, ref. uart_driver.h
 BasePortPtr hardware_port(
-        uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert)
+        uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert, size_t rx_buffer)
 {
-    const auto opened = hardware::open(baudrate, tx, rx, config, invert);
+    const auto opened = hardware::open(baudrate, tx, rx, config, invert, rx_buffer);
     if (!opened.stream) {
         return nullptr;
     }
@@ -395,7 +391,7 @@ BasePortPtr make_port(size_t index) {
     const auto baudrate = settings::baudrate(index);
     const auto invert = settings::invert(index);
 
-    out = hardware_port(baudrate, tx, rx, config, invert);
+    out = hardware_port(baudrate, tx, rx, config, invert, settings::rx_buffer(index));
 
 #if UART_SOFTWARE_SUPPORT
     if (!out) {
@@ -566,6 +562,29 @@ PortPtr port(size_t index) {
     return nullptr;
 }
 
+// a port of the settings opened now, when it is not yet (a module set it up after the boot opened the others)
+PortPtr open(size_t index) {
+    if (index >= std::size(internal::ports)) {
+        return nullptr;
+    }
+
+    if (!internal::ports[index]) {
+        internal::ports[index] = make_port(index);
+    }
+
+    return port(index);
+}
+
+// another speed for an open hardware port (a display that switches its baud rate)
+bool baud(size_t index, uint32_t value) {
+    if ((index >= std::size(internal::ports)) || !internal::ports[index]) {
+        return false;
+    }
+
+    const auto& ptr = internal::ports[index];
+    return hardware::baud(ptr->stream.get(), ptr->type, value);
+}
+
 const __FlashStringHelper* claimed(size_t index) {
     return (index < std::size(internal::owners))
         ? internal::owners[index]
@@ -714,5 +733,13 @@ const __FlashStringHelper* uartClaimed(size_t index) {
     return espurna::driver::uart::claimed(index);
 }
 
-#endif // UART_SUPPORT
+espurna::driver::uart::PortPtr uartOpen(size_t index) {
+    return espurna::driver::uart::open(index);
+}
+
+bool uartBaud(size_t index, uint32_t value) {
+    return espurna::driver::uart::baud(index, value);
+}
+
+#endif // UART_SUPPORT && !UART_MODULE
 

@@ -339,4 +339,3 @@ constexpr BaseSensor::Magnitude CSE7766Sensor::Magnitudes[];
 #endif
 
 #endif // SENSOR_SUPPORT && CSE7766_SUPPORT
-

@@ -1,82 +1,63 @@
 # ESP8266 / ESP8285 on ESPurna
 
 The architecture ESPurna started on. This fork builds it with Arduino core 3.1.2 and NONOS SDK 3.0.5 (SDK 2.2.x crashed
-inside its Wi-Fi stack on the home fleet) and replaces the 216 per-board builds with a few generic images: the board is
-picked after flashing, from a device template or the settings. Builds: [`code/platformio_esp8266.ini`](../code/platformio_esp8266.ini).
+inside its Wi-Fi stack on the home fleet) and replaces the 216 per-board builds with one head image: the board is
+picked after flashing, from a device template or the settings, and its features are modules. Builds:
+[`code/platformio_esp8266.ini`](../code/platformio_esp8266.ini).
 
-## Images: four instead of 216
+## Image and modules
 
 Upstream ESPurna had a build per board: 216 environments in `platformio.ini`, each with the pins and drivers of one
-device compiled in. This fork has **four generic images**. The pins are not in the build: the board is chosen after
-flashing (*ADMIN → Device Template*, or the settings), so one image runs every board with the same kind of hardware.
-The drivers are split over the images by what fits a 1 MB flash and the ESP8266 heap:
+device compiled in. This fork has **one head image** for every ESP8266 (`espurna-esp8266.bin`) and the drivers as
+modules, the same as on every chip: the head, the module list, installing them (the Apply), updating the head and the
+recovery steps are in [docs/modules.md](../docs/modules.md). The pins are not in the build: the board is chosen after
+flashing (*ADMIN → Device Template*, or the settings). Every driver stays idle until its pins or its port are set:
+sensor pins (`dhtPin`, `dallasPin`, `ntcPin` ...), `rfbProv` / `rfbRX` (RF), `ltProvider` (light), `relayProv` (relay
+MCUs). A UART driver (power meters, RF Bridge, relay MCUs) claims the port configured with `uartTx` / `uartRx`; the
+serial log and terminal stop using that port then. Unknown hardware is safe to flash: no GPIO is driven until
+configured.
 
-| Image | Size (`.bin` / `.bin.gz`, release 76dc912) | What is in it |
-|-------|-------------------|---------------|
-| `esp8266-1m` | 754 KB / 543 KB | relays, buttons, LEDs, dummy relays, **AC mains wall-switch inputs**, 433 MHz receiver (rc-switch) and the **Sonoff RF Bridge** (EFM8BB1), relay MCUs over UART (**Sonoff Dual**, STM relay boards, **LightFox**, **iFan02**, **KingArt** curtain), the MCP23S08 expander |
-| `esp8266-1m-light` | 810 KB / 571 KB | relays, buttons, LEDs + **lights** (`ltProvider`: PWM dimmer up to 5 channels, MY92XX, ...), **IR** receiver / transmitter, rotary **encoder** |
-| `esp8266-1m-sensor` | 772 KB / 541 KB | relays, buttons, LEDs + **power meters** (HLW8012, CSE7766, V9261F, ECH1560, PZEM-004T v1/v3, ADE7953), **sensors** (DHT, Dallas DS18B20, BMx280, analog, NTC, digital input), analog buttons |
-| `esp8266-4m` | 826 KB / 589 KB | for boards installed with the 4 MB layout: relays, buttons, LEDs, RF receiver, MCP23S08 and the drivers of `-1m-sensor` plus LDR, events and pulse meter; no light, IR or relay MCUs (their static RAM left too little heap) |
-| `esp8266-1m-mini` | 303 KB / 219 KB | not for running a board: the first step of the two-step update on 1 MB boards ([`code/mini-app`](../code/mini-app)), it downloads the full image itself |
+| The board has | Modules | Boards (examples) |
+|---------------|---------|-------------------|
+| relays, buttons, LEDs only | none (the head) | Sonoff Basic, Mini, S20, 4CH / 4CH Pro, T1 1-3CH, Touch, Slampher, S31 Lite; Shelly 1 / 2; Moes MS-104B; Gosund WP3 / WS1; LC-Tech ESP-12F relay x2 / x4 |
+| an RF receiver, the Sonoff RF Bridge | `rf` | Sonoff RF, Sonoff RF Bridge |
+| a light (PWM, MY92XX) | `light` | Sonoff B1 / LED, AiLight-type bulbs, Arilux, MagicHome LED controllers, H801 / H802 |
+| a power meter, a sensor | `sensors` | Sonoff Pow / Pow R2 / R3, S31, Shelly 1PM / 2.5, BlitzWolf SHP, Gosund SP111, Sonoff TH, DHT / DS18B20 shields |
 
-All four have the WebUI, API, MQTT, Home Assistant, the terminal (serial, telnet, web), NTP, scheduler, Domoticz,
-ThingSpeak, Alexa and web / ArduinoOTA. Every driver stays idle until its pins or its port are set: sensor pins
-(`dhtPin`, `dallasPin`, `ntcPin` ...), `rfbProv` / `rfbRX` (RF), `irRx` / `irRxPreset` (IR), `ltProvider` (light),
-`relayProv` (relay MCUs). A UART driver (power meters, RF Bridge, relay MCUs) claims the port configured with `uartTx` /
-`uartRx`; the serial log and terminal stop using that port then. Unknown hardware is safe to flash: no GPIO is driven
-until configured.
+A board that needs two of them (light + power meter, light + RF) takes both. Home Assistant, MQTT, Alexa, the
+scheduler and the full WebUI are modules too.
 
-## Which board on which image
+## Boards run on this architecture
 
-The [espurna-devices](https://github.com/igorufox/espurna-devices) list names the image of every board (178 ESP8266
-entries from `hardware.h`); the device search and the *Apply* confirmation show it. *Apply* does not check it, the
-device cannot tell which image it runs.
-
-| The board has | Image | Boards (examples) |
-|---------------|-------|-------------------|
-| relays, buttons, LEDs only | `esp8266-1m` (68 boards) | Sonoff Basic, Mini, S20, 4CH / 4CH Pro, T1 1-3CH, Touch, 1CH Inching, Slampher, SV, S31 Lite; Shelly 1 / 2; Moes MS-104B; Gosund WP3 / WS1; LC-Tech ESP-12F relay x4; the ESP-01S relay; most plain Wi-Fi plugs and wall switches |
-| an RF receiver, the Sonoff RF Bridge | `esp8266-1m` | Sonoff RF, Sonoff RF Bridge (with the stock EFM8BB1 or the direct mod) |
-| a relay MCU on UART | `esp8266-1m` | Sonoff Dual R2, STM relay boards, Foxel LightFox, Sonoff iFan02, KingArt curtain switch |
-| a light (PWM, MY92XX), IR, an encoder | `esp8266-1m-light` (37 boards) | Sonoff B1 / LED, AiLight-type bulbs, Arilux LC01-LC11, MagicHome LED controllers, H801 / H802, LSC, Mirabella Genio, GU10 / E14 / E27 bulbs, AG-L4 |
-| a power meter | `esp8266-1m-sensor` (41 boards) | Sonoff Pow / Pow R2 / R3, S31, Shelly 1PM / 2.5, BlitzWolf SHP, Gosund SP111 / P1, Teckin SP20 / SP22 / SP23, Maxcio, Hykker, Homecube |
-| a sensor, analog buttons | `esp8266-1m-sensor` | Sonoff TH, Sonoff Basic with DHT / DS18B20, ESP-01S DHT11 / DS18B20 shields, PZEM-004T / V9261F / ECH1560 on an ESP-01 |
-| 4 MB flash and the 4 MB layout of its old build | `esp8266-4m` (32 boards) | Wemos D1 mini (+ relay shield), NodeMCU, Witty Cloud, ESPurna H, EXS relays, Electrodragon, HW-622, LC-Tech ESP-12F relay x2, the ESP-12E power meter shields |
-
-How to choose when a board fits more than one row:
-
-- **Light + power meter or light + RF** (Smartlife Mini Smart Socket, MagicHome ZJ-WFMN-B11): no 1 MB image has both.
-  They run `esp8266-1m-light`, the other part stays off.
-- **A 4 MB board** (ESP-12E/F modules, Wemos, NodeMCU) can run a 1 MB image too, but its settings are where its old build
-  kept them: a board installed with the 4 MB layout stays on `esp8266-4m`, or loses its settings when it moves.
-- **2 MB boards** (Shelly 1 / 2 / 1PM / 2.5, Euromate V2) run the 1 MB images, but their settings sit elsewhere in the
-  2 MB layout: back up the settings (*ADMIN*, *Backup*) before the switch.
-- **`esp8266-1m-light` and the two-step update**: the mini (219 KB) has to fit behind the running image, and behind the
-  810 KB light image about 6 KB are missing. A light board does not update from the WebUI in two steps yet: put the
-  mini on it with ArduinoOTA or over serial. The other 1 MB images leave 250-270 KB for it.
-
-## Boards run on these images
-
-| Board | Chip, flash | Image | Runs | Page |
-|-------|-------------|-------|------|------|
-| Sonoff Basic | ESP8266, 1 MB | `esp8266-1m` | one on the bench: from ESPurna 1.15 to the generic image without a wire, two-step update from the WebUI; two more on a board build of this fork | [sonoff-basic.md](sonoff-basic.md) |
-| Sonoff Mini (R1 / R2) | ESP8285, 1 MB | `esp8266-1m` | seven in walls, a second wall switch on a spare pin and a dummy relay mirroring another board; on a board build of this fork | [sonoff-mini.md](sonoff-mini.md) |
-| Moes MS-104B, AC mains wall switches | ESP8266, 1 MB | `esp8266-1m` | four in walls, AC mains switch inputs; on a board build of this fork | [moes-ms-104b.md](moes-ms-104b.md) |
-| HW-622 (ESP-12F, 1 relay, opto input) | ESP8266, 4 MB | `esp8266-4m` | the test board of the generic 4 MB image: memory work, updates from the WebUI | [hw-622.md](hw-622.md) |
-| LC-Tech ESP-12F relay x4 (4 relays, AC or 7-30 V) | ESP8266, 4 MB used as 1 MB | `esp8266-1m` | on a board build of this fork; relays through jumpers RY1-RY4 | [esp12f-relay-x4.md](esp12f-relay-x4.md) |
-| LC-Tech ESP-12F relay x2 | ESP8266, 4 MB | `esp8266-4m` | one in a wall, per-relay buttons in *follow* and *switch* mode; on a board build of this fork | [esp12f-relay-x2.md](esp12f-relay-x2.md) |
+| Board | Chip, flash | Runs | Page |
+|-------|-------------|------|------|
+| Sonoff Basic | ESP8266, 1 MB | one on the bench: from ESPurna 1.15 to the generic image without a wire, two-step update from the WebUI; two more on a board build of this fork | [sonoff-basic.md](sonoff-basic.md) |
+| Sonoff Mini (R1 / R2) | ESP8285, 1 MB | seven in walls, a second wall switch on a spare pin and a dummy relay mirroring another board; on a board build of this fork | [sonoff-mini.md](sonoff-mini.md) |
+| Moes MS-104B, AC mains wall switches | ESP8266, 1 MB | four in walls, AC mains switch inputs; on a board build of this fork | [moes-ms-104b.md](moes-ms-104b.md) |
+| HW-622 (ESP-12F, 1 relay, opto input) | ESP8266, 4 MB | the test board of the generic 4 MB image: memory work, updates from the WebUI | [hw-622.md](hw-622.md) |
+| LC-Tech ESP-12F relay x4 (4 relays, AC or 7-30 V) | ESP8266, 4 MB used as 1 MB | on a board build of this fork; relays through jumpers RY1-RY4 | [esp12f-relay-x4.md](esp12f-relay-x4.md) |
+| LC-Tech ESP-12F relay x2 | ESP8266, 4 MB | one in a wall, per-relay buttons in *follow* and *switch* mode; on a board build of this fork | [esp12f-relay-x2.md](esp12f-relay-x2.md) |
 
 The other boards of [`hardware.h`](../code/espurna/config/hardware.h) (Sonoff, Shelly, BlitzWolf, ...) have device
 templates in [espurna-devices](https://github.com/igorufox/espurna-devices); most of them were not run on hardware since
 the move to generic images.
 
+## Flash layout
+
+One layout for every chip size: the 1 MB layout, the head from `0x0`, the module area behind it, the module directory
+at `0xF9000` (its second copy at `0xF8000`), the settings at `0xFA000` / `0xFB000`, then the SDK's RF calibration and
+Wi-Fi sectors. Boards installed with the old 4 MB layout keep their settings at the end of the 4 MB and move them once
+(settings backup, the update, restore); 2 MB boards (Shelly 1 / 2 / 1PM / 2.5, Euromate V2) likewise: back up the
+settings (*ADMIN*, *Backup*) before the switch. Details: [docs/modules.md](../docs/modules.md#esp8266).
+
 ## First flash
 
 ```
-esptool.py --chip esp8266 --baud 460800 write_flash 0x0 espurna-esp8266-1m.bin
+esptool.py --chip esp8266 --baud 460800 write_flash 0x0 espurna-esp8266.bin
 ```
 
 GPIO0 to GND at power-up enters the ROM bootloader. Then the first setup (access point `ESPURNA-XXXXXX`, password
-`fibonacci`, `http://192.168.4.1`) and *ADMIN → Device Template*.
+`fibonacci`, `http://192.168.4.1`), *ADMIN → Device Template*, and the modules the board needs.
 
 Coming from a board build of ESPurna: the generic image reads the pins from the settings. Apply the board's template
 before the update (it writes the values the build had, nothing changes on the running board) or right after the first
@@ -84,22 +65,17 @@ boot.
 
 ## Updates
 
-- **4 MB layout**: the browser uploads the file to `/upgrade`, one restart.
-- **1 MB boards**: a full image leaves about 200 KB, too little for the next one. Two steps: the browser uploads the mini,
-  which downloads the full `.bin.gz` from GitHub over https, checks its SHA-256 and writes it.
-
-Both from *ADMIN → From GitHub* by themselves. Details, the mini's own page, and the way from ESPurna 1.15:
-[docs/updates.md](../docs/updates.md#esp8266-upload-or-the-mini-on-1-mb-boards).
+The same as on every chip ([docs/modules.md](../docs/modules.md#updating-the-head)): the board restarts without modules,
+the browser uploads the head to `/upgrade` (eboot copies it from behind the running image at the restart), then the
+modules are written again. Boards on a full image of the older releases go through the mini once, and ESPurna 1.15
+boards have their own way: [docs/updates.md](../docs/updates.md#esp8266-upload-the-mini-for-older-1-mb-images).
 
 ## Nuances
 
-- **Memory.** About 40 KB of heap region; the settings buffer (4 KB), Wi-Fi, MQTT and the web server leave 10-20 KB.
-  All ESP8266 images use lwIP 'Lower Memory' (MSS 536) and create the API handlers only while the API is on: with the
-  bigger lwIP buffers the WebUI came truncated and uploads dropped half-way. An upload of 825 KB takes 30-45 s.
-  Measuring what each module takes at boot: `-DSETUP_HEAP_PROBE_SUPPORT=1`, terminal `HEAP.SETUP`.
-- **Static RAM of idle drivers.** A driver that is compiled in costs RAM even when it is not configured; that is why
-  `esp8266-4m` has no light, IR or relay MCU drivers. With all of them it had about 4 KB of heap left and crashed during
-  an update.
+- **Memory.** About 40 KB of heap region; the settings buffer (4 KB), Wi-Fi and the web server leave 10-20 KB. The
+  image uses lwIP 'Lower Memory' (MSS 536): with the bigger lwIP buffers the WebUI came truncated and uploads dropped
+  half-way. An upload of 825 KB takes 30-45 s. Measuring what each setup step takes at boot:
+  `-DSETUP_HEAP_PROBE_SUPPORT=1`, terminal `HEAP.SETUP`.
 - **In-wall boards on weak supplies.** A two-step update over ArduinoOTA bricked one Sonoff Mini whose power supply was
   dying (it rebooted in the middle of step 2). Before an update read `last reset reason` in `info`: anything but power on,
   terminal, web or OTA means the board is unstable, update it on the bench.
@@ -138,9 +114,7 @@ pio run -c platformio_esp8266.ini -e esp8266   # the head, every module, the rel
 pio run -d mini-app                   # the mini, code/mini-app/.pio/build/esp8266-1m-mini/firmware.bin
 ```
 
-One env, one head image for every ESP8266 (the 1 MB layout on every chip size); the images of the table above are the
-older releases, their drivers are modules now. Files in `code/.pio/build_esp8266/esp8266/`: `espurna-esp8266.bin`
-(+ `.bin.gz`), `espurna-esp8266-modules.bin`, `espurna-esp8266-full.bin`.
+Files in `code/.pio/build_esp8266/esp8266/`: `espurna-esp8266.bin` (+ `.bin.gz`), `espurna-esp8266.ota`.
 
 `code/scripts/boards_to_devices.py` regenerates the board entries of `../espurna-devices/devices.json` from `hardware.h`
 (hand-made entries are kept).

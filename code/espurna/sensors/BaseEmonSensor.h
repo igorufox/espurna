@@ -238,4 +238,3 @@ protected:
 
     EnergyIndex _energy{};
 };
-

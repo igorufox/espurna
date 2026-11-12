@@ -1,11 +1,12 @@
 /*
 
-MATTER BACKEND FOR ESP32 (Arduino-ESP32 core 3.x)
+MATTER APPLICATION FOR ESP32 (Arduino-ESP32 core 3.x)
 
-On/Off plug endpoints of the Matter library of Arduino-ESP32 (esp_matter, connectedhomeip). ESPurna keeps Wi-Fi, the
-relays and the web UI (matter.cpp). Commissioning is on-network only: ESPurna is on Wi-Fi already, and the libraries
-are built without CHIPoBLE. Setup codes and device attestation are the board's own (matter_identity_esp32.cpp), under
-the SDK test PAI (VID 0xFFF1, PID 0x8000)
+The Matter application C API of espurna_matter.h on the Matter library of Arduino-ESP32 (esp_matter, connectedhomeip):
+On/Off plug endpoints, a bridge (Aggregator + Bridged Nodes) for more than one relay. Everything else is matter.cpp.
+Commissioning is on-network only: ESPurna is on Wi-Fi already, and the libraries are built without CHIPoBLE. Setup
+codes and device attestation are the board's own (matter_identity_esp32.cpp), under the SDK test PAI (VID 0xFFF1,
+PID 0x8000)
 
 */
 
@@ -15,13 +16,14 @@ the SDK test PAI (VID 0xFFF1, PID 0x8000)
 
 #include "espurna_matter.h"
 #include "matter_identity_esp32.h"
-#include "relay.h"
 
 #include <Matter.h>
 #include <WiFi.h>
 
 #include <app/server/Server.h>
 #include <platform/CHIPDeviceLayer.h>
+#include <platform/ESP32/ESP32Config.h>
+#include <platform/KeyValueStoreManager.h>
 
 #include <cstring>
 
@@ -36,10 +38,6 @@ MatterOnOffPlugin plugs[MaxPlugs];
 size_t count { 0 };
 bool begun { false };
 
-// Identity strings are copied by the Matter library, but keep them for the panel
-String serial;
-String label;
-
 // More than one relay: the device is a bridge (gateway). Every relay plug becomes a Bridged Node with its own name
 // under an Aggregator endpoint, so controllers show one gateway with a plug per relay (the speaker hub showed a single
 // plug for a device with two plug endpoints). The usual bridge layout: Aggregator on endpoint 1, the plugs after it
@@ -51,10 +49,6 @@ struct BridgedName {
 
 BridgedName names[MaxPlugs];
 bool bridge { false };
-
-void bridged_name(size_t index, BridgedName& out) {
-    plug_name(index, out.label, sizeof(out.label), out.unique, sizeof(out.unique));
-}
 
 // A char string attribute of a cluster: the value of the existing one, or a new one
 void set_text(esp_matter::cluster_t* cluster, uint32_t id, char* value,
@@ -115,7 +109,8 @@ bool make_bridge(esp_matter::endpoint_t* aggregator) {
         }
 
         // UniqueID is mandatory, bridged_node::add() creates it empty: set the values of existing attributes
-        bridged_name(index, names[index]);
+        matter_plug_name(static_cast<uint8_t>(index + 1), names[index].label, sizeof(names[index].label),
+            names[index].unique, sizeof(names[index].unique));
         set_text(info, chip::app::Clusters::BridgedDeviceBasicInformation::Attributes::NodeLabel::Id,
             names[index].label, cluster::bridged_device_basic_information::attribute::create_node_label);
         set_text(info, chip::app::Clusters::BridgedDeviceBasicInformation::Attributes::UniqueID::Id,
@@ -152,11 +147,46 @@ bool qr_payload(const String& url, char* out, size_t size) {
     return std::strncmp(out, "MT:", 3) == 0;
 }
 
-} // namespace
+// The fabric table as last read. The loop only tries the CHIP stack lock: it does not wait while the Matter task holds
+// it for a certificate step of a commissioning, the list of the attempt before stays then
+struct Fabric {
+    uint8_t index;
+    uint16_t vendor;
+    uint64_t node;
+    char label[33];
+};
 
-size_t endpoints() {
-    return std::min(relayCount(), MaxPlugs);
+constexpr size_t MaxFabrics { 8 };
+Fabric fabrics[MaxFabrics];
+size_t fabric_count { 0 };
+
+void refresh_fabrics() {
+    if (!begun || !chip::DeviceLayer::PlatformMgr().TryLockChipStack()) {
+        return;
+    }
+
+    size_t out { 0 };
+    for (const auto& fabric : chip::Server::GetInstance().GetFabricTable()) {
+        if (out >= MaxFabrics) {
+            break;
+        }
+
+        auto& entry = fabrics[out++];
+        entry.index = fabric.GetFabricIndex();
+        entry.vendor = static_cast<uint16_t>(fabric.GetVendorId());
+        entry.node = fabric.GetNodeId();
+
+        const auto label = fabric.GetFabricLabel();
+        const auto length = std::min(label.size(), sizeof(entry.label) - 1);
+        std::memcpy(entry.label, label.data(), length);
+        entry.label[length] = '\0';
+    }
+    fabric_count = out;
+
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 }
+
+} // namespace
 
 // starts right away
 uint32_t start_delay() {
@@ -169,12 +199,84 @@ void setup() {
     wifiIpv6(true);
 }
 
-bool start() {
+// NVS is up since the boot, the identity is made in matter_app_start()
+bool prepare() {
+    return true;
+}
+
+uint16_t device_type() {
+    return 0;
+}
+
+void network(bool) {
+}
+
+void commissioning(bool) {
+}
+
+void describe(Identity& out) {
+    uint16_t vendor { 0 };
+    uint16_t product { 0 };
+    // the provider is only set up by Matter.begin(): before that (the WebUI asks on every connection) it crashed
     if (begun) {
-        return true;
+        auto* info = chip::DeviceLayer::GetDeviceInstanceInfoProvider();
+        if (info) {
+            info->GetVendorId(vendor);
+            info->GetProductId(product);
+        }
     }
 
-    count = endpoints();
+    out.vendor = F("ESPurna");
+    out.vendor_id = vendor;
+    out.product = systemDevice().toString();
+    out.product_id = product;
+    out.source = identity::status();
+}
+
+// What a Matter factory reset clears: chip-config (fabric index, unique id ...) and the KVS of fabrics, ACL, sessions.
+// The counters stay (no reuse of a message counter), the own identity stays in its "espurna-matter" namespace
+bool reset() {
+    using namespace chip::DeviceLayer::Internal;
+    using chip::DeviceLayer::PersistedStorage::KeyValueStoreMgrImpl;
+
+    const auto config = ESP32Config::ClearNamespace(ESP32Config::kConfigNamespace_ChipConfig);
+    const auto kvs = KeyValueStoreMgrImpl().EraseAll();
+
+    return (config == CHIP_NO_ERROR) && (kvs == CHIP_NO_ERROR);
+}
+
+size_t heap_min() {
+    return esp_get_minimum_free_heap_size();
+}
+
+} // namespace backend
+} // namespace matter
+} // namespace espurna
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The Matter application C API (espurna_matter.h)
+
+using namespace espurna::matter::backend;
+
+extern "C" {
+
+uint8_t matter_app_plugs(void) {
+    return MaxPlugs;
+}
+
+int matter_app_start(void) {
+    if (begun) {
+        return 0;
+    }
+
+    // the endpoints exist after the first try, a second one would add them again
+    static bool tried { false };
+    if (tried) {
+        return -1;
+    }
+    tried = true;
+
+    count = std::min(static_cast<size_t>(matter_plug_count()), MaxPlugs);
 
     // before Matter.begin(): the data model is fixed once the stack runs
     esp_matter::endpoint_t* aggregator { nullptr };
@@ -183,10 +285,10 @@ bool start() {
     }
 
     for (size_t index = 0; index < count; ++index) {
-        plugs[index].begin(relayStatus(index) == RelayStatus::On);
+        plugs[index].begin(false);
         // Matter task: the relay is switched in the loop
         plugs[index].onChange([index](bool value) {
-            onoff_changed(index, value);
+            matter_onoff_changed(static_cast<uint8_t>(index + 1), value);
             return true;
         });
     }
@@ -198,32 +300,29 @@ bool start() {
         }
     }
 
-    // Basic Information: the speaker hub reads the serial number while commissioning and stops when it is missing
-    serial = systemChipId().toString();
-    label = systemHostname();
-
+    // Basic Information (the setters copy)
     Matter.setVendorName("ESPurna");
-    Matter.setProductName(String(systemDevice()).c_str());
-    Matter.setDeviceName(label.c_str());
-    Matter.setSerialNumber(serial.c_str());
+    Matter.setProductName(matter_product_label());
+    Matter.setDeviceName(matter_node_label());
+    Matter.setSerialNumber(matter_serial_number());
     Matter.setHardwareVersion(1);
     Matter.setHardwareVersionString("1");
 
     Matter.onEvent([](matterEvent_t event, const chip::DeviceLayer::ChipDeviceEvent*) {
         switch (event) {
         case MATTER_COMMISSIONING_SESSION_STARTED:
-            commissioning(true);
+            matter_commissioning(true);
             break;
         case MATTER_COMMISSIONING_SESSION_STOPPED:
         case MATTER_COMMISSIONING_COMPLETE:
         case MATTER_FAIL_SAFE_TIMER_EXPIRED:
-            commissioning(false);
+            matter_commissioning(false);
             break;
         case MATTER_COMMISSIONING_WINDOW_OPEN:
-            window(true);
+            matter_window(true);
             break;
         case MATTER_COMMISSIONING_WINDOW_CLOSED:
-            window(false);
+            matter_window(false);
             break;
         default:
             break;
@@ -239,6 +338,9 @@ bool start() {
     }
 
     Matter.begin();
+    if (!esp_matter::is_started()) {
+        return -1;
+    }
     begun = true;
 
     // NodeLabel is kept in NVS by the stack, the value of the endpoint before (another relay, an older name) would stay:
@@ -252,28 +354,31 @@ bool start() {
         }
     }
 
-    // first start: the key and the certificate take a moment (two signatures)
-    if (!identity::install()) {
+    // first start: the key and the certificate take a moment (two signatures). The provider is only there after
+    // Matter.begin(), and the Matter task may already read it (a controller commissions right away): it is swapped
+    // with the CHIP stack lock held
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
+    const bool installed = identity::install();
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+
+    if (!installed) {
         DEBUG_MSG_P(PSTR("[MATTER] Own device attestation failed, the SDK test one stays\n"));
     }
     DEBUG_MSG_P(PSTR("[MATTER] Identity: %s\n"), identity::status().c_str());
 
-    return true;
+    return 0;
 }
 
-void network(bool) {
-}
-
-// The attribute itself, not MatterOnOffPlugin::setOnOff(): that one compares with its own copy of the state, which
-// begin() set from the relay, while the stack loads the value it kept in NVS (the relay state stayed unsent to
-// controllers then, e.g. after the endpoints were renumbered)
-void set_onoff(size_t index, bool on) {
-    if (!begun || (index >= count)) {
+// The attribute itself, not MatterOnOffPlugin::setOnOff(): that one compares with its own copy of the state, while the
+// stack loads the value it kept in NVS (the relay state stayed unsent to controllers then, e.g. after the endpoints
+// were renumbered). matter.cpp sends every relay state right after the start
+void matter_set_onoff(uint8_t endpoint, bool on) {
+    if (!begun || (endpoint < 1) || (endpoint > count)) {
         return;
     }
 
     using namespace chip::app::Clusters;
-    const auto id = plugs[index].getEndPointId();
+    const auto id = plugs[endpoint - 1].getEndPointId();
 
     esp_matter_attr_val_t val = esp_matter_invalid(nullptr);
     if ((esp_matter::attribute::get_val(id, OnOff::Id, OnOff::Attributes::OnOff::Id, &val) == ESP_OK)
@@ -285,7 +390,7 @@ void set_onoff(size_t index, bool on) {
     esp_matter::attribute::update(id, OnOff::Id, OnOff::Attributes::OnOff::Id, &val);
 }
 
-bool codes(char* manual, size_t manual_size, char* qr, size_t qr_size) {
+bool matter_onboarding_codes(char* manual, size_t manual_size, char* qr, size_t qr_size) {
     if (!begun || !manual_size || !qr_size) {
         return false;
     }
@@ -301,48 +406,34 @@ bool codes(char* manual, size_t manual_size, char* qr, size_t qr_size) {
     return qr_payload(Matter.getOnboardingQRCodeUrl(), qr, qr_size);
 }
 
-int fabrics() {
-    if (!begun) {
-        return 0;
-    }
-
-    chip::DeviceLayer::PlatformMgr().LockChipStack();
-    const auto out = chip::Server::GetInstance().GetFabricTable().FabricCount();
-    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
-
-    return out;
+int matter_fabric_count(void) {
+    refresh_fabrics();
+    return static_cast<int>(fabric_count);
 }
 
-size_t controllers(Controller* out, size_t size) {
-    if (!begun || !size) {
-        return 0;
+// n = 0 reads the table again, the rest of a list comes from the same reading
+bool matter_fabric_info(int n, uint8_t* index, uint16_t* vendor, uint64_t* node, char* label, size_t label_size) {
+    if (n == 0) {
+        refresh_fabrics();
     }
 
-    size_t count { 0 };
-    chip::DeviceLayer::PlatformMgr().LockChipStack();
-    for (const auto& fabric : chip::Server::GetInstance().GetFabricTable()) {
-        if (count >= size) {
-            break;
-        }
-
-        auto& entry = out[count++];
-        entry.index = fabric.GetFabricIndex();
-        entry.vendor = static_cast<uint16_t>(fabric.GetVendorId());
-        entry.node = fabric.GetNodeId();
-
-        const auto label = fabric.GetFabricLabel();
-        const auto length = std::min(label.size(), sizeof(entry.label) - 1);
-        std::memcpy(entry.label, label.data(), length);
-        entry.label[length] = '\0';
+    if ((n < 0) || (static_cast<size_t>(n) >= fabric_count) || !label_size) {
+        return false;
     }
-    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
-    return count;
+    const auto& entry = fabrics[n];
+    *index = entry.index;
+    *vendor = entry.vendor;
+    *node = entry.node;
+    std::strncpy(label, entry.label, label_size - 1);
+    label[label_size - 1] = '\0';
+
+    return true;
 }
 
 // What the RemoveFabric command of a controller does: the server drops the sessions, access entries and group keys of
 // that fabric with it, and opens the pairing window when it was the last one
-bool remove_controller(uint8_t index) {
+bool matter_remove_fabric(uint8_t index) {
     if (!begun) {
         return false;
     }
@@ -358,14 +449,10 @@ bool remove_controller(uint8_t index) {
     }
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
-    if (found) {
-        DEBUG_MSG_P(PSTR("[MATTER] Controller #%u removed\n"), index);
-    }
-
     return found;
 }
 
-void open_window() {
+void matter_open_window(void) {
     if (!begun) {
         return;
     }
@@ -378,48 +465,12 @@ void open_window() {
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 }
 
-// A work item through the Matter task, answered from the loop
-void ping() {
+void matter_ping(void) {
     if (begun) {
-        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t) { pong(); });
+        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t) { matter_pong(); });
     }
 }
 
-String product() {
-    uint16_t vendor { 0 };
-    uint16_t product { 0 };
-    // the provider is only set up by Matter.begin(): before that (the WebUI asks on every connection) it crashed
-    if (begun) {
-        auto* info = chip::DeviceLayer::GetDeviceInstanceInfoProvider();
-        if (info) {
-            info->GetVendorId(vendor);
-            info->GetProductId(product);
-        }
-    }
-
-    String out;
-    out.reserve(64);
-    out += F("ESPurna (0x");
-    out += String(vendor, 16);
-    out += F(") / ");
-    out += String(systemDevice());
-    out += F(" (0x");
-    out += String(product, 16);
-    out += ')';
-
-    return out;
-}
-
-size_t heap() {
-    return esp_get_free_heap_size();
-}
-
-size_t heap_min() {
-    return esp_get_minimum_free_heap_size();
-}
-
-} // namespace backend
-} // namespace matter
-} // namespace espurna
+} // extern "C"
 
 #endif

@@ -76,17 +76,12 @@ void otaProgress(size_t bytes) {
 }
 
 void otaSetup() {
-#if defined(ARDUINO_ARCH_ESP8266) && OTA_WEB_SUPPORT
     otaFetchSetup();
-#endif
 #if OTA_ARDUINOOTA_SUPPORT
     otaArduinoSetup();
 #endif
 #if !WEB_SUPPORT && OTA_WEB_SUPPORT
     otaWebSetup();
-#endif
-#if OTA_CLIENT != OTA_CLIENT_NONE
-    otaClientSetup();
 #endif
 }
 

@@ -10,22 +10,164 @@ Chip facts are in arch/<chip>/system_<chip>.cpp, common part of every chip is in
 
 #if defined(ESP32) || defined(LIBRETINY)
 
+#include "espurna_tasks.h"
 #include "rtcmem.h"
 #include "storage_eeprom.h"
 
 #include <algorithm>
-#include <atomic>
-#include <mutex>
 #include <vector>
 
-// Arduino core main.cpp (ESP32), arch/beken/system_beken.cpp (LibreTiny)
-extern TaskHandle_t loopTaskHandle;
+// -----------------------------------------------------------------------------
+// TASK PRIMITIVES (ref. espurna_tasks.h)
+// -----------------------------------------------------------------------------
+
+namespace espurna {
+namespace system {
+
+// The chip's part: ESP32 has two cores, a spinlock keeps the other one out (and masks the interrupts of this one),
+// the BK72xx has one core and masking its interrupts is enough. Both nest
+#if defined(ESP32)
+namespace {
+
+portMUX_TYPE critical_spinlock = portMUX_INITIALIZER_UNLOCKED;
+
+} // namespace
+
+uint32_t criticalEnter() {
+    portENTER_CRITICAL(&critical_spinlock);
+    return 0;
+}
+
+void criticalExit(uint32_t) {
+    portEXIT_CRITICAL(&critical_spinlock);
+}
+#else
+uint32_t criticalEnter() {
+    return static_cast<uint32_t>(port_disable_interrupts_flag());
+}
+
+void criticalExit(uint32_t state) {
+    port_enable_interrupts_flag(static_cast<int>(state));
+}
+#endif
+
+// made outside of the critical section (allocates), the first one installed wins
+SemaphoreHandle_t Mutex::handle() {
+    SemaphoreHandle_t out;
+    {
+        Critical critical;
+        out = _handle;
+    }
+
+    if (!out) {
+        auto* made = xSemaphoreCreateMutex();
+        {
+            Critical critical;
+            if (!_handle) {
+                _handle = made;
+                made = nullptr;
+            }
+            out = _handle;
+        }
+
+        if (made) {
+            vSemaphoreDelete(made);
+        }
+    }
+
+    return out;
+}
+
+// Owner and depth go together, both only ever set by the holder and read in the critical section. The depth tells
+// a held mutex from a free one, the owner is no help there before the scheduler runs (no task, null handle)
+bool Mutex::owned() const {
+    const auto self = xTaskGetCurrentTaskHandle();
+
+    Critical critical;
+    return (_depth > 0) && (_owner == self);
+}
+
+void Mutex::held(size_t depth) {
+    const auto self = depth ? xTaskGetCurrentTaskHandle() : nullptr;
+
+    Critical critical;
+    _owner = self;
+    _depth = depth;
+}
+
+bool Mutex::take(TickType_t ticks) {
+    if (owned()) {
+        Critical critical;
+        ++_depth;
+        return true;
+    }
+
+    if (xSemaphoreTake(handle(), ticks) != pdTRUE) {
+        return false;
+    }
+
+    held(1);
+    return true;
+}
+
+void Mutex::unlock() {
+    if (!owned()) {
+        return;
+    }
+
+    size_t depth;
+    {
+        Critical critical;
+        depth = --_depth;
+    }
+
+    if (!depth) {
+        held(0);
+        xSemaphoreGive(handle());
+    }
+}
+
+size_t Mutex::release() {
+    if (!owned()) {
+        return 0;
+    }
+
+    size_t out;
+    {
+        Critical critical;
+        out = _depth;
+    }
+
+    held(0);
+    xSemaphoreGive(handle());
+
+    return out;
+}
+
+void Mutex::reacquire(size_t depth) {
+    if (!depth) {
+        return;
+    }
+
+    xSemaphoreTake(handle(), portMAX_DELAY);
+    held(depth);
+}
+
+} // namespace system
+} // namespace espurna
 
 // Global ESP object for the macro of compat_rtos.h
 EspCompat ESP_COMPAT;
 
+// Same as esp8266, last 3 bytes of the MAC the chip id is made of (ref. systemChipId()), e.g. the SSDP serial number
+uint32_t EspCompat::getChipId() {
+    uint8_t mac[6] {};
+    espurna::system::chip::mac(mac);
+    return (uint32_t{mac[3]} << 16) | (uint32_t{mac[4]} << 8) | uint32_t{mac[5]};
+}
+
 // -----------------------------------------------------------------------------
-// TIMERS (ref. system_rtos.h SystemTimer)
+// TIMERS (ref. system.h SystemTimer)
 // -----------------------------------------------------------------------------
 
 namespace espurna {
@@ -38,7 +180,7 @@ struct Entry {
 };
 
 struct Dispatcher {
-    std::mutex mutex;
+    system::Mutex mutex;
     std::vector<Entry> live;
     uint32_t next_id { 0 };
 };
@@ -66,7 +208,7 @@ int64_t now() {
 
 SystemTimer::SystemTimer() {
     auto& d = dispatcher();
-    std::lock_guard<std::mutex> lock(d.mutex);
+    system::MutexLock lock(d.mutex);
 
     ++d.next_id;
     if (!d.next_id) {
@@ -98,7 +240,7 @@ SystemTimer::~SystemTimer() {
 
     {
         auto& d = dispatcher();
-        std::lock_guard<std::mutex> lock(d.mutex);
+        system::MutexLock lock(d.mutex);
 
         const auto id = _id;
         d.live.erase(
@@ -108,7 +250,7 @@ SystemTimer::~SystemTimer() {
                 }),
             d.live.end());
 
-        _armed.store(false, std::memory_order_release);
+        _armed = false;
         ++_generation;
 
         callback.swap(_callback);
@@ -125,12 +267,12 @@ void SystemTimer::dispatch() {
 
     std::vector<Ready> ready;
     {
-        std::lock_guard<std::mutex> lock(d.mutex);
+        system::MutexLock lock(d.mutex);
 
         const auto current = now();
         for (const auto& entry : d.live) {
             auto* timer = entry.timer;
-            if (!timer->armed() || (current < timer->_due)) {
+            if (!timer->_armed || (current < timer->_due)) {
                 continue;
             }
 
@@ -152,10 +294,10 @@ void SystemTimer::dispatch() {
         Callback callback;
 
         {
-            std::lock_guard<std::mutex> lock(d.mutex);
+            system::MutexLock lock(d.mutex);
 
             auto* timer = find(d, entry.id);
-            if (!timer || (timer->_generation != entry.generation) || !timer->armed()) {
+            if (!timer || (timer->_generation != entry.generation) || !timer->_armed) {
                 continue;
             }
 
@@ -166,7 +308,7 @@ void SystemTimer::dispatch() {
                 // allows callback to re-arm the timer (e.g. HASS discovery re-schedules
                 // itself from send(), one entity per tick)
                 callback.swap(timer->_callback);
-                timer->_armed.store(false, std::memory_order_release);
+                timer->_armed = false;
                 ++timer->_generation;
             }
         }
@@ -175,6 +317,12 @@ void SystemTimer::dispatch() {
             callback();
         }
     }
+}
+
+bool SystemTimer::armed() const {
+    auto& d = dispatcher();
+    system::MutexLock lock(d.mutex);
+    return _armed;
 }
 
 void SystemTimer::once(Duration delay, Callback callback) {
@@ -191,9 +339,9 @@ void SystemTimer::start(Duration delay, Callback callback, bool repeat) {
 
     {
         auto& d = dispatcher();
-        std::lock_guard<std::mutex> lock(d.mutex);
+        system::MutexLock lock(d.mutex);
 
-        _armed.store(false, std::memory_order_release);
+        _armed = false;
         ++_generation;
         previous.swap(_callback);
 
@@ -208,7 +356,7 @@ void SystemTimer::start(Duration delay, Callback callback, bool repeat) {
         _period = us;
         _due = now() + us;
 
-        _armed.store(true, std::memory_order_release);
+        _armed = true;
     }
 }
 
@@ -217,9 +365,9 @@ void SystemTimer::stop() {
 
     {
         auto& d = dispatcher();
-        std::lock_guard<std::mutex> lock(d.mutex);
+        system::MutexLock lock(d.mutex);
 
-        _armed.store(false, std::memory_order_release);
+        _armed = false;
         ++_generation;
         previous.swap(_callback);
     }
@@ -251,7 +399,7 @@ uint16_t systemVcc() {
 [[noreturn]] void forceEraseSDKConfig() {
     eraseSDKConfig();
     customResetReason(CustomResetReason::Terminal);
-    espurna::system::arch::restart();
+    espurna::system::chip::restart();
 }
 
 // -----------------------------------------------------------------------------
@@ -289,19 +437,19 @@ void registerPendingOutput(PendingOutput check) {
     }
 }
 
-namespace arch {
+namespace chip {
 
 void setup() {
-    chip::setup();
+    chip::sdk::setup();
 
     // Same as esp8266 soft WDT, reset when loop() gets stuck
     espurnaRegisterOnce([]() {
-        chip::enable_loop_wdt();
+        chip::sdk::enable_loop_wdt();
     });
 }
 
 void loop() {
-    chip::loop();
+    chip::sdk::loop();
     timer::SystemTimer::dispatch();
 }
 
@@ -311,7 +459,7 @@ void loop() {
     // The reboot here is immediate, give the network tasks a moment to flush when called from loop().
     // Output may also be stuck waiting for a TCP retransmission (reply sent right after the WS
     // connection was opened), keep waiting until the peers acknowledged everything, but not forever
-    if (xTaskGetCurrentTaskHandle() == loopTaskHandle) {
+    if (loopTask()) {
         constexpr uint32_t FlushMin { 250 };
         constexpr uint32_t FlushMax { 3000 };
         constexpr uint32_t FlushInterval { 50 };
@@ -325,15 +473,15 @@ void loop() {
     // settings are committed by the loop, make sure the last change is not lost
     eepromForceCommit();
 
-    chip::reboot();
+    chip::sdk::reboot();
 }
 
-} // namespace arch
+} // namespace chip
 } // namespace system
 } // namespace espurna
 
 // -----------------------------------------------------------------------------
-// LOOP / ASYNCTCP SERIALIZATION (ref. system_rtos.h)
+// LOOP / ASYNCTCP SERIALIZATION (ref. system.h)
 // -----------------------------------------------------------------------------
 
 namespace espurna {
@@ -343,90 +491,76 @@ namespace lock_impl {
 
 constexpr auto AsyncTimeout = duration::Milliseconds{ 100 };
 
-SemaphoreHandle_t mutex { nullptr };
-std::atomic<TaskHandle_t> owner { nullptr };
-size_t depth { 0 };
-
-// First lock() happens from the loop task in setup(), before any network task is running
-SemaphoreHandle_t handle() {
-    if (!mutex) {
-        mutex = xSemaphoreCreateMutex();
-    }
-
-    return mutex;
-}
-
-bool take(TickType_t ticks) {
-    const auto self = xTaskGetCurrentTaskHandle();
-    if (owner.load() == self) {
-        ++depth;
-        return true;
-    }
-
-    if (xSemaphoreTake(handle(), ticks) != pdTRUE) {
-        return false;
-    }
-
-    owner.store(self);
-    depth = 1;
-
-    return true;
-}
-
-void give() {
-    if (owner.load() != xTaskGetCurrentTaskHandle()) {
-        return;
-    }
-
-    if (--depth == 0) {
-        owner.store(nullptr);
-        xSemaphoreGive(handle());
-    }
-}
+Mutex mutex;
 
 } // namespace lock_impl
 } // namespace
 
 void lock() {
-    lock_impl::take(portMAX_DELAY);
+    lock_impl::mutex.lock();
 }
 
 bool lock(duration::Milliseconds timeout) {
-    return lock_impl::take(pdMS_TO_TICKS(timeout.count()));
+    return lock_impl::mutex.try_lock_for(timeout);
 }
 
 void unlock() {
-    lock_impl::give();
+    lock_impl::mutex.unlock();
 }
 
-void delay_unlocked(uint32_t ms) {
-    const auto self = xTaskGetCurrentTaskHandle();
+namespace {
 
+// a timer callback that calls delay() itself does not run the timers again (the ESP8266 SDK does not either)
+bool timers_in_delay { false };
+
+// sleep without the loop lock, the network tasks run meanwhile
+void sleep_unlocked(uint32_t ms) {
+    const auto depth = lock_impl::mutex.release();
+    ::delay(ms);
+    lock_impl::mutex.reacquire(depth);
+}
+
+} // namespace
+
+void delay_unlocked(uint32_t ms) {
     // Same as esp8266 delay(), sleeping in the loop task keeps the watchdog happy
     // (the loop task itself only feeds it between loop() calls)
-    if (self == loopTaskHandle) {
-        chip::feed_loop_wdt();
-    }
-
-    if (lock_impl::owner.load() != self) {
-        ::delay(ms);
+    if (!loopTask() || timers_in_delay) {
+        sleep_unlocked(ms);
         return;
     }
 
-    const auto depth = lock_impl::depth;
-    lock_impl::depth = 0;
-    lock_impl::owner.store(nullptr);
-    xSemaphoreGive(lock_impl::handle());
+    chip::sdk::feed_loop_wdt();
 
-    ::delay(ms);
+    // the same as the ESP8266: the timers that come due while the loop task waits in delay() run inside it, in the
+    // loop task with the loop lock (the SDK runs os_timer callbacks there), not only between loop() passes
+    constexpr uint32_t Slice { 5 };
+    const auto start = millis();
+    for (;;) {
+        timers_in_delay = true;
+        timer::SystemTimer::dispatch();
+        timers_in_delay = false;
 
-    xSemaphoreTake(lock_impl::handle(), portMAX_DELAY);
-    lock_impl::owner.store(self);
-    lock_impl::depth = depth;
+        const uint32_t passed = millis() - start;
+        if (passed >= ms) {
+            break;
+        }
+
+        sleep_unlocked(std::min<uint32_t>(Slice, ms - passed));
+    }
+
+    // delay(0): give the other tasks the CPU, as before
+    if (!ms) {
+        sleep_unlocked(0);
+    }
 }
 
 AsyncGuard::AsyncGuard() :
-    _locked(lock(lock_impl::AsyncTimeout))
+    AsyncGuard(lock_impl::AsyncTimeout)
+{}
+
+AsyncGuard::AsyncGuard(duration::Milliseconds timeout) :
+    _locked(lock(timeout))
 {
     // Safe from any task, debug output coming from outside of the loop task is queued
     // (ref. debug.cpp deferred::push()) and sent out by loop() later

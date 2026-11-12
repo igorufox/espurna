@@ -5,11 +5,17 @@ UART MODULE
 Chip part of the hardware UART ports, ref. arch/<chip>/uart_<chip>.h. Only uart.cpp includes it,
 every function is inline (uart.cpp is also a part of the sensors module, ref. custom_modules)
 
-- hardware::open(baudrate, tx, rx, config, invert)
+- hardware::open(baudrate, tx, rx, config, invert, rx_buffer)
                          hardware UART on these pins. {nullptr} when the chip has none there,
-                         or that UART is already used by another port
+                         or that UART is already used by another port (uart.cpp tries the software port then).
+                         Which pins: esp8266 - its pin pairs, ESP32 - any pins (GPIO matrix), LibreTiny - fixed pins
+- hardware::baud(stream, type, value)
+                         another speed for an open hardware port (false for a software port)
 - hardware::disable_uart0_rx()
                          no port reads the UART0 RX, its interrupt is not needed
+- hardware::sdk_log(type)
+                         SDK log output to this port (Uart0 / Uart1), Type::Unknown turns it off.
+                         Only the esp8266 SDK writes its log through our ports
 
 */
 
@@ -46,25 +52,6 @@ struct Opened {
     // Uart0 is the UART of the serial console
     Type type;
 };
-
-// esp8266 pin pairs. ESP32 takes the same ones, any other pins go to the software port
-// todo; technically, tx==2 is also possible
-// but, we reserve that for the uart1 TX-only interface
-constexpr bool uart0_normal(uint8_t tx, uint8_t rx) {
-    return ((tx == 1) && (rx == 3))
-        || ((tx == GPIO_NONE) && (rx == 3))
-        || ((tx == 1) && (rx == GPIO_NONE));
-}
-
-constexpr bool uart0_swapped(uint8_t tx, uint8_t rx) {
-    return ((tx == 15) && (rx == 13))
-        || ((tx == GPIO_NONE) && (rx == 13))
-        || ((tx == 15) && (rx == GPIO_NONE));
-}
-
-constexpr bool uart1_normal(uint8_t tx, uint8_t rx) {
-    return (tx == 2) && (rx == GPIO_NONE);
-}
 
 // SerialConfig bits of the esp8266 Core, ESP32 core reads the same ones
 constexpr int data_bits_from_config(uint8_t bits) {

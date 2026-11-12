@@ -61,4 +61,3 @@ struct StreamAdapter final : public Stream {
     T const _end;
 };
 
-

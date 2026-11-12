@@ -24,4 +24,3 @@ using RpcPayloadCheck = PayloadStatus(*)(espurna::StringView);
 bool rpcHandleAction(espurna::StringView);
 PayloadStatus rpcParsePayload(espurna::StringView, RpcPayloadCheck);
 PayloadStatus rpcParsePayload(espurna::StringView);
-

@@ -37,4 +37,3 @@ enum class LedMode {
     Relays,
     RelaysWiFi,
 };
-

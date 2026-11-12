@@ -5,7 +5,7 @@ RTMEM MODULE FOR BEKEN (LibreTiny)
 */
 
 #include "espurna.h"
-#include "arch/beken/rtcmem_beken.h"
+#include "rtcmem.h"
 #include "build.h"
 #include "layout_beken.h"
 
@@ -18,10 +18,7 @@ RTMEM MODULE FOR BEKEN (LibreTiny)
 
 #if defined(LIBRETINY)
 
-// No RAM survives the reset, bootloader clears all of it (0x00400000 and up, checked on BK7231N).
-// Contents only live until the next reboot, relay state is restored from settings instead.
-static RtcmemData _rtcmem_storage;
-volatile RtcmemData* Rtcmem = &_rtcmem_storage;
+// The structure itself is plain RAM, cleared by the bootloader on every reset (ref. rtcmem.cpp)
 
 namespace {
 
@@ -546,10 +543,6 @@ void __wrap_lt_wdt_feed() {
 
 } // extern "C"
 
-bool rtcmemStatus() {
-    return false;
-}
-
 // Also used before setup(), by the reset reason
 bool rtcmemSysStatus() {
     return (lt_get_reboot_reason() != REBOOT_REASON_POWER)
@@ -566,11 +559,8 @@ uint32_t rtcmemRetention() {
     return pack(Rtcmem->sys);
 }
 
-void rtcmemSetup() {
+void rtcmemChipSetup() {
     CrashRecordOffset = ::espurna::beken::flashLayout().crash_offset;
-
-    memset((void*)Rtcmem, 0, sizeof(RtcmemData));
-    Rtcmem->magic = RTCMEM_MAGIC;
 
     if (rtcmemSysStatus()) {
         Rtcmem->sys = unpack(_rtcmem_retention_at_boot);

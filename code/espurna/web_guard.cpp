@@ -17,7 +17,7 @@ and of telnet. A new connection is reset (the browser tries again) instead of ta
 - the free heap is below webGuardHeap,
 - the largest free block is below webGuardBlock,
 - lwIP's own heap (where lwIP has one, MEM_LIBC_MALLOC 0: the BK7231N) has less than webGuardLwip free.
-0 turns a check off; defaults per chip: WEB_GUARD_*_DEFAULT of config/general.h. Connections already open are never
+0 turns a check off; defaults per chip: espurna::chip::web_guard() (espurna_chip.h). Connections already open are never
 closed (the WebUI stays connected): the guard recovers by itself, the heap comes back as they finish.
 
 No server or library code changes: the loop puts the gate on the listeners every few seconds (a server started later
@@ -36,6 +36,7 @@ system_<chip>.cpp). The ESP8266 head keeps its SDK reserve in heap_reserve_esp82
 
 #include "web.h"
 #include "web_guard.h"
+#include "espurna_chip.h"
 
 #if TELNET_SUPPORT
 #include "telnet.h"
@@ -58,20 +59,21 @@ namespace {
 
 namespace build {
 
-constexpr uint32_t heap() {
-    return WEB_GUARD_HEAP_DEFAULT;
+// defaults are the chip's, ref. espurna_chip.h
+uint32_t heap() {
+    return espurna::chip::web_guard().heap;
 }
 
-constexpr uint32_t block() {
-    return WEB_GUARD_BLOCK_DEFAULT;
+uint32_t block() {
+    return espurna::chip::web_guard().block;
 }
 
-constexpr uint32_t lwip() {
-    return WEB_GUARD_LWIP_DEFAULT;
+uint32_t lwip() {
+    return espurna::chip::web_guard().lwip;
 }
 
-constexpr uint32_t conns() {
-    return WEB_GUARD_CONNS_DEFAULT;
+uint32_t conns() {
+    return espurna::chip::web_guard().conns;
 }
 
 // how often the loop looks for listeners without the gate

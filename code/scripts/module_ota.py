@@ -1,6 +1,7 @@
 # The install image of a chip, espurna-<chip>.ota: the head (Beken: both, one per bootloader) and the modules file (EMC2)
-# in one file. Its name keeps it off a serial flash tool; the WebUI takes it apart (html/src/fwinstall.mjs, otaParts):
-# the head of the board goes to /upgrade, after the restart the modules file to /modules/apply with the ticked names.
+# in one file. Its name keeps it off a serial flash tool; the MODULES panel takes it apart (html/src/modules.mjs, otaParts):
+# a head of another build goes on first (/upgrade, the ESP32 through its safeboot), then the modules file to
+# /modules/apply with the ticked names.
 #
 #   "EOT1", u32 count, then count entries: u32 kind (1 head, 2 modules file), char name[16] (head: esp8266, esp32,
 #   tuya, quectel; modules: modules), u32 offset, u32 size, u32 crc32; then the parts, each at its offset

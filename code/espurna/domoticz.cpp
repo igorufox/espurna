@@ -550,4 +550,3 @@ void domoticzSetup() {
 }
 
 #endif
-

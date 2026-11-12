@@ -2,8 +2,10 @@
 
 MATTER MODULE
 
-The part shared by the architectures: settings, the relay link, the terminal commands and the MATTER panel of the
-WebUI. The Matter stack itself is the backend of the architecture (espurna_matter.h)
+The one Matter layer of both chips (ref. espurna_matter.h): settings, the start, the relay link both ways, the bridged
+plug names, controllers (fabrics), the pairing window and codes, the quiet mode while a controller commissions, the
+log of the Matter task, the terminal commands and the MATTER panel of the WebUI. The Matter stack is reached only
+through the Matter application C API (`matter_app_*`), the same on the ESP32 and on Beken
 
 */
 
@@ -13,6 +15,7 @@ WebUI. The Matter stack itself is the backend of the architecture (espurna_matte
 
 #include "espurna_matter.h"
 #include "espurna_ota.h"
+#include "espurna_tasks.h"
 #include "relay.h"
 #include "terminal.h"
 #include "ws.h"
@@ -25,8 +28,12 @@ WebUI. The Matter stack itself is the backend of the architecture (espurna_matte
 #include "alexa.h"
 #endif
 
+#if defined(MATTER_UDP_LOG)
+#include <lwip/tcpip.h>
+#include <lwip/udp.h>
+#endif
+
 #include <algorithm>
-#include <atomic>
 #include <cstdlib>
 #include <cstring>
 
@@ -44,23 +51,55 @@ constexpr uint32_t NetworkResetStartDelay { 300 };
 // millis() | 1 of the automatic start that is due, 0 when none
 uint32_t start_at { 0 };
 
-// Relay changes from Matter come from its own task, they are applied in the loop: bit n of `changed` marks
-// relay n, bit n of `values` is its new state
-std::atomic<uint32_t> changed { 0 };
-std::atomic<uint32_t> values { 0 };
+// Plug endpoints of the relays: as many as the data model of the chip's Matter application has, at most 4
+constexpr size_t MaxPlugs { 4 };
 
-std::atomic<bool> alive { false };
+// Filled in the loop by start() for the Matter task (matter_node_label() ...), constant while Matter runs. Matter
+// limits the node label, product name and the bridged names to 32 characters
+struct PlugName {
+    char label[33];
+    char unique[33];
+};
 
-// Commissioning in progress (from the Matter task), applied in the loop
-std::atomic<int> busy { -1 };
+uint8_t plug_count { 0 };
+PlugName plug_names[MaxPlugs];
+char node_label[33];
+char serial_number[33];
+char product_label[33];
+uint16_t device_type { 0 };
+
+// What the Matter task reports (matter_onoff_changed() ...), applied in the loop in the same order: a relay switched
+// on and off again by a controller ends off, a commissioning that started and ended ends the quiet mode
+struct Event {
+    enum class Type : uint8_t {
+        OnOff,
+        Commissioning,
+        Window,
+        Pong,
+    };
+
+    Type type;
+    uint8_t endpoint;
+    bool value;
+};
+
+// a controller switching every plug at once, plus the commissioning and window events around it
+constexpr size_t EventsMax { 16 };
+
+espurna::system::EventQueue<Event, EventsMax> events;
+
+// The Matter task waits this long for the loop to make room, a relay change is not to be lost
+constexpr auto EventWait = duration::Milliseconds{ 50 };
+
+// Commissioning in progress, for the Matter task itself (only that task reads and writes it): the message trace of the
+// log only goes out then
+bool commissioning_active { false };
 
 // Fabrics a device keeps (CHIP_CONFIG_MAX_FABRICS is 5 by default)
 constexpr size_t MaxControllers { 8 };
 
-// Pairing window, from the Matter task (1 opened, 0 closed), applied in the loop. The stack does not tell how long a
-// window stays open: the basic window (button, first boot) closes after 15 minutes, a window a controller opened for
-// another one ends earlier with its close event
-std::atomic<int> window_event { -1 };
+// Pairing window, applied in the loop. The stack does not tell how long a window stays open: the basic window (button,
+// first boot) closes after 15 minutes, a window a controller opened for another one ends earlier with its close event
 uint32_t window_since { 0 };
 constexpr uint32_t WindowMs { 15 * 60 * 1000 };
 
@@ -79,6 +118,20 @@ uint32_t window_left() {
     return std::max<uint32_t>(1, (WindowMs - elapsed) / 1000);
 }
 
+void copy_text(char* out, size_t size, const char* text, size_t length) {
+    if (!size) {
+        return;
+    }
+
+    const auto count = std::min(size - 1, length);
+    std::memcpy(out, text, count);
+    out[count] = '\0';
+}
+
+void copy_text(char* out, size_t size, const String& text) {
+    copy_text(out, size, text.c_str(), text.length());
+}
+
 void web_update();
 
 // Log lines of the Matter task, printed from the loop (ESPurna debug output is not for other tasks).
@@ -92,50 +145,43 @@ char lines[Slots][Length];
 size_t head { 0 };
 size_t tail { 0 };
 size_t dropped { 0 };
-SemaphoreHandle_t mutex { nullptr };
+espurna::system::Mutex mutex;
 
 void push(const char* line) {
-    if (!mutex) {
-        return;
-    }
-
     // A burst of lines waits a little for the loop to print them (it runs every 10 ms)
     for (size_t attempt = 0; attempt < 5; ++attempt) {
-        xSemaphoreTake(mutex, portMAX_DELAY);
-        if ((head - tail) < Slots) {
-            std::strncpy(lines[head % Slots], line, Length - 1);
-            lines[head % Slots][Length - 1] = '\0';
-            ++head;
-            xSemaphoreGive(mutex);
-            return;
+        {
+            espurna::system::MutexLock lock(mutex);
+            if ((head - tail) < Slots) {
+                std::strncpy(lines[head % Slots], line, Length - 1);
+                lines[head % Slots][Length - 1] = '\0';
+                ++head;
+                return;
+            }
         }
-        xSemaphoreGive(mutex);
-        vTaskDelay(pdMS_TO_TICKS(10));
+        ::delay(10);
     }
 
-    xSemaphoreTake(mutex, portMAX_DELAY);
+    espurna::system::MutexLock lock(mutex);
     ++dropped;
-    xSemaphoreGive(mutex);
 }
 
 void print() {
-    if (!mutex) {
-        return;
-    }
-
     char line[Length];
     for (;;) {
         size_t lost { 0 };
+        bool empty;
 
-        xSemaphoreTake(mutex, portMAX_DELAY);
-        const bool empty = (head == tail);
-        if (!empty) {
-            std::memcpy(line, lines[tail % Slots], Length);
-            ++tail;
+        {
+            espurna::system::MutexLock lock(mutex);
+            empty = (head == tail);
+            if (!empty) {
+                std::memcpy(line, lines[tail % Slots], Length);
+                ++tail;
+            }
+            lost = dropped;
+            dropped = 0;
         }
-        lost = dropped;
-        dropped = 0;
-        xSemaphoreGive(mutex);
 
         if (lost) {
             DEBUG_MSG_P(PSTR("[MATTER] (%u lines dropped)\n"), lost);
@@ -151,13 +197,66 @@ void print() {
 
 } // namespace log
 
+#if defined(MATTER_UDP_LOG)
+// Bring-up aid for boards without a serial wire, off unless built with -DMATTER_UDP_LOG="a.b.c.d": every Matter log
+// line and start step as one UDP packet to MATTER_UDP_LOG (a.b.c.d), port 5514, sent from the tcpip thread, so it
+// works while the loop is stuck
+namespace udplog {
+
+struct Message {
+    size_t length;
+    char text[160];
+};
+
+udp_pcb* pcb { nullptr };
+
+void send_tcpip(void* arg) {
+    auto* message = static_cast<Message*>(arg);
+    if (!pcb) {
+        pcb = udp_new();
+    }
+
+    if (pcb) {
+        auto* buffer = pbuf_alloc(PBUF_TRANSPORT, message->length, PBUF_RAM);
+        if (buffer) {
+            std::memcpy(buffer->payload, message->text, message->length);
+            ip_addr_t address;
+            ipaddr_aton(MATTER_UDP_LOG, &address);
+            udp_sendto(pcb, buffer, &address, 5514);
+            pbuf_free(buffer);
+        }
+    }
+
+    free(message);
+}
+
+void send(const char* text) {
+    auto* message = static_cast<Message*>(malloc(sizeof(Message)));
+    if (!message) {
+        return;
+    }
+
+    message->length = snprintf(message->text, sizeof(message->text), "%u %u %s",
+        static_cast<unsigned>(millis()), static_cast<unsigned>(systemFreeHeap()), text);
+    message->length = std::min(message->length, sizeof(message->text) - 1);
+    if (tcpip_callback(send_tcpip, message) != ERR_OK) {
+        free(message);
+    }
+}
+
+} // namespace udplog
+#define MATTER_STEP(X) udplog::send(X)
+#else
+#define MATTER_STEP(X)
+#endif
+
 void web_tick();
 
 // Quiet mode while a controller commissions: the certificate checks (PASE / CASE, CSR, NOC) need tens of KB of heap
 // at once, more than is left with every module busy. MQTT disconnects, the Alexa servers stop; settings stay, everything
 // comes back at the end (or after QuietMaxMs without an end event). The WebUI stays connected (closing it showed
-// "Connection lost" in the middle of a pairing), only its periodic status and the debug log are held back: a 4-relay
-// Beken bridge ran out of heap in the status update while the hub paired it
+// "Connection lost" in the middle of a pairing), only its periodic status and the debug log are held back (wsPause()):
+// a 4-relay Beken bridge ran out of heap in the status update while the hub paired it
 constexpr uint32_t QuietMaxMs { 5 * 60 * 1000 };
 uint32_t quiet_since { 0 };
 
@@ -184,7 +283,8 @@ void quiet(bool active) {
             mqttDisconnect();
         }
     } else if (quiet_mqtt) {
-        mqttEnabled(true);
+        // MQTT switched off in the settings meanwhile stays off
+        mqttEnabled(getSetting("mqttEnabled", 1 == MQTT_ENABLED));
         quiet_mqtt = false;
     }
 #endif
@@ -193,7 +293,7 @@ void quiet(bool active) {
     alexaPause(active);
 #endif
 
-    DEBUG_MSG_P(PSTR("[MATTER] Quiet mode %s, heap %u\n"), active ? "on" : "off", backend::heap());
+    DEBUG_MSG_P(PSTR("[MATTER] Quiet mode %s, heap %u\n"), active ? "on" : "off", systemFreeHeap());
 }
 
 void start();
@@ -208,38 +308,176 @@ void loop() {
         start();
     }
 
-    const auto mask = changed.exchange(0);
-    if (mask) {
-        const auto state = values.load();
-        for (size_t index = 0; index < backend::endpoints(); ++index) {
-            if (mask & (1u << index)) {
-                relayStatus(index, (state & (1u << index)) != 0);
+    const auto lost = events.dropped();
+    if (lost) {
+        DEBUG_MSG_P(PSTR("[MATTER] %u events of the Matter task lost\n"), lost);
+    }
+
+    bool commissioning { false };
+
+    Event event;
+    while (events.pop(event)) {
+        switch (event.type) {
+        case Event::Type::OnOff:
+            if (event.endpoint <= plug_count) {
+                relayStatus(event.endpoint - 1, event.value);
             }
+            break;
+
+        case Event::Type::Commissioning:
+            commissioning = true;
+            DEBUG_MSG_P(PSTR("[MATTER] Commissioning %s\n"), event.value ? "started" : "ended");
+            quiet(event.value);
+            break;
+
+        case Event::Type::Window:
+            window_since = event.value ? (millis() | 1) : 0;
+            DEBUG_MSG_P(PSTR("[MATTER] Pairing window %s\n"), event.value ? "open" : "closed");
+            web_update();
+            break;
+
+        case Event::Type::Pong:
+            DEBUG_MSG_P(PSTR("[MATTER] Task is alive\n"));
+            break;
         }
     }
 
-    const auto active = busy.exchange(-1);
-    if (active >= 0) {
-        DEBUG_MSG_P(PSTR("[MATTER] Commissioning %s\n"), active ? "started" : "ended");
-        quiet(active != 0);
-    } else if (quiet_since && ((millis() - quiet_since) > QuietMaxMs)) {
+    if (!commissioning && quiet_since && ((millis() - quiet_since) > QuietMaxMs)) {
         DEBUG_MSG_P(PSTR("[MATTER] No end of commissioning in %u s, resuming\n"), QuietMaxMs / 1000);
         quiet(false);
     }
 
-    if (alive.exchange(false)) {
-        DEBUG_MSG_P(PSTR("[MATTER] Task is alive\n"));
-    }
-
-    const auto opened = window_event.exchange(-1);
-    if (opened >= 0) {
-        window_since = opened ? (millis() | 1) : 0;
-        DEBUG_MSG_P(PSTR("[MATTER] Pairing window %s\n"), opened ? "open" : "closed");
-        web_update();
-    }
-
     log::print();
     web_tick();
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The Matter application through its C API
+
+void plug_name(size_t index, PlugName& out) {
+    auto name = getSetting({"relayName", index}, String());
+    if (!name.length()) {
+        name = systemHostname();
+        name += ' ';
+        name += String(index + 1);
+    }
+
+    copy_text(out.label, sizeof(out.label), name);
+    snprintf(out.unique, sizeof(out.unique), "%s-%u", systemChipId().toString().c_str(), static_cast<unsigned>(index));
+}
+
+bool start_stack() {
+    MATTER_STEP("start");
+
+    if (!backend::prepare()) {
+        DEBUG_MSG_P(PSTR("[MATTER] Storage or identity of the chip failed\n"));
+        return false;
+    }
+
+    device_type = backend::device_type();
+    if (device_type) {
+        DEBUG_MSG_P(PSTR("[MATTER] Device type 0x%04X of the certification declaration\n"), device_type);
+    }
+
+    copy_text(node_label, sizeof(node_label), systemHostname());
+    // Basic Information SerialNumber: the speaker hub reads it while commissioning and stops when it is missing. The
+    // chip id (MAC) is unique and stays across updates
+    copy_text(serial_number, sizeof(serial_number), systemChipId().toString());
+    copy_text(product_label, sizeof(product_label), systemDevice().toString());
+
+    const size_t library = matter_app_plugs ? matter_app_plugs() : 1;
+    plug_count = static_cast<uint8_t>(std::min({relayCount(), library, MaxPlugs}));
+    for (size_t index = 0; index < plug_count; ++index) {
+        plug_name(index, plug_names[index]);
+    }
+
+    MATTER_STEP("ready, matter_app_start");
+    const auto out = matter_app_start() == 0;
+    MATTER_STEP(out ? "matter_app_start OK" : "matter_app_start FAILED");
+
+    return out;
+}
+
+void set_onoff(size_t index, bool on) {
+    if (started && (index < plug_count)) {
+        matter_set_onoff(static_cast<uint8_t>(index + 1), on);
+    }
+}
+
+int fabrics() {
+    return started ? matter_fabric_count() : 0;
+}
+
+// Controllers the device was added to (fabrics): for the WebUI list, and to remove one that the controller app forgot
+// (deleting a device in the hub's phone app does not tell the device; adding it to the same app again then fails)
+struct Controller {
+    uint8_t index;
+    uint16_t vendor;
+    uint64_t node;
+    char label[33];
+};
+
+size_t controllers(Controller* out, size_t size) {
+    if (!started || !matter_fabric_info) {
+        return 0;
+    }
+
+    size_t count { 0 };
+    while (count < size) {
+        auto& entry = out[count];
+        if (!matter_fabric_info(count, &entry.index, &entry.vendor, &entry.node, entry.label, sizeof(entry.label))) {
+            break;
+        }
+        ++count;
+    }
+
+    return count;
+}
+
+bool remove_controller(uint8_t index) {
+    if (!started || !matter_remove_fabric) {
+        return false;
+    }
+
+    const auto out = matter_remove_fabric(index);
+    if (out) {
+        DEBUG_MSG_P(PSTR("[MATTER] Controller #%u removed\n"), index);
+    }
+
+    return out;
+}
+
+void open_window() {
+    if (started) {
+        matter_open_window();
+    }
+}
+
+bool codes(char* manual, size_t manual_size, char* qr, size_t qr_size) {
+    return started && matter_onboarding_codes(manual, manual_size, qr, qr_size);
+}
+
+// "vendor (0xVID) / product (0xPID), identity" for the panel and the status command
+String product() {
+    backend::Identity identity;
+    backend::describe(identity);
+
+    String out;
+    out.reserve(112);
+    out += identity.vendor;
+    out += F(" (0x");
+    out += String(identity.vendor_id, 16);
+    out += F(") / ");
+    out += identity.product;
+    out += F(" (0x");
+    out += String(identity.product_id, 16);
+    out += ')';
+    if (identity.source.length()) {
+        out += F(", ");
+        out += identity.source;
+    }
+
+    return out;
 }
 
 void start() {
@@ -247,13 +485,13 @@ void start() {
         return;
     }
 
-    started = backend::start();
+    started = start_stack();
     DEBUG_MSG_P(PSTR("[MATTER] Start %s, %u endpoint(s), heap %u\n"),
-        started ? "OK" : "FAILED", backend::endpoints(), backend::heap());
+        started ? "OK" : "FAILED", plug_count, systemFreeHeap());
 
     if (started) {
-        for (size_t index = 0; index < backend::endpoints(); ++index) {
-            backend::set_onoff(index, relayStatus(index) == RelayStatus::On);
+        for (size_t index = 0; index < plug_count; ++index) {
+            set_onoff(index, relayStatus(index) == RelayStatus::On);
         }
     }
 }
@@ -297,19 +535,15 @@ PROGMEM_STRING(Status, "MATTER");
 
 void command_status(::terminal::CommandContext&& ctx) {
     ctx.output.printf_P(PSTR("started: %s, fabrics: %d, heap: %u, lowest since boot: %u\n"),
-        started ? "yes" : "no",
-        started ? backend::fabrics() : 0,
-        backend::heap(), backend::heap_min());
+        started ? "yes" : "no", fabrics(), systemFreeHeap(), backend::heap_min());
 
-    if (started) {
-        backend::Controller list[MaxControllers];
-        const auto count = backend::controllers(list, MaxControllers);
-        for (size_t index = 0; index < count; ++index) {
-            ctx.output.printf_P(PSTR("controller #%u vendor 0x%04X node 0x%08X%08X label \"%s\"\n"),
-                list[index].index, list[index].vendor,
-                static_cast<uint32_t>(list[index].node >> 32), static_cast<uint32_t>(list[index].node),
-                list[index].label);
-        }
+    Controller list[MaxControllers];
+    const auto count = controllers(list, MaxControllers);
+    for (size_t index = 0; index < count; ++index) {
+        ctx.output.printf_P(PSTR("controller #%u vendor 0x%04X node 0x%08X%08X label \"%s\"\n"),
+            list[index].index, list[index].vendor,
+            static_cast<uint32_t>(list[index].node >> 32), static_cast<uint32_t>(list[index].node),
+            list[index].label);
     }
 
     terminalOK(ctx);
@@ -330,7 +564,7 @@ void command_remove(::terminal::CommandContext&& ctx) {
     }
 
     const auto index = std::strtoul(ctx.argv[1].c_str(), nullptr, 10);
-    if (!index || (index > 254) || !backend::remove_controller(static_cast<uint8_t>(index))) {
+    if (!index || (index > 254) || !remove_controller(static_cast<uint8_t>(index))) {
         terminalError(ctx, F("No such controller"));
         return;
     }
@@ -347,7 +581,7 @@ void command_window(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    backend::open_window();
+    open_window();
     terminalOK(ctx);
 }
 
@@ -360,7 +594,7 @@ void command_ping(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    backend::ping();
+    matter_ping();
     terminalOK(ctx);
 }
 
@@ -392,13 +626,49 @@ void command_codes(::terminal::CommandContext&& ctx) {
 
     char manual[24];
     char qr[32];
-    if (!backend::codes(manual, sizeof(manual), qr, sizeof(qr))) {
+    if (!codes(manual, sizeof(manual), qr, sizeof(qr))) {
         terminalError(ctx, F("No commissioning data"));
         return;
     }
 
     ctx.output.printf_P(PSTR("manual pairing code: %s\nQR code: %s\n"), manual, qr);
     terminalOK(ctx);
+}
+
+PROGMEM_STRING(Factory, "MATTER.FACTORY");
+
+// Where the device attestation comes from. Public part only, no keys, passcode or verifier
+void command_factory(::terminal::CommandContext&& ctx) {
+    backend::Identity identity;
+    backend::describe(identity);
+
+    ctx.output.printf_P(PSTR("identity: %s\n"), identity.source.c_str());
+    ctx.output.printf_P(PSTR("vendor: %s (0x%04X), product: %s (0x%04X)\n"),
+        identity.vendor.c_str(), identity.vendor_id, identity.product.c_str(), identity.product_id);
+    if (identity.details.length()) {
+        ctx.output.printf_P(PSTR("%s\n"), identity.details.c_str());
+    }
+
+    terminalOK(ctx);
+}
+
+PROGMEM_STRING(Reset, "MATTER.RESET");
+
+// Forget every controller (fabrics, ACL), keep the own identity and its pairing code. Not while Matter runs: it
+// holds all of that in memory and writes it back
+void command_reset(::terminal::CommandContext&& ctx) {
+    if (started) {
+        terminalError(ctx, F("Matter is running, reboot first (matterAuto 0 keeps it off)"));
+        return;
+    }
+
+    if (!backend::reset()) {
+        terminalError(ctx, F("Matter storage failed"));
+        return;
+    }
+
+    terminalOK(ctx);
+    prepareReset(CustomResetReason::Terminal);
 }
 
 static constexpr ::terminal::Command Commands[] PROGMEM {
@@ -408,6 +678,8 @@ static constexpr ::terminal::Command Commands[] PROGMEM {
     {Ping, command_ping},
     {Window, command_window},
     {Remove, command_remove},
+    {Factory, command_factory},
+    {Reset, command_reset},
 };
 #endif
 
@@ -433,32 +705,29 @@ void onVisible(JsonObject& root) {
 
 void onData(JsonObject& root) {
     root["matterStarted"] = started ? F("yes") : F("no");
-    root["matterFabrics"] = started ? backend::fabrics() : 0;
-    root["matterProduct"] = backend::product();
+    root["matterFabrics"] = matter::fabrics();
+    root["matterProduct"] = product();
     root["matterWindow"] = started ? window_left() : 0;
-
 
     // [[#, vendor id, "node id (hex)", "label"], ...]
     JsonArray& list = root.createNestedArray("matterControllers");
-    if (started) {
-        backend::Controller controllers[MaxControllers];
-        const auto count = backend::controllers(controllers, MaxControllers);
-        for (size_t index = 0; index < count; ++index) {
-            char node[17];
-            snprintf_P(node, sizeof(node), PSTR("%08X%08X"),
-                static_cast<uint32_t>(controllers[index].node >> 32), static_cast<uint32_t>(controllers[index].node));
+    Controller entries[MaxControllers];
+    const auto count = controllers(entries, MaxControllers);
+    for (size_t index = 0; index < count; ++index) {
+        char node[17];
+        snprintf_P(node, sizeof(node), PSTR("%08X%08X"),
+            static_cast<uint32_t>(entries[index].node >> 32), static_cast<uint32_t>(entries[index].node));
 
-            JsonArray& entry = list.createNestedArray();
-            entry.add(controllers[index].index);
-            entry.add(controllers[index].vendor);
-            entry.add(String(node));
-            entry.add(String(controllers[index].label));
-        }
+        JsonArray& entry = list.createNestedArray();
+        entry.add(entries[index].index);
+        entry.add(entries[index].vendor);
+        entry.add(String(node));
+        entry.add(String(entries[index].label));
     }
 
     char manual[24] {};
     char qr[32] {};
-    if (started && backend::codes(manual, sizeof(manual), qr, sizeof(qr))) {
+    if (codes(manual, sizeof(manual), qr, sizeof(qr))) {
         root["matterManual"] = manual;
         root["matterQr"] = qr;
     } else {
@@ -475,17 +744,15 @@ void onConnected(JsonObject& root) {
 void onAction(uint32_t, const char* action, JsonObject& data) {
     if (std::strcmp(action, "matterRemove") == 0) {
         const auto index = data["index"].as<int>();
-        if (started && (index > 0) && (index < 255)) {
-            backend::remove_controller(static_cast<uint8_t>(index));
+        if ((index > 0) && (index < 255)) {
+            remove_controller(static_cast<uint8_t>(index));
             // the list goes out again from web_tick() when the fabric count changed
         }
         return;
     }
 
     if (std::strcmp(action, "matterWindow") == 0) {
-        if (started) {
-            backend::open_window();
-        }
+        open_window();
         // the button is grey until an answer: the state now, the countdown follows with the open event
         wsPost(onData);
         return;
@@ -524,7 +791,7 @@ void web_tick() {
     }
     web::last = now;
 
-    const auto count = backend::fabrics();
+    const auto count = fabrics();
     if (count != web::fabrics) {
         web::fabrics = count;
         if (wsConnected()) {
@@ -547,61 +814,10 @@ void web_update() {
 }
 #endif
 
-} // namespace
-
-void onoff_changed(size_t index, bool on) {
-    if (index >= 32) {
-        return;
-    }
-
-    const auto bit = 1u << index;
-    if (on) {
-        values.fetch_or(bit);
-    } else {
-        values.fetch_and(~bit);
-    }
-    changed.fetch_or(bit);
-}
-
-void commissioning(bool active) {
-    busy = active ? 1 : 0;
-}
-
-void pong() {
-    alive = true;
-}
-
-void window(bool open) {
-    window_event = open ? 1 : 0;
-}
-
-void log_line(const char* line) {
-    log::push(line);
-}
-
-void plug_name(size_t index, char* label, size_t label_size, char* unique, size_t unique_size) {
-    auto name = getSetting({"relayName", index}, String());
-    if (!name.length()) {
-        name = systemHostname();
-        name += ' ';
-        name += String(index + 1);
-    }
-
-    if (label_size) {
-        std::strncpy(label, name.c_str(), label_size - 1);
-        label[label_size - 1] = '\0';
-    }
-
-    if (unique_size) {
-        snprintf(unique, unique_size, "%s-%u", systemChipId().c_str(), static_cast<unsigned>(index));
-    }
-}
-
 void setup() {
     // left by older builds (the Matter code in the OTA partition): nothing reads it any more
     delSetting("matterSkip");
 
-    log::mutex = xSemaphoreCreateMutex();
     backend::setup();
 #if TERMINAL_SUPPORT
     terminal::add(Commands);
@@ -610,16 +826,96 @@ void setup() {
     web::setup();
 #endif
     wifiRegister(wifi_event);
-    relayOnStatusChange([](size_t id, bool status) {
-        if (started && (id < backend::endpoints())) {
-            backend::set_onoff(id, status);
-        }
-    });
+    relayOnStatusChange(set_onoff);
     espurnaRegisterLoop(loop);
 }
 
+} // namespace
 } // namespace matter
 } // namespace espurna
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Callbacks of the Matter application (espurna_matter.h)
+
+extern "C" {
+
+void matter_onoff_changed(uint8_t endpoint, bool on) {
+    using namespace espurna::matter;
+    if ((endpoint < 1) || (endpoint > MaxPlugs)) {
+        return;
+    }
+
+    events.push(Event{Event::Type::OnOff, endpoint, on}, EventWait);
+}
+
+void matter_commissioning(bool active) {
+    using namespace espurna::matter;
+    backend::commissioning(active);
+    commissioning_active = active;
+    events.push(Event{Event::Type::Commissioning, 0, active}, EventWait);
+}
+
+void matter_window(bool open) {
+    using namespace espurna::matter;
+    events.push(Event{Event::Type::Window, 0, open}, EventWait);
+}
+
+void matter_pong(void) {
+    using namespace espurna::matter;
+    events.push(Event{Event::Type::Pong, 0, true});
+}
+
+// Every message in and out is an "EM" progress line, a dozen per exchange: they flood the 8 slots and make the Matter
+// task wait. They only pass while a controller commissions, errors of every module always do
+void matter_log(const char* line) {
+    using namespace espurna::matter;
+    if ((line[0] == 'E') && (line[1] == 'M') && (line[2] == ' ') && !commissioning_active) {
+        return;
+    }
+
+    // free heap at the time of the line: commissioning runs out of it, this shows which step takes how much
+    char tagged[log::Length];
+    snprintf(tagged, sizeof(tagged), "(%u) %s", static_cast<unsigned>(systemFreeHeap()), line);
+    log::push(tagged);
+#if defined(MATTER_UDP_LOG)
+    udplog::send(line);
+#endif
+}
+
+const char* matter_node_label(void) {
+    return espurna::matter::node_label;
+}
+
+const char* matter_serial_number(void) {
+    return espurna::matter::serial_number;
+}
+
+const char* matter_product_label(void) {
+    return espurna::matter::product_label;
+}
+
+uint8_t matter_plug_count(void) {
+    return espurna::matter::plug_count;
+}
+
+uint16_t matter_device_type(void) {
+    return espurna::matter::device_type;
+}
+
+bool matter_plug_name(uint8_t plug, char* label, size_t label_size, char* unique, size_t unique_size) {
+    using namespace espurna::matter;
+    if ((plug < 1) || (plug > plug_count) || !label_size || !unique_size) {
+        return false;
+    }
+
+    const auto& name = plug_names[plug - 1];
+    copy_text(label, label_size, name.label, std::strlen(name.label));
+    copy_text(unique, unique_size, name.unique, std::strlen(name.unique));
+
+    return true;
+}
+
+} // extern "C"
 
 void matterSetup() {
     espurna::matter::setup();

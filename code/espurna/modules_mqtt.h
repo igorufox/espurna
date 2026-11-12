@@ -3,7 +3,7 @@
 PROTOTYPE: MQTT as a module (docs/modules.md)
 
 The head of the ESP8266 image is built with MQTT_MODULE=1: relays, buttons, LEDs, the terminal ... call the MQTT API as
-always, but the head has only forwarders (modules_api_esp8266.cpp) to the table the mqtt module hands over when it
+always, but the head has only forwarders (modules_api.cpp) to the table the mqtt module hands over when it
 starts (module_mqtt.cpp). Without the module: not connected, nothing sent. Callbacks registered before it starts (the
 head's own parts register in their setup) are kept by the head and given to the module when it comes.
 

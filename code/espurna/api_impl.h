@@ -31,7 +31,7 @@ struct Request {
     Request(Request&&) noexcept = default;
     Request& operator=(Request&&) = delete;
 
-    Request(AsyncWebServerRequest& request, const PathParts& pattern, const PathParts& parts) :
+    Request(WebRequest& request, const PathParts& pattern, const PathParts& parts) :
         _request(request),
         _pattern(pattern),
         _parts(parts)
@@ -41,15 +41,14 @@ struct Request {
     void handle(T&& handler) {
         if (_done) return;
         _done = true;
-        handler(&_request);
+        handler(_request);
     }
 
     template <typename T>
     void param_foreach(T&& handler) {
         const size_t params { _request.params() };
         for (size_t current = 0; current < params; ++current) {
-            auto* param = _request.getParam(current);
-            handler(param->name(), param->value());
+            handler(String(_request.paramName(current)), String(_request.paramValue(current)));
         }
     }
 
@@ -90,7 +89,7 @@ struct Request {
 private:
     bool _done { false };
 
-    AsyncWebServerRequest& _request;
+    WebRequest& _request;
     const PathParts& _pattern;
     const PathParts& _parts;
 };
@@ -137,11 +136,11 @@ struct RequestHelper {
     RequestHelper(RequestHelper&&) noexcept = default;
     RequestHelper& operator=(RequestHelper&&) = delete;
 
-    // &path is expected to be request->url(), which is valid throughout the request's lifetime
-    RequestHelper(AsyncWebServerRequest& request, const PathParts& pattern) :
+    // &path is request.url(), valid throughout the request's lifetime
+    RequestHelper(WebRequest& request, const PathParts& pattern) :
         _request(request),
         _pattern(pattern),
-        _path(request.url()),
+        _path(espurna::StringView(request.url())),
         _match(_pattern.match(_path))
     {}
 
@@ -175,7 +174,7 @@ struct RequestHelper {
     }
 
 private:
-    AsyncWebServerRequest& _request;
+    WebRequest& _request;
 
     RequestBufferPtr _buffer;
 
@@ -186,4 +185,3 @@ private:
 
 } // namespace api
 } // namespace espurna
-

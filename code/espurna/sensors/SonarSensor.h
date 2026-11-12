@@ -133,4 +133,3 @@ class SonarSensor : public BaseSensor {
 };
 
 #endif // SENSOR_SUPPORT && SONAR_SUPPORT
-

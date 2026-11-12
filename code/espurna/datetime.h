@@ -320,4 +320,3 @@ constexpr bool operator==(const datetime::Date& lhs, const tm& rhs) {
 }
 
 } // namespace espurna
-

@@ -1,7 +1,7 @@
 /*
 
 PROTOTYPE: the NSPanel module of the ESP32 head (docs/modules.md, "ESP32"), env:esp32-modules of
-platformio_esp32.ini: nspanel.cpp as it is (UART protocol, both display drivers, pages, TFT upload).
+platformio_esp32.ini: nspanel*.cpp as they are (UART protocol, both display drivers, pages, TFT upload).
 
 */
 

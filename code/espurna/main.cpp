@@ -279,7 +279,8 @@ void setup() {
     SETUP_HEAP_PROBE("settings");
 
     // Init hardware / software UART ports
-    #if UART_SUPPORT
+    // with modules the ports are the uart module's (module_uart.cpp)
+    #if UART_SUPPORT && !UART_MODULE
         uartSetup();
         SETUP_HEAP_PROBE("uart");
     #endif

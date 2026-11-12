@@ -223,4 +223,3 @@ class SenseAirSensor : public BaseSensor, SenseAir {
 
 
 #endif // SENSOR_SUPPORT && SENSEAIR_SUPPORT
-

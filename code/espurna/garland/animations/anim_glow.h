@@ -47,4 +47,3 @@ class AnimGlow : public Anim {
 };
 
 #endif  // GARLAND_SUPPORT
-

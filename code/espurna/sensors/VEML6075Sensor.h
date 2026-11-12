@@ -87,4 +87,3 @@ class VEML6075Sensor : public I2CSensor<> {
 };
 
 #endif // SENSOR_SUPPORT && VEML6075_SUPPORT
-

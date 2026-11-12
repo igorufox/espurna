@@ -35,6 +35,16 @@
 
 #pragma once
 
+// Generic images of the three chips (ESP8266_GENERIC / ESP32_GENERIC / BEKEN_GENERIC from the ini): no board, nothing
+// is pre-assigned, pins and drivers come from the settings (device template, Tasmota import, WebUI or terminal)
+#ifndef GENERIC_IMAGE
+#if defined(ESP8266_GENERIC) || defined(ESP32_GENERIC) || defined(BEKEN_GENERIC)
+#define GENERIC_IMAGE               1
+#else
+#define GENERIC_IMAGE               0
+#endif
+#endif
+
 // -----------------------------------------------------------------------------
 // Custom hardware
 // -----------------------------------------------------------------------------
@@ -410,10 +420,6 @@
     #define OTA_ARDUINOOTA_SUPPORT  0
     #endif
 
-    #ifndef OTA_CLIENT
-    #define OTA_CLIENT              OTA_CLIENT_NONE
-    #endif
-
     #ifndef MDNS_SERVER_SUPPORT
     #define MDNS_SERVER_SUPPORT     0
     #endif
@@ -533,16 +539,8 @@
     #define OTA_ARDUINOOTA_SUPPORT  0
     #define OTA_WEB_SUPPORT         1
 
-    // Downloads the full image itself (https, SHA-256): the second step of the 1 MB update. It replaces the
-    // http-only `OTA <url>` terminal command; no captive portal in the AP mode (the page is at 192.168.4.1).
-    // Every KB counts here: this image (.bin.gz) has to fit next to the biggest full image, and the full image
-    // (.bin.gz, through /upgrade) next to this one
-    #ifndef OTA_FETCH_SUPPORT
-    #define OTA_FETCH_SUPPORT       1
-    #endif
-    #ifndef OTA_CLIENT
-    #define OTA_CLIENT              OTA_CLIENT_NONE
-    #endif
+    // The update by an URL (ota_fetch.cpp, https, SHA-256) is in every image; no captive portal in the AP mode (the
+    // page is at 192.168.4.1)
     #ifndef WIFI_AP_CAPTIVE_SUPPORT
     #define WIFI_AP_CAPTIVE_SUPPORT 0
     #endif
@@ -5882,10 +5880,6 @@
 
     #ifndef OTA_ARDUINOOTA_SUPPORT
     #define OTA_ARDUINOOTA_SUPPORT  0
-    #endif
-
-    #ifndef OTA_CLIENT
-    #define OTA_CLIENT              OTA_CLIENT_NONE
     #endif
 
     #ifndef NOFUSS_SUPPORT

@@ -35,4 +35,3 @@ private:
     bool _value { false };
 };
 
-

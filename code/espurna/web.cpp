@@ -4,6 +4,9 @@ WEBSERVER MODULE
 
 Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
+The one HTTP server of ESPurna (libs/http_server.h on lwIP, every chip). Its handlers run in the loop, so the settings,
+the modules, the OTA state are read and changed there directly: no lock to wait for, no "busy" answer.
+
 */
 
 #include "espurna.h"
@@ -14,20 +17,11 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <functional>
 #include <memory>
 
-#include <Print.h>
-#if defined(ESP8266)
-#include <Hash.h>
-#endif
-#include <FS.h>
-
 #include <ArduinoJson.h>
-#include <ESPAsyncWebServer.h>
-#include <AsyncJson.h>
 
 #include "ntp.h"
 #include "settings.h"
 #include "system.h"
-#include "espurna_tasks.h"
 #include "utils.h"
 #include "web.h"
 #include "ws.h"
@@ -37,22 +31,6 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include "modules.h"
 #endif
 
-#if WEB_EMBEDDED && !MODULES_SUPPORT
-
-namespace {
-
-// the one WebUI of every chip and board (code/html, `gulp build`), panels shown by modulesVisible
-#include "static/index.html.ipp"
-
-} // namespace
-
-#endif // WEB_EMBEDDED
-
-#if WEB_SSL_ENABLED
-#include "static/server.cer.h"
-#include "static/server.key.h"
-#endif // WEB_SSL_ENABLED
-
 namespace espurna {
 namespace web {
 namespace {
@@ -61,18 +39,8 @@ namespace build {
 
 STRING_VIEW_INLINE(WebRemoteDomain, WEB_REMOTE_DOMAIN);
 
-constexpr auto DefaultPort = uint16_t{
-#if WEB_SSL_ENABLED
-        443
-#else
-        80
-#endif
-};
-
 constexpr uint16_t port() {
-    return (WEB_PORT == 0)
-        ? DefaultPort
-        : (WEB_PORT);
+    return (WEB_PORT == 0) ? 80 : (WEB_PORT);
 }
 
 constexpr bool access_log() {
@@ -111,338 +79,81 @@ uint16_t port() {
 }
 
 } // namespace settings
-} // namespace
-} // namespace web
-} // namespace espurna
 
-namespace {
+constexpr size_t ConfigBufferMax { 4096 };
 
-static constexpr size_t WebConfigBufferMax { 4096 };
+uint16_t port {};
+WebServer server;
+bool log_requests { false };
 
-template <typename T>
-void _addHeader(T& other, espurna::StringView name, espurna::StringView value) {
-    other.addHeader(name.toString(), value.toString());
-}
-
-void _addConnectionClose(AsyncWebServerResponse* response) {
-    _addHeader(*response,
-        STRING_VIEW("Connection"), STRING_VIEW("close"));
-}
-
-void _addSecurityHeaders(AsyncWebServerResponse* response) {
-    _addHeader(*response,
-        STRING_VIEW("X-XSS-Protection"),
-        STRING_VIEW("1; mode=block"));
-    _addHeader(*response,
-        STRING_VIEW("X-Content-Type-Options"),
-        STRING_VIEW("nosniff"));
-    _addHeader(*response,
-        STRING_VIEW("X-Frame-Options"),
-        STRING_VIEW("deny"));
-}
-
-#if WEB_EMBEDDED && !MODULES_SUPPORT
-static constexpr auto WebContentEncoding = espurna::StringView(webui_content_encoding);
-static constexpr auto WebLastModified = espurna::StringView(webui_last_modified);
-
-void _addGenericHeaders(AsyncWebServerResponse* response) {
-    if (WebContentEncoding.length()) {
-        _addHeader(*response,
-            STRING_VIEW("Content-Encoding"), WebContentEncoding);
-    }
-
-    _addHeader(*response,
-        STRING_VIEW("Last-Modified"), WebLastModified);
-}
-#endif
-
-} // namespace
-
-namespace espurna {
-namespace web {
-namespace print {
-
-bool RequestPrint::_addBuffer() {
-    if ((_buffers.size() + 1) > _config.backlog.count) {
-        if (!_exhaustBuffers()) {
-            _state = State::Error;
-            return false;
-        }
-    }
-
-    // Note: c++17, emplace returns created object reference
-    //       c++11, we need to use .back()
-    _buffers.emplace_back(_config.backlog.size, 0);
-    _buffers.back().clear();
-
-    return true;
-}
-
-// Creates response object that will handle the data written into the Print& interface.
-//
-// This API expects a **very** careful approach to context switching between SYS and CONT:
-// - Returning RESPONSE_TRY_AGAIN before buffers are filled will result in invalid size marker being sent on the wire.
-//   HTTP client (curl, python requests etc., as discovered in testing) will then drop the connection
-// - Returning 0 will immediately close the connection from our side
-// - Calling _prepareRequest() **before** _buffers are filled will result in returning 0
-// - Calling yield() / delay() while request handler is active **may** trigger this callback out of sequence
-//   (e.g. Stream.write(...), Stream.read(...), DEBUG_MSG(...), or any other API trying to switch contexts)
-// - Receiving data (tcp ack from the previous packet) **will** trigger the callback when switching contexts.
-
-size_t RequestPrint::_handleRequest(uint8_t* data, size_t maxLen) {
-    switch (_state) {
-    case State::None:
-        return RESPONSE_TRY_AGAIN;
-    case State::Error:
-    case State::Done:
-        return 0;
-    case State::Sending:
-        break;
-    }
-
-    size_t written = 0;
-    while ((written < maxLen) && !_buffers.empty()) {
-        auto& chunk =_buffers.front();
-        auto have = maxLen - written;
-        if (chunk.size() > have) {
-            std::copy(chunk.data(), chunk.data() + have, data + written);
-            chunk.erase(chunk.begin(), chunk.begin() + have);
-            written += have;
-        } else {
-            std::copy(chunk.data(), chunk.data() + chunk.size(), data + written);
-            _buffers.pop_front();
-            written += chunk.size();
-        }
-    }
-
-    return written;
-}
-
-void RequestPrint::_prepareRequest() {
-    _state = State::Sending;
-
-    auto *response = _request->beginChunkedResponse(
-        _config.mimeType,
-        [this](uint8_t*data, size_t maxLen, size_t) -> size_t {
-            return this->_handleRequest(data, maxLen);
-        });
-
-    _addConnectionClose(response);
-    _request->send(response);
-}
-
-size_t RequestPrint::write(uint8_t b) {
-    return write(&b, 1);
-}
-
-bool RequestPrint::_exhaustBuffers() {
-    // XXX: espasyncwebserver will trigger write callback if we setup response too early
-    //      exploring code, callback handler responds to a special return value RESPONSE_TRY_AGAIN
-    //      but, it seemingly breaks chunked response logic
-    // XXX: this should be **the only place** that can trigger yield() while we stay in CONT
-    if (_state == State::None) {
-        _prepareRequest();
-    }
-
-    using TimeSource = espurna::time::CoreClock;
-    const auto start = TimeSource::now();
-
-    do {
-        if (TimeSource::now() - start > _config.backlog.timeout) {
-            _buffers.clear();
-            break;
-        }
-        yield();
-    } while (!_buffers.empty());
-
-    return _buffers.empty();
-}
-
-void RequestPrint::flush() {
-    _exhaustBuffers();
-    _state = State::Done;
-}
-
-size_t RequestPrint::write(const uint8_t* data, size_t size) {
-    if (_state == State::Error) {
-        return 0;
-    }
-
-    size_t full_size = size;
-    auto* data_ptr = data;
-
-    while (size) {
-        if (_buffers.empty() && !_addBuffer()) {
-            full_size = 0;
-            break;
-        }
-        auto& current = _buffers.back();
-        const auto have = current.capacity() - current.size();
-        if (have >= size) {
-            current.insert(current.end(), data_ptr, data_ptr + size);
-            size = 0;
-        } else {
-            current.insert(current.end(), data_ptr, data_ptr + have);
-            if (!_addBuffer()) {
-                full_size = 0;
-                break;
-            }
-            data_ptr += have;
-            size -= have;
-        }
-    }
-
-    return full_size;
-}
-
-} // namespace print
-} // namespace web
-} // namespace espurna
-
-// -----------------------------------------------------------------------------
-
-namespace espurna {
-namespace web {
-namespace {
-
-uint16_t port{};
-AsyncWebServer* server;
-
-// XXX shared between requests!
-std::unique_ptr<std::vector<uint8_t>> config_buffer;
-bool config_success = false;
-
-// Upload was dropped because the loop lock could not be taken, ref. _onPostConfigFile()
-// (only touched by the async handlers, never set on esp8266)
-bool config_busy = false;
-
-// TODO server may not cache the full body
 std::vector<web_request_callback_f> request_callbacks;
 std::vector<web_body_callback_f> body_callbacks;
 
-} // namespace
-} // namespace web
-} // namespace espurna
+// the settings restore (POST /config): the body, kept until it is complete
+struct ConfigUpload {
+    std::vector<uint8_t> data;
+    bool failed { false };
+};
 
-// -----------------------------------------------------------------------------
-// HOOKS
-// -----------------------------------------------------------------------------
+void addSecurityHeaders(WebRequest& request) {
+    request.addHeader("X-XSS-Protection", "1; mode=block");
+    request.addHeader("X-Content-Type-Options", "nosniff");
+    request.addHeader("X-Frame-Options", "deny");
+}
 
-namespace {
-
-bool _authenticateRequest(AsyncWebServerRequest* request) {
+bool authenticate(WebRequest& request) {
 #if USE_PASSWORD
-    return request->authenticate(WEB_USERNAME, systemPassword().c_str());
+    return request.authenticate(WEB_USERNAME, systemPassword().c_str(), systemHostname().c_str());
 #else
+    (void)request;
     return true;
 #endif
 }
 
-// Whether the request is for this hostname or IP
-bool _isAPModeRequest(AsyncWebServerRequest* request) {
-    if (wifiConnectable()) {
-        const auto direct = request->client()->localIP() == wifiApIp();
-        if (!direct) {
-            return false;
-        }
-
-        const auto header = request->getHeader(F("Host"));
-        if (!header) {
-            return false;
-        }
-
-        const auto host = header->value();
-
-        const auto domain = systemHostname() + '.';
-        const auto ip = ipToString(wifiApIp());
-
-        if (!host.equals(ip) && !host.startsWith(domain)) {
-            return false;
-        }
-
-        return true;
-    }
-
-    return false;
+void requestAuthentication(WebRequest& request) {
+    request.requestAuthentication(systemHostname().c_str());
 }
 
-// 404 with implicit "Connection: close", and the connection is closed right after
-// Not doing so will cause memory exhaustion, because the connection will linger
-// ref: https://github.com/xoseperez/espurna/issues/1660
-void _webSendNotFound(AsyncWebServerRequest* request) {
-    request->send(404);
-    if (espurna::system::ParallelTasks) {
-        // AsyncTCP close() runs the disconnect callback right away, deleting both the request and
-        // the client while the server is still parsing the request (and the body) using them.
-        // Close is delayed instead. RX timeout (reset by send()) closes it from the async_tcp poll
-        // callback, unless client does it first. Request is also marked as answered, so that neither
-        // the following body chunks nor the _onRequest() answer it once again (see _onBody())
-        request->client()->setRxTimeout(3);
-        if (!request->_tempObject) {
-            request->_tempObject = malloc(sizeof(bool));
-        }
-    } else {
-        request->client()->close();
+// Whether the request came to the access point by its address or the hostname
+bool apModeRequest(WebRequest& request) {
+    if (!wifiConnectable()) {
+        return false;
     }
+
+    if (request.localIp() != static_cast<uint32_t>(wifiApIp())) {
+        return false;
+    }
+
+    const char* host = request.header("Host");
+    if (!host) {
+        return false;
+    }
+
+    const String value(host);
+    return value.equals(ipToString(wifiApIp())) || value.startsWith(systemHostname() + '.');
 }
 
-// Allow only requests that use our hostname or IP
-bool _onAPModeRequest(AsyncWebServerRequest* request) {
-    if (wifiConnectable()) {
-        if (_isAPModeRequest(request)) {
-            return true;
-        }
-
-        _webSendNotFound(request);
-
+// in the AP mode, only requests that use our hostname or IP
+bool allowed(WebRequest& request) {
+    if (wifiConnectable() && !apModeRequest(request)) {
+        request.send(404, "text/plain", "Not Found");
         return false;
     }
 
     return true;
 }
 
-void _webRequestAuth(AsyncWebServerRequest* request) {
-    request->requestAuthentication(systemHostname().c_str(), true);
-}
-
-// On ESP32 handlers run in the async_tcp task (ref. AsyncGuard). Without the loop lock, settings
-// (incl. the password used for authentication) and module state cannot be safely read or changed.
-// Request also cannot be handed over to loop(), it has to be answered while it is still alive and
-// the authentication itself needs the lock. Such handlers ask the client to retry instead.
-// Never happens on esp8266, where the guard is always locked.
-void _webSendBusy(AsyncWebServerRequest* request) {
-    auto* response = request->beginResponse(503,
-        STRING_VIEW("text/plain").toString(),
-        STRING_VIEW("Busy, retry\n").toString());
-    _addHeader(*response, STRING_VIEW("Retry-After"), STRING_VIEW("1"));
-    request->send(response);
-}
-
-void _onReset(AsyncWebServerRequest *request) {
-    // auth and prepareReset() both need the lock, 503 when busy
-    espurna::system::AsyncGuard guard;
-    if (!guard.locked()) {
-        _webSendBusy(request);
-        return;
-    }
-
-    if (!_authenticateRequest(request)) {
-        _webRequestAuth(request);
+void onReset(WebRequest& request) {
+    if (!authenticate(request)) {
+        requestAuthentication(request);
         return;
     }
 
     prepareReset(CustomResetReason::Web);
-    request->send(200);
+    request.send(200, "text/plain", "OK");
 }
 
-void _onDiscover(AsyncWebServerRequest *request) {
-    // read-only, but hostname and device name are read from settings, 503 when busy
-    espurna::system::AsyncGuard guard;
-    if (!guard.locked()) {
-        _webSendBusy(request);
-        return;
-    }
-
+void onDiscover(WebRequest& request) {
     StaticJsonBuffer<JSON_OBJECT_SIZE(5) + 128> buffer;
     JsonObject& root = buffer.createObject();
 
@@ -453,40 +164,20 @@ void _onDiscover(AsyncWebServerRequest *request) {
     root["app"] = app.name;
     root["version"] = app.version;
 
-    auto* response = request->beginResponseStream(
-        F("application/json"), root.measureLength());
-    response->setCode(200);
-    root.printTo(*response);
-
-    request->send(response);
+    String out;
+    root.printTo(out);
+    request.send(200, "application/json", out.c_str());
 }
 
-void _setupAccessControlHeaders() {
-    const auto domain = espurna::web::settings::domain();
-
-    auto& headers = DefaultHeaders::Instance();
-    _addHeader(headers, STRING_VIEW("Access-Control-Allow-Origin"), domain);
-    if (!domain.equals("*")) {
-        _addHeader(headers,
-            STRING_VIEW("Access-Control-Allow-Credentials"), STRING_VIEW("true"));
-    }
-}
-
-void _onGetConfig(AsyncWebServerRequest *request) {
-    // iterates over the whole settings storage, 503 when busy
-    espurna::system::AsyncGuard guard;
-    if (!guard.locked()) {
-        _webSendBusy(request);
-        return;
-    }
-
-    if (!_authenticateRequest(request)) {
-        _webRequestAuth(request);
+// the whole settings storage as a JSON file
+void onGetConfig(WebRequest& request) {
+    if (!authenticate(request)) {
+        requestAuthentication(request);
         return;
     }
 
     auto out = std::make_shared<String>();
-    out->reserve(TCP_MSS);
+    out->reserve(1024);
 
     const auto app = buildApp();
 
@@ -495,7 +186,7 @@ void _onGetConfig(AsyncWebServerRequest *request) {
             PSTR("{\n\"app\": \"%s\",\n\"version\": \"%s\",\n\"backup\": \"1\""),
             app.name.c_str(), app.version.c_str());
     if (prefix_len <= 0) {
-        request->send(500);
+        request.send(500, "text/plain", "");
         return;
     }
     out->concat(buffer, prefix_len);
@@ -512,23 +203,6 @@ void _onGetConfig(AsyncWebServerRequest *request) {
     });
     *out += "\n}";
 
-    AsyncWebServerResponse* response = request->beginChunkedResponse(
-        F("application/json"),
-        [out](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
-            auto len = out->length();
-            if (index == len) {
-                return 0;
-            }
-
-            auto* ptr = out->c_str() + index;
-            size_t have = std::min(len - index, maxLen);
-            if (have) {
-                std::copy(ptr, ptr + have, buffer);
-            }
-
-            return have;
-        });
-
     auto get_timestamp = []() -> String {
 #if NTP_SUPPORT
         if (ntpSynced()) {
@@ -541,289 +215,166 @@ void _onGetConfig(AsyncWebServerRequest *request) {
     int written = snprintf_P(buffer, sizeof(buffer),
         PSTR("attachment; filename=\"%s %s backup.json\""),
         systemHostname().c_str(), get_timestamp().c_str());
-
-    if (written > 0) {
-        _addSecurityHeaders(response);
-        _addHeader(*response,
-            STRING_VIEW("Content-Disposition"),
-            espurna::StringView(&buffer[0], written));
-        request->send(response);
+    if (written <= 0) {
+        request.send(500, "text/plain", "");
         return;
     }
 
-    request->send(500);
+    addSecurityHeaders(request);
+    request.addHeader("Content-Disposition", buffer);
+    request.send(200, "application/json", static_cast<long>(out->length()),
+        [out](uint8_t* data, size_t max, size_t index) -> size_t {
+            const size_t len = out->length();
+            const size_t have = (index < len) ? std::min(len - index, max) : 0;
+            if (have) {
+                std::copy(out->c_str() + index, out->c_str() + index + have, data);
+            }
+            return have;
+        });
 }
 
-void _onPostConfig(AsyncWebServerRequest *request) {
-    // 503 when this or any of the upload chunks could not take the lock (nothing was restored then)
-    espurna::system::AsyncGuard guard;
-    if (!guard.locked() || espurna::web::config_busy) {
-        espurna::web::config_busy = false;
-        _webSendBusy(request);
-        return;
+ConfigUpload* configUpload(WebRequest& request) {
+    auto* upload = static_cast<ConfigUpload*>(request.context());
+    if (!upload) {
+        upload = new (std::nothrow) ConfigUpload();
+        request.setContext(upload, [](void* ptr) {
+            delete static_cast<ConfigUpload*>(ptr);
+        });
     }
-
-    if (!_authenticateRequest(request)) {
-        _webRequestAuth(request);
-        return;
-    }
-    request->send(espurna::web::config_success ? 200 : 400);
+    return upload;
 }
 
-void _onPostConfigFile(AsyncWebServerRequest *request, String, size_t index, uint8_t *data, size_t len, bool final) {
-    espurna::system::AsyncGuard guard;
-
-    // Every chunk is authenticated and the last one restores the settings, both need the lock.
-    // Deferring the restore would not help, since the authentication cannot be deferred.
-    // Without the lock, drop the upload and let _onPostConfig() answer with 503.
-    auto& busy = espurna::web::config_busy;
-    if (index == 0) {
-        busy = false;
-    }
-
-    if (busy || !guard.locked()) {
-        busy = true;
-        espurna::web::config_buffer.reset(nullptr);
+// the restore file, as the raw body or the file part of a form
+void onPostConfigBody(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool) {
+    auto* upload = configUpload(request);
+    if (!upload || upload->failed) {
         return;
     }
 
-    if (!_authenticateRequest(request)) {
-        _webRequestAuth(request);
+    if (!index) {
+        upload->data.clear();
+    }
+
+    if ((upload->data.size() + len) > std::min(ConfigBufferMax, systemFreeHeap() / 2)) {
+        upload->failed = true;
+        upload->data.clear();
         return;
     }
 
-    auto& success = espurna::web::config_success;
-    auto& buffer = espurna::web::config_buffer;
-
-    // No buffer
-    if (final && (index == 0)) {
-        success = settingsRestoreJson((char*) data);
-        return;
-    }
-
-    // Buffer start => reset
-    if (index == 0) if (buffer) buffer.reset(nullptr);
-
-    // init buffer if it doesn't exist
-    if (!buffer) {
-        buffer = std::make_unique<std::vector<uint8_t>>();
-        success = false;
-    }
-
-    // Copy
-    if (len > 0) {
-        using buffer_type = std::remove_cvref<decltype(buffer)>::type::element_type;
-        if ((buffer->size() + len) > std::min(WebConfigBufferMax, systemFreeHeap() - sizeof(buffer_type))) {
-            buffer.reset(nullptr);
-            request->send(500);
-            return;
-        }
-        buffer->reserve(buffer->size() + len);
-        buffer->insert(buffer->end(), data, data + len);
-    }
-
-    // Ending
-    if (final) {
-        buffer->push_back(0);
-        success = settingsRestoreJson((char*) buffer->data());
-        buffer.reset(nullptr);
-    }
-
+    upload->data.insert(upload->data.end(), data, data + len);
 }
 
-#if WEB_EMBEDDED && !MODULES_SUPPORT
-
-void _onHome(AsyncWebServerRequest *request) {
-    // only the authentication needs the lock (503 when busy), page itself is static data
-    espurna::system::AsyncGuard guard;
-    if (!_isAPModeRequest(request)) {
-        if (!guard.locked()) {
-            _webSendBusy(request);
-            return;
-        }
-
-        if (!_authenticateRequest(request)) {
-            _webRequestAuth(request);
-            return;
-        }
-    }
-
-    const auto* modified = request->getHeader(
-        STRING_VIEW("If-Modified-Since").toString());
-    if (modified && (modified->value() == WebLastModified)) {
-        request->send(304);
+void onPostConfig(WebRequest& request) {
+    if (!authenticate(request)) {
+        requestAuthentication(request);
         return;
     }
 
-#if WEB_SSL_ENABLED
-    // Chunked response, we calculate the chunks based on free heap (in multiples of 32)
-    // This is necessary when a TLS connection is open since it sucks too much memory
-    const size_t max = (systemFreeHeap() / 3) & 0xFFE0;
-    auto* response = request->beginChunkedResponse("text/html", [max](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-        // Get the chunk based on the index and maxLen
-        size_t len = std::size(webui_data) - index;
-        len = std::min({len, maxLen, max});
-        if (len > 0) {
-            memcpy_P(buffer, webui_data + index, len);
-        }
-
-        // Return the actual length of the chunk (0 for end of file)
-        return len;
-    });
-#else
-    auto* response = request->beginResponse_P(200, F("text/html"), webui_data, std::size(webui_data));
-#endif
-
-    _addGenericHeaders(response);
-    _addSecurityHeaders(response);
-
-    request->send(response);
-}
-#endif
-
-#if WEB_SSL_ENABLED
-
-int _onCertificate(void * arg, const char *filename, uint8_t **buf) {
-
-#if WEB_EMBEDDED
-
-    if (strcmp(filename, "server.cer") == 0) {
-        uint8_t * nbuf = (uint8_t*) malloc(server_cer_len);
-        memcpy_P(nbuf, server_cer, server_cer_len);
-        *buf = nbuf;
-        DEBUG_MSG_P(PSTR("[WEB] SSL File: %s - OK\n"), filename);
-        return server_cer_len;
+    auto* upload = static_cast<ConfigUpload*>(request.context());
+    bool success = false;
+    if (upload && !upload->failed && !upload->data.empty()) {
+        upload->data.push_back(0);
+        success = settingsRestoreJson(reinterpret_cast<char*>(upload->data.data()));
     }
 
-    if (strcmp(filename, "server.key") == 0) {
-        uint8_t * nbuf = (uint8_t*) malloc(server_key_len);
-        memcpy_P(nbuf, server_key, server_key_len);
-        *buf = nbuf;
-        DEBUG_MSG_P(PSTR("[WEB] SSL File: %s - OK\n"), filename);
-        return server_key_len;
-    }
-
-    DEBUG_MSG_P(PSTR("[WEB] SSL File: %s - ERROR\n"), filename);
-    *buf = 0;
-    return 0;
-
-#else
-
-    File file = SPIFFS.open(filename, "r");
-    if (file) {
-        size_t size = file.size();
-        uint8_t * nbuf = (uint8_t*) malloc(size);
-        if (nbuf) {
-            size = file.read(nbuf, size);
-            file.close();
-            *buf = nbuf;
-            DEBUG_MSG_P(PSTR("[WEB] SSL File: %s - OK\n"), filename);
-            return size;
-        }
-        file.close();
-    }
-    DEBUG_MSG_P(PSTR("[WEB] SSL File: %s - ERROR\n"), filename);
-    *buf = 0;
-    return 0;
-
-#endif // WEB_EMBEDDED == 1
-
+    request.send(success ? 200 : 400, "text/plain", success ? "OK" : "Error");
 }
 
-#endif // WEB_SSL_ENABLED
-
-void _onRequest(AsyncWebServerRequest *request){
-    espurna::system::AsyncGuard guard;
-
-    // already answered by _onBody()
-    if (espurna::system::ParallelTasks && request->_tempObject) {
+// every request no route took: the subscribers (alexa, prometheus, terminal), else 404
+void onRequest(WebRequest& request) {
+    if (!allowed(request)) {
         return;
     }
 
-    if (!_onAPModeRequest(request)) return;
-
-    // subscribers (alexa, prometheus, terminal) use module state, 503 when busy
-    if (!guard.locked()) {
-        _webSendBusy(request);
-        return;
-    }
-
-    // Send request to subscribers, break when request is 'handled' by the callback
-    for (auto& callback : espurna::web::request_callbacks) {
+    for (auto& callback : request_callbacks) {
         if (callback(request)) {
             return;
         }
     }
 
-    // No subscriber handled the request
-    _webSendNotFound(request);
-
+    if (!request.answered()) {
+        request.send(404, "text/plain", "Not Found");
+    }
 }
 
-void _onBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-    espurna::system::AsyncGuard guard;
-
-    // subscribers (alexa) use module state, 503 when busy. Request is then marked as answered
-    // (same as ota_web.cpp, freed by the request itself), so that neither the following chunks
-    // nor _onRequest() answer it once again. Same for the 404, see _webSendNotFound()
-    if (espurna::system::ParallelTasks && request->_tempObject) {
+void onBody(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool) {
+    if (wifiConnectable() && !apModeRequest(request)) {
         return;
     }
 
-    if (!_onAPModeRequest(request)) return;
-
-    // never the case on esp8266, the guard is always locked there
-    if (!guard.locked()) {
-        _webSendBusy(request);
-        request->_tempObject = malloc(sizeof(bool));
-        return;
+    for (auto& callback : body_callbacks) {
+        if (callback(request, data, len, index, request.contentLength())) {
+            return;
+        }
     }
-
-    // Send request to subscribers
-    for (unsigned char i = 0; i < espurna::web::body_callbacks.size(); i++) {
-        bool response = (espurna::web::body_callbacks[i])(request, data, len, index, total);
-        if (response) return;
-    }
-
-    // Same as _onAPModeRequest(...)
-    _webSendNotFound(request);
-
 }
 
-void _onVisible(JsonObject& root) {
-    root[espurna::web::settings::keys::Port] = espurna::web::port;
-    root[espurna::web::settings::keys::TemplatesUrl] = getSetting(espurna::web::settings::keys::TemplatesUrl);
-    root[espurna::web::settings::keys::FirmwareUrl] = getSetting(espurna::web::settings::keys::FirmwareUrl);
+void onVisible(JsonObject& root) {
+    root[settings::keys::Port] = port;
+    root[settings::keys::TemplatesUrl] = getSetting(settings::keys::TemplatesUrl);
+    root[settings::keys::FirmwareUrl] = getSetting(settings::keys::FirmwareUrl);
 }
 
-bool _onKeyCheck(espurna::StringView key, const JsonVariant&) {
-    return key.startsWith(espurna::web::settings::keys::Prefix);
+bool onKeyCheck(espurna::StringView key, const JsonVariant&) {
+    return key.startsWith(settings::keys::Prefix);
+}
+
+void setupAccessControlHeaders() {
+    const auto domain = settings::domain();
+    server.defaultHeader("Access-Control-Allow-Origin", domain.c_str());
+    if (!domain.equals("*")) {
+        server.defaultHeader("Access-Control-Allow-Credentials", "true");
+    }
+}
+
+void loop() {
+    server.loop();
 }
 
 } // namespace
+} // namespace web
+} // namespace espurna
 
-void webSecurityHeaders(AsyncWebServerResponse* response) {
-    _addSecurityHeaders(response);
+void webSecurityHeaders(WebRequest& request) {
+    espurna::web::addSecurityHeaders(request);
 }
 
-bool webApModeRequest(AsyncWebServerRequest* request) {
-    return _isAPModeRequest(request);
+bool webApModeRequest(WebRequest& request) {
+    return espurna::web::apModeRequest(request);
 }
 
-bool webAuthenticate(AsyncWebServerRequest *request) {
-    return _authenticateRequest(request);
+bool webAuthenticate(WebRequest& request) {
+    return espurna::web::authenticate(request);
 }
 
-void webSendBusy(AsyncWebServerRequest* request) {
-    _webSendBusy(request);
+void webRequestAuthentication(WebRequest& request) {
+    espurna::web::requestAuthentication(request);
+}
+
+String webHeader(WebRequest& request, const char* name) {
+    const char* value = request.header(name);
+    return value ? String(value) : String();
+}
+
+String webParam(WebRequest& request, const char* name) {
+    const char* value = request.param(name);
+    return value ? String(value) : String();
+}
+
+void webSend(WebRequest& request, int code, const char* type, const String& body) {
+    request.send(code, type, reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
+}
+
+void webSend(WebRequest& request, int code) {
+    request.send(code, "text/plain", "");
 }
 
 uint16_t webPort() {
     return espurna::web::port;
 }
 
-AsyncWebServer& webServer() {
-    return *espurna::web::server;
+WebServer& webServer() {
+    return espurna::web::server;
 }
 
 void webBodyRegister(web_body_callback_f callback) {
@@ -834,93 +385,58 @@ void webRequestRegister(web_request_callback_f callback) {
     espurna::web::request_callbacks.push_back(callback);
 }
 
-void webLog(AsyncWebServerRequest* request) {
-    const auto client = request->client();
-    String from = client
-        ? ipToString(client->remoteIP())
-        : F("(unknown)");
-
+void webLog(WebRequest& request) {
     DEBUG_MSG_P(PSTR("[WEBSERVER] %s - %s %s\n"),
-        from.c_str(),
-        request->methodToString(),
-        request->url().c_str());
+        ipToString(IPAddress(request.remoteIp())).c_str(),
+        request.methodName(),
+        request.url());
 }
 
-class WebAccessLogHandler : public AsyncWebHandler {
-    bool canHandle(AsyncWebServerRequest* request) const override {
-        webLog(request);
-        return false;
-    }
-};
-
 void webSetup() {
-    // Create server and install global URL debug handler
-    // (since we don't want to forcibly add it to each instance)
     using namespace espurna::web;
 
     port = settings::port();
-    server = new AsyncWebServer(port);
+    log_requests = settings::access_log();
+
+    auto& srv = server;
+    srv.rewrite("/", "/index.html");
+
+#if MODULES_SUPPORT
+    // the webui module, or the head's own page (modules_page.h)
+    srv.on("/index.html", WebMethod::Get, modulesOnHome);
+#endif
+
+    srv.on("/reset", WebMethod::Get, onReset);
+    srv.on("/config", WebMethod::Get, onGetConfig);
+    srv.on("/config", WebMethod::Post | WebMethod::Put, onPostConfig, onPostConfigBody);
+    srv.on("/discover", WebMethod::Get, onDiscover);
+
+    // the connectivity check redirects of the captive portal are the captive module's (captive.cpp). Every other
+    // request (with its body: alexa) goes to the subscribers, else 404
+    srv.onNotFound(onRequest, onBody);
 
 #if DEBUG_SUPPORT
-    if (settings::access_log()) {
-        static WebAccessLogHandler log;
-        server->addHandler(&log);
+    if (log_requests) {
+        srv.onAccess(webLog);
     }
 #endif
 
-    // Rewrites
-    server->rewrite("/", "/index.html");
-
-    // Serve home (basic authentication protection is done manually b/c the handler is installed through callback functions)
-    // the 1 MB head image: the WebUI module, or the head's own page
-    #if MODULES_SUPPORT
-        server->on("/index.html", HTTP_GET, modulesOnHome);
-    #elif WEB_EMBEDDED
-        server->on("/index.html", HTTP_GET, _onHome);
-    #endif
-
-    // Serve static files (not supported, yet)
-    #if SPIFFS_SUPPORT
-        server->serveStatic("/", SPIFFS, "/")
-            .setLastModified(WebLastModified.toString().c_str())
-            .setFilter([](AsyncWebServerRequest *request) -> bool {
-                webLog(request);
-                return true;
-            });
-    #endif
-
-    server->on("/reset", HTTP_GET, _onReset);
-    server->on("/config", HTTP_GET, _onGetConfig);
-    server->on("/config", HTTP_POST | HTTP_PUT, _onPostConfig, _onPostConfigFile);
-    server->on("/discover", HTTP_GET, _onDiscover);
-
-    // the connectivity check redirects of the captive portal are the captive module's (captive.cpp)
-
-    // Handle every other request, including 404
-    server->onRequestBody(_onBody);
-    server->onNotFound(_onRequest);
-
-    // Run server
-    #if WEB_SSL_ENABLED
-        server->onSslFileRequest(_onCertificate, NULL);
-        server->beginSecure("server.cer", "server.key", NULL);
-    #else
-        server->begin();
-    #endif
+    if (!srv.begin(port)) {
+        DEBUG_MSG_P(PSTR("[WEBSERVER] Cannot listen on port %hu\n"), port);
+        return;
+    }
 
     DEBUG_MSG_P(PSTR("[WEBSERVER] Webserver running on port %hu\n"), port);
+    espurnaRegisterLoop(loop);
 
     // new connections wait while the heap is low
     webGuardSetup();
 
-    // CORS setup
-    _setupAccessControlHeaders();
+    setupAccessControlHeaders();
 
-    // Handle ws server settings updates
     wsRegister()
-        .onVisible(_onVisible)
-        .onKeyCheck(_onKeyCheck);
+        .onVisible(onVisible)
+        .onKeyCheck(onKeyCheck);
 }
 
 #endif // WEB_SUPPORT
-

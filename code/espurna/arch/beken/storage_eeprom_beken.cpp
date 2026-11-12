@@ -19,6 +19,7 @@ The buffer is the .bss of this object: platformio_beken.ini (custom_tcm_main_ram
 #if defined(LIBRETINY)
 
 #include "storage_eeprom.h"
+#include "../../libs/crc32_ieee.h"
 
 #include <algorithm>
 #include <cstring>
@@ -61,15 +62,7 @@ uint32_t _eepromSlotAddress(size_t slot) {
 }
 
 uint32_t _eepromCrc(const uint8_t* data, size_t size) {
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t index = 0; index < size; ++index) {
-        crc ^= data[index];
-        for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc >> 1) ^ (0xEDB88320 & (0 - (crc & 1)));
-        }
-    }
-
-    return ~crc;
+    return ::espurna::crc32_ieee::crc32Update(0, data, size);
 }
 
 bool _eepromReadHeader(size_t slot, Header& header) {

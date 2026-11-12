@@ -32,6 +32,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #endif
 
 #include "espurna_tasks.h"
+#include "uart_driver.h"
 
 namespace espurna {
 namespace debug {
@@ -484,19 +485,41 @@ const char* release(size_t index) {
     internal::port = nullptr;
 
     if (!CoreDebug && settings::sdkDebug()) {
-        uart_set_debug(UART_NO);
+        driver::uart::hardware::sdk_log(driver::uart::Type::Unknown);
     }
 
     return PSTR("serial log");
 }
 
+bool attach();
+
+#if UART_MODULE
+// the ports are the uart module's, it starts after the head's setup: try again every second until it is there
+timer::SystemTimer retry;
+#endif
+
 void setup() {
+    if (attach()) {
+        return;
+    }
+
+#if UART_MODULE
+    retry.repeat(duration::Seconds(1), []() {
+        // attached, or the module is there and the port is not for the log (none, or claimed by a driver)
+        if (attach() || uartPort(port_index())) {
+            retry.stop();
+        }
+    });
+#endif
+}
+
+bool attach() {
     // HardwareSerial::begin() will automatically enable this when
     // `#if defined(DEBUG_ESP_PORT) && !defined(NDEBUG)`
     // Do not interfere when that is the case
     const auto port = uartPort(port_index());
     if (!port || !port->tx || uartClaimed(port_index())) {
-        return;
+        return false;
     }
 
     // TODO: notice that SDK accepts anything as putc / printf,
@@ -507,10 +530,8 @@ void setup() {
     if (!CoreDebug && settings::sdkDebug()) {
         switch (port->type) {
         case driver::uart::Type::Uart0:
-            uart_set_debug(0);
-            break;
         case driver::uart::Type::Uart1:
-            uart_set_debug(1);
+            driver::uart::hardware::sdk_log(port->type);
             break;
         default:
             break;
@@ -520,6 +541,7 @@ void setup() {
     internal::port = port->stream;
     internal::output = port_output;
     uartOnClaim(release);
+    return true;
 }
 
 } // namespace serial

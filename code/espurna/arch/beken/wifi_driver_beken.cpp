@@ -5,7 +5,7 @@ link state, connection, scan, AP settings) is the shared one, wifi_driver_rtos.c
 
 BDK specifics: no 802.11 reason of the AP (synthetic reasons), a supplicant that associates again by itself unless it
 is stopped, the 'scan done' event as the end of a scan, one radio for the AP and the station (the AP follows the
-station channel), AP stations only from the supplicant, and a watch on the IP stack (netwatch).
+station channel), AP stations only from the supplicant. The watch on the IP stack (netwatch) is common, wifi.cpp.
 
 */
 
@@ -13,7 +13,7 @@ station channel), AP stations only from the supplicant, and a watch on the IP st
 
 #if defined(LIBRETINY)
 
-#include "../../wifi_driver_rtos.h"
+#include "../rtos/wifi_driver_rtos.h"
 
 #include <WiFi.h>
 #include <lwip/etharp.h>
@@ -61,9 +61,7 @@ uint32_t ap_changed_at { 0 };
 
 } // namespace internal
 
-bool expired(uint32_t since, uint32_t timeout) {
-    return static_cast<int32_t>(millis() - since) >= static_cast<int32_t>(timeout);
-}
+using rtos::expired;
 
 // SDK only has DTIM sleep (on / off), which needs the driver to be started
 void apply_sleep(uint8_t mode) {
@@ -81,84 +79,11 @@ int ap_station_count() {
     return num;
 }
 
-// The Wi-Fi link can stay associated while the IP stack receives nothing at all: 10.0.5.116 2026-11-07, first boot after
-// the Matter code was written by an install, DHCP done, then no ARP / ping answers for 28 min. The loop kept running and
-// feeding the watchdog, so nothing reset it; a deauth from the AP did. Every Interval, while connected with an address,
-// whatever arrived (ARP + IPv4 + IPv6 packets) is compared with the last check. Nothing new => an ARP request goes to
-// the gateway (answers within ms, so a healthy stack always sees traffic by the next check); Misses checks in a row
-// without a single received packet => restart
-namespace netwatch {
-
-constexpr auto Interval = espurna::duration::Seconds(20);
-constexpr int Misses = 6;
-
-uint32_t last_rx { 0 };
-int misses { 0 };
-timer::SystemTimer timer;
-
-uint32_t received() {
-    uint32_t out { 0 };
-#if ETHARP_STATS
-    out += lwip_stats.etharp.recv;
-#endif
-#if IP_STATS
-    out += lwip_stats.ip.recv;
-#endif
-#if IP6_STATS
-    out += lwip_stats.ip6.recv;
-#endif
-    return out;
-}
-
-// tcpip thread
-void probe(void*) {
-    auto* netif = netif_default;
-    if (netif && netif_is_up(netif) && !ip4_addr_isany_val(*netif_ip4_gw(netif))) {
-        etharp_request(netif, netif_ip4_gw(netif));
-    }
-}
-
-bool addressed() {
-    const auto* netif = netif_default;
-    return rtos::state().linked
-        && netif && netif_is_up(netif)
-        && !ip4_addr_isany_val(*netif_ip4_addr(netif));
-}
-
-void check() {
-    const auto now = received();
-    if (!addressed() || (now != last_rx)) {
-        last_rx = now;
-        misses = 0;
-        return;
-    }
-
-    ++misses;
-    if (misses >= Misses) {
-        DEBUG_MSG_P(PSTR("[WIFI] Nothing received for %lu s while connected, restarting\n"),
-            static_cast<unsigned long>(Interval.count() * Misses));
-        timer.stop();
-        prepareReset(CustomResetReason::Network);
-        return;
-    }
-
-    DEBUG_MSG_P(PSTR("[WIFI] Nothing received for %lu s, asking the gateway\n"),
-        static_cast<unsigned long>(Interval.count() * misses));
-    // a full tcpip mailbox is the same story, the next check counts it
-    tcpip_try_callback(probe, nullptr);
-}
-
-void setup() {
-    last_rx = received();
-    timer.repeat(Interval, check);
-}
-
-} // namespace netwatch
+// the network watch (netwatch) is common: wifi.cpp
 
 } // namespace
 
 void init() {
-    netwatch::setup();
 }
 
 void opmode(uint8_t mode) {
@@ -198,14 +123,50 @@ void dropped() {
     stop_station();
 }
 
+bool ap_changed_recently() {
+    return internal::ap_changed && !expired(internal::ap_changed_at, build::ApChangeQuiet);
+}
+
+// 'connection failed' / 'leaving' is all the SDK says for an association that is lost, ours or the AP's
+bool leaving(int reason) {
+    return (reason == WIFI_REASON_CONNECTION_FAIL) || (reason == WIFI_REASON_ASSOC_LEAVE);
+}
+
 // Beken SDK does not pass the reason of the AP (SM_DISCONNECT_IND reason_code is only printed by
-// mhdr_disconnect_ind(), the event has none). Signal loss stays BEACON_TIMEOUT
-bool synthetic_reasons() {
+// mhdr_disconnect_ind(), the event has none). Signal loss stays BEACON_TIMEOUT. Neither the AP: the one linked to
+bool map_reason(int reported, const Mac&, const Mac& linked_bssid, LinkLost& out) {
+    if (reported == WIFI_REASON_NO_AP_FOUND) {
+        // Not about the link. Supplicant scan without results (a scan while associated) sets the station
+        // status to 'no AP found' (Beken hostapd_intf.c wpa_get_scan_rst), the association stays
+        DEBUG_MSG_P(PSTR("[WIFI] Ignoring 'no AP found' while connected\n"));
+        return false;
+    }
+
+    // the AP dropped us, unless it happened right after our own AP start / stop
+    out.ours = ap_changed_recently();
+    out.reason = out.ours
+        ? rtos::ReasonAssocLeave
+        : leaving(reported)
+            ? rtos::ReasonUnspecified
+            : reported;
+    out.bssid = linked_bssid;
+
     return true;
 }
 
-bool ap_changed_recently() {
-    return internal::ap_changed && !expired(internal::ap_changed_at, build::ApChangeQuiet);
+// Without real reasons, a 'leaving' before the station associated is the end of the previous association, not
+// necessarily within the stale window. The SDK handles this late 'leaving' after our begin() and drops the new attempt
+// with it, nothing else comes until the attempt timeout (15 s, twice in a row on 10.0.5.139 after WIFI.RESET,
+// 2026-11-09): the same attempt starts again right away, once. A failed attempt is about the AP it was for
+Attempt attempt_event(const AttemptDisconnect& disconnect, Mac& bssid) {
+    if (disconnect.stale || (leaving(disconnect.reason) && !disconnect.associated)) {
+        return disconnect.begun_again
+            ? Attempt::Ignored
+            : Attempt::BeginAgain;
+    }
+
+    bssid = disconnect.target;
+    return Attempt::Failed;
 }
 
 // LibreTiny WiFiClass has no disconnectReasonName(), only the ones seen in practice
@@ -242,7 +203,49 @@ const char* reason_name(int reason) {
     return "UNKNOWN";
 }
 
-bool scan_done_event() {
+// Scan while associated with the 'scan done' event: results only come with the event of the scan itself. Without it
+// there are no results (the supplicant gets none, reports 'no AP found' on its own and tries again)
+constexpr uint32_t ScanTimeoutLinked { 5000 };
+
+// LibreTiny reports 'scan done' for every scan results event of the supplicant, including the
+// ones of its own scans and of the scan that was still running when ours was requested (2 APs
+// 108 ms after the start, while a real scan of every channel takes more than a second)
+constexpr uint32_t ScanTimeMin { 500 };
+
+// The end of the scan is our own 'scan done' event: LibreTiny keeps updating the results with every scan results event,
+// an earlier one may come from a different scan (ref. ScanTimeMin)
+bool scan_finished(rtos::Scan& scan, int16_t& count) {
+    const auto timeout = scan.linked
+        ? ScanTimeoutLinked
+        : rtos::ScanTimeout;
+
+    if (!expired(scan.at, timeout)) {
+        if (!scan.done) {
+            return false;
+        }
+        scan.done = false;
+
+        const auto after = scan.done_at - scan.at;
+        if (after < ScanTimeMin) {
+            DEBUG_MSG_P(PSTR("[WIFI] Ignoring scan results reported %u ms after the start\n"),
+                static_cast<unsigned>(after));
+            return false;
+        }
+
+        scan.done_ok = true;
+    }
+
+    // While associated, what the core has without the 'done' event is not from this scan
+    count = WiFi.scanComplete();
+    if (scan.linked && !scan.done_ok) {
+        DEBUG_MSG_P(PSTR("[WIFI] Scan while connected got no results in %u ms\n"),
+            static_cast<unsigned>(millis() - scan.at));
+        count = -1;
+    } else {
+        DEBUG_MSG_P(PSTR("[WIFI] Scan done in %u ms, %d network(s)\n"),
+            static_cast<unsigned>(millis() - scan.at), static_cast<int>(count));
+    }
+
     return true;
 }
 
@@ -267,7 +270,7 @@ void before_connect(const StaConnect& connect) {
 // the two kept switching the radio, STA dropped every few seconds and the AP never showed up.
 // The SDK picks the channel itself (channel 0, ref. bk_wlan_ap_set_default_channel()): the station
 // channel when associated, the configured one otherwise, and follows the station when it associates
-void ap_start(const char* ssid, const char* passphrase, uint8_t channel) {
+uint8_t ap_prepare(uint8_t channel) {
     // A connected station keeps the radio on its channel: the AP goes there, not to the configured one. WIFI.AP while
     // connected to tiger (ch 1) started the AP on ch 13, the station dropped and every later attempt failed until a
     // reset (10.0.5.139, 2026-11-09)
@@ -280,16 +283,13 @@ void ap_start(const char* ssid, const char* passphrase, uint8_t channel) {
     internal::ap_changed = true;
     internal::ap_changed_at = millis();
 
-    const IPAddress ip(192, 168, 4, 1);
-    WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0));
-    if (!WiFi.softAP(ssid, passphrase, 0)) {
-        DEBUG_MSG_P(PSTR("[WIFI] SoftAP start failed\n"));
-    }
+    return 0;
+}
 
-    // AP start takes a few seconds, quiet time counts from the end of it
+// AP start takes a few seconds, quiet time counts from the end of it
+void ap_started() {
     internal::ap_changed_at = millis();
     internal::ap_started = true;
-    apply_sleep();
 }
 
 void ap_stop() {

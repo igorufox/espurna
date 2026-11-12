@@ -17,4 +17,3 @@ void tspkFlush();
 
 bool tspkEnabled();
 void tspkSetup();
-

@@ -95,4 +95,4 @@ Flashing as above: read the stock flash first, then `espurna-beken-tuya.uf2` ove
 "Connecting"), then the modules from the MODULES panel.
 
 Tested: stock backup, UART flash of the release image, Wi-Fi, the relay from the terminal, the Matter code over Wi-Fi
-(`MATTER.TAIL`: ready). Not tested yet: the button and the wall switch, Matter pairing.
+(older release, Matter in the update partition before the modules). Not tested yet: the button and the wall switch, Matter pairing.

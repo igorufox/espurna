@@ -41,10 +41,10 @@ Everything below is the user guide. Every field, limit and protocol detail is in
 - A Sonoff NSPanel **EU** (gen1). The US versions have a different screen layout and are not supported.
 - A USB-UART adapter (3.3 V) for the first flash only. Later updates go over WiFi.
 - An MQTT broker and devices that publish their state to MQTT.
-- The `esp32-matter-nspanel` image from the [release](https://github.com/igorufox/espurna/releases/latest):
-  `espurna-esp32-matter-nspanel.bin`, one file for the serial flash (bootloader, partition table, the ESPurna safeboot
-  and the firmware) and for later updates. Newer releases have one ESP32 image, `espurna-esp32.bin`, with the panel as
-  the `nspanel` module (`espurna-esp32-modules.bin`, WebUI MODULES; pins: `nspTx`, `nspRx`, `nspPower`, `nspBuzzer`).
+- From the [release](https://github.com/igorufox/espurna/releases/latest): `espurna-esp32.bin`, the head of every ESP32
+  (bootloader, partition table, the ESPurna safeboot and ESPurna) for the serial flash, and `espurna-esp32.ota` with
+  the panel as the `nspanel` module (WebUI MODULES, Apply; pins: `nspTx`, `nspRx`, `nspPower`, `nspBuzzer`, the defaults
+  are the NSPanel's). Older releases had a panel image of its own, `espurna-esp32-matter-nspanel.bin`.
   Or build it, PlatformIO environment `esp32` (the safeboot first, so that it goes into the merged image):
 
   ```
@@ -53,8 +53,8 @@ Everything below is the user guide. Every field, limit and protocol detail is in
   pio run -c platformio_esp32.ini -e esp32
   ```
 
-  The build writes the full image as `.pio/build_esp32/esp32/espurna-esp32.bin` (the update image as `firmware.bin`
-  next to it) and the modules file `espurna-esp32-modules.bin`.
+  The build writes the merged image as `.pio/build_esp32/esp32/espurna-esp32.bin` and the install image
+  `espurna-esp32.ota` next to it.
 
 ## 2. Install
 
@@ -62,12 +62,13 @@ Everything below is the user guide. Every field, limit and protocol detail is in
    GND, IO0. Hold IO0 on GND while you power the adapter, then flash:
 
    ```
-   esptool.py --chip esp32 --port COMx --baud 460800 write_flash --erase-all -z 0x0 espurna-esp32-matter-nspanel.bin
+   esptool.py --chip esp32 --port COMx --baud 460800 write_flash --erase-all -z 0x0 espurna-esp32.bin
    ```
 
    The screen stays dark on the adapter alone: it is powered by the 5 V of the relay board. Close the panel and power it from mains.
 2. **Network.** The panel starts the usual ESPurna access point. Set WiFi, the admin password, the MQTT broker and the NTP time
-   zone in the web UI, as on any ESPurna device.
+   zone in the web UI, as on any ESPurna device. On the MODULES page tick `nspanel` (and `mqtt`, `webui`) and *Apply*
+   with `espurna-esp32.ota` of the same release ([docs/modules.md](../docs/modules.md#installing-modules-apply)).
 
    <img src="img/webui-status.png" width="49%" alt="ESPurna web UI status page of the panel">
 
@@ -83,14 +84,14 @@ Everything below is the user guide. Every field, limit and protocol detail is in
 4. **Configuration.** Open the **NSPANEL** section of the web UI, paste your JSON (start from [`nspanel.example.json`](nspanel.example.json)),
    press **Save**. The panel checks it, stores it and redraws the screen at once.
 
-Later firmware updates: *ADMIN → From GitHub*, the release list, as on every ESP32 ([docs/updates.md](../docs/updates.md)).
-The panel has one app slot and cannot overwrite itself (*Upgrade* with a file answers with an error), so the WebUI hands
-the update to the ESPurna safeboot in the factory partition: the panel restarts into it, it downloads
-`espurna-esp32-matter-nspanel.bin` itself (SHA-256 checked), writes its ESPurna part and boots ESPurna again, about a minute with a dark screen.
-A panel installed over Tasmota keeps Tasmota's safeboot there: the list installs the ESPurna one first (ESPurna never
-restarts into a safeboot that is not its own). A panel with an older ESPurna on the two-slot layout is migrated by the
-list; `nspanel.json` stays. ESPurna from before this change has no safeboot support: once, upload an NSPanel image
-without Matter (it fits the 1.9 MB slot) with *Upgrade*, twice if the panel runs from its first slot.
+Later firmware updates: *ADMIN → From GitHub*, the release list, as on every chip
+([docs/modules.md](../docs/modules.md#updating-the-head)). The panel has one app slot and cannot overwrite itself
+(*Upgrade* with a file answers with an error), so the head goes through the ESPurna safeboot in the factory partition:
+the panel restarts into it, the browser uploads the head, the safeboot writes it and boots ESPurna again (a dark screen
+meanwhile), then the modules are written again. A panel installed over Tasmota keeps Tasmota's safeboot there, and
+ESPurna never restarts into a safeboot that is not its own: install ours from the `/safeboot` page of ESPurna first. A
+panel with an older ESPurna on the two-slot layout is migrated from the same page; `nspanel.json` stays
+([docs/updates.md](../docs/updates.md#esp32-the-safeboot)).
 By hand: `safeboot` in the terminal (DEBUG or telnet), then the panel's address, user `admin`, the admin password: the
 releases or an upload of the `.bin`; it boots ESPurna by itself after 15 minutes of nothing. After 3 crashes in a row
 (each within a minute of boot) the panel switches to safeboot by itself.

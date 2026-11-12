@@ -7,12 +7,29 @@
 # ldscripts, lwip patching, updated postmortem flags and git support
 # Copyright (C) 2019-2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
-# Run this script every time building an env AFTER platform-specific code is loaded
+# The post: script of every chip (platformio_esp8266.ini, platformio_esp32.ini, platformio_beken.ini), run AFTER the
+# platform code is loaded:
+# - every chip: APP_VERSION with the git revision (26.11.0-git<sha>, the WebUI release list finds the release the board
+#   runs by it), the ESPURNA_BUILD_* / ESPURNA_BOARD / ESPURNA_FLAGS overrides of the OS environment, warnings of the
+#   project code, the compile_commands.json defines, the CacheDir fix
+# - ESP8266 only, what its platform does not do itself or does differently: the firmware map, no float printf, the
+#   ldscripts of dist/ld, the 1 MB espota size hint, the postmortem switch, the patched elf2bin, the .bin.gz and the
+#   build-and-copy target (build.sh)
 
 import os
 import itertools
+import sys
 
-from espurna_utils import (
+from SCons.Script import Import
+
+Import("env", "projenv")
+env = globals()["env"]
+projenv = globals()["projenv"]
+
+# espurna_utils is in this folder: on sys.path while SCons runs this script, not always for the scripts after it
+sys.path.insert(0, os.path.join(env.subst("$PROJECT_DIR"), "scripts"))
+
+from espurna_utils import (  # noqa: E402
     app_add_compiledb_defines,
     app_add_gzip_file,
     app_add_target_build_and_copy,
@@ -27,53 +44,66 @@ from espurna_utils import (
     remove_float_support,
 )
 
-from SCons.Script import Import
-
-Import("env", "projenv")
-env = globals()["env"]
-projenv = globals()["projenv"]
-
 CI = check_env("CI", "false")
+ESP8266 = env.get("PIOPLATFORM") == "espressif8266"
 
-# See what happens in-between linking .cpp.o + .a into the resulting .elf
-env.Append(ESPURNA_BUILD_FIRMWARE_MAP="${BUILD_DIR}/${PROGNAME}.map")
-env.Append(LINKFLAGS="-Wl,-Map -Wl,$ESPURNA_BUILD_FIRMWARE_MAP -Wl,--cref")
-env.SideEffect(env["ESPURNA_BUILD_FIRMWARE_MAP"], "${BUILD_DIR}/${PROGNAME}.elf")
+# the parts of the version string, the name and destination of `-t build-and-copy`, the board and flags of ota.py:
+# from the OS environment (build.sh, ota.py, CI)
+for name in (
+    "ESPURNA_BUILD_NAME",
+    "ESPURNA_BUILD_DESTINATION",
+    "ESPURNA_BUILD_FULL_VERSION",
+    "ESPURNA_BUILD_VERSION",
+    "ESPURNA_BUILD_REVISION",
+    "ESPURNA_BUILD_VERSION_SUFFIX",
+    "ESPURNA_BOARD",
+    "ESPURNA_FLAGS",
+):
+    value = os.environ.get(name)
+    if value:
+        env.Replace(**{name: value})
+        projenv.Replace(**{name: value})
 
 # Always show warnings for project code
 projenv.ProcessUnFlags("-w")
-
-# XXX: note that this will also break %d format with floats and print raw memory contents as int
-# Cores after 2.3.0 can disable %f in the printf / scanf to reduce .bin size
-remove_float_support(env)
-ldscripts_inject_libpath(env)
-
-# compressed and two-step update hint when using 1MB boards
-if not CI and env.get("UPLOAD_PROTOCOL") == "espota":
-    env.AddPostAction(
-        "${BUILD_DIR}/${PROGNAME}.bin",
-        env.VerboseAction(check_binsize, "Checking maximum upload size $TARGET"),
-    )
-
-# disable postmortem printing to the uart. another one is in eboot, but this is what causes the most harm
-if "DISABLE_POSTMORTEM_STACKDUMP" in itertools.chain(
-    env["CPPFLAGS"], projenv["CPPFLAGS"]
-):
-    disable_postmortem_output(env)
 
 # override static version flag from the espurna/config/version.h
 # either completely, or change the version / revision / suffix part separately
 app_inject_version(projenv)
 
-# handle ESPURNA_BOARD and ESPURNA_FLAGS here, since projenv is not available in pre-scripts
-# TODO: prefer PLATFORMIO_BUILD_SRC_FLAGS instead? both of these only allow -D...
+# ESPURNA_BOARD and ESPURNA_FLAGS (only -D...), here since projenv is not available in pre-scripts
 app_inject_flags(projenv)
 
-# handle when CI does a tagged build or user explicitly asked to store the firmware.bin
-app_add_target_build_and_copy(projenv)
+if ESP8266:
+    # See what happens in-between linking .cpp.o + .a into the resulting .elf (the other platforms write their map)
+    env.Append(ESPURNA_BUILD_FIRMWARE_MAP="${BUILD_DIR}/${PROGNAME}.map")
+    env.Append(LINKFLAGS="-Wl,-Map -Wl,$ESPURNA_BUILD_FIRMWARE_MAP -Wl,--cref")
+    env.SideEffect(env["ESPURNA_BUILD_FIRMWARE_MAP"], "${BUILD_DIR}/${PROGNAME}.elf")
 
-# handle special GzipFile builder
-app_add_gzip_file(projenv)
+    # XXX: note that this will also break %d format with floats and print raw memory contents as int
+    # Cores after 2.3.0 can disable %f in the printf / scanf to reduce .bin size
+    remove_float_support(env)
+    ldscripts_inject_libpath(env)
+
+    # compressed and two-step update hint when using 1MB boards
+    if not CI and env.get("UPLOAD_PROTOCOL") == "espota":
+        env.AddPostAction(
+            "${BUILD_DIR}/${PROGNAME}.bin",
+            env.VerboseAction(check_binsize, "Checking maximum upload size $TARGET"),
+        )
+
+    # disable postmortem printing to the uart. another one is in eboot, but this is what causes the most harm
+    if "DISABLE_POSTMORTEM_STACKDUMP" in itertools.chain(env["CPPFLAGS"], projenv["CPPFLAGS"]):
+        disable_postmortem_output(env)
+
+    # handle when CI does a tagged build or user explicitly asked to store the firmware.bin
+    app_add_target_build_and_copy(projenv)
+
+    # handle special GzipFile builder
+    app_add_gzip_file(projenv)
+
+    # workaround for Core 2.7.4 python3.12 syntax warnings, merge upstream changes
+    app_patch_elf2bin(env)
 
 # pre-processing single-source only makes sense from projenv
 # (however, this means dependencies are already attached)
@@ -93,12 +123,8 @@ if single_source:
 
 # hijack SCons signature generation to exclude BUILD_DIR, making our builds faster
 # when using different environments (i.e. itead-sonoff-basic, itead-sonoff-pow, etc.)
-cachedir_fix = check_env("ESPURNA_FIX_CACHEDIR_PATH", "n")
-if cachedir_fix:
+if check_env("ESPURNA_FIX_CACHEDIR_PATH", "n"):
     app_patch_cachedir(projenv)
-
-# workaround for Core 2.7.4 python3.12 syntax warnings, merge upstream changes
-app_patch_elf2bin(env)
 
 # modules are implicitly enabled when generating compile_commands.json
 # disabled by default, to avoid silently hijacking config values from headers

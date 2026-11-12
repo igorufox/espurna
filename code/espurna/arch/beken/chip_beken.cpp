@@ -10,6 +10,7 @@ CHIP DESCRIPTION AND LWIP GLUE, LibreTiny part (ref. espurna_chip.h)
 
 #include "../../espurna_chip.h"
 
+
 #if WEB_SUPPORT
 #include "../../ws.h"
 #endif
@@ -80,6 +81,23 @@ IPAddress address(const ip_addr_t* addr) {
 // fixed layout, printed by the terminal itself
 bool storage(Print&, const char*) {
     return false;
+}
+
+// the SDK does not track the largest free block; lwIP has its own heap (MEM_LIBC_MALLOC 0, 16 KB for queued TCP data
+// and received frames). With Matter: 27.6 KB free, 15 parallel `GET /` took all of it (10.0.5.139, 2026-11-09)
+// LibreTiny has no SPI library (no SPI.h): the RFM69 radio cannot be built for the BK7231N. The library's select()
+// takes DIV16 on ARM chips
+uint32_t rfm69_spi_divider() {
+    return 16;
+}
+
+WebGuard web_guard() {
+    return WebGuard{
+        .heap = 8192,
+        .block = 0,
+        .lwip = 4096,
+        .conns = 4,
+    };
 }
 
 // SDK version is the LibreTiny one (ref. system_get_sdk_version()), core is the Beken BDK under it

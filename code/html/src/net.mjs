@@ -35,17 +35,60 @@ export function safeHref(value, base) {
 }
 
 /**
+ * A GET that only goes on with a 2xx answer, never from the browser cache
  * @param {string | URL} url
  * @param {RequestInit} [options]
- * @returns {Promise<any>}
+ * @param {string} [what] names the request in the error
+ * @returns {Promise<Response>}
  */
-export async function fetchJson(url, options = {}) {
+export async function fetchOk(url, options = {}, what = '') {
     const response = await fetch(url, {cache: 'no-store', ...options});
     if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`);
+        throw new Error(`${what ? `${what}: ` : ''}HTTP ${response.status}`);
     }
 
-    return response.json();
+    return response;
+}
+
+/**
+ * @param {string | URL} url
+ * @param {RequestInit} [options]
+ * @param {string} [what] names the request in the error
+ * @returns {Promise<any>}
+ */
+export async function fetchJson(url, options = {}, what = '') {
+    return (await fetchOk(url, options, what)).json();
+}
+
+/**
+ * A file of the release list: its size and its SHA-256 as the list names them, a different file never reaches the
+ * board (B4). Every download of firmware goes through here
+ * @param {string} url absolute http(s), safeHref() of the list entry
+ * @param {{name: string, size?: number, sha256?: string}} file
+ * @param {(text: string) => void} [step]
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function fetchBytes(url, {name, size, sha256}, step = () => {}) {
+    if (!url) {
+        throw new Error(`${name}: the release list has no http(s) link to it`);
+    }
+    if (!sha256) {
+        throw new Error(`${name}: the release list names no SHA-256 of it`);
+    }
+
+    step(`Downloading ${name}...`);
+    const buffer = await (await fetchOk(url, {}, `download of ${name}`)).arrayBuffer();
+    if (size && (buffer.byteLength !== size)) {
+        throw new Error(`download of ${name}: ${buffer.byteLength} bytes instead of ${size}`);
+    }
+
+    step(`Checking ${name}...`);
+    const actual = sha256Hex(new Uint8Array(buffer));
+    if (actual !== sha256.toLowerCase()) {
+        throw new Error(`download of ${name}: SHA-256 ${actual} instead of ${sha256}`);
+    }
+
+    return buffer;
 }
 
 /**
@@ -65,21 +108,20 @@ export async function post(url, body) {
 }
 
 /**
- * The board refuses a firmware update while module code runs from the area the update is written into (409
- * "MODULES.OFF first", ESP8266): restart it without the modules (POST modules/off, they stay installed but off) and
- * wait until it answers again
- * @param {URL} upgrade the /upgrade URL of the board
+ * Waits for a restarting board: asks `url` until it answers with `status` (first after 4 s, then every 2 s)
+ * @param {URL} url
+ * @param {number} status
  * @param {number} timeout ms
+ * @returns {Promise<Response>} that answer
  */
-export async function modulesOffForUpdate(upgrade, timeout = 90000) {
-    await post(new URL("modules/off", upgrade), new FormData());
+export async function waitFor(url, status = 200, timeout = 90000) {
     const start = Date.now();
     await wait(4000);
     while ((Date.now() - start) < timeout) {
         try {
-            const response = await fetch(new URL("modules", upgrade), {cache: "no-store", credentials: "same-origin"});
-            if (response.ok) {
-                return;
+            const response = await fetch(url, {cache: 'no-store', credentials: 'same-origin'});
+            if (response.status === status) {
+                return response;
             }
         } catch {
             // restarting
@@ -88,6 +130,18 @@ export async function modulesOffForUpdate(upgrade, timeout = 90000) {
     }
 
     throw new Error(`the board did not come back in ${Math.round(timeout / 1000)} s`);
+}
+
+/**
+ * The board refuses a firmware update while module code runs from the area the update is written into (409
+ * "MODULES.OFF first", ESP8266): restart it without the modules (POST modules/off, they stay installed but off) and
+ * wait until it answers again
+ * @param {URL} upgrade the /upgrade URL of the board
+ * @param {number} timeout ms
+ */
+export async function modulesOffForUpdate(upgrade, timeout = 90000) {
+    await post(new URL('modules/off', upgrade), new FormData());
+    await waitFor(new URL('modules', upgrade), 200, timeout);
 }
 
 /**

@@ -8,7 +8,7 @@ Chip part, the FreeRTOS chips part is in arch/rtos/system_rtos.cpp, common part 
 
 #include <Arduino.h>
 
-#include <atomic>
+#include "../../espurna_tasks.h"
 
 #include <esp_system.h>
 #if __has_include(<esp_mac.h>)
@@ -90,7 +90,7 @@ struct Record {
 
 RTC_NOINIT_ATTR Record record;
 
-std::atomic<uint32_t> passes { 0 };
+espurna::system::Shared<uint32_t> passes { 0 };
 String last;
 
 void task(void*) {
@@ -133,18 +133,18 @@ void setup() {
 
 namespace chip {
 
-void loop() {
-    ++stall::passes;
+void sdk::loop() {
+    stall::passes.fetch_add(1);
 }
 
 // Same as esp8266 delay(), the loop task itself only feeds it between loop() calls
-void feed_loop_wdt() {
+void sdk::feed_loop_wdt() {
     if (loopTaskWDTEnabled) {
         esp_task_wdt_reset();
     }
 }
 
-[[noreturn]] void reboot() {
+[[noreturn]] void sdk::reboot() {
     // Same as esp8266 hardwareGpioIgnore(), relay outputs keep their state through the software
     // reset instead of dropping for the whole boot. Pads are latched here and released on the
     // first write after the boot, when the relay module already restored the same state.
@@ -229,7 +229,7 @@ bool deep_sleep(sleep::Microseconds time) {
 void early_setup() {
 }
 
-void setup() {
+void sdk::setup() {
 #if TERMINAL_SUPPORT
     // COREDUMP / COREDUMP.ERASE terminal commands, ref. coredump_esp32.cpp
     coredumpSetup();
@@ -239,13 +239,13 @@ void setup() {
 }
 
 // task WDT, CONFIG_ESP_TASK_WDT_TIMEOUT_S (5s)
-void enable_loop_wdt() {
+void sdk::enable_loop_wdt() {
     enableLoopWDT();
 }
 
 } // namespace chip
 
-namespace arch {
+namespace chip {
 
 void pre_setup() {
     // AsyncTCP servers are started before WiFi is, make sure the TCP/IP stack is up
@@ -282,7 +282,7 @@ uint32_t reset_reason() {
     return REASON_DEFAULT_RST;
 }
 
-} // namespace arch
+} // namespace chip
 } // namespace system
 } // namespace espurna
 

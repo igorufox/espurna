@@ -289,4 +289,3 @@ class RelayProviderBase;
 std::unique_ptr<RelayProviderBase> lightMakeStateRelayProvider(size_t);
 
 void lightSetup();
-

@@ -3,7 +3,7 @@
 OTA MODULE, esp8266 part (ref. ota_driver.h)
 
 Updater takes .bin and .bin.gz images, written right after the running one, every upload it
-takes is fine (upload_check() of ota_driver_plain.h).
+takes is fine (the default upload_check() of ota_driver.h).
 
 */
 
@@ -69,4 +69,3 @@ inline void arduino_ota_progress() {
 } // namespace ota
 } // namespace espurna
 
-#include "../../ota_driver_plain.h"

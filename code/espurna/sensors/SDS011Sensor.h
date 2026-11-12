@@ -120,4 +120,3 @@ class SDS011Sensor : public BaseSensor {
 };
 
 #endif // SENSOR_SUPPORT && SDS011_SUPPORT
-

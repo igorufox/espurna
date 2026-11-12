@@ -15,6 +15,7 @@ Store layout (bk7231tools.analysis.kvstorage, the Tuya SDK's "simple flash"):
 #if defined(LIBRETINY) || defined(TUYA_KV_HOST_TEST)
 
 #include "tuya_kv_beken.h"
+#include "../../libs/text.h"
 
 #include <algorithm>
 #include <cstring>
@@ -510,54 +511,15 @@ bool aes128_ecb_decrypt(const uint8_t key[16], const uint8_t* in, uint8_t* out, 
     return true;
 }
 
+// the one base64 (libs/text.h); kept by these names for the host test
 bool base64_decode(const char* in, size_t size, std::vector<uint8_t>& out) {
-    out.clear();
-    uint32_t buffer { 0 };
-    int bits { 0 };
-    for (size_t index = 0; index < size; ++index) {
-        const char c = in[index];
-        int value;
-        if ((c >= 'A') && (c <= 'Z')) {
-            value = c - 'A';
-        } else if ((c >= 'a') && (c <= 'z')) {
-            value = c - 'a' + 26;
-        } else if ((c >= '0') && (c <= '9')) {
-            value = c - '0' + 52;
-        } else if (c == '+') {
-            value = 62;
-        } else if (c == '/') {
-            value = 63;
-        } else if ((c == '=') || (c == '\r') || (c == '\n') || (c == ' ') || (c == '\t')) {
-            continue;
-        } else {
-            return false;
-        }
-
-        buffer = ((buffer << 6) | static_cast<uint32_t>(value)) & 0xffffff;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<uint8_t>((buffer >> bits) & 0xff));
-        }
-    }
-
-    return !out.empty();
+    return ::espurna::text::base64Decode(out, in, size);
 }
 
 std::string base64_encode(const uint8_t* data, size_t size) {
-    static const char Alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string out;
     out.reserve(((size + 2) / 3) * 4);
-    for (size_t index = 0; index < size; index += 3) {
-        const uint32_t chunk = (static_cast<uint32_t>(data[index]) << 16)
-            | ((index + 1 < size) ? (static_cast<uint32_t>(data[index + 1]) << 8) : 0)
-            | ((index + 2 < size) ? static_cast<uint32_t>(data[index + 2]) : 0);
-        out += Alphabet[(chunk >> 18) & 0x3f];
-        out += Alphabet[(chunk >> 12) & 0x3f];
-        out += (index + 1 < size) ? Alphabet[(chunk >> 6) & 0x3f] : '=';
-        out += (index + 2 < size) ? Alphabet[chunk & 0x3f] : '=';
-    }
-
+    ::espurna::text::base64Encode(out, data, size);
     return out;
 }
 

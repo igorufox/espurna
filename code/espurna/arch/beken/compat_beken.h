@@ -69,7 +69,7 @@ TcmStats systemTcmStats();
 // micros() extended to 64bit, ref. compat_beken.cpp
 uint64_t micros64();
 
-// Same names as the esp8266 Core / SDK ones (ref. arch/rtos/system_time_rtos.h)
+// Same names as the esp8266 Core / SDK ones (ref. system_time.h)
 // FreeRTOS ticks scaled to F_CPU (configCPU_CLOCK_HZ), 2ms resolution
 inline uint32_t esp_get_cycle_count() {
     return lt_cpu_get_cycle_count();

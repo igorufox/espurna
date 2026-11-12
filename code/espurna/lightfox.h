@@ -18,4 +18,3 @@ class BasePin;
 std::unique_ptr<BasePin> lightfoxMakeButtonPin(size_t);
 
 void lightfoxSetup();
-

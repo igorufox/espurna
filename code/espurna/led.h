@@ -17,4 +17,3 @@ bool ledStatus(size_t id);
 
 void ledSetup();
 void ledSetupUnstable();
-

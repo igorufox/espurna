@@ -12,19 +12,7 @@ Copyright (C) 2019-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #include "pwm.h"
 
-// Generic PWM driver for ESP8266, using new-pwm library
-#if PWM_PROVIDER == PWM_PROVIDER_GENERIC
-#include "libs/esp8266_pwm.h"
-#endif
-
-// In case of Core implementation for ESP8266, we need to explicitly
-// perform a 'stop' for the PIN, otherwise it will stay on the minimal duty value
-#if defined(ESP8266) and (PWM_PROVIDER == PWM_PROVIDER_ARDUINO)
-// This is only available in Core 3.x.x
-extern "C" bool _stopPWM(uint8_t pin) __attribute__((weak));
-// This is available in both versions, but we prefer the above
-extern "C" int stopWaveform(uint8_t pin);
-#endif
+#include "pwm_driver.h"
 
 namespace espurna {
 namespace driver {
@@ -60,11 +48,11 @@ uint32_t frequency() {
     return getSetting(keys::Frequency, build::frequency());
 }
 
-[[gnu::unused]] uint32_t resolution() {
+uint32_t resolution() {
     return getSetting(keys::Resolution, build::resolution());
 }
 
-[[gnu::unused]] float limit() {
+float limit() {
     return getSetting(keys::Limit, build::limit());
 }
 
@@ -72,76 +60,26 @@ uint32_t frequency() {
 } // namespace settings
 
 namespace {
-namespace internal {
-
-uint32_t duty_limit;
-
-} // namespace internal
 
 // TODO: notice that both LEDC and new-pwm API techically support installing multiple pins
 // on the same channel, allowing simultaneous pin changes.
 // TODO: fade in / out could be implemented here?
 // TODO: only consumer right now is lights module, via hw pin <-> channel assignment
 // move pin initialization here and expose 'channel-id'? (partially done)
-// TODO: in case of new-pwm, this requires some tweaks to init function that replace
-// direct pin configuration with a generic pin mask packed into u16
-
-// Use common Arduino Core functions, should not depend on the SDK used.
-// - ESP8266 PWM implementation is either PWM or Phase locked, and is selected at build time.
-//   Default is PWM locked, enable Phase locked one by adding `enablePhaseLockedWaveform();`
-//   somewhere in the code (e.g. in `setup()` right in this file)
-//   Core declares both implementations as a standalone function /w `__attribute__((weak))`
-//   Linker will prioritize one over the other when symbol from a specific `.cpp.o` is used.
-//   (...such round-about way was chosed to support Arduino IDE builds, which do not commonly
-// support an easy way of setting global build flags for Core sources...)
-// - ESP32 version uses LEDC driver in 10bit mode, and does not support **any settings**.
-//   (at least at the time of writing this)
-#if PWM_PROVIDER == PWM_PROVIDER_ARDUINO
-namespace arduino {
 
 struct Channel {
     uint8_t pin;
     uint32_t duty;
 };
 
-namespace scale {
-
-constexpr uint32_t max(uint32_t resolution) {
-    return (1 << resolution) - 1;
-}
-
-constexpr uint32_t duty(float value, uint32_t resolution) {
-    return (std::clamp(value, 0.f, 100.f) / 100.f) * max(resolution);
-}
-
-} // namespace scale
-
-using StopPwmFunc = void(*)(uint8_t);
-
-namespace detail {
-
-#if defined(ESP8266)
-void stop_waveform(uint8_t pin) {
-    stopWaveform(pin);
-}
-
-void stop_pwm(uint8_t pin) {
-    _stopPWM(pin);
-}
-#else
-// LibreTiny (Beken): the PWM of a pin stops with a duty of 0, digitalWrite() below sets the level
-void stop_duty(uint8_t pin) {
-    ::analogWrite(pin, 0);
-}
-#endif
-
-} // namespace detail
-
 namespace internal {
 
-StopPwmFunc stop;
+// duty of a fully on channel, the range of the driver values
+uint32_t full;
+
+// highest duty that is ever written, pwmLimit percent of the full one
 uint32_t duty_limit;
-uint32_t resolution;
+
 std::vector<Channel> channels;
 
 } // namespace internal
@@ -149,7 +87,7 @@ std::vector<Channel> channels;
 PwmRange range() {
     return PwmRange{
         .min = 0,
-        .max = arduino::internal::duty_limit,
+        .max = internal::full,
     };
 }
 
@@ -161,179 +99,54 @@ size_t channels() {
 // Everything related to PINs is handled in pin init function
 // Here, only set up the driver and api range
 void setup() {
-    const auto resolution = settings::resolution();
-    internal::resolution = resolution;
+    const auto full = chip::setup(settings::frequency(), settings::resolution());
+    internal::full = full;
 
-    const auto max_duty = scale::max(resolution);
-    const auto frequency = settings::frequency();
-#if defined(ESP8266)
-    ::analogWriteRange(max_duty);
-    ::analogWriteFreq(frequency);
-
-    // Handle 2.7.4 -> 3.x.x migration
-    internal::stop =
-        (_stopPWM)
-            ? detail::stop_pwm
-            : detail::stop_waveform;
-#else
-    // LibreTiny: the same API with its own names, resolution in bits
-    ::analogWriteResolution(resolution);
-    ::analogWriteFrequency(frequency);
-    internal::stop = detail::stop_duty;
-#endif
-
-    // stop() above needs to check for the internal value
-    internal::duty_limit = max_duty;
-
-    // however, driver api will work with the global one
     const auto limit = settings::limit();
-    driver::pwm::internal::duty_limit =
+    internal::duty_limit =
         (limit < 100.f)
-            ? (static_cast<float>(max_duty) / 100.f) * limit
-            : max_duty;
+            ? (static_cast<float>(full) / 100.f) * limit
+            : full;
 
-    DEBUG_MSG_P(PSTR("[PWM] Arduino - Frequency %u (Hz), resolution %u (bits)\n"),
-        frequency, resolution);
-    if (max_duty != driver::pwm::internal::duty_limit) {
+    if (full != internal::duty_limit) {
         DEBUG_MSG_P(PSTR("[PWM] Duty limit %u (%s%%)\n"),
-            driver::pwm::internal::duty_limit, String(limit, 3).c_str());
+            internal::duty_limit, String(limit, 3).c_str());
     }
 }
 
 void update() {
-    // Arduino Core updates pins immediately, forcing delayed update
-    // b/c of a weird dependency on ::digitalWrite implementation, explicitly stop PWM
-    // before writing either zero or maximum duty and simply set pin to LOW or HIGH
-    for (auto channel : internal::channels) {
-        const auto duty_range = range();
-        if (channel.duty == duty_range.min) {
-            internal::stop(channel.pin);
-            digitalWrite(channel.pin, LOW);
-        } else if (channel.duty == duty_range.max) {
-            internal::stop(channel.pin);
-            digitalWrite(channel.pin, HIGH);
-        } else {
-            ::analogWrite(channel.pin, channel.duty);
-        }
-    }
-}
-
-bool init(const uint8_t* begin, const uint8_t* end) {
-    if (!internal::channels.size()) {
-        for (auto it = begin; it != end; ++it) {
-            const auto pin = *it;
-            if (gpioLocked(pin)) {
-                internal::channels.clear();
-                break;
-            }
-
-            internal::channels.push_back(Channel{
-                .pin = pin,
-                .duty = 0,
-            });
-        }
-
-        for (auto channel : internal::channels) {
-            gpioLock(channel.pin);
-        }
-
-        return internal::channels.size();
+    const auto full = internal::full;
+    for (size_t index = 0; index < internal::channels.size(); ++index) {
+        const auto& channel = internal::channels[index];
+        chip::write(index, channel.pin, channel.duty, full);
     }
 
-    return false;
+    chip::update();
 }
 
-void duty(size_t channel, uint32_t value) {
-    internal::channels[channel].duty =
-        std::min(driver::pwm::internal::duty_limit, value);
-}
-
-void duty(size_t channel, float value) {
-    duty(channel, scale::duty(value, internal::resolution));
-}
-
-} // namespace arduino
-
-// Currently, new-pwm - a drop-in replacement for the version provided in the Espressif SDK
-// API is the same as the SDK one, so it is possible (in theory) to seamlessly replace one with the other
-// But, one would need to fix period <-> frequency scaling, b/c of (NONOS) SDK weird limits
-#elif PWM_PROVIDER == PWM_PROVIDER_ESP32
-namespace esp32 {
-
-struct Channel {
-    uint8_t pin;
-    uint8_t channel;
-    uint32_t duty;
-};
-
-namespace internal {
-
-uint32_t duty_limit;
-uint32_t resolution;
-std::vector<Channel> channels;
-
-} // namespace internal
-
-PwmRange range() {
-    return PwmRange{
-        .min = 0,
-        .max = (1UL << internal::resolution) - 1,
-    };
-}
-
-size_t channels() {
-    return internal::channels.size();
-}
-
-void setup() {
-    internal::resolution = settings::resolution();
-    const auto max_duty = (1UL << internal::resolution) - 1;
-
-    const auto limit = settings::limit();
-    internal::duty_limit = (limit < 100.f)
-        ? (static_cast<float>(max_duty) / 100.f) * limit
-        : max_duty;
-
-    DEBUG_MSG_P(PSTR("[PWM] ESP32 LEDC - Frequency %u (Hz), resolution %u (bits)\n"),
-        settings::frequency(), internal::resolution);
-}
-
-void update() {
-    for (auto& channel : internal::channels) {
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-        ledcWriteChannel(channel.channel, channel.duty);  // ledcWrite() takes the pin in 3.x
-#else
-        ledcWrite(channel.channel, channel.duty);
-#endif
-    }
-}
-
-bool init(const uint8_t* begin, const uint8_t* end) {
-    if (!internal::channels.empty()) {
+bool valid(const uint8_t* begin, const uint8_t* end) {
+    const size_t requested = static_cast<size_t>(end - begin);
+    if (!requested) {
         return false;
     }
 
-    // SOC_LEDC_CHANNEL_NUM: classic ESP32 = 16, S2/S3 = 8, C3 = 6.
-    // We bail before touching the peripheral so a misconfigured pin list
-    // cannot half-claim channels and leak them.
-    const size_t requested = static_cast<size_t>(end - begin);
-    if (requested == 0 || requested > SOC_LEDC_CHANNEL_NUM) {
-        DEBUG_MSG_P(PSTR("[PWM] ESP32 LEDC channel budget %u, requested %u\n"),
-            (unsigned)SOC_LEDC_CHANNEL_NUM, (unsigned)requested);
+    if (requested > chip::channels_max()) {
+        DEBUG_MSG_P(PSTR("[PWM] Channel budget %u, requested %u\n"),
+            (unsigned)chip::channels_max(), (unsigned)requested);
         return false;
     }
 
     for (auto it = begin; it != end; ++it) {
-        if (!gpioValidForOutput(*it)) {
-            DEBUG_MSG_P(PSTR("[PWM] GPIO%u is not valid for output\n"), (unsigned)*it);
-            return false;
-        }
         if (gpioLocked(*it)) {
             return false;
         }
-        // Reject duplicates within the same init() — otherwise we'd assign
-        // the pin to two LEDC channels (only one wins at the GPIO matrix,
-        // the other channel leaks).
+
+        if (!chip::pin_valid(*it)) {
+            DEBUG_MSG_P(PSTR("[PWM] GPIO%u is not valid\n"), (unsigned)*it);
+            return false;
+        }
+
+        // Reject duplicates, the driver would install the pin twice
         for (auto prev = begin; prev != it; ++prev) {
             if (*prev == *it) {
                 DEBUG_MSG_P(PSTR("[PWM] GPIO%u listed twice\n"), (unsigned)*it);
@@ -342,232 +155,40 @@ bool init(const uint8_t* begin, const uint8_t* end) {
         }
     }
 
-    const auto freq = settings::frequency();
-    // core 3.x: ledcSetup() / ledcAttachPin() are gone, ledcAttachChannel() keeps the explicit channel numbers
-    uint8_t next_channel = 0;
-    for (auto it = begin; it != end; ++it) {
-        const auto pin = *it;
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-        ledcAttachChannel(pin, freq, internal::resolution, next_channel);
-#else
-        ledcSetup(next_channel, freq, internal::resolution);
-        ledcAttachPin(pin, next_channel);
-#endif
-        gpioLock(pin);
+    return true;
+}
 
+bool init(const uint8_t* begin, const uint8_t* end) {
+    if (!internal::channels.empty()) {
+        return false;
+    }
+
+    if (!valid(begin, end) || !chip::init(begin, end)) {
+        return false;
+    }
+
+    for (auto it = begin; it != end; ++it) {
+        gpioLock(*it);
         internal::channels.push_back(Channel{
-            .pin = pin,
-            .channel = next_channel,
+            .pin = *it,
             .duty = 0,
         });
-        ++next_channel;
     }
 
     return true;
 }
 
 void duty(size_t channel, uint32_t value) {
-    internal::channels[channel].duty = std::min(internal::duty_limit, value);
+    internal::channels[channel].duty =
+        std::min(internal::duty_limit, value);
 }
 
 void duty(size_t channel, float value) {
-    const auto max_duty = (1UL << internal::resolution) - 1;
-    duty(channel, static_cast<uint32_t>((std::clamp(value, 0.f, 100.f) / 100.f) * max_duty));
+    duty(channel, static_cast<uint32_t>(
+        (std::clamp(value, 0.f, 100.f) / 100.f) * internal::full));
 }
-
-} // namespace esp32
-
-#elif PWM_PROVIDER == PWM_PROVIDER_GENERIC
-namespace generic {
-namespace pin {
-
-// TODO: peripherals header should expose our register accessor funcs?
-// (or just move these to the lib itself?)
-
-static constexpr std::array<uint32_t, 16> addr PROGMEM {
-    PERIPHS_IO_MUX_GPIO0_U,    // GPIO0
-    PERIPHS_IO_MUX_U0TXD_U,    // GPIO1
-    PERIPHS_IO_MUX_GPIO2_U,    // GPIO2
-    PERIPHS_IO_MUX_U0RXD_U,    // GPIO3
-    PERIPHS_IO_MUX_GPIO4_U,    // GPIO4
-    PERIPHS_IO_MUX_GPIO5_U,    // GPIO5
-    PERIPHS_IO_MUX_SD_CLK_U,   // GPIO6  **UNUSED**
-    PERIPHS_IO_MUX_SD_DATA0_U, // GPIO7  **UNUSED**
-    PERIPHS_IO_MUX_SD_DATA1_U, // GPIO8  **UNUSED**
-    PERIPHS_IO_MUX_SD_DATA2_U, // GPIO9
-    PERIPHS_IO_MUX_SD_DATA3_U, // GPIO10
-    PERIPHS_IO_MUX_SD_CMD_U,   // GPIO11 **UNUSED**
-    PERIPHS_IO_MUX_MTDI_U,     // GPIO12
-    PERIPHS_IO_MUX_MTCK_U,     // GPIO13
-    PERIPHS_IO_MUX_MTMS_U,     // GPIO14
-    PERIPHS_IO_MUX_MTDO_U,     // GPIO15
-};
-
-static constexpr std::array<uint32_t, 16> func PROGMEM {
-    FUNC_GPIO0,
-    FUNC_GPIO1,
-    FUNC_GPIO2,
-    FUNC_GPIO3,
-    FUNC_GPIO4,
-    FUNC_GPIO5,
-    FUNC_GPIO6,
-    FUNC_GPIO7,
-    FUNC_GPIO8,
-    FUNC_GPIO9,
-    FUNC_GPIO10,
-    FUNC_GPIO11,
-    FUNC_GPIO12,
-    FUNC_GPIO13,
-    FUNC_GPIO14,
-    FUNC_GPIO15,
-};
-
-bool valid(unsigned char pin) {
-    return !gpioLocked(pin)
-        && (pin < addr.size())
-        && (pin < func.size());
-}
-
-} // namespace pin
-
-// > By default there is one small difference to the SDK. The code uses a unit of 200ns for both period and duty.
-// > E.g. for 10% duty cycle at 1kHz you need to specify a period value of 5000 and a duty cycle value of 500,
-// > a duty cycle of 5000 or above switches the channel to full on.
-namespace scale {
-
-constexpr uint32_t Step { 200 }; // nanoseconds
-
-constexpr uint32_t period(uint32_t frequency) {
-    return std::nano::den / frequency / Step;
-}
-
-constexpr uint32_t duty(float value, uint32_t period) {
-    return (std::clamp(value, 0.f, 100.f) / 100.f) * period;
-}
-
-} // namespace scale
-
-namespace internal {
-
-size_t channels;
-uint32_t period;
-
-} // namespace internal
-
-constexpr size_t ChannelsMax { 8 };
-using Channels = std::vector<pwm_pin_info>;
-
-PwmRange range() {
-    return PwmRange{
-        .min = 0,
-        .max = internal::period,
-    };
-}
-
-size_t channels() {
-    return internal::channels;
-}
-
-pwm_pin_info from_pin(uint8_t pin) {
-    return pwm_pin_info{
-        .addr = pin::addr[pin],
-        .func = pin::func[pin],
-        .pin = pin,
-    };
-}
-
-Channels prepare(const uint8_t* begin, const uint8_t* end) {
-    Channels out;
-
-    for (auto it = begin; it != end; ++it) {
-        const auto pin = *it;
-        if (!pin::valid(pin)) {
-            out.clear();
-            break;
-        }
-
-        out.push_back(from_pin(*it));
-    }
-
-    if (out.size() > ChannelsMax) {
-        out.clear();
-    }
-
-    return out;
-}
-
-void update() {
-    ::pwm_start();
-}
-
-void duty(uint32_t channel, uint32_t value) {
-    ::pwm_set_duty(
-        std::min(driver::pwm::internal::duty_limit, value), channel);
-}
-
-void duty(uint32_t channel, float value) {
-    duty(channel, scale::duty(value, internal::period));
-}
-
-void setup() {
-    const auto frequency = settings::frequency();
-    internal::period = scale::period(frequency);
-    DEBUG_MSG_P(PSTR("[PWM] Generic - Frequency %u (Hz), period %u (ns)\n"), frequency, internal::period);
-
-    const auto limit = settings::limit();
-    driver::pwm::internal::duty_limit =
-        (limit < 100.f)
-            ? (static_cast<float>(internal::period) / 100.f) * limit
-            : internal::period;
-
-    if (internal::period != driver::pwm::internal::duty_limit) {
-        DEBUG_MSG_P(PSTR("[PWM] Duty limit %u (%s%%)\n"),
-            driver::pwm::internal::duty_limit, String(limit, 3).c_str());
-    }
-}
-
-bool init(const uint8_t* begin, const uint8_t* end) {
-    if (!internal::channels) {
-        auto channels = prepare(begin, end);
-        if (!channels.size()) {
-            return false;
-        }
-
-        for (auto channel : channels) {
-            pinMode(channel.pin, OUTPUT);
-            gpioLock(channel.pin);
-        }
-
-        ::pwm_init(internal::period, nullptr,
-            channels.size(), channels.data());
-
-        constexpr uint32_t Initial = 0;
-        for (uint32_t channel = 0; channel < channels.size(); ++channel) {
-            duty(channel, Initial);
-        }
-
-        update();
-
-        internal::channels = channels.size();
-
-        return true;
-    }
-
-    return false;
-}
-
-} // namespace generic
-#endif
 
 } // namespace
-
-#if PWM_PROVIDER == PWM_PROVIDER_ARDUINO
-using namespace arduino;
-#elif PWM_PROVIDER == PWM_PROVIDER_GENERIC
-using namespace generic;
-#elif PWM_PROVIDER == PWM_PROVIDER_ESP32
-using namespace esp32;
-#endif
 
 #if TERMINAL_SUPPORT
 namespace terminal {

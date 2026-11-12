@@ -10,6 +10,8 @@ CHIP DESCRIPTION AND LWIP GLUE, esp8266 part (ref. espurna_chip.h)
 
 #include "../../espurna_chip.h"
 
+#include <SPI.h>
+
 #include <lwip/init.h>
 #include <lwip/tcp.h>
 
@@ -60,6 +62,14 @@ bool netstat(Print& out) {
     return true;
 }
 
+void wdt_pause() {
+    ESP.wdtDisable();
+}
+
+void wdt_resume() {
+    ESP.wdtEnable(5000);
+}
+
 IPAddress address(const ip_addr_t* addr) {
     return IPAddress(addr);
 }
@@ -70,6 +80,21 @@ bool address_set(const IPAddress& ip) {
 
 err_t gethostbyname(const char* name, IPAddress& out, dns_found_callback callback, void* arg) {
     return dns_gethostbyname(name, out, callback, arg);
+}
+
+// off, as upstream: no limit of connections or heap for new requests (owner, 2026-11-10). The settings turn it on
+// the RFM69 library's select(): DIV2, speeding it up for the ESP8266
+uint32_t rfm69_spi_divider() {
+    return SPI_CLOCK_DIV2;
+}
+
+WebGuard web_guard() {
+    return WebGuard{
+        .heap = 0,
+        .block = 0,
+        .lwip = 0,
+        .conns = 0,
+    };
 }
 
 // fixed layout, printed by the terminal itself
@@ -111,11 +136,6 @@ String core_revision() {
 
 } // namespace chip
 } // namespace espurna
-
-// Core IPAddress already has it, LibreTiny core provides the same function
-String ipToString(const IPAddress& ip) {
-    return ip.toString();
-}
 
 bool equalsConstantTime(const String& lhs, const String& rhs) {
     return lhs.equalsConstantTime(rhs);

@@ -51,7 +51,7 @@ struct Header {
 
 static_assert(sizeof(Header) == 128, "");
 
-// functions one module provides to the others through the head (modules_api_esp8266.cpp forwards to the slot the
+// functions one module provides to the others through the head (modules_api.cpp forwards to the slot the
 // provider's entry fills; scripts/esp8266_module_link.py renames the provider's own ones, `provides` in the ini)
 enum class Api : size_t {
     MagnitudeCount,
@@ -106,6 +106,14 @@ enum class Api : size_t {
     AlexaPause,
     MdnsRunning,
     MdnsServiceQuery,
+    UartPort,
+    UartClaim,
+    UartClaimed,
+    UartOnClaim,
+    UartOpen,
+    UartBaud,
+    HttpTlsExtend,
+    HttpTlsKey,
     Count,
 };
 
@@ -197,13 +205,6 @@ extern char __mod_init_end[];
 #endif
 #endif
 
-// the chips whose backend implements the shared core (modules_core.h); the others still have their own loader
-#if MODULES_SUPPORT && (defined(ESP8266) || defined(LIBRETINY) || defined(ESP32))
-#define MODULES_CORE 1
-#else
-#define MODULES_CORE 0
-#endif
-
 // the module of that name is installed and switched on (the directory), whether or not it started yet. In the head;
 // declared for the module objects too (MODULE_BUILD has MODULES_SUPPORT 0), they call it through the head's exports
 bool modulesEnabled(const char* name);
@@ -234,6 +235,6 @@ uint32_t modulesHeapLoop();
 uint32_t modulesHeapLow();
 
 // GET / of the head: the WebUI module (a data module named "webui"), or the head's own page
-class AsyncWebServerRequest;
-void modulesOnHome(AsyncWebServerRequest*);
+namespace espurna { namespace http { namespace server { class Request; } } }
+void modulesOnHome(espurna::http::server::Request&);
 #endif

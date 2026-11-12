@@ -47,4 +47,3 @@ bool apiRestFul();
 void apiCommonSetup();
 
 void apiSetup();
-

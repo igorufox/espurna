@@ -165,4 +165,3 @@ class SI7021Sensor : public I2CSensor<> {
 };
 
 #endif // SENSOR_SUPPORT && SI7021_SUPPORT
-

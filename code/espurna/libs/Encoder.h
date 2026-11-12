@@ -226,4 +226,3 @@ namespace EncoderLibrary {
 }
 
 using EncoderLibrary::Encoder;
-

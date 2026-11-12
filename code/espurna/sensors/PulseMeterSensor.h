@@ -199,4 +199,3 @@ constexpr BaseSensor::Magnitude PulseMeterSensor::Magnitudes[];
 #endif
 
 #endif // SENSOR_SUPPORT && PULSEMETER_SUPPORT
-

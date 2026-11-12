@@ -1010,4 +1010,3 @@ return_result:
 } // namespace embedis
 } // namespace settings
 } // namespace espurna
-

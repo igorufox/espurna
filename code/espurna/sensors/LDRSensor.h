@@ -172,4 +172,3 @@ class LDRSensor : public AnalogSensor {
 };
 
 #endif // SENSOR_SUPPORT && LDR_SUPPORT
-

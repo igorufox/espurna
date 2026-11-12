@@ -577,4 +577,3 @@ output:
 
 } // namespace duration
 } // namespace espurna
-

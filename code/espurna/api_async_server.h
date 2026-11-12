@@ -9,10 +9,9 @@ Copyright (C) 2020-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #pragma once
 
-#include <ESPAsyncWebServer.h>
+#include "web.h"
 
-bool apiAuthenticateHeader(AsyncWebServerRequest*, const String& key);
-bool apiAuthenticateParam(AsyncWebServerRequest*, const String& key);
-bool apiAuthenticate(AsyncWebServerRequest*);
-
+bool apiAuthenticateHeader(WebRequest&, const String& key);
+bool apiAuthenticateParam(WebRequest&, const String& key);
+bool apiAuthenticate(WebRequest&);
 

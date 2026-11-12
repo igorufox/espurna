@@ -120,4 +120,3 @@ class AnimFountain : public Anim {
 };
 
 #endif  // GARLAND_SUPPORT
-

@@ -318,4 +318,3 @@ private:
     double _pivot { 0.0 };
     double _current { 0.0 };
 };
-

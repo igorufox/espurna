@@ -637,7 +637,7 @@ bool eraseSDKConfig() {
 
 // Common system module hooks (ref. system.h)
 namespace system {
-namespace arch {
+namespace chip {
 
 void pre_setup() {
     ::espurna::boot::pre();
@@ -659,7 +659,7 @@ uint32_t reset_reason() {
     ::espurna::reset();
 }
 
-} // namespace arch
+} // namespace chip
 } // namespace system
 } // namespace espurna
 

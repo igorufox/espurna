@@ -4,7 +4,7 @@
 # objects are compiled in the same build with the module flags, then every module is linked against the head and the
 # release images are written. A chip script (the last extra script of the env: esp8266_module_link.py, ...) subclasses
 # Linker below with what only that chip has (its toolchain, the bases of its linker script, its relocation records,
-# its head identity, what it writes after the modules file), then calls install().
+# its head identity, where its module area starts in the initial image: module_initial_image.py), then calls install().
 #
 #   custom_module_flags = -D...      macros of the module objects: replace the head's macros of the same names
 #   custom_module_undef = NAME ...   macros of the head the module objects do not get (MODULES_SUPPORT ...)
@@ -31,9 +31,16 @@
 # its relocations (kind 1, 2, 3 in the order of Linker.bases); anything else differing stops the build, unless the chip
 # knows it (Beken: branches into the head).
 #
-# The package: PACKAGE, then per CHUNK of the image the map of 2 bits per word (the relocation kind), what the chip
-# adds per chunk (Beken: its branch list) and the chunk. The module header (modules.h) in the image gets the head id
-# (offset 24) and the modules it needs (HEADER_NEEDS).
+# The package, one format on every chip (PACKAGE_VERSION, modules_core.h PackageVersion): PACKAGE, then per CHUNK of
+# the image the map of 2 bits per word (0 as is, 1 flash data view, 2 RAM, 3 code: ESP8266 IRAM code, ESP32 the
+# instruction view), a u32 branch count and that many u32 branches (offset in the chunk | kind << 16: Beken's BL / BLX
+# into the head; 0 on the other chips), then the chunk. The module header (modules.h) in the image gets the head id
+# (offset 24) and the modules it needs (HEADER_REQUIRES).
+#
+# The outputs of every chip: module-<name>.module / .elf / .map, the modules file espurna-<chip>-modules.bin (EMC2,
+# every package, webui among them), the initial image (module_initial_image.py: the head + the modules on by default
+# at the start of the module area) and the install image espurna-<chip>.ota (module_ota.py: the head(s) + the modules
+# file). The board installs packages only by the Apply (/modules/apply).
 
 import hashlib
 import json
@@ -46,16 +53,18 @@ import zlib
 
 # loaded with this file: the folder of the scripts is on sys.path only while the env's scripts run
 import module_ota  # noqa: E402  pylint: disable=wrong-import-position
+import release_image  # noqa: E402  pylint: disable=wrong-import-position
 
 HEADER_MAGIC = 0x31444D45   # "EMD1"
 PACKAGE_MAGIC = 0x31504D45  # "EMP1"
-# magic, version, name, head id, image size, RAM, IRAM, the link A bases of kind 1, 2, 3, crc32 of the body, branches
+PACKAGE_VERSION = 4         # modules_core.h PackageVersion
+# magic, version, name, head id, image size, RAM, IRAM, the link A bases of kind 1, 2, 3, crc32 of the body, reserved
 PACKAGE = struct.Struct("<II16s16sIIIIIIII")
 CHUNK = 4096
 MAP_SIZE = CHUNK // 16
 RENAMED = "espmod_"
 
-# the modules file: name, offset, package bytes, image bytes, RAM, second arena, the modules it needs (EMC2)
+# the modules file: name, offset, package bytes, image bytes, RAM, IRAM code, the modules it needs, flags (EMC2)
 CONTAINER_MAGIC = 0x32434D45  # "EMC2"
 CONTAINER_ENTRY = struct.Struct("<16sIIIII32sI")
 # flags of a container entry: its RAM takes byte access from interrupts (custom_module_byte_ram), not into a pool that
@@ -97,8 +106,9 @@ def module_name(name):
     return name.encode()[:15].ljust(16, b"\0")
 
 
-def pack_body(image, kinds, chunk_extra=None):
-    """per CHUNK: the map (2 bits per word), chunk_extra(start, size) when given, the bytes"""
+def pack_body(image, kinds, branches):
+    """per CHUNK: the map (2 bits per word), the branch count and the branches of the chunk (offset in the chunk |
+    kind << 16, from `branches` {offset in the image: kind}), the bytes"""
     body = bytearray()
     for start in range(0, len(image), CHUNK):
         chunk = image[start: start + CHUNK]
@@ -106,25 +116,30 @@ def pack_body(image, kinds, chunk_extra=None):
         for index, kind in enumerate(kinds[start // 4: start // 4 + CHUNK // 4]):
             bitmap[index >> 2] |= kind << ((index & 3) * 2)
         body += bitmap
-        if chunk_extra:
-            body += chunk_extra(start, len(chunk))
+        inside = sorted(offset for offset in branches if start <= offset < start + len(chunk))
+        body += struct.pack("<I", len(inside))
+        for offset in inside:
+            body += struct.pack("<I", (offset - start) | (branches[offset] << 16))
         body += chunk
     return bytes(body)
 
 
-def package_bytes(version, name, head_id, image, kinds, ram, iram, bases, chunk_extra=None, count=0):
-    """PACKAGE + body; bases: the link A bases of kind 1, 2, 3 (0 for what the chip has not)"""
-    body = pack_body(image, kinds, chunk_extra)
+def package_bytes(name, head_id, image, kinds, ram, iram, bases, branches=None):
+    """PACKAGE + body; bases: the link A bases of kind 1, 2, 3 (0 for what the chip has not); branches: {offset in the
+    image: kind} of the words the board moves other than by the map (Beken), none elsewhere"""
+    body = pack_body(image, kinds, branches or {})
     bases = list(bases) + [0] * (3 - len(bases))
-    header = PACKAGE.pack(PACKAGE_MAGIC, version, module_name(name), head_id, len(image), ram, iram, *bases,
-                          zlib.crc32(body) & 0xFFFFFFFF, count)
+    header = PACKAGE.pack(PACKAGE_MAGIC, PACKAGE_VERSION, module_name(name), head_id, len(image), ram, iram, *bases,
+                          zlib.crc32(body) & 0xFFFFFFFF, 0)
     return header + body
 
 
-def data_package(name, data, head_id, link_flash):
-    """a data module (no code, entry 0, e.g. the WebUI page): the header + the data, padded to 4 bytes; only
-    flash_start / flash_end hold addresses, they are its two flash relocations (words 10 and 11)"""
-    size = round_up(HEADER.size + len(data), 4)
+def data_package(name, data, head_id, bases, align=4):
+    """a data module (no code, entry 0, e.g. the WebUI page): the header + the data, padded to the chip's image
+    alignment; only flash_start / flash_end hold addresses, they are its two flash relocations (words 10 and 11, kind
+    1). bases: the chip's link A bases (the first one, flash, is the data module's link address)"""
+    link_flash = bases[0]
+    size = round_up(HEADER.size + len(data), align)
     fields = [0] * 14  # the last one: priority 0
     fields[0] = link_flash         # flash_start
     fields[1] = link_flash + size  # flash_end
@@ -133,7 +148,7 @@ def data_package(name, data, head_id, link_flash):
     image += b"\0" * (size - len(image))
     kinds = [0] * (size // 4)
     kinds[10] = kinds[11] = 1
-    out = package_bytes(1, name, head_id, image, kinds, 0, 0, (link_flash, 0, 0))
+    out = package_bytes(name, head_id, image, kinds, 0, 0, bases)
     print(f"data module '{name}': {len(data)} bytes of data, image {len(image)}, package {len(out)}, "
           f"head md5 {head_id.hex()}")
     return out
@@ -144,12 +159,38 @@ def head_exports_path(env):
     return os.path.join(env.subst("$PROJECT_DIR"), path) if path else ""
 
 
-def read_head_exports(env):
-    path = head_exports_path(env)
+def export_chip(env):
+    """the chip key of the export list: esp8266, esp32, beken"""
+    # the platform option of the env: a name or a URL (pioarduino), with a version
+    platform = (env.GetProjectOption("platform", "") or env.subst("$PIOPLATFORM")).lower()
+    for key, chip in (("espressif8266", "esp8266"), ("espressif32", "esp32"), ("libretiny", "beken")):
+        if key in platform:
+            return chip
+    raise RuntimeError(f"head exports: unknown platform {platform!r}")
+
+
+def read_export_lines(path):
+    """(name, chips) per line of the export list; chips empty - every chip"""
     if not path or not os.path.exists(path):
         return []
+    out = []
     with open(path) as f:
-        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        for line in f:
+            parts = line.split()
+            if parts and not parts[0].startswith("#"):
+                out.append((parts[0], set(parts[1:])))
+    return out
+
+
+def read_head_exports(env):
+    chip = export_chip(env)
+    seen = set()
+    out = []
+    for name, chips in read_export_lines(head_exports_path(env)):
+        if (not chips or chip in chips) and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
 
 
 def write_head_exports(env):
@@ -194,7 +235,6 @@ class Linker:
     # 1, 2, 3 of the package: (placeholder, base of link A, base of link B, name in the summary)
     link_script = ""
     bases = ()
-    package_version = 1
     # sections of the module ELF that may take memory; the ones its image is made of, in flash order
     own_sections = ()
     image_sections = ()
@@ -205,10 +245,8 @@ class Linker:
     link_options = ()
     # the toolchain's libraries every module links with
     system_libs = ("-lstdc++", "-lm", "-lc", "-lgcc")
-    # the module's IRAM (ESP8266): its own arena, its size in the package
+    # the module has IRAM code of its own (ESP8266: copied into the fixed pool at its start), its size in the package
     has_iram = False
-    # RAM of a module above the head's arena stops the build (ESP8266: RAM may go to the IRAM tail instead)
-    ram_in_arena = True
 
     def __init__(self, env, projenv=None):
         self.env = env
@@ -241,10 +279,6 @@ class Linker:
         """a word that differs by no base delta and that the chip knows (adds it to branches): True"""
         return False
 
-    def chunk_extra(self, branches):
-        """what the package has per chunk between the map and the bytes: f(start, size) or None"""
-        return None
-
     def check(self, name, syms):
         """more checks of the linked module (its symbols)"""
 
@@ -255,24 +289,38 @@ class Linker:
     def report(self, name, mapfile):
         """warnings about the linked module"""
 
+    def webui_page(self):
+        """the WebUI of the webui data module, every chip (decision 11-11): the one WebUI build (gulp build),
+        html/build/index.html.gz"""
+        page = os.path.join(self.env.subst("$PROJECT_DIR"), "html", "build", "index.html.gz")
+        return page if os.path.exists(page) else None
+
     def extra_packages(self, ctx):
-        """more packages for the modules file (a data module), paths"""
-        return []
+        """the webui data module"""
+        page = self.webui_page()
+        if not page:
+            return []
+        with open(page, "rb") as f:
+            data = data_package("webui", f.read(), ctx["head_id"], [base[1] for base in self.bases], self.image_align)
+        out = os.path.join(ctx["build_dir"], "module-webui.module")
+        with open(out, "wb") as f:
+            f.write(data)
+        print(f"  webui from {os.path.basename(page)}")
+        return [out]
 
     def extra_sources(self):
-        """more files the modules link depends on (the WebUI page of a data module)"""
-        return []
+        """a new WebUI build (gulp build) has to reach the modules file too"""
+        page = self.webui_page()
+        return [page] if page else []
 
-    def after(self, ctx, container):
-        """after the modules file (images, reports)"""
+    def initial(self, ctx, container, on):
+        """the initial image(s) of the chip: the head + the modules file of `on` at the start of the module area
+        (module_initial_image.py); returns the paths written"""
+        raise NotImplementedError
 
     def ota_heads(self, ctx):
         """[(name, path)] of the heads in the install image espurna-<chip>.ota (scripts/module_ota.py)"""
         return []
-
-    def arenas(self, ctx):
-        """names and sizes of the head's arenas: RAM first"""
-        return [("RAM", self.arena())]
 
     # --- tools -----------------------------------------------------------------------------------------------------
 
@@ -288,10 +336,6 @@ class Linker:
 
     def script(self, name):
         return os.path.join(self.env.subst("$PROJECT_DIR"), "scripts", name)
-
-    def arena(self):
-        """RAM of the modules: no fixed arena on any chip (the Apply sizes it, a heap block and the chip's pool), 0"""
-        return 0
 
     @staticmethod
     def run(args):
@@ -444,14 +488,12 @@ class Linker:
         exported = [name for name in missing if name in defined]
         absent = [name for name in missing if name not in defined]
         if exported:
-            known = set()
-            if os.path.exists(path):
-                with open(path) as f:
-                    known = {line.strip() for line in f if line.strip() and not line.startswith("#")}
+            known = set(read_head_exports(self.env))
+            chip = export_chip(self.env)
             with open(path, "a", newline=chr(10)) as f:
                 for name in exported:
                     if name not in known:
-                        f.write(name + chr(10))
+                        f.write(f"{name} {chip}" + chr(10))
         return exported, absent
 
     def head_object(self, head_dir, head_map, head_env, object_name):
@@ -637,14 +679,11 @@ class Linker:
         syms = self.symbols(elf_a)
         ram_size = syms["__mod_bss_end"] - syms["__mod_data_start"]
         iram_size = syms["__mod_iram_end"] - syms["__mod_iram_start"] if self.has_iram else 0
-        arenas = self.arenas(ctx)
         if syms["__mod_flash_start"] != flash or struct.unpack_from("<I", image_a, 0)[0] != HEADER_MAGIC:
             raise RuntimeError(f"module {name}: no module header at the start (KEEP .module_header)")
         if round_up(syms["__mod_flash_end"] - flash, self.image_align) != len(image_a):
             raise RuntimeError(f"module {name}: image is {len(image_a)} bytes, flash range "
                                f"{syms['__mod_flash_end'] - flash}")
-        if self.ram_in_arena and arenas[0][1] and ram_size > arenas[0][1]:
-            raise RuntimeError(f"module {name}: RAM {ram_size} bytes, the arena of the head has {arenas[0][1]}")
         self.check(name, syms)
 
         # the head id and the modules it needs (5th column of custom_modules) into the header, same in every placement
@@ -652,8 +691,8 @@ class Linker:
         image[HEADER_ID: HEADER_ID + 16] = head_id
         image[HEADER_REQUIRES: HEADER_REQUIRES + REQUIRES_SIZE] = self.requires_bytes(name)
 
-        data = package_bytes(self.package_version, name, head_id, bytes(image), kinds, ram_size, iram_size,
-                             [base[1] for base in self.bases], self.chunk_extra(branches), len(branches))
+        data = package_bytes(name, head_id, bytes(image), kinds, ram_size, iram_size, [base[1] for base in self.bases],
+                             branches)
         with open(os.path.join(build_dir, f"module-{name}.module"), "wb") as f:
             f.write(data)
 
@@ -814,6 +853,11 @@ class Linker:
                 folders.append(os.path.join(folder, "libraries"))
         for folder in folders:
             path = os.path.join(folder, name)
+            if not os.path.isdir(path) and os.path.isdir(folder):
+                # the names of the ini are the lib_ignore ones (hlw8012), the folders the libraries' own (HLW8012): a
+                # case-sensitive file system (CI) finds them by the name in any case
+                path = next((os.path.join(folder, entry) for entry in sorted(os.listdir(folder))
+                             if entry.lower() == name.lower() and os.path.isdir(os.path.join(folder, entry))), path)
             if os.path.isdir(path):
                 print(f"  module library {name}: {path}")
                 return path
@@ -938,14 +982,15 @@ class Linker:
                                    f"{len(set(absent_all))} symbols the head does not have")
             self.relink_head()
 
-        print("All modules: " + ", ".join(f"{label} {total}" + (f" of {size}" if size else "")
-                                          for (label, size), total in zip(self.arenas(ctx), totals)))
+        print(f"All modules: RAM {totals[0]}" + (f", IRAM code {totals[1]}" if self.has_iram else ""))
         container = self.write_container(ctx, [module["name"] for module in self.parse_modules()])
-        self.after(ctx, container)
+        import module_initial_image  # it imports this file
+        on = module_initial_image.modules_on(self.env.subst("$PROJECT_DIR"))
+        images = self.initial(ctx, container, on)
         heads = self.ota_heads(ctx)
-        if heads:
-            image = self.env.subst("$PIOENV")
-            module_ota.build(os.path.join(ctx["build_dir"], f"espurna-{image}.ota"), heads, container)
+        ota = os.path.join(ctx["build_dir"], f"espurna-{self.env.subst('$PIOENV')}.ota")
+        module_ota.build(ota, heads, container)
+        release_image.listing(list(images) + [container, ota])
 
     def install(self):
         """the module objects and the modules link: a default target of the env, after the head's outputs"""

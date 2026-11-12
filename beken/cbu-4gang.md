@@ -24,7 +24,8 @@ updates. Or built from `code/`:
 py -3 -m platformio run -c platformio_beken.ini -e beken
 ```
 
-(newer releases: `espurna-beken-tuya.uf2`, the head, and the modules file `espurna-beken-modules.bin`)
+The features (MQTT, Home Assistant, Matter ...) are modules: MODULES panel, `espurna-beken.ota` of the same release
+([docs/modules.md](../docs/modules.md)).
 
 ## Wiring
 

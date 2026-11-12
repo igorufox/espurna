@@ -234,4 +234,3 @@ class BMP180Sensor : public I2CSensor<> {
 };
 
 #endif // SENSOR_SUPPORT && BMP180_SUPPORT
-

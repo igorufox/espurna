@@ -66,4 +66,3 @@ class AnimPixieDust : public Anim {
 };
 
 #endif  // GARLAND_SUPPORT
-

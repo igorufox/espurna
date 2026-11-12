@@ -10,4 +10,3 @@ bool idbSend(const char * topic, unsigned char id, const char * payload);
 bool idbSend(const char * topic, const char * payload);
 bool idbEnabled();
 void idbSetup();
-

@@ -40,13 +40,6 @@ String EspCompat::getResetInfo() {
     return out;
 }
 
-// efuse value starts with the vendor OUI
-uint32_t EspCompat::getChipId() {
-    uint8_t mac[6] {};
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    return (uint32_t{mac[3]} << 16) | (uint32_t{mac[4]} << 8) | uint32_t{mac[5]};
-}
-
 // the framework EspClass reads them out of the efuse / SPI flash
 uint32_t EspCompat::getFlashChipSpeed() {
     return static_cast<EspClass&>(*this).getFlashChipSpeed();

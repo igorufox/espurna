@@ -284,7 +284,7 @@
 
 // default of the `garlandGPIO` setting; generic images have none, the module stays idle until it is set
 #ifndef GARLAND_DATA_PIN
-#if defined(ESP8266_GENERIC)
+#if GENERIC_IMAGE
 #define GARLAND_DATA_PIN            GPIO_NONE
 #else
 #define GARLAND_DATA_PIN            4           // WS2812 data pin (default: D2 / GPIO4)
@@ -427,7 +427,7 @@
 // curtain...) are compiled in, but stay idle until configured. The one that starts takes its port from
 // the serial log / terminal at runtime (uartClaim()), instead of these being compiled out
 #ifndef UART_DRIVERS_CLAIM_PORT
-#if defined(ESP8266_GENERIC) || defined(ESP32_GENERIC) || defined(BEKEN_GENERIC)
+#if GENERIC_IMAGE
 #define UART_DRIVERS_CLAIM_PORT         1
 #else
 #define UART_DRIVERS_CLAIM_PORT         0
@@ -757,10 +757,6 @@
 #define WEB_SUPPORT                 1           // Enable web support (http, api, 121.65Kb)
 #endif
 
-#ifndef WEB_EMBEDDED
-#define WEB_EMBEDDED                1           // Build the firmware with the web interface embedded in
-#endif
-
 #ifndef WEB_ACCESS_LOG
 #define WEB_ACCESS_LOG              0           // Log every request that was received by the server (but, not necessarily processed)
 #endif
@@ -790,24 +786,7 @@
 // - LWIP: free bytes of lwIP's own heap, where lwIP has one (MEM_LIBC_MALLOC 0: the BK7231N, 16 KB for queued TCP data
 //   and received frames)
 // - CONNS: connections to the server's port, the new one and web sockets included
-#if defined(ESP8266)
-// off, as upstream: no limit of connections or heap for new requests (owner, 2026-11-10). The settings turn it on
-#define WEB_GUARD_HEAP_DEFAULT      0
-#define WEB_GUARD_BLOCK_DEFAULT     0
-#define WEB_GUARD_LWIP_DEFAULT      0
-#define WEB_GUARD_CONNS_DEFAULT     0
-#elif defined(ESP32)
-#define WEB_GUARD_HEAP_DEFAULT      16384
-#define WEB_GUARD_BLOCK_DEFAULT     4096
-#define WEB_GUARD_LWIP_DEFAULT      0
-#define WEB_GUARD_CONNS_DEFAULT     8
-#else
-// BK7231N with Matter: 27.6 KB free, 15 parallel `GET /` took all of it (10.0.5.139, 2026-11-09)
-#define WEB_GUARD_HEAP_DEFAULT      8192
-#define WEB_GUARD_BLOCK_DEFAULT     0
-#define WEB_GUARD_LWIP_DEFAULT      4096
-#define WEB_GUARD_CONNS_DEFAULT     4
-#endif
+// Defaults are the chip's, espurna::chip::web_guard() (arch/<chip>/chip_<chip>.cpp)
 
 // Defining a WEB_REMOTE_DOMAIN will enable Cross-Origin Resource Sharing (CORS)
 // so you will be able to login to this device from another domain. This will allow
@@ -961,7 +940,7 @@
 #endif
 
 #ifndef OTA_MQTT_SUPPORT
-#define OTA_MQTT_SUPPORT            0           // Listen for HTTP(s) URLs at '<root topic>/ota'. Depends on OTA_CLIENT
+#define OTA_MQTT_SUPPORT            0           // Listen for "<url> [sha256]" at <root topic>/ota (ota_fetch.cpp)
 #endif
 
 #ifndef OTA_ARDUINOOTA_SUPPORT
@@ -969,46 +948,10 @@
                                                 // Implicitly depends on ESP8266mDNS library, thus increasing firmware size
 #endif
 
-#ifndef OTA_CLIENT
-#define OTA_CLIENT                  OTA_CLIENT_ASYNCTCP     // Terminal / MQTT OTA support
-                                                            // OTA_CLIENT_ASYNCTCP   (ESPAsyncTCP library)
-                                                            // OTA_CLIENT_HTTPUPDATE (Arduino Core library)j
-                                                            // OTA_CLIENT_NONE to disable
-#endif
-
 #ifndef OTA_WEB_SUPPORT
 #define OTA_WEB_SUPPORT             WEB_SUPPORT             // Support `/upgrade` endpoint and WebUI OTA handler
 #endif
 
-#ifndef OTA_FETCH_SUPPORT
-#define OTA_FETCH_SUPPORT           0           // ESP8266: the image downloads its update itself at boot (/ota/fetch, https
-                                                // with SHA-256, ota_fetch.cpp). Needs ~27 KB of heap for TLS, which no full
-                                                // image has: off everywhere, the 1 MB updater is code/mini-app
-#endif
-
-#define OTA_GITHUB_FP               "CA:06:F5:6B:25:8B:7A:0D:4F:2B:05:47:09:39:47:86:51:15:19:84"
-
-#ifndef OTA_FINGERPRINT
-#define OTA_FINGERPRINT             OTA_GITHUB_FP
-#endif
-
-#ifndef OTA_SECURE_CLIENT_CHECK
-#define OTA_SECURE_CLIENT_CHECK                SECURE_CLIENT_CHECK
-#endif
-
-#ifndef OTA_SECURE_CLIENT_MFLN
-#define OTA_SECURE_CLIENT_MFLN                 SECURE_CLIENT_MFLN
-#endif
-
-#ifndef OTA_SECURE_CLIENT_INCLUDE_CA
-#define OTA_SECURE_CLIENT_INCLUDE_CA        0            // Use user-provided CA. Only PROGMEM PEM option is supported.
-                                                         // TODO: eventually should be replaced with pre-parsed structs, read directly from flash
-                                                         // (ref: https://github.com/earlephilhower/bearssl-esp8266/pull/14)
-                                                         //
-                                                         // When enabled, current implementation includes "static/ota_client_trusted_root_ca.h" with
-                                                         // const char _ota_client_trusted_root_ca[] PROGMEM = "...PEM data...";
-                                                         // By default, using DigiCert root in "static/digicert_evroot_pem.h" (for https://github.com)
-#endif
 
 
 // -----------------------------------------------------------------------------
@@ -1522,42 +1465,10 @@
                                                     // Not clearing it will result in latest values for each field being sent every time
 #endif
 
-#ifndef THINGSPEAK_USE_ASYNC
-#define THINGSPEAK_USE_ASYNC        1               // Use AsyncClient instead of WiFiClientSecure
-#endif
-
-// THINGSPEAK OVER SSL
-// Using THINGSPEAK over SSL works well but generates problems with the web interface,
-// so you should compile it with WEB_SUPPORT to 0.
-// When THINGSPEAK_USE_ASYNC is 1, requires EspAsyncTCP to be built with ASYNC_TCP_SSL_ENABLED=1 and ESP8266 Arduino Core >= 2.4.0.
-// When THINGSPEAK_USE_ASYNC is 0, requires Arduino Core >= 2.6.0 and SECURE_CLIENT_BEARSSL
-//
-// WARNING: Thingspeak servers do not support MFLN right now, connection requires at least 30KB of free RAM.
-//          Also see MQTT comments above.
-
-#ifndef THINGSPEAK_USE_SSL
-#define THINGSPEAK_USE_SSL          0               // Use secure connection
-#endif
-
-#ifndef THINGSPEAK_SECURE_CLIENT_CHECK
-#define THINGSPEAK_SECURE_CLIENT_CHECK    SECURE_CLIENT_CHECK
-#endif
-
-#ifndef THINGSPEAK_SECURE_CLIENT_MFLN
-#define THINGSPEAK_SECURE_CLIENT_MFLN     SECURE_CLIENT_MFLN
-#endif
-
-#ifndef THINGSPEAK_FINGERPRINT
-#define THINGSPEAK_FINGERPRINT      "78 60 18 44 81 35 BF DF 77 84 D4 0A 22 0D 9B 4E 6C DC 57 2C"
-#endif
-
+// http:// or https:// (the one HTTP client, libs/http_client.h; https through the tls module), the tspkAddress setting
 #ifndef THINGSPEAK_ADDRESS
-#if THINGSPEAK_USE_SSL
-#define THINGSPEAK_ADDRESS          "https://api.thingspeak.com/update"
-#else
 #define THINGSPEAK_ADDRESS          "http://api.thingspeak.com/update"
 #endif
-#endif // ifndef THINGSPEAK_ADDRESS
 
 #ifndef THINGSPEAK_TRIES
 #define THINGSPEAK_TRIES            3               // Number of attemps to send the data (minimum 1)
@@ -1711,7 +1622,8 @@
 #endif
 
 #ifndef RFB_PROVIDER
-#if defined(ESP8266_GENERIC)
+// generic esp8266 images take both, the EFM8BB1 co-MCU exists only on an esp8266 board (Sonoff RF Bridge)
+#if GENERIC_IMAGE && defined(ESP8266)
 #define RFB_PROVIDER                RFB_PROVIDER_ANY
 #else
 #define RFB_PROVIDER                RFB_PROVIDER_RCSWITCH
@@ -1924,7 +1836,7 @@
 
 // default of the `rfm69CsGPIO` setting; generic images have none, the module stays idle until it is set
 #ifndef RFM69_CS_PIN
-#if defined(ESP8266_GENERIC)
+#if GENERIC_IMAGE
 #define RFM69_CS_PIN                GPIO_NONE
 #else
 #define RFM69_CS_PIN                SS

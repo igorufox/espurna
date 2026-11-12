@@ -59,10 +59,6 @@ fauxmoESP fauxmo;
 
 namespace build {
 
-constexpr bool createServer() {
-    return WEB_SUPPORT == 0;
-}
-
 constexpr uint16_t port() {
     return 80;
 }
@@ -127,25 +123,53 @@ void onConnected(JsonObject& root) {
     root[FPSTR(settings::keys::Name)] = alexa::settings::hostname();
 }
 
-bool body_callback(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-    if (len != total) {
-        DEBUG_MSG_P(PSTR("[ALEXA] Ignoring incomplete %s %s from %s (%zu / %zu)\n"),
-                request->methodToString(),
-                request->url().c_str(),
-                ipToString(request->client()->remoteIP()).c_str(),
-                len, index);
+// fauxmoESP answers through the reply (our fork, 3.4.1-espurna.2: no TCP of its own), the web server sends it
+bool process(WebRequest& request, const String& body) {
+    return fauxmo.process(request.method() == WebMethod::Get, String(request.url()), body,
+        [&request](const char* code, const char* text, const char* mime) {
+            request.send(atoi(code), mime, text);
+        });
+}
+
+// the body of a request no route took, kept until it is complete
+struct Body {
+    String data;
+};
+
+bool body_callback(WebRequest& request, const uint8_t* data, size_t len, size_t index, size_t total) {
+    if (total > 1024) {
+        DEBUG_MSG_P(PSTR("[ALEXA] Ignoring %s %s from %s (%u bytes)\n"),
+            request.methodName(), request.url(),
+            ipToString(IPAddress(request.remoteIp())).c_str(), total);
         return false;
     }
 
-    String payload;
-    payload.concat(reinterpret_cast<char*>(data), len);
+    auto* body = static_cast<Body*>(request.context());
+    if (!body) {
+        body = new (std::nothrow) Body();
+        request.setContext(body, [](void* ptr) {
+            delete static_cast<Body*>(ptr);
+        });
+    }
 
-    return fauxmo.process(request->client(), request->method() == HTTP_GET, request->url(), payload);
+    if (body) {
+        if (!index) {
+            body->data = String();
+        }
+        body->data.concat(reinterpret_cast<const char*>(data), len);
+    }
+
+    return true;
 }
 
-bool request_callback(AsyncWebServerRequest *request) {
-    String body = (request->hasParam("body", true)) ? request->getParam("body", true)->value() : String();
-    return fauxmo.process(request->client(), request->method() == HTTP_GET, request->url(), body);
+bool request_callback(WebRequest& request) {
+    const auto* body = static_cast<Body*>(request.context());
+    if (body) {
+        return process(request, body->data);
+    }
+
+    const char* form = request.param("body");
+    return process(request, form ? String(form) : String());
 }
 
 void setup() {
@@ -216,7 +240,6 @@ void setup() {
     migrateVersion(settings::migrate);
 
     // Basic fauxmoESP configuration
-    fauxmo.createServer(alexa::build::createServer());
     fauxmo.setPort(alexa::build::port());
 
     auto hostname = alexa::settings::hostname();

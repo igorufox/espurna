@@ -130,4 +130,3 @@ class A02YYUSensor : public BaseSensor {
 };
 
 #endif // SENSOR_SUPPORT && A02YYU_SUPPORT
-

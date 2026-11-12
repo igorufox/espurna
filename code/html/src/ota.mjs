@@ -1,5 +1,6 @@
 import { notifyMessage } from './notify.mjs';
 import { modulesBlockUpdate, modulesOffForUpdate } from './net.mjs';
+import { installImage, isInstallImage, readModules, runningNames } from './install.mjs';
 import { listenAppConnected } from './connection.mjs';
 import { variableListeners } from './settings.mjs';
 import {
@@ -83,6 +84,11 @@ function onButtonClick(event) {
         }
 
         const file = files[0];
+        if (__install) {
+            installFile(file, url);
+            return;
+        }
+
         /** @param {boolean} again */
         const send = (again) => {
             const data = new FormData();
@@ -137,6 +143,31 @@ function onButtonClick(event) {
     });
 }
 
+/** the picked file is an install image (.ota): it goes the way of every install (install.mjs installImage) */
+let __install = false;
+
+/**
+ * The install image picked here: its head (when the board runs another head build), then the modules the board runs
+ * @param {File} file
+ * @param {string} url the /upgrade URL
+ */
+function installFile(file, url) {
+    const root = new URL("./", new URL(url, window.location.href));
+    file.arrayBuffer()
+        .then(async (buffer) => {
+            const status = await readModules(root);
+            await installImage(root, buffer, status, runningNames(status), (text) => {
+                const filename = document.querySelector("input[name=filename]");
+                if (filename instanceof HTMLInputElement) {
+                    filename.value = text;
+                }
+            });
+            alert("Installed, the board is back. This page will be refreshed now");
+            window.location.reload();
+        })
+        .catch((error) => alert(`ERROR while installing ${file.name} - ${error.message ?? error}`));
+}
+
 /**
  * @param {Event} event
  */
@@ -165,6 +196,13 @@ async function onFileChanged(event) {
         filename.value = file.name;
     }
 
+    // the install image (.ota): the head and the modules, every chip
+    __install = isInstallImage(await file.slice(0, 4).arrayBuffer());
+    if (__install) {
+        button.disabled = false;
+        return;
+    }
+
     const need = roundedSize(file.size);
     if ((__free_size !== 0) && (need > __free_size)) {
         alert(`OTA .bin cannot be uploaded. Need at least ${need}bytes of free space, ${__free_size}bytes available.`);
@@ -174,7 +212,7 @@ async function onFileChanged(event) {
     const buffer = await file.slice(0, 8).arrayBuffer();
     const header = new Uint8Array(buffer);
 
-    // ESP8266 / ESP32 .bin, gzip'd ESP8266 .bin.gz, Beken .uf2 / ESPBEKEN image / ESPMTAIL Matter code
+    // ESP8266 / ESP32 .bin, gzip'd ESP8266 .bin.gz, Beken .uf2
     const kind = firmwareHeader(header);
     if (!kind) {
         alert("Invalid binary header, does not look like a firmware image (.bin, .bin.gz, .uf2)");

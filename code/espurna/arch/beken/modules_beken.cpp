@@ -1,38 +1,30 @@
 /*
 
-PROTOTYPE: the BK7231N backend of the module loader (modules_core.h, modules.cpp; docs/modules.md, "Beken")
+PROTOTYPE: what the BK7231N gives the module loader (modules_core.h; the loader is modules.cpp; docs/modules.md,
+"Beken")
 
 Flash: the modules lie in the bootloader's 'download' partition (the OTA image goes there only while the head updates
 itself, the modules are erased for that, as on the ESP8266). Its first sector stays free (the RBL header the bootloader
-looks at), its last sector is the directory (raw bytes) with the guard's boot marks in its second half. Modules are
-placed from the top down, in whole sectors.
+looks at), its last sector is the directory (raw bytes). Modules are placed from the top down, in whole sectors.
 
 Code runs from the flash through the mapping of the flash controller (XIP): logical address L is stored at flash
 offset L / 32 * 34 as 32 bytes encrypted with the chip's key, then their CRC-16 (big endian). The board writes a
-module in that format itself: the words are encrypted with the key found at boot (compared against its own app),
-the CRC of every 32 bytes follows them. A module starts on a 32 byte boundary of the logical space, inside its sectors
-(Entry::arch[0]: that logical address).
-
-A module is relocated on install for the address it will have: its flash (kind 1), its RAM (kind 2), and every
-BL / BLX from it into the head is moved by the flash delta (the branch list of the package, read by the core's package
-reader). Module RAM, placed by the Apply largest first: the data TCM the head leaves free (from _tcmbss_end, the TCM is
-not heap), the rest in the core's heap block. Nothing kept in reserve. The block is taken early at every boot at the
-same address; when it moved anyway, the modules in it stay off (Apply again: the image would need rewriting).
+module in that format itself: the words are encrypted with the key found at boot (compared against its own app), the
+CRC of every 32 bytes follows them. A module starts on a 32 byte boundary of the logical space, inside its sectors
+(Entry::bases[BaseFlash]: that logical address). Every BL / BLX from it into the head is moved by the flash delta (the
+branch list of the package). The fixed pool: the data TCM the head leaves free (from _tcmbss_end, the TCM is not heap).
 
 */
 
 #include "espurna.h"
 #include "modules.h"
 
-#if MODULES_SUPPORT && MODULES_CORE && defined(LIBRETINY)
+#if MODULES_SUPPORT && defined(LIBRETINY)
 
 #include "modules_core.h"
 #include "terminal.h"
 
 #include "layout_beken.h"
-
-#include <FreeRTOS.h>
-#include <timers.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -58,15 +50,10 @@ namespace {
 
 constexpr uint32_t BlockData { 32 };
 constexpr uint32_t BlockSize { 34 };
-constexpr uint32_t DirectoryMagic { 0x33424445 }; // "EDB3": Beken, the Entry of modules_core.h, 16 entries
-constexpr uint32_t PackageVersion { 3 };          // Beken: kinds 1 flash, 2 RAM; branch list per chunk
-constexpr size_t Logical { 0 };                   // Entry::arch[Logical]: where the module runs
-constexpr size_t RamAddress { 1 };                // Entry::arch[RamAddress]: the address its RAM words were relocated for
 
 // branch list entries: offset in the chunk | kind << 16
 constexpr uint32_t BranchThumb { 1 };   // Thumb BL / BLX pair (two half words)
 constexpr uint32_t BranchArm { 2 };     // ARM BL / BLX
-constexpr size_t BranchesMax { 1024 };  // per 4 KiB chunk
 
 // the fixed pool: the free data TCM
 uint32_t tcmStart() {
@@ -76,12 +63,6 @@ uint32_t tcmStart() {
 uint32_t tcmSize() {
     const uint32_t end = reinterpret_cast<uint32_t>(_espurna_tcm_end) & ~7u;
     return (end > tcmStart()) ? (end - tcmStart()) : 0;
-}
-
-// where the RAM of the module is this boot: the TCM, or the core's heap block
-uint32_t ramAddress(uint32_t ram_offset) {
-    const uint32_t offset = ram_offset & ~RamSecondArena;
-    return ((ram_offset & RamSecondArena) ? tcmStart() : heapBlockBase()) + offset;
 }
 
 // --- the flash format ----------------------------------------------------------------------------
@@ -349,227 +330,40 @@ bool findArea() {
     return region.valid;
 }
 
-// flash of a module: whole sectors, its first block from the first block boundary in them
-uint32_t slotSize(uint32_t image) {
-    return roundUp(BlockSize + (roundUp(image, BlockData) / BlockData * BlockSize), SectorSize);
-}
-
 void commandsSetup();
-
-// --- the head --------------------------------------------------------------------------------------
 
 const uint8_t* buildId() {
     return __build_id_start + 16;
 }
 
-// --- the guard's boot marks ---------------------------------------------------------------------------
+// --- the image written: a whole chunk at a time (relocated by the core), the branches moved, encrypted ------------
 
-// The bootloader clears the whole RAM at every reset, so the guard's count lives in the directory sector: a pair of
-// words per boot that started module code, written without an erase (bits only go 1 -> 0): [0] cleared when the code
-// starts, [1] once the boot ran MODULES_BOOT_SECONDS or ended by a restart of ESPurna. A directory write erases them
-constexpr uint32_t MarksOffset { 2048 };
-constexpr uint32_t MarksSize { 512 };
-constexpr size_t Marks { MarksSize / 8 };
-
-bool readMarks(uint32_t marks[Marks * 2]) {
-    return lt_flash_read(region.hi + MarksOffset, reinterpret_cast<uint8_t*>(marks), Marks * 8) == (Marks * 8);
-}
-
-bool clearMark(size_t word) {
-    const uint32_t zero { 0 };
-    return lt_flash_write(region.hi + MarksOffset + (word * 4), reinterpret_cast<const uint8_t*>(&zero), 4) == 4;
-}
-
-// boots in a row that started module code and did not get to their end mark
-size_t unfinishedBoots(const uint32_t marks[Marks * 2]) {
-    size_t out = 0;
-    for (size_t index = 0; index < Marks; ++index) {
-        if (marks[index * 2] != 0) {
-            break;
-        }
-        out = (marks[index * 2 + 1] != 0) ? (out + 1) : 0;
-    }
-
-    return out;
-}
-
-// a restart of ESPurna, not a crash: a custom reason, except Stability (the exit of the unstable mode, a boot without
-// modules: the last mark is of the crashed boot before it)
-bool deliberateRestart() {
-    const auto reason = customResetReason();
-    return (reason != CustomResetReason::None) && (reason != CustomResetReason::Stability);
-}
-
-arch::GuardState guard {};
-size_t boot_mark { Marks };
-bool boot_mark_finished { false };
-
-// the core's view (running / booted / crashes of the boot before this one) made from the marks
-void guardLoad() {
-    uint32_t marks[Marks * 2];
-    if (!region.valid || !readMarks(marks)) {
-        return;
-    }
-
-    size_t last = Marks;
-    for (size_t index = 0; index < Marks; ++index) {
-        if (marks[index * 2] == 0) {
-            last = index;
-        }
-    }
-
-    // ended by a restart of ESPurna: that boot is finished
-    if ((last < Marks) && (marks[last * 2 + 1] != 0) && deliberateRestart()) {
-        clearMark(last * 2 + 1);
-        marks[last * 2 + 1] = 0;
-    }
-
-    const auto unfinished = unfinishedBoots(marks);
-    guard.running = (last < Marks) ? 1 : 0;
-    guard.booted = ((last < Marks) && (marks[last * 2 + 1] == 0)) ? 1 : 0;
-    // the core adds the last boot when it crashed
-    guard.crashes = (guard.running && !guard.booted && unfinished) ? (unfinished - 1) : unfinished;
-}
-
-// module code starts in this boot
-void guardMark() {
-    uint32_t marks[Marks * 2];
-    if (!readMarks(marks)) {
-        return;
-    }
-
-    size_t index = 0;
-    while ((index < Marks) && (marks[index * 2] == 0)) {
-        ++index;
-    }
-
-    // full: the sector again without the marks (the directory kept)
-    if (index == Marks) {
-        Directory dir;
-        if (!readDirectory(dir) || !writeDirectoryPrimary(dir)) {
-            return;
-        }
-        index = 0;
-    }
-
-    if (clearMark(index * 2)) {
-        boot_mark = index;
-    }
-}
-
-TimerHandle_t guard_timer { nullptr };
-
-void guardTimerCallback(TimerHandle_t) {
-    guardTick();
-
-    if (guard.booted && !boot_mark_finished && (boot_mark < Marks)) {
-        boot_mark_finished = true;
-        clearMark(boot_mark * 2 + 1);
-    }
-}
-
-// --- upload: placed when its header is in, a whole chunk relocated (words, branches), encrypted and written -------
-
-struct Upload : PackageReader {
-    uint8_t chunk[ChunkSize];
-    uint32_t branch_list[BranchesMax];
-    uint8_t carry[BlockData];       // the last block of the previous chunk, while a branch spans into this one
-
-    uint32_t image_crc { 0 };
-    uint32_t slot { 0 };            // flash offset
-    uint32_t slot_size { 0 };
-    uint32_t address { 0 };         // logical address
-    uint32_t ram_offset { 0 };
-    uint32_t delta[3] {};           // by kind: 0, flash, RAM
-
-    uint32_t chunk_size { 0 };
-    uint32_t done { 0 };            // image bytes handled (whole chunks)
+// one image at a time (the Apply writes the packages one after another)
+struct Writing {
+    uint32_t slot { 0 };
+    uint32_t end { 0 };             // of the image's flash
     uint32_t erased { 0 };          // flash erased up to here
-
-    bool carry_pending { false };
+    uint8_t carry[BlockData];       // the last block of the previous chunk, while a branch spans into this one
     uint32_t carry_address { 0 };
+    bool carry_pending { false };
 };
 
-const char* prepare(PackageReader& reader) {
-    auto& up = static_cast<Upload&>(reader);
-    const auto& header = up.header;
-    if (!region.valid) {
-        return PSTR("no module area (OTA partition)");
-    }
+Writing writing;
 
-    if (!key_found) {
-        return PSTR("the flash key of this chip is unknown");
-    }
-
-    Directory dir;
-    bool installed = false;
-    const auto* error = packageAccept(up, PackageVersion, dir, installed);
-    if (error) {
-        return error;
-    }
-
-    if ((header.image_size % BlockData) || header.iram_size) {
-        return PSTR("bad image size");
-    }
-
-    Spaces space;
-    spaces(dir, true, space, installed ? header.name : nullptr);
-
-    up.slot_size = slotSize(header.image_size);
-    if (!space.flash.place(up.slot_size, true, up.slot)) {
-        return PSTR("not enough flash");
-    }
-
-    // where the Apply placed it; else (an old single upload) into what the TCM has left: the heap block of this boot was
-    // sized before, it has no room for more
-    const uint32_t ram_size = roundUp(header.ram_size, 8);
-    if (ram_size && up.planned) {
-        up.ram_offset = up.planned_ram;
-    } else if (ram_size) {
-        uint32_t offset;
-        if (!space.ram_second.place(ram_size, false, offset)) {
-            return PSTR("no room in the TCM for its RAM: Apply in the MODULES panel");
-        }
-        up.ram_offset = offset | RamSecondArena;
-    } else {
-        up.ram_offset = 0;
-    }
-
-    // an OTA image left in the partition: with its header erased the bootloader sees no update to install
-    uint8_t probe[16];
-    if (lt_flash_read(region.start, probe, sizeof(probe)) == sizeof(probe)) {
-        bool blank = true;
-        for (const auto byte : probe) {
-            blank = blank && (byte == 0xff);
-        }
-        if (!blank && !lt_flash_erase_block(region.start)) {
-            return PSTR("flash erase");
-        }
-    }
-
-    up.address = logicalFrom(up.slot);
-    up.erased = up.slot;
-    up.delta[0] = 0;
-    up.delta[1] = up.address - header.link_flash;
-    up.delta[2] = ramAddress(up.ram_offset) - header.link_ram;
-
-    return nullptr;
-}
-
-bool eraseTo(Upload& up, uint32_t end) {
-    while (up.erased < end) {
-        if (!flashErase(up.erased, SectorSize)) {
+bool eraseTo(uint32_t end) {
+    while (writing.erased < end) {
+        if (!flashErase(writing.erased, SectorSize)) {
             return false;
         }
-        up.erased += SectorSize;
+        writing.erased += SectorSize;
     }
 
     return true;
 }
 
-bool writePlain(Upload& up, uint32_t address, const uint8_t* data, size_t size) {
+bool writePlain(uint32_t address, const uint8_t* data, size_t size) {
     const uint32_t end = physical(address) + (size / BlockData * BlockSize);
-    if ((end > (up.slot + up.slot_size)) || !eraseTo(up, end)) {
+    if ((end > writing.end) || !eraseTo(roundUp(end, SectorSize))) {
         return false;
     }
 
@@ -623,51 +417,38 @@ const char* moveArm(uint8_t* ptr, uint32_t delta) {
     return nullptr;
 }
 
-// a whole chunk is in: relocate, move the branches, write it
-const char* chunkDone(Upload& up) {
-    const uint32_t size = up.chunk_size;
-    for (uint32_t index = 0; index < (size / 4); ++index) {
-        const uint8_t kind = (up.map[index >> 2] >> ((index & 3) * 2)) & 3;
-        if (kind == 3) {
-            return PSTR("unknown relocation kind");
-        }
-        if (kind) {
-            uint32_t value;
-            std::memcpy(&value, &up.chunk[index * 4], 4);
-            value += up.delta[kind];
-            std::memcpy(&up.chunk[index * 4], &value, 4);
-        }
-    }
-
-    const uint32_t address = up.address + up.done;
+// the branches of a whole chunk moved by the flash delta, written; a Thumb pair across the chunk's end waits for the
+// next chunk (its last block is held back)
+const char* writeChunk(Upload& up, uint32_t offset, uint8_t* chunk, size_t size) {
+    const uint32_t address = up.bases[BaseFlash] + offset;
     const uint32_t delta = up.delta[1];
 
     // a Thumb branch from the end of the previous chunk into this one
-    if (up.carry_pending) {
-        const auto* error = moveThumb(&up.carry[BlockData - 2], &up.chunk[0], delta);
+    if (writing.carry_pending) {
+        const auto* error = moveThumb(&writing.carry[BlockData - 2], &chunk[0], delta);
         if (error) {
             return error;
         }
-        if (!writePlain(up, up.carry_address, up.carry, BlockData)) {
+        if (!writePlain(writing.carry_address, writing.carry, BlockData)) {
             return PSTR("flash write");
         }
-        up.image_crc = crc32Update(up.image_crc, up.carry, BlockData);
-        up.carry_pending = false;
+        up.image_crc = crc32Update(up.image_crc, writing.carry, BlockData);
+        writing.carry_pending = false;
     }
 
     bool spans = false;
     for (uint32_t index = 0; index < up.branch_count; ++index) {
-        const uint32_t offset = up.branch_list[index] & 0xffff;
-        const uint32_t kind = up.branch_list[index] >> 16;
+        const uint32_t at = up.branches[index] & 0xffff;
+        const uint32_t kind = up.branches[index] >> 16;
         const char* error { nullptr };
-        if ((kind == BranchThumb) && ((offset + 2) == size) && (size == ChunkSize)) {
+        if ((kind == BranchThumb) && ((at + 2) == size) && (size == ChunkSize)) {
             spans = true;
             continue;
         }
-        if ((kind == BranchThumb) && ((offset + 4) <= size) && !(offset & 1)) {
-            error = moveThumb(&up.chunk[offset], &up.chunk[offset + 2], delta);
-        } else if ((kind == BranchArm) && ((offset + 4) <= size) && !(offset & 3)) {
-            error = moveArm(&up.chunk[offset], delta);
+        if ((kind == BranchThumb) && ((at + 4) <= size) && !(at & 1)) {
+            error = moveThumb(&chunk[at], &chunk[at + 2], delta);
+        } else if ((kind == BranchArm) && ((at + 4) <= size) && !(at & 3)) {
+            error = moveArm(&chunk[at], delta);
         } else {
             error = PSTR("branch list: bad entry");
         }
@@ -677,35 +458,19 @@ const char* chunkDone(Upload& up) {
     }
 
     const uint32_t now = spans ? (size - BlockData) : size;
-    if (!writePlain(up, address, up.chunk, now)) {
+    if (!writePlain(address, chunk, now)) {
         return PSTR("flash write");
     }
-    up.image_crc = crc32Update(up.image_crc, up.chunk, now);
+    up.image_crc = crc32Update(up.image_crc, chunk, now);
 
     if (spans) {
-        std::memcpy(up.carry, &up.chunk[size - BlockData], BlockData);
-        up.carry_address = address + size - BlockData;
-        up.carry_pending = true;
+        std::memcpy(writing.carry, &chunk[size - BlockData], BlockData);
+        writing.carry_address = address + size - BlockData;
+        writing.carry_pending = true;
     }
 
-    up.done += size;
     return nullptr;
 }
-
-// image bytes of the current chunk: collected, the whole chunk handled at its end
-const char* bytes(PackageReader& reader, const uint8_t* data, size_t size) {
-    auto& up = static_cast<Upload&>(reader);
-    const uint32_t offset = up.delivered % ChunkSize;
-    std::memcpy(&up.chunk[offset], data, size);
-    if (size < up.chunk_left) {
-        return nullptr;
-    }
-
-    up.chunk_size = offset + size;
-    return chunkDone(up);
-}
-
-constexpr PackageHooks Hooks { prepare, bytes };
 
 // --- terminal: the XIP proof (step 1 of the Beken design) -------------------------------------------------------
 
@@ -836,7 +601,7 @@ void commandsSetup() {
 
 } // namespace
 
-// --- the contract of modules_core.h ------------------------------------------------------------------------------
+// --- what the chip gives the loader (modules_core.h) -----------------------------------------------------------------
 
 namespace arch {
 
@@ -854,10 +619,6 @@ void setup() {
 // an undefined instruction, as module code would crash (a write to an unmapped address does not fault on BK7231N)
 void crashNow() {
     __asm__ volatile(".inst.n 0xde00");
-}
-
-uint32_t directoryMagic() {
-    return DirectoryMagic;
 }
 
 // Flash = the OTA partition, its first sector shown as the "head"
@@ -890,7 +651,7 @@ bool rawWrite(uint32_t offset, const void* data, size_t size) {
 
 // where the module runs: the logical address of the first block in its slot, its blocks inside the slot
 uint32_t imageAt(const Entry& entry) {
-    const uint32_t address = entry.arch[Logical];
+    const uint32_t address = entry.bases[BaseFlash];
     if (!region.valid || !key_found || (address != logicalFrom(entry.offset))
         || ((physical(address) + (roundUp(entry.size, BlockData) / BlockData * BlockSize)) > (entry.offset + entry.slot)))
     {
@@ -911,125 +672,77 @@ bool imageRead(uint32_t at, void* data, size_t size) {
     return true;
 }
 
+// whole sectors, the first block from the first block boundary in them
+uint32_t imageFlash(uint32_t image) {
+    return roundUp(BlockSize + (roundUp(image, BlockData) / BlockData * BlockSize), SectorSize);
+}
+
+uint32_t flashView(uint32_t slot) {
+    return logicalFrom(slot);
+}
+
+uint32_t codeView(uint32_t) {
+    return 0;
+}
+
+const char* imageBegin(Upload& up) {
+    if (!region.valid) {
+        return PSTR("no module area (OTA partition)");
+    }
+
+    if (!key_found) {
+        return PSTR("the flash key of this chip is unknown");
+    }
+
+    if (up.header.image_size % BlockData) {
+        return PSTR("bad image size");
+    }
+
+    // an OTA image left in the partition: with its header erased the bootloader sees no update to install
+    uint8_t probe[16];
+    if (lt_flash_read(region.start, probe, sizeof(probe)) == sizeof(probe)) {
+        bool blank = true;
+        for (const auto byte : probe) {
+            blank = blank && (byte == 0xff);
+        }
+        if (!blank && !lt_flash_erase_block(region.start)) {
+            return PSTR("flash erase");
+        }
+    }
+
+    writing = Writing{};
+    writing.slot = up.slot;
+    writing.erased = up.slot;
+    writing.end = up.slot + imageFlash(up.header.image_size);
+    return nullptr;
+}
+
+const char* imageWrite(Upload& up, uint32_t offset, uint8_t* data, size_t size, bool last) {
+    const auto* error = writeChunk(up, offset, data, size);
+    if (!error && last && writing.carry_pending) {
+        error = PSTR("a branch past the image end");
+    }
+
+    return error;
+}
+
+// the mapping keeps what it read: emptied before the image is read back
+void imageDone(uint32_t, uint32_t) {
+    evictCache();
+}
+
+// 34 byte blocks across the sectors: no rewrite in place
+bool rewritable() {
+    return false;
+}
+
 // the first 16 bytes of the head's GNU build id (the module header's head_md5 field)
 bool headId(uint8_t out[16]) {
     std::memcpy(out, buildId(), 16);
     return true;
 }
 
-// from the mapping (code, header, the .data image), RAM in the TCM or the heap block; no IRAM
-const char* runs(const Entry& entry, const Header&, Runs& out) {
-    if (entry.ram_size && (ramAddress(entry.ram_offset) != entry.arch[RamAddress])) {
-        return PSTR("the heap block moved since the Apply: Apply again");
-    }
-    if (entry.ram_size && !(entry.ram_offset & RamSecondArena)
-        && ((entry.ram_offset + entry.ram_size) > heapBlockSize()))
-    {
-        return PSTR("not in this boot's heap block: Apply again");
-    }
-
-    const uint32_t address = entry.arch[Logical];
-    out.flash_lo = address;
-    out.flash_hi = address + entry.size;
-    out.entry_lo = out.flash_lo;
-    out.entry_hi = out.flash_hi;
-    out.ram_lo = ramAddress(entry.ram_offset);
-    out.ram_hi = out.ram_lo + entry.ram_size;
-    out.iram_lo = 0;
-    out.iram_hi = 0;
-    out.iram_copy = false;
-    out.words = false;
-    return nullptr;
-}
-
-// EntryUnplaced (the full image, or switched off): the image in flash is encrypted, its RAM words point to its place in
-// the arena (the full image gives every module its own place, scripts/beken_full_image.py; an upload the one best fit
-// found then). Rewriting the slot for another place would be a flash rewrite of the whole image with no copy to go
-// back to on a power cut, so the place stays: switched on, it runs when no module placed now takes any of that RAM
-const char* place(const Directory& dir, Entry& entry) {
-    if (!imageAt(entry)) {
-        return PSTR("not in the module area");
-    }
-
-    if (!(entry.ram_offset & RamSecondArena) || (((entry.ram_offset & ~RamSecondArena) + entry.ram_size) > tcmSize())) {
-        return PSTR("RAM outside the TCM: Apply in the MODULES panel");
-    }
-
-    const uint32_t lo = entry.ram_offset;
-    const uint32_t hi = lo + entry.ram_size;
-    for (uint32_t index = 0; index < dir.count; ++index) {
-        const auto& other = dir.entries[index];
-        if ((&other == &entry) || (0 == std::strncmp(other.name, entry.name, sizeof(entry.name)))
-            || (other.flags & EntryUnplaced) || !other.ram_size || !hi)
-        {
-            continue;
-        }
-        if ((other.ram_offset < hi) && (lo < (other.ram_offset + other.ram_size))) {
-            return PSTR("not enough RAM: another module switched on takes its RAM");
-        }
-    }
-
-    if (!blocksValid(entry.arch[Logical], entry.size)) {
-        return PSTR("flash blocks of the image");
-    }
-
-    return nullptr;
-}
-
-// its RAM stays where it was placed (place() above): it can always be given back and taken again
-bool placeable(const Entry&) {
-    return region.valid && key_found;
-}
-
-PackageReader* uploadNew(AsyncWebServerRequest*) {
-    auto* out = new (std::nothrow) Upload();
-    if (out) {
-        out->hooks = &Hooks;
-        out->branches = out->branch_list;
-        out->branches_max = BranchesMax;
-    }
-
-    return out;
-}
-
-const char* uploadFinish(PackageReader& reader, Entry& out) {
-    auto& up = static_cast<Upload&>(reader);
-    const auto* error = packageComplete(up);
-    if (error) {
-        return error;
-    }
-
-    if ((up.done != up.header.image_size) || up.carry_pending) {
-        return PSTR("short upload");
-    }
-
-    // what the code will read: every block raw first, then through the mapping (its cache emptied first)
-    evictCache();
-    uint32_t crc;
-    if (!imageCrc(up.address, up.done, crc)) {
-        return PSTR("verify: flash blocks");
-    }
-
-    if (crc != up.image_crc) {
-        return PSTR("verify: mapped image");
-    }
-
-    out.offset = up.slot;
-    out.slot = up.slot_size;
-    out.size = up.done;
-    out.crc32 = crc;
-    out.ram_offset = up.ram_offset;
-    out.ram_size = roundUp(up.header.ram_size, 8);
-    out.arch[Logical] = up.address;
-    out.arch[RamAddress] = ramAddress(up.ram_offset);
-    return nullptr;
-}
-
-uint32_t slotFor(uint32_t image) {
-    return slotSize(image);
-}
-
-// the free data TCM is the fixed pool, the rest of the RAM in the heap block
+// the free data TCM is the fixed pool, the rest in the heap block
 void pools(Pools& out) {
     // the free heap (lt_heap_get_max_alloc() is a stub here, 0; heap_4 keeps its free list to itself). Never probed by
     // malloc(): every refused malloc() runs the failed hook, which leaves a crash record and restarts the board (the
@@ -1038,85 +751,24 @@ void pools(Pools& out) {
     const uint32_t free = lt_heap_get_free();
     out.heap = heapBlockSize() + ((free > MODULES_HEAP_KEEP) ? (free - MODULES_HEAP_KEEP) : 0);
     out.fixed = tcmSize();
+    out.fixed_base = tcmStart();
     out.fixed_words = false;
     out.code_in_fixed = false;
-}
-
-void arenas(const Directory&, bool, Spaces& out, const char*) {
-    out.ram_second.lo = 0;
-    out.ram_second.hi = tcmSize();
+    out.words = false;
+    out.name = "TCM";
 }
 
 void statusJson(String& out) {
-    out += F(",\"pool\":\"TCM\"");
     jsonField(out, F("chip"), lt_flash_get_size());
 }
 
-void entryJson(String& out, const Entry& entry) {
-    jsonField(out, F("address"), entry.arch[Logical]);
-}
-
 void listHead(Print& out) {
-    out.printf_P(PSTR("loader beken rev 4 (core), key %s, TCM pool %u bytes at %08x, heap block %u bytes at %08x\n"),
+    out.printf_P(PSTR("beken: key %s, TCM pool %u bytes at %08x, heap block %u bytes at %08x\n"),
         key_name, tcmSize(), tcmStart(), heapBlockSize(), heapBlockBase());
-
-    uint32_t marks[Marks * 2];
-    if (region.valid && readMarks(marks)) {
-        size_t used = 0;
-        while ((used < Marks) && (marks[used * 2] == 0)) {
-            ++used;
-        }
-        out.printf_P(PSTR("boot marks: %u of %u, unfinished in a row: %u\n"), used, Marks, unfinishedBoots(marks));
-    }
-}
-
-void listEntry(Print& out, const Entry& entry) {
-    out.printf_P(PSTR(", runs at 0x%06x, slot %u"), entry.arch[Logical], entry.slot);
-}
-
-// the boot before this one did not end by a restart of ESPurna (a crash, the watchdog, power)
-bool crashRestart() {
-    return customResetReason() == CustomResetReason::None;
-}
-
-GuardState& guardState() {
-    static bool loaded { false };
-    if (!loaded) {
-        loaded = true;
-        guardLoad();
-    }
-
-    return guard;
-}
-
-// a FreeRTOS timer (its own task: it ticks while loop() waits); the start mark of this boot first
-void guardTimer() {
-    guardMark();
-    if (!guard_timer) {
-        guard_timer = xTimerCreate("modules", pdMS_TO_TICKS(1000), pdTRUE, nullptr, guardTimerCallback);
-    }
-    if (guard_timer) {
-        xTimerStart(guard_timer, 0);
-    }
-}
-
-void guardTimerStop() {
-    if (guard_timer) {
-        xTimerStop(guard_timer, 0);
-    }
-}
-
-void restartNow() {
-    customResetReason(CustomResetReason::Stability);
-    espurna::system::arch::restart();
-}
-
-uint32_t freeHeap() {
-    return systemFreeHeap();
 }
 
 } // namespace arch
 } // namespace modules
 } // namespace espurna
 
-#endif // MODULES_SUPPORT && MODULES_CORE && LIBRETINY
+#endif // MODULES_SUPPORT && LIBRETINY

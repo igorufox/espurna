@@ -4,7 +4,8 @@ WIFI MODULE
 
 Chip part of the WiFi module. wifi.cpp holds the state machine (scan, connection, roaming,
 AP fallback, settings, terminal, WebUI); everything that talks to the SDK is behind these
-functions, ref. arch/<chip>/wifi_driver_<chip>.cpp
+functions, ref. arch/esp8266/wifi_driver_esp8266.cpp (NONOS SDK) and arch/rtos/wifi_driver_rtos.cpp (Arduino WiFi
+class of ESP32 and LibreTiny, with arch/esp32 and arch/beken wifi_driver_<chip>.cpp for the calls only their SDK has)
 
 Network events reach the common code through the `on_...` functions below, always from
 the context of loop(). esp8266 SDK runs them in SYS, which never overlaps with loop().
@@ -30,37 +31,21 @@ static constexpr uint8_t OpmodeApSta { OpmodeSta | OpmodeAp };
 static constexpr size_t SsidMax { 32 };
 static constexpr size_t PassphraseMax { 64 };
 
-#if defined(ESP8266)
-static constexpr AUTH_MODE AuthOpen { AUTH_OPEN };
+// WPA-PSK passphrase is 8..63 characters (64 is the hex PSK)
+static constexpr size_t PassphraseMin { 8 };
 
-using ScanResult = bss_info;
-#else
-static constexpr AUTH_MODE AuthOpen { WIFI_AUTH_OPEN };
+// AuthOpen and ScanResult (same fields as the esp8266 SDK bss_info, i.e. ssid is not null-terminated)
+// are the chip's, ref. espurna_wifi.h
+static_assert(sizeof(ScanResult::ssid) == SsidMax, "");
 
-// Same fields as the esp8266 SDK bss_info, i.e. ssid is not null-terminated
-struct ScanResult {
-    uint8_t bssid[6];
-    uint8_t ssid[SsidMax];
-    uint8_t ssid_len;
-    uint8_t channel;
-    int8_t rssi;
-    AUTH_MODE authmode;
-};
-#endif
-
-#if defined(ESP8266)
-inline bool ip_set(const IPAddress& ip) {
-    return ip.isSet();
-}
-#else
 // Same as the esp8266 IPAddress::isSet(), neither 'any' nor 'none'
 inline bool ip_set(const IPAddress& ip) {
     const auto v4 = static_cast<uint32_t>(ip);
     return (v4 != 0) && (v4 != 0xffffffff);
 }
-#endif
 
-// Station connection request. References are only valid during the sta_connect() call
+// Station connection request. References are only valid during the sta_connect() call.
+// Checked by the common code before the call: ssid is 1..SsidMax, passphrase is empty or PassphraseMin..PassphraseMax
 struct StaConnect {
     const String& hostname;
     const String& ssid;
@@ -149,9 +134,6 @@ void ap_stop();
 IPAddress ap_ip();
 SoftApNetwork ap_current();
 size_t ap_stations();
-
-// Gratuitous ARP on every active interface. Returns true when anything was sent
-bool garp_send();
 
 // Terminal helpers. Return the number of the printed entries
 size_t print_stations(Print&);

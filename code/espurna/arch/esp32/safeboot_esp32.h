@@ -18,5 +18,8 @@ Asymmetric flash layout (esp32_4mb_safeboot.csv, Tasmota's offsets): a factory a
 // Early, right after the basic modules (works in the 'unstable' system mode as well)
 void safebootSetup();
 
+// The URL (and the SHA-256, may be empty) for safeboot, the next boot goes there (ota_fetch.cpp). The caller restarts
+bool safebootUpdateFromUrl(const String& url, const String& sha256, String& error);
+
 // The /safeboot page (flash layout migration, update from an URL) and the /upgrade guard, after webSetup()
 void safebootWebSetup();

@@ -208,4 +208,3 @@ bool api_find_and_call(StringView cmd, Print& output) {
 
 } // namespace terminal
 } // namespace espurna
-

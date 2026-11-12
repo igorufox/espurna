@@ -393,10 +393,9 @@ inline String operator+=(String& lhs, StringView rhs) {
     return lhs;
 }
 
-#if defined(ESP32) || defined(LIBRETINY)
-// String of these cores only has StringSumHelper operator+ overloads. Implicit conversions
-// into StringView would make `String + String` or `"..." + String` ambiguous in this namespace,
-// so only StringView itself is accepted here
+// Only StringView itself is accepted here. String of the esp32 and libretiny cores only has StringSumHelper
+// operator+ overloads, implicit conversions into StringView would make `String + String` or `"..." + String`
+// ambiguous in this namespace
 template <typename T>
 using IfStringView = typename std::enable_if<std::is_same<T, StringView>::value, String>::type;
 
@@ -413,61 +412,8 @@ inline IfStringView<T> operator+(T lhs, const String& rhs) {
     out += rhs;
     return out;
 }
-#else
-inline String operator+(String&& lhs, StringView rhs) {
-    lhs.concat(rhs.c_str(), rhs.length());
-    return lhs;
-}
 
-inline String operator+(StringView lhs, const String& rhs) {
-    String out;
-    out += lhs.toString();
-    out += rhs;
-    return out;
-}
-#endif
-
-#if defined(ARDUINO_ESP8266_RELEASE_2_7_4)
-inline String operator+(const String& lhs, const String& rhs) {
-    String out;
-    out.reserve(lhs.length() + rhs.length());
-
-    out += lhs;
-    out += rhs;
-
-    return out;
-}
-
-inline String operator+(String&& lhs, const String& rhs) {
-    String out(std::move(lhs));
-    out += rhs;
-    return out;
-}
-
-inline String operator+(const String& lhs, const __FlashStringHelper* rhs) {
-    return lhs + String(rhs);
-}
-
-inline String operator+(String&& lhs, const __FlashStringHelper* rhs) {
-    return std::move(lhs) + String(rhs);
-}
-#endif
-
-// esp32 and libretiny map .rodata from flash, string literals are already there.
-// The .irom0.pstr section is specific to the esp8266 linker script
-#if defined(ESP32) || defined(LIBRETINY)
-#define PROGMEM_STRING_ATTR
-#define PROGMEM_STRING(NAME, X) static constexpr char NAME[] = (X)
-#define STRING_VIEW(X) ::espurna::StringView(X)
-#define STRING_VIEW_INLINE(NAME, X)\
-        static constexpr char __pstr__ ## NAME ##  __ [] = (X);\
-        static constexpr auto NAME = ::espurna::StringView(__pstr__ ## NAME ## __)
-#endif
-
-#ifndef PROGMEM_STRING_ATTR
-#define PROGMEM_STRING_ATTR __attribute__((section( "\".irom0.pstr." __FILE__ "." __STRINGIZE(__LINE__) "."  __STRINGIZE(__COUNTER__) "\", \"aSM\", @progbits, 1 #")))
-#endif
-
+// PROGMEM_STRING_ATTR and the macros below: the chip may define its own, ref. arch/<chip>/compat_<chip>.h
 #ifndef PROGMEM_STRING
 #define PROGMEM_STRING(NAME, X)\
         alignas(4) static constexpr char NAME[] PROGMEM_STRING_ATTR = (X)

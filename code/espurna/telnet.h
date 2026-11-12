@@ -16,4 +16,3 @@ uint16_t telnetPort();
 bool telnetConnected();
 void telnetSetup();
 
-

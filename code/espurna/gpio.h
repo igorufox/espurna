@@ -56,6 +56,15 @@ void setup();
 // state of the pin for the GPIO terminal command, rest of the line after the lock mark
 void print_pin(Print&, uint8_t pin);
 
+#if defined(ESP32) || defined(LIBRETINY)
+// Pins of the FreeRTOS chips are driven through the Arduino API (arch/rtos/gpio_rtos.cpp), what differs per chip:
+// which pins exist, which of them have an output driver, how a mode and a level reach the pad
+bool valid(uint8_t pin);
+bool valid_output(uint8_t pin);
+void pin_mode(uint8_t pin, int8_t mode);
+void write(uint8_t pin, int8_t value);
+#endif
+
 } // namespace chip
 } // namespace gpio
 
@@ -108,30 +117,6 @@ public:
 
 private:
     std::bitset<Pins> _locked;
-};
-
-// Pin of the FreeRTOS chips, driven through the Arduino API. How the mode and the level are set is the chip part
-// (ref. arch/<chip>/gpio_<chip>.cpp)
-class ArduinoPin : public BasePin {
-public:
-    explicit ArduinoPin(unsigned char pin) :
-        _pin(pin)
-    {}
-
-    const char* id() const override {
-        return "hardware";
-    }
-
-    unsigned char pin() const override {
-        return _pin;
-    }
-
-    int digitalRead() override {
-        return ::digitalRead(_pin);
-    }
-
-protected:
-    unsigned char _pin;
 };
 
 GpioBase* gpioBase(GpioType);

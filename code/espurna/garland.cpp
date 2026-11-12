@@ -563,11 +563,11 @@ void Scene::run() {
         It is not best practice, but assuming that it is only garland, it can be acceptable.
         Tested up to 300 leds. */
         if (_numLeds > NUMLEDS_CAN_CAUSE_WDT_RESET) {
-            ESP.wdtDisable();
+            espurna::chip::wdt_pause();
         }
         _pixels->show();
         if (_numLeds > NUMLEDS_CAN_CAUSE_WDT_RESET) {
-            ESP.wdtEnable(5000);
+            espurna::chip::wdt_resume();
         }
         sum_show_time += (micros() - iteration_start_time);
         ++show_num;

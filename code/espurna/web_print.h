@@ -4,18 +4,19 @@ Part of WEBSERVER MODULE
 
 Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
+A Print into the response of a request: what the callback prints is kept (up to a limit) and sent once it returns.
+The handlers run in the loop (libs/http_server.h), the callback runs right away.
+
 */
 
 #pragma once
 
 #include "espurna.h"
-#include "espurna_tasks.h"
+#include "libs/http_server.h"
 
-#include <ESPAsyncWebServer.h>
-
-#include <atomic>
+#include <algorithm>
 #include <functional>
-#include <list>
+#include <memory>
 #include <vector>
 
 namespace espurna {
@@ -23,86 +24,63 @@ namespace web {
 namespace print {
 
 struct Config {
-    struct Backlog {
-        size_t count;
-        size_t size;
-        duration::Seconds timeout;
-    };
+    const char* mimeType;
+    size_t limit;           // bytes kept, the rest is dropped (a terminal command that never ends its output)
+};
 
-    const char* const mimeType;
-    Backlog backlog;
+static constexpr Config DefaultConfig {
+    "text/plain",
+    16 * 1024,
 };
 
 class RequestPrint : public Print {
 public:
-    enum class State {
-        None,
-        Sending,
-        Done,
-        Error
-    };
+    explicit RequestPrint(Config config) :
+        _config(config)
+    {}
 
-    using BufferType = std::vector<uint8_t>;
-    using TimeSource = espurna::time::CoreClock;
-
-    // To be able to safely output data right from the request callback,
-    // we schedule a 'printer' task that will print into the request response buffer via AsyncChunkedResponse
-    // Note: implementation must be included in the header
-    template <typename CallbackType>
-    static void scheduleFromRequest(Config config, AsyncWebServerRequest*, CallbackType);
-
-    template <typename CallbackType>
-    static void scheduleFromRequest(AsyncWebServerRequest*, CallbackType);
-
-    void flush() final override;
-
-    size_t write(uint8_t) final override;
-    size_t write(const uint8_t *buffer, size_t size) final override;
-
-    // On ESP32 also changed from the async_tcp task, ref. _onDisconnect()
-    State state() const {
-        return _state;
+    size_t write(uint8_t c) override {
+        return write(&c, 1);
     }
 
-    void state(State state) {
-        _state = state;
+    size_t write(const uint8_t* data, size_t size) override {
+        const size_t room = (_out.size() < _config.limit) ? (_config.limit - _out.size()) : 0;
+        const size_t take = std::min(room, size);
+        _out.insert(_out.end(), data, data + take);
+        return size;
     }
 
-    AsyncWebServerRequest* request() const {
-        return _request;
+    // 200 with everything printed
+    void send(espurna::http::server::Request& request) {
+        auto out = std::make_shared<std::vector<uint8_t>>(std::move(_out));
+        request.send(200, _config.mimeType, static_cast<long>(out->size()),
+            [out](uint8_t* buffer, size_t max, size_t index) -> size_t {
+                const size_t take = (index < out->size()) ? std::min(max, out->size() - index) : 0;
+                if (take) {
+                    std::copy(out->data() + index, out->data() + index + take, buffer);
+                }
+                return take;
+            });
     }
 
 private:
     Config _config;
-
-    std::list<BufferType> _buffers;
-    AsyncWebServerRequest* const _request;
-    espurna::system::Shared<State> _state;
-
-    RequestPrint(Config config, AsyncWebServerRequest* request) :
-        _config(config),
-        _request(request),
-        _state(State::None)
-    {}
-
-    bool _addBuffer();
-    bool _exhaustBuffers();
-
-    void _prepareRequest();
-    size_t _handleRequest(uint8_t* data, size_t maxLen);
-
-    void _onDisconnect();
-
-    template <typename CallbackType>
-    void _callback(CallbackType&&);
+    std::vector<uint8_t> _out;
 };
 
+// runs `callback(Print&)` and answers the request with what it printed
 template <typename T>
-void scheduleFromRequest(AsyncWebServerRequest* request, T&& callback) {
-    RequestPrint::scheduleFromRequest(request, std::forward<T>(callback));
+void scheduleFromRequest(Config config, espurna::http::server::Request& request, T&& callback) {
+    RequestPrint print(config);
+    callback(static_cast<Print&>(print));
+    print.send(request);
+}
+
+template <typename T>
+void scheduleFromRequest(espurna::http::server::Request& request, T&& callback) {
+    scheduleFromRequest(DefaultConfig, request, std::forward<T>(callback));
 }
 
 } // namespace print
 } // namespace web
 } // namespace espurna
-

@@ -199,4 +199,3 @@ class AM2320Sensor : public I2CSensor<> {
 };
 
 #endif // SENSOR_SUPPORT && AM2320_SUPPORT
-

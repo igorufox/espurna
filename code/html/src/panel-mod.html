@@ -44,7 +44,7 @@
             </div>
 
             <div class="mod-source">
-                <label>Modules file</label>
+                <label>Install image (.ota)</label>
                 <input type="file" class="mod-file" accept=".ota,.bin">
                 <button type="button" class="pure-button button-mod-github">From GitHub</button>
                 <button type="button" class="pure-button button-mod-refresh">Refresh</button>
@@ -52,9 +52,11 @@
             <div class="mod-message"></div>
 
             <span class="pure-form-message">
-                The modules come from the install image (.ota) of the release this board runs: from the disk, or
-                <em>From GitHub</em>. Tick the modules, then <em>Apply</em>: the board restarts without modules, takes the
-                ticked ones from the file, writes them packed and restarts with them. Only switching off needs no file.
+                The modules come from the install image (.ota) of a release: from the disk, or <em>From GitHub</em> (the
+                one of the build this board runs). Tick the modules, then <em>Apply</em>: when the image is of another
+                head build, its head goes on first (the same install as ADMIN, OTA); then the board restarts without
+                modules, takes the ticked ones from the file, writes them packed and restarts with them. Nothing starts or
+                stops before the restart. Only switching off needs no file.
                 Without the <code>webui</code> module the board keeps a small page with the same switches,
                 <a href="modules.html">modules.html</a>.
             </span>

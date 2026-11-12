@@ -39,18 +39,15 @@ static_assert(relaySupport() || sensorSupport(), "");
 
 namespace {
 
-void handler(AsyncWebServerRequest* request) {
-
-    // TODO: Add more stuff?
-    // Note: Response 'stream' backing buffer is customizable. Default is 1460 bytes (see ESPAsyncWebServer.h)
-    //       In case printf overflows, memory of CurrentSize+N{overflow} will be allocated to replace
-    //       the existing buffer. Previous buffer will be copied into the new and destroyed after that.
-    auto *response = request->beginResponseStream("text/plain");
+void handler(WebRequest& request) {
+    String out;
+    char line[64];
 
     if (build::relaySupport()) {
         for (size_t index = 0; index < relayCount(); ++index) {
             const auto status = relayStatus(index);
-            response->printf_P(PSTR("relay%u %d\n"), index, static_cast<int>(status));
+            snprintf_P(line, sizeof(line), PSTR("relay%u %d\n"), index, static_cast<int>(status));
+            out += line;
         }
     }
 
@@ -59,15 +56,16 @@ void handler(AsyncWebServerRequest* request) {
             auto value = magnitudeValue(index);
             if (value) {
                 value.topic.replace("/", "");
-                response->printf_P(PSTR("%s %s\n"),
-                    value.topic.c_str(), value.repr.c_str());
+                out += value.topic;
+                out += ' ';
+                out += value.repr;
+                out += '\n';
             }
         }
     }
 
-    response->write('\n');
-
-    request->send(response);
+    out += '\n';
+    webSend(request, 200, "text/plain", out);
 }
 
 void setup() {
@@ -80,13 +78,13 @@ void setup() {
         nullptr
     );
 #else
-    webRequestRegister([](AsyncWebServerRequest* request) {
-        if (request->url().equals(F(API_BASE_PATH "metrics"))) {
+    webRequestRegister([](WebRequest& request) {
+        if (!strcmp(request.url(), API_BASE_PATH "metrics")) {
             if (apiAuthenticate(request)) {
                 handler(request);
                 return true;
             }
-            request->send(403);
+            request.send(403, "text/plain", "");
             return true;
         }
 
@@ -104,4 +102,3 @@ void prometheusSetup() {
 }
 
 #endif // PROMETHEUS_SUPPORT
-

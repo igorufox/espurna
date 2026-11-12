@@ -1839,25 +1839,38 @@ public:
         return espurna::relay::settings::options::RelayProviderDual;
     }
 
+    // the port is taken when it is there: with modules the ports are the uart module's, which starts after the relays.
+    // Until then every second, the relays wait for it
     bool setup() override {
         static bool once = ([]() {
-            const auto port = uartPort(RELAY_PROVIDER_DUAL_PORT - 1);
-#if UART_DRIVERS_CLAIM_PORT
-            // generic images: serial log and terminal let go of the port
-            if (port && !uartClaim(RELAY_PROVIDER_DUAL_PORT - 1, F("Sonoff Dual"))) {
-                return false;
+            if (!attach()) {
+                _retry.repeat(espurna::duration::Seconds(1), []() {
+                    if (attach()) {
+                        _retry.stop();
+                    }
+                });
             }
-#endif
-            if (port) {
-                DualProvider::_port = port->stream;
-                espurnaRegisterLoop(loop);
-                return true;
-            }
-
-            return false;
+            return true;
         })();
 
         return once;
+    }
+
+    // true - done (the port taken, or there and claimed by someone else: nothing more to wait for)
+    static bool attach() {
+        const auto port = uartPort(RELAY_PROVIDER_DUAL_PORT - 1);
+        if (!port) {
+            return false;
+        }
+#if UART_DRIVERS_CLAIM_PORT
+        // generic images: serial log and terminal let go of the port
+        if (!uartClaim(RELAY_PROVIDER_DUAL_PORT - 1, F("Sonoff Dual"))) {
+            return true;
+        }
+#endif
+        DualProvider::_port = port->stream;
+        espurnaRegisterLoop(loop);
+        return true;
     }
 
     void change(bool) override {
@@ -1900,6 +1913,10 @@ public:
 
         DEBUG_MSG_P(PSTR("[RELAY] Sending DUAL mask: %s\n"),
             RelayMaskHelper(mask.to_ulong()).toString().c_str());
+
+        if (!_port) {
+            return;
+        }
 
         uint8_t value = static_cast<uint8_t>(mask.to_ulong());
         uint8_t buffer[4] { 0xa0, 0x04, value, 0xa1 };
@@ -1952,10 +1969,12 @@ private:
 
     static std::vector<DualProvider*> _instances;
     static Stream* _port;
+    static espurna::timer::SystemTimer _retry;
 };
 
 std::vector<DualProvider*> DualProvider::_instances;
 Stream* DualProvider::_port = nullptr;
+espurna::timer::SystemTimer DualProvider::_retry;
 
 #endif // RELAY_PROVIDER_DUAL_SUPPORT
 
@@ -1974,25 +1993,37 @@ public:
     }
 
 
+    // the port is taken when it is there (the uart module starts after the relays), every second until then
     bool setup() override {
         static bool once = ([]() {
-            const auto port = uartPort(RELAY_PROVIDER_STM_PORT - 1);
-#if UART_DRIVERS_CLAIM_PORT
-            // generic images: serial log and terminal let go of the port
-            if (port && !uartClaim(RELAY_PROVIDER_STM_PORT - 1, F("STM relay"))) {
-                return false;
+            if (!attach()) {
+                _retry.repeat(espurna::duration::Seconds(1), []() {
+                    if (attach()) {
+                        _retry.stop();
+                    }
+                });
             }
-#endif
-            if (port) {
-                StmProvider::_port = port->stream;
-                espurnaRegisterLoop(loop);
-                return true;
-            }
-
-            return false;
+            return true;
         })();
 
         return once;
+    }
+
+    // true - done (the port taken, or there and claimed by someone else)
+    static bool attach() {
+        const auto port = uartPort(RELAY_PROVIDER_STM_PORT - 1);
+        if (!port) {
+            return false;
+        }
+#if UART_DRIVERS_CLAIM_PORT
+        // generic images: serial log and terminal let go of the port
+        if (!uartClaim(RELAY_PROVIDER_STM_PORT - 1, F("STM relay"))) {
+            return true;
+        }
+#endif
+        StmProvider::_port = port->stream;
+        espurnaRegisterLoop(loop);
+        return true;
     }
 
     void change(bool status) override {
@@ -2013,9 +2044,11 @@ public:
 private:
     size_t _id;
     static Stream* _port;
+    static espurna::timer::SystemTimer _retry;
 };
 
 Stream* StmProvider::_port = nullptr;
+espurna::timer::SystemTimer StmProvider::_retry;
 
 #endif // RELAY_PROVIDER_STM_SUPPORT
 

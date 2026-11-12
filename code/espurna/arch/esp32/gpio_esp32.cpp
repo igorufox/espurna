@@ -1,6 +1,6 @@
 /*
 
-GPIO MODULE, ESP32 part (common part is in gpio.cpp)
+GPIO MODULE, ESP32 part (common part is in gpio.cpp and arch/rtos/gpio_rtos.cpp)
 
 */
 
@@ -15,59 +15,40 @@ GPIO MODULE, ESP32 part (common part is in gpio.cpp)
 
 namespace espurna {
 namespace gpio {
-namespace {
+namespace chip {
 
-class Hardware final : public HardwareGpioBase<40> {
-public:
-    // Classic ESP32 wiring constraints:
-    //   GPIO 6..11: bonded to the on-chip SPI flash; touching them = boot crash.
-    //   GPIO 20, 24, 28..31: do not exist.
-    //   GPIO 34..39: input-only, no output driver and no pull resistors.
-    // Strapping pins (0, 2, 5, 12, 15) remain valid — they only need
-    // attention at reset time.
-    // Same as esp8266, flash pins are not valid for anything (incl. buttons and sensors).
-    bool valid(unsigned char pin) const override {
-        if (pin >= Pins) return false;
-        if (pin >= 6 && pin <= 11) return false;
-        if (pin == 20 || pin == 24) return false;
-        if (pin >= 28 && pin <= 31) return false;
-        return true;
-    }
-
-    bool validForOutput(unsigned char pin) const override {
-        return valid(pin) && (pin < 34);
-    }
-
-    BasePinPtr pin(unsigned char pin) override;
-};
-
-class HardwarePin final : public ArduinoPin {
-public:
-    using ArduinoPin::ArduinoPin;
-
-    // Relay pads may still be latched from before the software reset (ref. system_esp32.cpp
-    // reboot()). While held, pad ignores any configuration change, so the output stays
-    // as it was until the first write sets the output register and the hold is released.
-    void pinMode(int8_t mode) override {
-        ::pinMode(_pin, mode);
-        if (mode != OUTPUT) {
-            gpio_hold_dis(static_cast<gpio_num_t>(_pin));
-        }
-    }
-
-    void digitalWrite(int8_t val) override {
-        ::digitalWrite(_pin, val);
-        gpio_hold_dis(static_cast<gpio_num_t>(_pin));
-    }
-};
-
-BasePinPtr Hardware::pin(unsigned char pin) {
-    return BasePinPtr(new HardwarePin(pin));
+// Classic ESP32 wiring constraints:
+//   GPIO 6..11: bonded to the on-chip SPI flash; touching them = boot crash.
+//   GPIO 20, 24, 28..31: do not exist.
+//   GPIO 34..39: input-only, no output driver and no pull resistors.
+// Strapping pins (0, 2, 5, 12, 15) remain valid — they only need
+// attention at reset time.
+// Same as esp8266, flash pins are not valid for anything (incl. buttons and sensors).
+bool valid(uint8_t pin) {
+    if (pin >= 6 && pin <= 11) return false;
+    if (pin == 20 || pin == 24) return false;
+    if (pin >= 28 && pin <= 31) return false;
+    return true;
 }
 
-} // namespace
+bool valid_output(uint8_t pin) {
+    return pin < 34;
+}
 
-namespace chip {
+// Relay pads may still be latched from before the software reset (ref. system_esp32.cpp
+// reboot()). While held, pad ignores any configuration change, so the output stays
+// as it was until the first write sets the output register and the hold is released.
+void pin_mode(uint8_t pin, int8_t mode) {
+    ::pinMode(pin, mode);
+    if (mode != OUTPUT) {
+        gpio_hold_dis(static_cast<gpio_num_t>(pin));
+    }
+}
+
+void write(uint8_t pin, int8_t value) {
+    ::digitalWrite(pin, value);
+    gpio_hold_dis(static_cast<gpio_num_t>(pin));
+}
 
 void setup() {
     // Pads latched before the software reset (ref. system_esp32.cpp reboot()).
@@ -108,10 +89,5 @@ void print_pin(Print& out, uint8_t pin) {
 } // namespace chip
 } // namespace gpio
 } // namespace espurna
-
-GpioBase& hardwareGpio() {
-    static espurna::gpio::Hardware gpio;
-    return gpio;
-}
 
 #endif

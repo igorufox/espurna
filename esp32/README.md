@@ -7,43 +7,37 @@ Core 6.2 or newer), Matter On/Off plugs, and a flash layout with an own safeboot
 
 ## Boards
 
-| Board | Image | Runs | Page |
-|-------|-------|------|------|
-| LC-Tech ESP32 relay x2 | `esp32-matter` | the lab board: Matter with 2 controllers, migrated from the two-slot layout over Wi-Fi, updates from the WebUI | [lc-tech-relay-x2.md](lc-tech-relay-x2.md) |
-| Sonoff MINIR4 "Mini Extreme" | `esp32-matter` | one in a wall | [sonoff-minir4.md](sonoff-minir4.md) |
-| Sonoff NSPanel EU (gen1) | `esp32-matter-nspanel` | one in a wall: stand-alone panel, MQTT tiles, thermostats | [nspanel/README.md](../nspanel/README.md) |
+| Board | Modules | Runs | Page |
+|-------|---------|------|------|
+| LC-Tech ESP32 relay x2 | `matter` | the lab board: Matter with 2 controllers, migrated from the two-slot layout over Wi-Fi, updates from the WebUI | [lc-tech-relay-x2.md](lc-tech-relay-x2.md) |
+| Sonoff MINIR4 "Mini Extreme" | `matter` | one in a wall | [sonoff-minir4.md](sonoff-minir4.md) |
+| Sonoff NSPanel EU (gen1) | `nspanel` | one in a wall: stand-alone panel, MQTT tiles, thermostats | [nspanel/README.md](../nspanel/README.md) |
 
-Any ESP32 with 4 MB flash runs `esp32-matter` with a [Tasmota template](#tasmota-templates); the generic image drives no
-GPIO until configured, so it is safe to flash on unknown hardware.
+Any ESP32 with 4 MB flash runs the head with a [Tasmota template](#tasmota-templates); the head drives no GPIO until
+configured, so it is safe to flash on unknown hardware.
 
-## Images
+## Image and modules
 
-| Image | Files | For |
-|-------|-------|-----|
-| `esp32-matter` | `espurna-esp32-matter.bin` | any ESP32 with 4 MB flash, Matter On/Off plugs |
-| `esp32-matter-nspanel` | `espurna-esp32-matter-nspanel.bin` | Sonoff NSPanel EU (gen1) |
-
-One file per image, the merged image (bootloader, partition table, safeboot, ESPurna): serial flash at `0x0`, and the
-same file for updates, the safeboot writes only its ESPurna part into app0. The `/safeboot` page of ESPurna takes it for
-installing the safeboot too (the safeboot part of it is used). Releases before 2026-11-08 had `-full.bin`, `-ota.bin`
-and `espurna-esp32-safeboot.bin`.
-
-Enabled modules: WebUI, API, MQTT, terminal, Home Assistant, Domoticz, Alexa, sensors, PWM and Matter.
+One head image for every ESP32, `espurna-esp32.bin`: the merged image (bootloader, partition table, safeboot, ESPurna)
+for the first serial flash at `0x0`; `espurna-esp32.ota` is the install image (the head and every module). The features,
+Matter and the NSPanel among them, are modules, the same as on every chip: the module list, installing them (the Apply),
+updating the head and the recovery steps are in [docs/modules.md](../docs/modules.md). The modules lie in the tail of
+app0 behind the head.
 
 ## Flash layout and safeboot
 
 Tasmota's safeboot offsets ([`code/esp32_4mb_safeboot.csv`](../code/esp32_4mb_safeboot.csv)): bootloader, partition
-table, `boot_app0`, the ESPurna safeboot in the factory partition at `0x10000` (832 KB) and ESPurna at `0xE0000`. An
-update goes through the safeboot: the board restarts into it, it downloads the image's `.bin` over https (certificate
-bundle), checks its SHA-256, writes the ESPurna part into app0 and boots ESPurna; an interrupted update leaves the safeboot to retry from. Safeboot reads Wi-Fi, the
-hostname, the admin password and `webFwUrl` from the ESPurna settings and has none of its own; its page
-(`http://<board>/` while in safeboot) lists the releases too. Boards on the old two-slot layout are migrated over Wi-Fi on
-the first update. Details: [docs/updates.md](../docs/updates.md#esp32-through-safeboot).
+table, `boot_app0`, the ESPurna safeboot in the factory partition at `0x10000` (832 KB) and app0 at `0xE0000` (2880 KB:
+the head, then the module area). ESPurna cannot overwrite itself: a head update restarts into the safeboot, which takes
+the head and writes app0. Safeboot reads Wi-Fi, the hostname, the admin password and `webFwUrl` from the ESPurna settings
+and has none of its own; its page (`http://<board>/` while in safeboot) lists the releases and takes a file or a URL too.
+Boards on the old two-slot layout are migrated over Wi-Fi from the `/safeboot` page of ESPurna. Details:
+[docs/updates.md](../docs/updates.md#esp32-the-safeboot).
 
 ## First flash
 
 ```
-esptool.py --chip esp32 --baud 460800 write_flash 0x0 espurna-esp32-matter.bin
+esptool.py --chip esp32 --baud 460800 write_flash 0x0 espurna-esp32.bin
 ```
 
 ## Tasmota templates
@@ -51,7 +45,7 @@ esptool.py --chip esp32 --baud 460800 write_flash 0x0 espurna-esp32-matter.bin
 Relays, buttons and LEDs are configured at runtime, so any ESP32 device can be set up from a
 [Tasmota template](https://templates.blakadder.com/) without a rebuild:
 
-1. Flash `espurna-esp32-matter.bin` and connect to the device WebUI.
+1. Flash `espurna-esp32.bin` and connect to the device WebUI.
 2. **Admin → Device Template**, find the device and press **Apply**, or open *Paste a Tasmota template* and paste the
    template JSON, e.g.
    `{"NAME":"MyDevice","GPIO":[0,0,0,0,0,0,0,0,0,0,0,0,224,225,0,0,0,0,0,544,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"FLAG":0,"BASE":1}`
@@ -81,9 +75,8 @@ pio run -d safeboot-app               # the safeboot first (ESP-IDF project), it
 pio run -c platformio_esp32.ini -e esp32   # the head, every module, the release files (docs/modules.md)
 ```
 
-One env, `esp32`: the head (relays, buttons, LEDs, web, MQTT ...) and the modules (sensors, scheduler, alexa,
-homeassistant, domoticz, thingspeak, matter, nspanel) in one build; `espurna-esp32-modules.bin` next to the image is
-the modules file of the WebUI MODULES panel. The merged image is written to `code/.pio/build_esp32/esp32/espurna-esp32.bin` by
+One env, `esp32`: the head and every module in one build; `espurna-esp32.ota` next to the image is the install image
+of the WebUI. The merged image is written to `code/.pio/build_esp32/esp32/espurna-esp32.bin` by
 [`scripts/esp32_merge.py`](../code/scripts/esp32_merge.py) (the release `.bin`); `firmware.bin` next to it is ESPurna
 alone (an application image, what Tasmota's safeboot takes). Without the
 safeboot built first ESPurna still runs, only the `safeboot` command refuses to switch.

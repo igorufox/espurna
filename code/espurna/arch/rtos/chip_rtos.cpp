@@ -16,6 +16,13 @@ is in arch/<chip>/chip_<chip>.cpp
 namespace espurna {
 namespace chip {
 
+void wdt_pause() {
+}
+
+void wdt_resume() {
+    system::chip::sdk::feed_loop_wdt();
+}
+
 // lwIP pcb lists belong to the tcpip task here
 bool netstat(Print&) {
     return false;

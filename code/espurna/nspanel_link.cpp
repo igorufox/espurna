@@ -1,0 +1,434 @@
+/*
+
+NSPANEL MODULE - link
+
+UART2 (TX GPIO16, RX GPIO17 by default) ownership, the display events, and the display detection
+that picks the Driver: OHpanel (nspanel_ohpanel.cpp) or Lovelace (nspanel_lovelace.cpp)
+
+*/
+
+#include "espurna.h"
+
+#if NSPANEL_SUPPORT
+
+#include "nspanel_core.h"
+#include "uart.h"
+
+#if MQTT_SUPPORT
+#include "mqtt.h"
+#endif
+
+#include <ArduinoJson.h>
+
+namespace espurna {
+namespace nspanel {
+
+// -----------------------------------------------------------------------------
+// UART2 and state shared by the display drivers
+// -----------------------------------------------------------------------------
+
+namespace uart {
+namespace {
+
+// the display's UART: a port of the uart module (uartTx<n> / uartRx<n>, the same on every chip), nspPort is n + 1.
+// The older keys nspTx / nspRx (or the NSPanel's own pins 16 / 17) become such a port once: those pins, 115200, a
+// 2 KB receive buffer (the TFT upload and the answers of the drivers)
+constexpr size_t PortsMax { 4 };
+constexpr size_t RxBuffer { 2048 };
+
+size_t index { 0 };
+Stream* stream { nullptr };
+uint32_t current { 0 };
+
+// the port of the older pin keys: the one with these pins, else the first without pins
+size_t migrate() {
+    const auto tx = getSetting("nspTx", 16);
+    const auto rx = getSetting("nspRx", 17);
+
+    size_t out = PortsMax;
+    for (size_t n = 0; n < PortsMax; ++n) {
+        const auto port_tx = getSetting({"uartTx", n}, -1);
+        const auto port_rx = getSetting({"uartRx", n}, -1);
+        if ((port_tx == tx) && (port_rx == rx)) {
+            out = n;
+            break;
+        }
+        if ((out == PortsMax) && (port_tx < 0) && (port_rx < 0)) {
+            out = n;
+        }
+    }
+
+    if (out == PortsMax) {
+        return out;
+    }
+
+    setSetting({"uartTx", out}, tx);
+    setSetting({"uartRx", out}, rx);
+    setSetting({"uartBaud", out}, build::LovelaceBaud);
+    setSetting({"uartRxBuf", out}, RxBuffer);
+    setSetting("nspPort", out + 1);
+    delSetting("nspTx");
+    delSetting("nspRx");
+    DEBUG_MSG_P(PSTR("[NSPANEL] The display is on UART port #%u now (TX %d, RX %d)\n"),
+        static_cast<unsigned>(out), tx, rx);
+    return out;
+}
+
+} // namespace
+
+Stream& port() {
+    return *stream;
+}
+
+bool begin() {
+    const auto number = getSetting("nspPort", 0);
+    index = (number > 0) ? static_cast<size_t>(number - 1) : migrate();
+    if (index >= PortsMax) {
+        return false;
+    }
+
+    auto opened = uartOpen(index);
+    if (!opened || !opened->tx || !opened->rx || !uartClaim(index, F("NSPanel"))) {
+        return false;
+    }
+
+    stream = opened->stream;
+    current = getSetting({"uartBaud", index}, build::LovelaceBaud);
+    setBaud(build::LovelaceBaud);
+    return true;
+}
+
+void drainInput() {
+    while (port().read() >= 0) {
+    }
+}
+
+// waits for what is queued only while switching, at most ~1 KB at 115200
+void rate(uint32_t value) {
+    if (value != current) {
+        uartBaud(index, value);
+        current = value;
+    }
+}
+
+void setBaud(uint32_t value) {
+    rate(value);
+    drainInput();
+}
+
+int writable() {
+    constexpr int Command { 256 };
+    const auto out = port().availableForWrite();
+    return (out > 0) ? out : Command;
+}
+
+// raw Nextion command, terminated by FF FF FF
+void writeRaw(const char* command) {
+    auto& serial = port();
+    serial.write(reinterpret_cast<const uint8_t*>(command), strlen(command));
+    const uint8_t end[3] {0xFF, 0xFF, 0xFF};
+    serial.write(end, sizeof(end));
+}
+
+} // namespace uart
+
+namespace {
+
+struct Panel {
+    std::deque<String> events;
+    String info; // last driver announcement, republished on MQTT connect
+};
+
+Panel panel;
+
+void recordEvent(const String& message) {
+    if (panel.events.size() >= build::EventsMax) {
+        panel.events.pop_front();
+    }
+    panel.events.push_back(message);
+}
+
+} // namespace
+
+// every TFT event: kept for nspanel.info and published to <root>/nspanel
+void publishEvent(const String& message) {
+    recordEvent(message);
+#if MQTT_SUPPORT
+    if (mqttConnected()) {
+        mqttSendRaw(mqttTopic("nspanel").c_str(), message.c_str(), false);
+    }
+#endif
+}
+
+// {"driver":"ohpanel","version":"bc629e1e","model":"..."} to <root>/nspanel
+void announceDriver(const Driver& driver, const String& version, const String& model) {
+    DynamicJsonBuffer buffer(256);
+    JsonObject& root = buffer.createObject();
+    root["driver"] = driver.name();
+    root["version"] = version.c_str();
+    root["model"] = model.c_str();
+
+    panel.info = String();
+    root.printTo(panel.info);
+    publishEvent(panel.info);
+}
+
+const String& panelInfo() {
+    return panel.info;
+}
+
+const std::deque<String>& panelEvents() {
+    return panel.events;
+}
+
+// -----------------------------------------------------------------------------
+// Display detection. Exactly one driver owns UART2 at a time.
+//
+// auto: OHpanel at 921600 (FF FF FF sendme + get design_ver, expects 66 / 71) for 600 ms, then
+// Lovelace at 115200 (raw recmod=1, pageType~pageStartup, expects event,startup) for 2 s, repeated
+// until one answers. Forced: only that driver, retried. No answer for 30 s: the display is
+// power-cycled once (GPIO4 HIGH 800 ms, 1.5 s boot), not within 3 min after a TFT upload.
+// Detection runs again at boot, after every TFT upload, when "display" changes, on
+// `nspanel.detect`, and when the active driver reports the TFT lost.
+// -----------------------------------------------------------------------------
+
+namespace link {
+namespace {
+
+enum class Power {
+    None,
+    Off,
+    Boot,
+};
+
+Driver* current { nullptr };
+Driver* detected { nullptr };
+bool is_probing { true };
+uint32_t window_start { 0 };
+uint32_t episode_start { 0 };
+uint32_t quiet_until { 0 };     // no automatic power-cycle before this
+bool power_cycled { false };
+Power power { Power::None };
+uint32_t power_at { 0 };
+uint32_t probes { 0 };
+String reason { "boot" };
+
+const char* nameOf(const Driver* driver) {
+    return driver ? driver->name() : "none";
+}
+
+Driver& first() {
+    switch (config().display) {
+    case DriverPref::Lovelace:
+        return lovelace::driver();
+    case DriverPref::Ohpanel:
+    case DriverPref::Auto:
+        break;
+    }
+    return ohpanel::driver();
+}
+
+Driver& next(const Driver* now) {
+    switch (config().display) {
+    case DriverPref::Lovelace:
+        return lovelace::driver();
+    case DriverPref::Ohpanel:
+        return ohpanel::driver();
+    case DriverPref::Auto:
+        break;
+    }
+    return (now == &ohpanel::driver()) ? lovelace::driver() : ohpanel::driver();
+}
+
+uint32_t window(const Driver* driver) {
+    const bool forced = (config().display != DriverPref::Auto);
+    if (driver == &lovelace::driver()) {
+        return forced ? build::ProbeForcedLovelaceMs : build::ProbeLovelaceMs;
+    }
+    return forced ? build::ProbeForcedOhpanelMs : build::ProbeOhpanelMs;
+}
+
+void start(Driver& driver) {
+    current = &driver;
+    window_start = millis();
+    ++probes;
+    driver.begin();
+}
+
+} // namespace
+
+Driver* active() {
+    return current;
+}
+
+const char* name() {
+    return nameOf(current);
+}
+
+bool connected() {
+    return current && current->connected();
+}
+
+bool probing() {
+    return is_probing;
+}
+
+void probe(const char* why) {
+    DEBUG_MSG_P(PSTR("[NSPANEL] Detecting the display (%s, display: %s)\n"), why, driverPrefName(config().display));
+    reason = why;
+    is_probing = true;
+    episode_start = millis();
+    power_cycled = false;
+    power = Power::None;
+    build::powerWrite(LOW);
+    start(first());
+}
+
+void afterFlash(bool done) {
+    quiet_until = millis() + build::FlashQuietMs;
+    probe(done ? "TFT uploaded" : "TFT upload failed");
+}
+
+void loop() {
+    const auto now = millis();
+
+    switch (power) {
+    case Power::Off:
+        if (now - power_at >= build::PowerOffMs) {
+            build::powerWrite(LOW);
+            power = Power::Boot;
+            power_at = now;
+        }
+        return;
+
+    case Power::Boot:
+        if (now - power_at >= build::PowerBootMs) {
+            power = Power::None;
+            start(first());
+        }
+        return;
+
+    case Power::None:
+        break;
+    }
+
+    if (current) {
+        current->loop();
+    }
+
+    if (!is_probing) {
+        if (!current || current->lost()) {
+            probe("display lost");
+        }
+        return;
+    }
+
+    if (connected()) {
+        is_probing = false;
+        detected = current;
+        DEBUG_MSG_P(PSTR("[NSPANEL] Display driver: %s (after %u ms, %u probes)\n"),
+            nameOf(current), static_cast<unsigned>(now - episode_start), probes);
+        return;
+    }
+
+    if (current && current->found()) {
+        return; // identifying
+    }
+
+    if (now - window_start < window(current)) {
+        return;
+    }
+
+    if (!power_cycled && (now - episode_start >= build::ProbePowerCycleMs)
+        && (static_cast<int32_t>(now - quiet_until) >= 0))
+    {
+        DEBUG_MSG_P(PSTR("[NSPANEL] No display answer for %u s, power-cycling it\n"),
+            static_cast<unsigned>((now - episode_start) / 1000));
+        power_cycled = true;
+        power = Power::Off;
+        power_at = now;
+        build::powerWrite(HIGH);
+        return;
+    }
+
+    start(next(current));
+}
+
+void info(Print& out) {
+    out.printf_P(PSTR("Display: driver %s (setting \"%s\"), %s, version '%s', model '%s'\n"),
+        nameOf(current), driverPrefName(config().display),
+        flash::busy() ? "TFT upload running"
+            : connected() ? "connected"
+            : is_probing ? "detecting" : "not connected",
+        driver::version(), driver::model());
+    out.printf_P(PSTR("Detect: last '%s', %u probes, %u s ago, last found %s\n"),
+        reason.c_str(), probes,
+        static_cast<unsigned>((millis() - episode_start) / 1000), nameOf(detected));
+    if (current) {
+        current->info(out);
+    }
+}
+
+} // namespace link
+
+// -----------------------------------------------------------------------------
+// The active driver
+// -----------------------------------------------------------------------------
+
+void entityChanged(int entity) {
+    if (auto* active = link::active()) {
+        active->entityChanged(entity);
+    }
+}
+
+namespace driver {
+
+void weatherChanged() {
+    if (auto* active = link::active()) {
+        active->weatherChanged();
+    }
+}
+
+void temperatureChanged() {
+    if (auto* active = link::active()) {
+        active->temperatureChanged();
+    }
+}
+
+void reload() {
+    if (auto* active = link::active()) {
+        active->reload();
+    }
+}
+
+void showPage(int page) {
+    if (auto* active = link::active()) {
+        active->showPage(page);
+    }
+}
+
+void send(String payload) {
+    if (auto* active = link::active()) {
+        active->send(std::move(payload));
+    }
+}
+
+const char* version() {
+    return link::connected() ? link::active()->version() : "";
+}
+
+const char* model() {
+    return link::connected() ? link::active()->model() : "";
+}
+
+// OHpanel: the design's name and what it has (grid layouts, backgrounds)
+String design() {
+    return link::connected() ? link::active()->design() : String();
+}
+
+} // namespace driver
+
+} // namespace nspanel
+} // namespace espurna
+
+#endif // NSPANEL_SUPPORT

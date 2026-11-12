@@ -19,19 +19,7 @@ Copyright (C) 2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include <memory>
 
-#if THINGSPEAK_USE_ASYNC
-#if defined(ESP8266)
-#include <ESPAsyncTCP.h>
-#elif defined(ESP32)
-#include <AsyncTCP.h>
-#endif
-#else
-#include <ESP8266HTTPClient.h>
-#endif
-
-#include "libs/URL.h"
-#include "libs/SecureClientHelpers.h"
-#include "libs/AsyncClientHelpers.h"
+#include "libs/http_client.h"
 
 namespace espurna {
 namespace thingspeak {
@@ -76,12 +64,6 @@ PROGMEM_STRING(Relay, "tspkRelay");
 
 #if SENSOR_SUPPORT
 PROGMEM_STRING(Magnitude, "tspkMagnitude");
-#endif
-
-#if THINGSPEAK_USE_SSL && (SECURE_CLIENT != SECURE_CLIENT_NONE)
-PROGMEM_STRING(Check, "tspkScCheck");
-PROGMEM_STRING(Fingerprint, "tspkFP");
-PROGMEM_STRING(Mfln, "tspkMfln");
 #endif
 
 } // namespace keys
@@ -214,405 +196,63 @@ void maybe_retry(const String& body) {
     }
 }
 
-#if !THINGSPEAK_USE_ASYNC
-namespace sync {
-namespace internal {
+// The POST through the head's one HTTP client (libs/http_client.h): http:// or https:// (the tls module for servers
+// that take more than the base suites), the loop drives it
+namespace post {
 namespace {
 
-#if THINGSPEAK_USE_SSL && (SECURE_CLIENT != SECURE_CLIENT_NONE)
+// the response: the id of the entry ("0" - not taken), a few bytes
+struct Body : public ::espurna::http::Sink {
+    const char* begin(const ::espurna::http::Head& head) override {
+        text = String();
+        if (head.status != 200) {
+            DEBUG_MSG_P(PSTR("[THINGSPEAK] ERROR: HTTP %d\n"), head.status);
+        }
+        return nullptr;
+    }
 
-#if THINGSPEAK_SECURE_CLIENT_INCLUDE_CA
-#include "static/thingspeak_client_trusted_root_ca.h"
-#else
-#include "static/digicert_high_assurance_pem.h"
-#define trusted_root _ssl_digicert_high_assurance_ev_root_ca
-#endif
+    const char* write(const uint8_t* data, size_t len) override {
+        if (text.length() < 32) {
+            text.concat(reinterpret_cast<const char*>(data), std::min<size_t>(len, 32 - text.length()));
+        }
+        return nullptr;
+    }
 
-#if (SECURE_CLIENT == SECURE_CLIENT_BEARSSL)
+    const char* end() override {
+        return nullptr;
+    }
 
-static constexpr int Check { THINGSPEAK_SECURE_CLIENT_CHECK };
-static constexpr uint16_t Mfln { THINGSPEAK_SECURE_CLIENT_MFLN };
-
-PROGMEM_STRING(Tag, "THINGSPEAK");
-PROGMEM_STRING(Fingerprint, THINGSPEAK_FINGERPRINT);
-
-SecureClientConfig secure_config {
-    .tag = Tag,
-    .on_check = []() -> int {
-        return getSetting(FPSTR(settings::keys::Check), Check);
-    },
-    .on_certificate = []() -> const char* {
-        return trusted_root;
-    },
-    .on_fingerprint = []() -> String {
-        return getSetting(FPSTR(settings::keys::Fingerprint), FPSTR(Fingerprint));
-    },
-    .on_mfln = []() -> uint16_t {
-        return getSetting(FPSTR(settings::keys::Mfln), Mfln);
-    },
-    .debug = true,
+    String text;
 };
 
-#endif
+::espurna::http::Client client;
+Body body;
 
-#undef trusted_root
-
-#endif
-
-} // namespace
-} // namesapce internal
-
-namespace {
-
-void send(WiFiClient& client, const URL& url, const String& data) {
-    DEBUG_MSG_P(PSTR("[THINGSPEAK] POST %s?%s\n"), url.path.c_str(), data.c_str());
-
-    HTTPClient http;
-    http.begin(client, url.host, url.port, url.path,
-        url.protocol.equals(F("https")));
-
-    const auto app = buildApp();
-    http.addHeader(F("User-Agent"), String(app.name));
-    http.addHeader(F("Content-Type"), F("application/x-www-form-urlencoded"));
-
-    const auto response = http.POST(data);
-
-    String body;
-    if (response == 200) {
-        if (http.getSize()) {
-            body = http.getString();
-        }
-    } else {
-        DEBUG_MSG_P(PSTR("[THINGSPEAK] ERROR: HTTP %d\n"), response);
+void done(const ::espurna::http::Result& result) {
+    if (!result.ok) {
+        DEBUG_MSG_P(PSTR("[THINGSPEAK] ERROR: %s\n"), result.message);
     }
 
-    if (body.length()) {
-        DEBUG_MSG_P(PSTR("[THINGSPEAK] Response: %s\n"), body.c_str());
-    } else {
-        DEBUG_MSG_P(PSTR("[THINGSPEAK] Empty body\n"));
-    }
-
-    maybe_retry(body);
-}
-
-void send(const String& address, const String& data) {
-    const URL url(address);
-
-#if SECURE_CLIENT == SECURE_CLIENT_BEARSSL
-    if (url.protocol.equals(F("https"))) {
-        const int check = internal::secure_config.on_check();
-        if (!ntpSynced() && (check == SECURE_CLIENT_CHECK_CA)) {
-            DEBUG_MSG_P(PSTR("[THINGSPEAK] Time not synced! Cannot use CA validation\n"));
-            return;
-        }
-
-        auto client = std::make_unique<SecureClient>(internal::secure_config);
-        if (!client->beforeConnected()) {
-            return;
-        }
-
-        send(client->get(), url, data);
-        return;
-    }
-#endif
-
-    if (url.protocol.equals(F("http"))) {
-        auto client = std::make_unique<WiFiClient>();
-        send(*client.get(), url, data);
-        return;
-    }
+    maybe_retry((result.ok && (result.status == 200)) ? body.text : String());
 }
 
 } // namespace
-} // namespace sync
-#endif
-
-#if THINGSPEAK_USE_ASYNC
-namespace async {
-namespace {
-
-class Client {
-public:
-    static constexpr auto Timeout = espurna::duration::Seconds(15);
-
-    using Completion = void(*)(const String&);
-
-    using ClientState = AsyncClientState;
-    enum class ParserState {
-        Init,
-        Headers,
-        Body,
-        End,
-    };
-
-    bool send(const String& data, Completion completion) {
-        if (_client_state == ClientState::Disconnected) {
-            _data = data;
-            _completion = completion;
-
-            if (!_client) {
-                _client = std::make_unique<AsyncClient>();
-                _client->onDisconnect(Client::_onDisconnected, this);
-                _client->onConnect(Client::_onConnect, this);
-                _client->onTimeout(Client::_onTimeout, this);
-                _client->onPoll(Client::_onPoll, this);
-                _client->onData(Client::_onData, this);
-            }
-
-            _connection_start = TimeSource::now();
-            _client_state = ClientState::Connecting;
-
-            if (_client->connect(_address.host.c_str(), _address.port)) {
-                return true;
-            }
-
-            _client->close(true);
-        }
-
-        return false;
-    }
-
-    bool send(const String& address, const String& data, Completion completion) {
-        _address = URL(address);
-        return send(data, completion);
-    }
-
-    void disconnect() {
-        if (_client_state == ClientState::Disconnected) {
-            _client = nullptr;
-        }
-    }
-
-    const URL& address() const {
-        return _address;
-    }
-
-    explicit operator bool() const {
-        return _client_state != ClientState::Disconnected;
-    }
-
-private:
-    void onDisconnected() {
-        DEBUG_MSG_P(PSTR("[THINGSPEAK] Disconnected\n"));
-        _parser_state = ParserState::Init;
-        _client_state = ClientState::Disconnected;
-        _data = "";
-    }
-
-    void onTimeout(uint32_t timestamp) {
-        DEBUG_MSG_P(PSTR("[THINGSPEAK] ERROR: Network timeout after %ums\n"), timestamp);
-        _client->close(true);
-    }
-
-    bool _sendPendingData() {
-        if (!_data.length()) {
-            return true;
-        }
-
-        size_t wrote = _client->write(_data.c_str(), _data.length());
-        if (wrote == _data.length()) {
-            _data = "";
-            return true;
-        }
-
-        return false;
-    }
-
-    void onPoll() {
-        if (_client_state != ClientState::Connected) {
-            return;
-        }
-
-        if (!_sendPendingData()) {
-            return;
-        }
-
-        const auto now = TimeSource::now();
-        if (now - _connection_start > Timeout) {
-            DEBUG_MSG_P(PSTR("[THINGSPEAK] ERROR: Timeout after %ums\n"),
-                (now - _connection_start).count());
-            _client->close(true);
-        }
-    }
-
-    void onConnect() {
-            _parser_state = ParserState::Init;
-            _client_state = ClientState::Connected;
-
-            DEBUG_MSG_P(PSTR("[THINGSPEAK] Connected to %s:%hu\n"),
-                _address.host.c_str(), _address.port);
-
-            DEBUG_MSG_P(PSTR("[THINGSPEAK] POST %s?%s\n"),
-                    _address.path.c_str(), _data.c_str());
-
-            static constexpr size_t HeadersSize { 256 };
-
-            String headers;
-            headers.reserve(HeadersSize);
-            auto append = [&](const String& key, const String& value) {
-                headers += key;
-                headers += F(": ");
-                headers += value;
-                headers += F("\r\n");
-            };
-
-            headers += F("POST ");
-            headers += _address.path;
-            headers += F(" HTTP/1.1");
-            headers += F("\r\n");
-
-            const auto app = buildApp();
-
-            append(F("Host"), _address.host);
-            append(F("User-Agent"), String(app.name));
-            append(F("Connection"), F("close"));
-            append(F("Content-Type"), F("application/x-www-form-urlencoded"));
-            append(F("Content-Length"), String(_data.length(), 10));
-
-            headers += F("\r\n");
-
-            _client->write(headers.c_str(), headers.length());
-            _sendPendingData();
-    }
-
-    void onData(const uint8_t* data, size_t len) {
-        if (_data.length()) {
-            _parser_state = ParserState::End;
-            _client->close(true);
-            return;
-        }
-
-        PROGMEM_STRING(Status, "HTTP/1.1 200 OK");
-        PROGMEM_STRING(Break, "\r\n\r\n");
-
-        auto begin = reinterpret_cast<const char*>(data);
-        auto end = begin + len;
-
-        const char* ptr { nullptr };
-
-        do {
-            switch (_parser_state) {
-
-            case ParserState::End:
-                break;
-
-            case ParserState::Init:
-            {
-                ptr = strnstr(begin, Status, len);
-                if (!ptr) {
-                    _client->close(true);
-                    return;
-                }
-                _parser_state = ParserState::Headers;
-                break;
-            }
-
-            case ParserState::Headers:
-            {
-                ptr = strnstr(ptr, Break, len);
-                if (!ptr) {
-                    return;
-                }
-
-                ptr = ptr + __builtin_strlen(Break);
-                _parser_state = ParserState::Body;
-                // fallthrough!
-            }
-
-            case ParserState::Body:
-            {
-                if (!ptr) {
-                    ptr = begin;
-                }
-
-                if (end - ptr) {
-                    String body;
-                    body.concat(ptr, end - ptr);
-
-                    _completion(body);
-                    _client->close(true);
-
-                    _parser_state = ParserState::End;
-                }
-                return;
-            }
-
-            }
-
-        } while (_parser_state != ParserState::End);
-    }
-
-    static void _onDisconnected(void* ptr, AsyncClient*) {
-        reinterpret_cast<Client*>(ptr)->onDisconnected();
-    }
-
-    static void _onConnect(void* ptr, AsyncClient*) {
-        reinterpret_cast<Client*>(ptr)->onConnect();
-    }
-
-    static void _onTimeout(void* ptr, AsyncClient*, uint32_t timestamp) {
-        reinterpret_cast<Client*>(ptr)->onTimeout(timestamp);
-    }
-
-    static void _onPoll(void* ptr, AsyncClient*) {
-        reinterpret_cast<Client*>(ptr)->onPoll();
-    }
-
-    static void _onData(void* ptr, AsyncClient*, const void* data, size_t len) {
-        reinterpret_cast<Client*>(ptr)->onData(reinterpret_cast<const uint8_t*>(data), len);
-    }
-
-    ParserState _parser_state = ParserState::Init;
-    ClientState _client_state = ClientState::Disconnected;
-
-    TimeSource::time_point _connection_start;
-
-    URL _address;
-    Completion _completion;
-    String _data;
-    std::unique_ptr<AsyncClient> _client;
-};
-
-} // namespace
-
-namespace internal {
-namespace {
-
-Client client;
-
-} // namespace
-} // namespace internal
-
-namespace {
-
-void send(const String& address, const String& data) {
-    if (internal::client) {
-        return;
-    }
-
-    if (!internal::client.send(address, data, maybe_retry)) {
-        DEBUG_MSG_P(PSTR("[THINGSPEAK] Connection failed\n"));
-    }
-}
-
-} // namespace
-} // namespace async
-#endif
+} // namespace post
 
 bool ready() {
-#if THINGSPEAK_USE_ASYNC
-    return !static_cast<bool>(async::internal::client);
-#else
-    return true;
-#endif
+    return !post::client.busy();
 }
 
 void send(const String& address, const String& data) {
-#if THINGSPEAK_USE_ASYNC
-    async::send(address, data);
-#else
-    sync::send(address, data);
-#endif
+    DEBUG_MSG_P(PSTR("[THINGSPEAK] POST %s?%s\n"), address.c_str(), data.c_str());
+
+    ::espurna::http::Request request;
+    request.url = address.c_str();
+    request.method = "POST";
+    request.type = "application/x-www-form-urlencoded";
+    request.body = reinterpret_cast<const uint8_t*>(data.c_str());
+    request.body_len = data.length();
+    post::client.start(request, post::body, post::done);
 }
 
 void flush() {
@@ -676,6 +316,8 @@ void configure() {
 }
 
 void loop() {
+    post::client.loop();
+
     if (!internal::enabled) {
         return;
     }

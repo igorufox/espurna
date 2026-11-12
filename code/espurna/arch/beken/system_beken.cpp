@@ -429,15 +429,15 @@ namespace espurna {
 namespace system {
 namespace chip {
 
-void loop() {
+void sdk::loop() {
 }
 
 // yield() only feeds it between loop() calls
-void feed_loop_wdt() {
+void sdk::feed_loop_wdt() {
     lt_wdt_feed();
 }
 
-[[noreturn]] void reboot() {
+[[noreturn]] void sdk::reboot() {
     // lt_reboot() -> bk_reboot() writes the reboot type into the retention register. Same reboot,
     // but with the system word (custom reset reason) there instead (ref. rtcmem_beken.cpp)
     constexpr uintptr_t RegRetention { 0x00800150 };
@@ -476,18 +476,18 @@ bool deep_sleep(sleep::Microseconds) {
 void early_setup() {
 }
 
-void setup() {
+void sdk::setup() {
     ::mac::report();
 }
 
 // hardware WDT, fed by LibreTiny yield() after every loop()
-void enable_loop_wdt() {
+void sdk::enable_loop_wdt() {
     lt_wdt_enable(LoopWdtTimeout);
 }
 
 } // namespace chip
 
-namespace arch {
+namespace chip {
 
 void pre_setup() {
     loopTaskHandle = xTaskGetCurrentTaskHandle();
@@ -535,7 +535,7 @@ uint32_t reset_reason() {
     return REASON_DEFAULT_RST;
 }
 
-} // namespace arch
+} // namespace chip
 } // namespace system
 
 // Crash record is kept in a flash record of its own, written by the trap handlers (ref. rtcmem_beken.cpp).

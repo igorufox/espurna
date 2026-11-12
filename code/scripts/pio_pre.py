@@ -29,22 +29,8 @@ from espurna_utils import (
 Import("env")
 env = globals()["env"]
 
-# handle `-t build-and-copy` parameters
-for name in [
-    # what is the name suffix of the .bin
-    "ESPURNA_BUILD_NAME",
-    # where to copy the resulting .bin
-    "ESPURNA_BUILD_DESTINATION",
-    # set the full string for the build, no need to change individual parts
-    "ESPURNA_BUILD_FULL_VERSION",
-    # **or**, replace parts of the version string that would've been auto-detected
-    "ESPURNA_BUILD_VERSION",
-    "ESPURNA_BUILD_REVISION",
-    "ESPURNA_BUILD_VERSION_SUFFIX",
-]:
-    value = os.environ.get(name)
-    if value:
-        env.Append(**{name: value})
+# ESPURNA_BUILD_* (version parts, `-t build-and-copy`), ESPURNA_BOARD and ESPURNA_FLAGS of the OS environment:
+# scripts/pio_main.py, the post: script of every chip
 
 
 CI = check_env("CI", "false")
@@ -63,8 +49,9 @@ def log(message, verbose=False, file=sys.stderr):
 
 
 def get_shared_libdeps(config, section="common", name="shared_lib_deps"):
-    raw = config.getraw(section, name)
-    return config.parse_multi_values(raw)
+    # resolved: the entries are ${libraries.<name>} of libraries.ini
+    value = config.get(section, name)
+    return value if isinstance(value, list) else config.parse_multi_values(value)
 
 
 def get_shared_libdir(config, section="common", name="shared_lib_dir"):
@@ -118,13 +105,6 @@ def ensure_platform_updated():
     except Exception:
         log("Warning: no connection, cannot check for outdated packages", verbose=True)
 
-
-# handle build flags through os environment.
-# using env instead of ini to avoid platformio ini changing hash on every change
-env.Append(
-    ESPURNA_BOARD=os.environ.get("ESPURNA_BOARD", ""),
-    ESPURNA_FLAGS=os.environ.get("ESPURNA_FLAGS", ""),
-)
 
 ESPURNA_OTA_PORT = os.environ.get("ESPURNA_IP")
 if ESPURNA_OTA_PORT:

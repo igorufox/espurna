@@ -49,4 +49,3 @@ espurna::build::Hardware buildHardware();
 espurna::build::App buildApp();
 
 espurna::StringView buildModules();
-

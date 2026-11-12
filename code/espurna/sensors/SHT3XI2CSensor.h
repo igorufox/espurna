@@ -177,4 +177,3 @@ class SHT3XI2CSensor : public I2CSensor<> {
 };
 
 #endif // SENSOR_SUPPORT && SHT3X_I2C_SUPPORT
-

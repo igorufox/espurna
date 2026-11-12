@@ -68,4 +68,3 @@ private:
     std::vector<double> _values {};
     size_t _size { 0 };
 };
-

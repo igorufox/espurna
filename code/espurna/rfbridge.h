@@ -26,4 +26,3 @@ void rfbStore(size_t id, bool status, String code);
 
 void rfbForget(size_t id, bool status);
 void rfbSetup();
-

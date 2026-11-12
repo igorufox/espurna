@@ -25,7 +25,8 @@ ESPurna but gets no updates over Wi-Fi.
 ## 1. Image
 
 One head image (env `beken` of `code/platformio_beken.ini`) for every BK7231N board: every GPIO of the chip, no relays,
-buttons or LEDs pre-assigned (device template or web UI); the features are modules (MODULES panel), Matter among them.
+buttons or LEDs pre-assigned (device template or web UI); the features are modules, Matter among them, the same as on
+every chip ([docs/modules.md](../docs/modules.md)).
 The firmware finds out at boot which bootloader the chip has, from the CRC32 of its first `0x11000` bytes (Tuya
 `f684a1dc` and `6802f257`, Quectel `64b02979`; Tuya `39afde9f` is the bootloader 3.00 of Tuya's Matter firmware, which
 does not install our updates, ref. [moes-ms-104b-matter.md](moes-ms-104b-matter.md#bootloader-300); `info` in the
@@ -36,15 +37,15 @@ bootloader's partitions: no OTA.
 |------|----------|
 | `espurna-beken-tuya.uf2` | the head, Tuya bootloader (CB1S, CB2S, CB3S, CBU, CB2L ...: 2 MiB, encrypted flash): first flash over UART and every update over Wi-Fi |
 | `espurna-beken-quectel.uf2` | the same head, Quectel bootloader without flash encryption (4 MiB), e.g. the XH-CB2S / BK7231M of the [Sparkleiot Mini](sparkleiot-mini.md): first flash over UART and every update over Wi-Fi |
-| `espurna-beken-modules.bin` | every module (WebUI MODULES panel), both bootloaders |
-| `espurna-beken-full.bin` | Tuya bootloader, flash from `0x11000`: the head with every module in flash, switched off |
+| `espurna-beken.ota` | the install image: both heads and every module (WebUI MODULES panel, the release list); not for ltchiptool |
 
-Each `.uf2` carries the partition table of its bootloader; the board checks that its `download` partition is the one
-of its own bootloader before anything is written and refuses the other file
-([`code/espurna/arch/beken/ota_beken.cpp`](../code/espurna/arch/beken/ota_beken.cpp)). The WebUI release list offers
-the file of the board's bootloader (the board names its image `beken-tuya` or `beken-quectel`).
+Each `.uf2` is the head and, at the start of the `download` partition (the module area), the modules that are on out
+of the box (`captive`), installed by the first boot. It carries the partition table of its bootloader; the board checks
+that its `download` partition is the one of its own bootloader before anything is written and refuses the other file
+([`code/espurna/arch/beken/ota_beken.cpp`](../code/espurna/arch/beken/ota_beken.cpp)). The board names its image after
+its bootloader (`beken-tuya` or `beken-quectel`), so the WebUI takes the right head.
 
-Boards have no builds of their own: the head with the device template of the board. The firmware version carries the git revision (`26.11.0-git<sha>`, `scripts/beken_version.py`), the WebUI release list finds the running release by it.
+Boards have no builds of their own: the head with the device template of the board.
 
 Pin numbers are GPIO numbers (`P24` is GPIO 24, set it as `24` in the web UI). Only the pins that the module brings out
 can be used.
@@ -66,8 +67,9 @@ filled the 16 KiB lwIP heap and the board stopped receiving. After a restart by 
 least 5 minutes. It also waits while a firmware upload runs or a restart is due. `MATTER.START` starts it at once;
 `set matterDelay 0` gives the old start at boot.
 
-Matter is a module like the others: installed from the MODULES panel into the module area (the `download` partition,
-which an update of the head takes back: switch the modules off with MODULES.OFF first, the update refuses otherwise).
+Matter is the `matter` module: ticked on the MODULES panel and installed by the Apply from `espurna-beken.ota`, like
+every module ([docs/modules.md](../docs/modules.md#installing-modules-apply)). The head carries what it needs: lwIP with
+IPv6 and the Matter library's lwIP options; the Matter stack answers mDNS itself (not together with the `mdns` module).
 Boards with Quectel Matter factory data (`0x3E0000`) use it: the certificates and the
 setup code printed on the box. Boards without make their own identity at the first start (development DAC, VID 0xFFF1 /
 PID 0x8000, random setup code): controllers that accept SDK example devices, such as the speaker hub and
@@ -128,10 +130,10 @@ Wi-Fi LED, `remote_io` is the 433 MHz receiver. The `_lv` fields give the active
 py -3 -m platformio run -c platformio_beken.ini -e beken
 ```
 
-One env, `beken`: the head, every module (thingspeak, domoticz, matter) and the release files in one build
-([docs/modules.md](../docs/modules.md#beken)), in `code/.pio/build_beken/beken/`: `espurna-beken-tuya.uf2` (the head, Tuya
-layout; LibreTiny's `firmware.uf2` under the release name), `espurna-beken-quectel.uf2` (the same head for the Quectel
-layout, `code/scripts/beken_quectel_image.py`), `espurna-beken-modules.bin` and `espurna-beken-full.bin`. Then flash it:
+One env, `beken`: the head, every module and the release files in one build
+([docs/modules.md](../docs/modules.md#building)), in `code/.pio/build_beken/beken/`: `espurna-beken-tuya.uf2` (Tuya
+layout), `espurna-beken-quectel.uf2` (the same head for the Quectel layout, `code/scripts/beken_quectel_image.py`) and
+`espurna-beken.ota`. Then flash it:
 
 ```
 ltchiptool flash write -d COM3 -b 921600 -t 45 code/.pio/build_beken/beken/espurna-beken-tuya.uf2
@@ -144,10 +146,10 @@ the board from its own 5 V rail (or a 3.3 V supply of 500 mA) for the first boot
 Touch CEN to GND at `Connecting...` again. The chip starts ESPurna by itself at the end, no reset is needed. After the first
 setup below, pick the board on *ADMIN → Device Template* and reboot.
 
-Only the `app` partition (`0x11000`) is written. The bootloader stays; on Tuya modules the Tuya config at `0x1EE000` stays
-too, so the stock pin map is still on the chip.
+The `app` partition (`0x11000`) and the start of the `download` partition (the modules on out of the box) are written.
+The bootloader stays; on Tuya modules the Tuya config at `0x1EE000` stays too, so the stock pin map is still on the chip.
 
-Matter, like every module, is installed afterwards from the MODULES panel (`espurna-beken-modules.bin`).
+Every other module, Matter among them, comes afterwards from the MODULES panel (the `.ota` of the release).
 
 **A board that already runs ESPurna needs no CEN wire.** The bootloader answers the link check of ltchiptool for a short
 moment after every reboot, and the ESPurna terminal is on the same UART1 at 115200: send `reset` on the port right before
@@ -188,18 +190,20 @@ cannot be made again.
 
 A phone should show the "sign in to network" page by itself (captive portal, not checked on a phone yet); otherwise
 open the address by hand.
-There is no `ESPURNA-XXXXXX.local` name: ESPurna's mDNS responder is off in the Matter image, use the IP address.
+A `<hostname>.local` name needs the `mdns` module; without it (or with `matter`) use the IP address.
 
 ## 6. Updates over Wi-Fi
 
-**From GitHub.** *ADMIN*, OTA, *From GitHub*, *Show releases*, *Install*: the browser downloads the `.uf2` of the
-board's bootloader (`espurna-beken-tuya.uf2` or `espurna-beken-quectel.uf2`, from GitHub Pages: the board itself cannot
-download from GitHub, its mbedTLS has no ECDHE), checks its SHA-256 and uploads it: one upload, the board restarts into
-the new firmware. Installed modules take the space the update goes to: MODULES.OFF first, the update refuses otherwise.
+The same as on every chip: *ADMIN*, OTA, *From GitHub*, *Install*, or the MODULES panel with the `.ota`
+([docs/modules.md](../docs/modules.md#updating-the-head)). The browser brings the file (the board cannot download from
+GitHub, its mbedTLS has no ECDHE): the board restarts without modules, takes the head of its bootloader on `/upgrade`
+(into the `download` partition, the module area), the bootloader installs it at the restart (about 20 s), then the
+Apply writes the modules again. The settings stay. The head of the other bootloader is refused before anything is
+written (the board compares the `download` partition of the file with its own). Details:
+[docs/updates.md](../docs/updates.md#beken-the-uf2-of-the-boards-bootloader).
 
-**By hand.** Upload the `.uf2` of the board's bootloader on **ADMIN → Upgrade**. It takes about 30 s, plus about 20 s
-while the bootloader installs it, and keeps the settings. The file of the other bootloader is refused before anything is
-written (the board compares the `download` partition of the file with its own).
+**By hand.** With the modules off (`MODULES.OFF`; `/upgrade` answers 409 while module code runs), upload the `.uf2` of
+the board's bootloader on **ADMIN → Upgrade** (about 30 s), then Apply the modules from the `.ota` of the same release.
 
 ![Admin tab, OTA: Browse and Upgrade](img/webui-ota.webp)
 
@@ -243,12 +247,17 @@ switches the relay.
   terminal command", "after a successful OTA update") and the stability counter are carried in the 16-bit SDK retention
   register instead, so they survive reboots done by ESPurna and crashes; after a hang only `watchdog` is known.
   Relay states are restored from the settings, not from RTC memory.
-- **Network watchdog.** A board whose network stops receiving (on Wi-Fi, but no packet for 2 minutes, not even the
-  gateway's answer to ARP) restarts with *Reboot after the network stopped receiving*. Seen on the boot right after the
-  Matter code was written on a 2 MiB board, cause not found ([docs/updates.md](../docs/updates.md#beken-the-browser-uploads-the-board-picks-its-part)).
-  The hardware watchdog is armed from the first `loop()`: a hang inside `setup()` still needs a power cycle.
-- ESPurna's mDNS responder is off in the Matter image (the Matter stack answers mDNS for itself), so `<hostname>.local`
-  is not announced; looking up the MQTT broker over mDNS (`mqttServer` left empty) does not work either, set the broker
+- **Network watchdog.** A board whose network stops receiving restarts with *Reboot after the network stopped
+  receiving*. Seen on 2 MiB Tuya boards: on Wi-Fi, address from DHCP, but no ping, no ARP, the loop still feeding the
+  watchdog (twice on a CB3S, once 28 minutes deaf). The likely cause is the lwIP heap (16 KiB, every received frame
+  comes from it): when it is full, receiving stops without an error; not proven. Every 20 s while connected the
+  firmware compares the received packet counters (ARP, IPv4, IPv6); with nothing new it sends an ARP request to the
+  gateway, and after 6 checks in a row without a packet (2 minutes) it restarts (`netwatch`,
+  `arch/beken/wifi_driver_beken.cpp`). The deaf boots came when Matter started at boot and both controllers reconnected
+  at once next to DHCP, MQTT and the WebUI: hence `matterDelay` ([section 2](#2-matter)). The hardware watchdog is armed
+  from the first `loop()`: a hang inside `setup()` still needs a power cycle.
+- Without the `mdns` module (or with `matter`, whose stack answers mDNS for itself) `<hostname>.local` is not announced
+  by ESPurna; looking up the MQTT broker over mDNS (`mqttServer` left empty) does not work either, set the broker
   address.
 - `wifiTxPwr` (dBm) works, but the SDK calibration caps it: 10 dBm measured about 5 dB below the default 20 dBm.
 - No ArduinoOTA, and the board does not download updates itself: the browser brings the file (see [section 6](#6-updates-over-wi-fi)).

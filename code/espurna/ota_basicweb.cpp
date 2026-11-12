@@ -103,6 +103,9 @@ namespace internal {
 
 bool denied { false };
 
+// a page of another site, nothing is written (ref. otaWebSameOrigin())
+bool refused { false };
+
 struct Result {
     template <typename T>
     void set(int code, T&& value) {
@@ -158,6 +161,17 @@ bool authenticated(Server& server) {
     return false;
 }
 
+// the POSTs that change the firmware (ref. otaWebSameOrigin()), headers collected by begin()
+template <typename Server>
+bool sameOrigin(Server& server) {
+    if (otaWebSameOrigin(server.header(F("Origin")), server.hostHeader(), server.header(F("X-Forwarded-Host")))) {
+        return true;
+    }
+
+    DEBUG_MSG_P(PSTR("[UPGRADE] Refused, Origin %s is not this board\n"), server.header(F("Origin")).c_str());
+    return false;
+}
+
 template <typename Server>
 void result(Server& server) {
     if (internal::denied) {
@@ -166,6 +180,7 @@ void result(Server& server) {
         return;
     }
 
+    internal::refused = false;
     internal::result.send(server);
 }
 
@@ -182,8 +197,15 @@ void upload(Server& server) {
         }
 
         internal::result.reset();
+        internal::refused = false;
         internal::denied = !server.authenticate("admin", systemPassword().c_str());
         if (internal::denied) {
+            return;
+        }
+
+        internal::refused = !sameOrigin(server);
+        if (internal::refused) {
+            internal::result.set(403, F("Origin"));
             return;
         }
 
@@ -197,7 +219,7 @@ void upload(Server& server) {
     }
 
     case UPLOAD_FILE_END:
-        if (internal::denied) {
+        if (internal::denied || internal::refused) {
             break;
         }
 
@@ -234,7 +256,7 @@ void upload(Server& server) {
         break;
 
     case UPLOAD_FILE_ABORTED:
-        if (internal::denied) {
+        if (internal::denied || internal::refused) {
             break;
         }
 
@@ -262,7 +284,7 @@ void home(Server& server) {
     page += F("const S=");
     page += status;
     page += F(",\"host\":\"");
-    page += systemHostname();
+    page += otaWebJsString(systemHostname());
     page += F("\"},I=");
     page += FPSTR(build::Images);
     page += F(",M=\"");
@@ -293,6 +315,11 @@ void fetch(Server& server) {
         return;
     }
 
+    if (!sameOrigin(server)) {
+        server.send(403, PSTR("text/plain"), String(F("ERROR: Origin")));
+        return;
+    }
+
     String error;
     if (!otaFetchRequest(server.arg(F("url")), server.arg(F("sha256")), error)) {
         server.send(400, PSTR("text/plain"), String(F("ERROR: ")) + error);
@@ -307,6 +334,10 @@ void fetch(Server& server) {
 
 template <typename Server>
 void begin(Server& server, uint16_t port) {
+    // the server keeps only the headers it is asked for (ref. sameOrigin())
+    static const char* headers[] { "Origin", "X-Forwarded-Host" };
+    server.collectHeaders(headers, sizeof(headers) / sizeof(headers[0]));
+
     server.on("/", HTTP_GET, [&]() {
         handlers::home(server);
     });

@@ -42,14 +42,19 @@ Common part. SDK headers, chip facts and what only one of the chips needs are in
 #define strcmp_P strcmp
 #endif
 
+// PROGMEM_STRING / STRING_VIEW (ref. types.h): .rodata is mapped from flash, string literals are already there
+#define PROGMEM_STRING_ATTR
+#define PROGMEM_STRING(NAME, X) static constexpr char NAME[] = (X)
+#define STRING_VIEW(X) ::espurna::StringView(X)
+#define STRING_VIEW_INLINE(NAME, X)\
+        static constexpr char __pstr__ ## NAME ##  __ [] = (X);\
+        static constexpr auto NAME = ::espurna::StringView(__pstr__ ## NAME ## __)
+
 // Missing ADC/UART/TZ constants/functions
 #define ADC_VCC 255
 #define ADC_TOUT 254
 #undef ADC_MODE_VALUE
 #define ADC_MODE_VALUE ADC_TOUT
-// SDK log goes to the console port of the framework, nothing to switch
-#define UART_NO -1
-inline void uart_set_debug(int) {}
 #define TZ_Etc_UTC "UTC0"
 
 // Stack info, uxTaskGetStackHighWaterMark returns words; convert to bytes for ESP8266 parity.

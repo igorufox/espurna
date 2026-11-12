@@ -2,8 +2,8 @@
 
 NSPANEL MODULE
 
-Sonoff NSPanel (gen1, ESP32) display backend for the OHpanel TFT (nspanel_ohpanel.h) and the
-joBr99 "NSPanel Lovelace UI" TFT (nspanel_lovelace.h), detected automatically,
+Sonoff NSPanel (gen1, ESP32) display backend for the OHpanel TFT (nspanel_ohpanel.cpp) and the
+joBr99 "NSPanel Lovelace UI" TFT (nspanel_lovelace.cpp), detected automatically (the parts: nspanel_core.h),
 (flash layout and updates: arch/esp32/safeboot_esp32.cpp, as on every ESP32 image)
 
 */

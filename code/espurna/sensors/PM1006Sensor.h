@@ -126,4 +126,3 @@ class PM1006Sensor : public BaseSensor {
 };
 
 #endif // SENSOR_SUPPORT && PM1006_SUPPORT
-

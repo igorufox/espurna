@@ -80,4 +80,3 @@ class SI1145Sensor : public I2CSensor<> {
 };
 
 #endif // SENSOR_SUPPORT && SI1145_SUPPORT
-

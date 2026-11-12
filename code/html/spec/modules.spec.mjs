@@ -1,4 +1,18 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+    HEAD_ROUTES,
+    OTA_MODULES,
+    headFor,
+    headName,
+    installImage,
+    isInstallImage,
+    modulesFileOf,
+    modulesHeadId,
+    needsHead,
+    otaParts,
+    parseContainer,
+    runningNames,
+} from '../src/install.mjs';
 import {
     blockedBy,
     conflictsOf,
@@ -9,7 +23,6 @@ import {
     meterLevel,
     meters,
     moduleRows,
-    parseContainer,
     sectors,
     selectionAfter,
     sizeText,
@@ -79,15 +92,6 @@ test('the modules file is read, a foreign or cut file is refused', () => {
     expect([...(packages.get('sensors')?.data ?? [])]).toEqual([1, 2, 3]);
 
     expect(() => parseContainer(new ArrayBuffer(16))).toThrow('not a modules file');
-
-    // the full image: an ESP image at 0x0, the same modules file behind 1 MB
-    const inner = container([{name: 'rf', image: 16000, ram: 1300, iram: 64, data: [7, 8, 9]}]);
-    const full = new Uint8Array(0x100000 + inner.byteLength).fill(0xff);
-    full[0] = 0xe9;
-    full.set(new Uint8Array(inner), 0x100000);
-    const fromFull = parseContainer(full.buffer);
-    expect([...fromFull.keys()]).toEqual(['rf']);
-    expect([...(fromFull.get('rf')?.data ?? [])]).toEqual([7, 8, 9]);
 
     const cut = container([{name: 'rf', image: 1, ram: 0, iram: 0, data: [1, 2, 3, 4]}]).slice(0, 82);
     expect(() => parseContainer(cut)).toThrow('cut short');
@@ -198,7 +202,7 @@ test('a group counts its modules: on, in flash, all', () => {
 });
 
 describe('install image and the ticked set', async () => {
-    const { otaParts, modulesFileOf, selectionAfter, runningSet, OTA_MODULES } = await import('../src/modules.mjs');
+    const { selectionAfter, runningSet } = await import('../src/modules.mjs');
 
     /** an install image: one head and one modules file */
     function ota(head, modules) {
@@ -227,12 +231,14 @@ describe('install image and the ticked set', async () => {
         const parts = otaParts(buffer);
         expect(parts.map((x) => [x.kind, x.name, x.data.length])).toEqual([[1, 'esp32', 3], [2, 'modules', 8]]);
         expect(new Uint8Array(modulesFileOf(buffer))).toEqual(parts.find((x) => x.kind === OTA_MODULES).data);
+        expect(isInstallImage(buffer)).toBe(true);
     });
 
     test('not an install image: the buffer as it is', () => {
         const plain = new Uint8Array([0x45, 0x4d, 0x43, 0x32]).buffer;
         expect(otaParts(plain)).toBe(null);
         expect(modulesFileOf(plain)).toBe(plain);
+        expect(isInstallImage(plain)).toBe(false);
     });
 
     test('ticking a module ticks what it needs, unticking unticks what needs it', () => {
@@ -243,6 +249,7 @@ describe('install image and the ticked set', async () => {
         ]);
         const now = runningSet(status);
         expect([...now].sort()).toEqual(['captive', 'mqtt']);
+        expect(runningNames({modules: [...status.modules, {name: 'rf', enabled: 0}]})).toEqual(['mqtt', 'captive']);
 
         const on = selectionAfter(new Set(['captive']), 'domoticz', true, status, packages);
         expect([...on].sort()).toEqual(['captive', 'domoticz', 'mqtt']);
@@ -259,4 +266,147 @@ test('matter unticks mdns on the ESP32 and the Beken, not on the ESP8266', () =>
     expect(blockedBy('mdns', new Set(['matter']), beken)).toEqual(['matter']);
     expect(blockedBy('mdns', new Set(['matter']), status())).toEqual([]);
     expect(conflictsOf('matter', status())).toEqual([]);
+});
+
+test('the head id of the modules file and the head of an install image for the board', () => {
+    const data = new Array(48).fill(0);
+    for (let n = 0; n < 16; ++n) {
+        data[24 + n] = n + 1;
+    }
+    const file = container([{name: 'mqtt', image: 9000, ram: 100, iram: 0, data}]);
+    expect(modulesHeadId(file)).toBe('0102030405060708090a0b0c0d0e0f10');
+    expect(modulesHeadId(container([]))).toBe('');
+    expect(modulesHeadId(new ArrayBuffer(4))).toBe('');
+
+    // the head goes on unless the board runs the build the modules were linked against
+    expect(needsHead({md5: '0102030405060708090a0b0c0d0e0f10'}, file)).toBe(false);
+    expect(needsHead({md5: 'ffff'}, file)).toBe(true);
+    expect(needsHead({}, file)).toBe(true);
+
+    const parts = [
+        {kind: 1, name: 'tuya', data: new Uint8Array(1)},
+        {kind: 1, name: 'quectel', data: new Uint8Array(2)},
+        {kind: 2, name: 'modules', data: new Uint8Array(3)},
+    ];
+    expect(headFor(parts, 'beken-quectel')?.name).toBe('quectel');
+    expect(headFor(parts, 'beken-tuya')?.name).toBe('tuya');
+    expect(headFor(parts, 'esp32')).toBeNull();
+});
+
+test('every head of an install image has its route, the chips differ only in that data', () => {
+    expect(['esp8266', 'esp32', 'beken-tuya', 'beken-quectel', 'esp32-matter'].map(headName))
+        .toEqual(['esp8266', 'esp32', 'tuya', 'quectel', 'esp32']);
+    for (const name of ['esp8266', 'esp32', 'tuya', 'quectel']) {
+        expect(HEAD_ROUTES[name]).toBeDefined();
+    }
+    // the ESP32 runs from its only application slot: its safeboot writes the head, the file as the body
+    expect(HEAD_ROUTES.esp32).toEqual({restart: 'safeboot/switch', away: 404, upload: 'upload', field: ''});
+    expect(HEAD_ROUTES.tuya).toEqual(HEAD_ROUTES.esp8266);
+    expect(HEAD_ROUTES.quectel).toEqual(HEAD_ROUTES.esp8266);
+});
+
+describe('one install for every chip', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
+    });
+
+    /**
+     * the board: /modules answers 200, or 404 while in the ESP32 safeboot; every request is logged
+     * @param {string[]} log
+     */
+    function board(log) {
+        let safeboot = false;
+        vi.stubGlobal('fetch', async (url, options = {}) => {
+            const path = new URL(url).pathname.slice(1);
+            log.push(`${options.method ?? 'GET'} ${path}`);
+            if (path === 'safeboot/switch') {
+                safeboot = true;
+            }
+            if ((path === 'modules') && safeboot) {
+                return new Response('', {status: 404});
+            }
+            return new Response((path === 'modules') ? '{"modules":[]}' : 'OK', {status: 200});
+        });
+        vi.stubGlobal('XMLHttpRequest', class {
+            constructor() {
+                this.upload = {addEventListener() {}};
+                this.handlers = {};
+            }
+            open(method, url) {
+                this.path = new URL(url).pathname.slice(1);
+                log.push(`${method} ${this.path}`);
+            }
+            addEventListener(name, handler) {
+                this.handlers[name] = handler;
+            }
+            send(body) {
+                if (this.path === 'upload') {
+                    safeboot = false;
+                }
+                log.push((body instanceof FormData) ? `form ${[...body.keys()].join(',')}` : 'body');
+                this.status = 200;
+                this.responseText = 'OK';
+                setTimeout(() => this.handlers.load(), 0);
+            }
+        });
+    }
+
+    /** @param {string} name the head in the image */
+    function image(name) {
+        const data = new Array(48).fill(0);
+        data[24] = 0xaa;
+        const modules = new Uint8Array(container([{name: 'webui', image: 9000, ram: 0, iram: 0, data}]));
+        const head = new Uint8Array([0xe9, 1, 2, 3]);
+        const count = 2;
+        const table = 8 + 32 * count;
+        const out = new Uint8Array(table + head.length + modules.length);
+        const view = new DataView(out.buffer);
+        view.setUint32(0, 0x31544f45, true);
+        view.setUint32(4, count, true);
+        let offset = table;
+        [[1, name, head], [2, 'modules', modules]].forEach(([kind, part, bytes], index) => {
+            const at = 8 + 32 * index;
+            view.setUint32(at, kind, true);
+            [...part].forEach((c, i) => view.setUint8(at + 4 + i, c.charCodeAt(0)));
+            view.setUint32(at + 20, offset, true);
+            view.setUint32(at + 24, bytes.length, true);
+            out.set(bytes, offset);
+            offset += bytes.length;
+        });
+        return out.buffer;
+    }
+
+    /**
+     * @param {string} chip the board's image
+     * @param {string} head
+     * @param {string} md5 the board's head id
+     */
+    async function run(chip, head, md5) {
+        vi.useFakeTimers();
+        /** @type {string[]} */
+        const log = [];
+        board(log);
+        const done = installImage(new URL('http://board/'), image(head), {image: chip, md5}, ['webui'], () => {});
+        await vi.runAllTimersAsync();
+        await done;
+        return log;
+    }
+
+    const APPLY = ['POST modules/off', 'GET modules', 'POST modules/apply', 'form names,modules', 'GET modules'];
+
+    test('ESP8266 and Beken: the head to /upgrade after a restart without modules, then the Apply', async () => {
+        const head = ['POST modules/off', 'GET modules', 'POST upgrade', 'form upgrade', 'GET modules'];
+        expect(await run('esp8266', 'esp8266', 'ff')).toEqual([...head, ...APPLY]);
+        expect(await run('beken-quectel', 'quectel', 'ff')).toEqual([...head, ...APPLY]);
+    });
+
+    test('ESP32: the head through the safeboot, then the same Apply', async () => {
+        expect(await run('esp32', 'esp32', 'ff')).toEqual([
+            'POST safeboot/switch', 'GET modules', 'POST upload', 'body', 'GET modules', ...APPLY]);
+    });
+
+    test('the board runs the head of the image: the Apply alone', async () => {
+        expect(await run('esp32', 'esp32', 'aa' + '00'.repeat(15))).toEqual(APPLY);
+    });
 });

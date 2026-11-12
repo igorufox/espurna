@@ -3,10 +3,13 @@
 # only the OTA 'download' partition and the RBL format differ (ref. arch/beken/layout_beken.cpp).
 #
 #   <ltchiptool python> beken_quectel_image.py <build dir> <board json of the build> <board json of the Quectel layout>
+#       [<file>+<offset>=flasher:download]
 #
 # Writes espurna-beken-quectel.uf2: the whole application partition (image, CRC of every 32 bytes, RBL header at its
 # end) for the first flash over UART, and the RBL of the Quectel layout for the 'download' partition, the OTA. Its
 # BOARD tag names the Quectel layout: the board refuses a UF2 of the other bootloader (arch/beken/ota_beken.cpp).
+# The optional last input is the modules file of the modules on by default at the start of the module area ('download'
+# + 0x1000, module_initial_image.py), for the flasher only, the same run as in espurna-beken-tuya.uf2.
 # Run by scripts/beken_module_link.py after the head's link, under ltchiptool's python (LibreTiny's venv).
 
 import json
@@ -33,7 +36,7 @@ def merged(base, extra):
     return out
 
 
-def build(folder, board_json, quectel_json):
+def build(folder, board_json, quectel_json, extra=()):
     from ltchiptool import Board
     from ltchiptool.soc.bk72xx.binary import to_offset
     from ltchiptool.soc.bk72xx.util import RBL, BekenBinary, DataType, OTACompression, OTAEncryption
@@ -96,7 +99,7 @@ def build(folder, board_json, quectel_json):
             "--legacy",
             f"{app_path}=flasher:app",
             f"{ota_path}=device:download",
-        ],
+        ] + list(extra),
         check=True,
     )
     listing([uf2_path])
@@ -104,6 +107,6 @@ def build(folder, board_json, quectel_json):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        sys.exit(__doc__ if __doc__ else "usage: beken_quectel_image.py <build dir> <board json> <quectel json>")
-    build(sys.argv[1], sys.argv[2], sys.argv[3])
+    if len(sys.argv) not in (4, 5):
+        sys.exit("usage: beken_quectel_image.py <build dir> <board json> <quectel json> [<file>+<offset>=flasher:download]")
+    build(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:])

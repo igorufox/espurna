@@ -1,10 +1,10 @@
 /*
 
-MATTER BACKEND FOR BEKEN (LibreTiny)
+MATTER FOR BEKEN (LibreTiny): WHAT ONLY THIS CHIP HAS
 
-Matter On/Off plug (connectedhomeip, prebuilt libMatterApp.a of matter-bk7231n) on top of ESPurna. ESPurna keeps
-Wi-Fi, the relay and the web UI (matter.cpp); Matter gets the bk_* platform API it was written against (matter_pal.h
-of the BK7231N port):
+The Matter application (the C API of espurna_matter.h: matter_app_start() ...) is libMatterApp.a of matter-bk7231n
+(connectedhomeip for the BK7231N), the rest of the Matter layer is matter.cpp. Here only what that library and this
+chip need underneath: the bk_* platform API it was written against (matter_pal.h of the BK7231N port):
 - "chip-factory" namespace: read only, straight from the factory data the stock firmware left in flash: the factory
   table of the Quectel SDK (Sparkleiot XH-CB2S), or the encrypted key-value store of Tuya's Matter firmware (MOES
   MS-104B Matter, CBU, ref. tuya_kv_beken.h): DAC and its key, PAI, certification declaration, passcode verifier,
@@ -12,6 +12,7 @@ of the BK7231N port):
 - every other namespace (chip-config, chip-counters, the KVS of fabrics, ACL ...): FlashDB on the 'kvs' partition
 - Wi-Fi status and the connected / got IP events from the ESPurna wifi module
 - entropy from the TRNG of the chip
+- the watchdog while a controller commissions, IGMP on the netif for the mDNS of Matter
 
 */
 
@@ -20,9 +21,8 @@ of the BK7231N port):
 #if defined(LIBRETINY) && MATTER_SUPPORT
 
 #include "espurna_matter.h"
+#include "espurna_tasks.h"
 #include "layout_beken.h"
-#include "relay.h"
-#include "terminal.h"
 #include "tuya_kv_beken.h"
 
 #include <FreeRTOS.h>
@@ -32,17 +32,13 @@ of the BK7231N port):
 #include <lwip/igmp.h>
 #include <lwip/netif.h>
 #include <lwip/tcpip.h>
-#if defined(MATTER_UDP_LOG)
-#include <lwip/udp.h>
-#endif
 
 #include <algorithm>
-#include <atomic>
 #include <cstring>
 #include <vector>
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The C API between ESPurna and the Matter library (matter_pal.h and matter_app.cpp of the BK7231N port)
+// Types of the bk_* platform API of the Matter library (matter_pal.h of the BK7231N port)
 
 extern "C" {
 
@@ -92,19 +88,6 @@ typedef struct {
     int ap_num;
     wifi_scan_ap_info_t* aps;
 } wifi_scan_result_t;
-
-int matter_app_start(void);
-// plug endpoints of the library (1..4); libraries before multi-plug have only endpoint 1 and no such function
-uint8_t matter_app_plugs(void) __attribute__((weak));
-void matter_set_onoff(uint8_t endpoint, bool on);
-bool matter_onboarding_codes(char* manual, size_t manual_size, char* qr, size_t qr_size);
-int matter_fabric_count(void);
-// controller list / removal; libraries before them do not have these
-bool matter_fabric_info(int n, uint8_t* index, uint16_t* vendor, uint64_t* node, char* label, size_t label_size)
-    __attribute__((weak));
-bool matter_remove_fabric(uint8_t index) __attribute__((weak));
-void matter_open_window(void);
-void matter_ping(void);
 
 } // extern "C"
 
@@ -168,8 +151,8 @@ bool copy_number(uint32_t value, size_t bytes, uint8_t* out, size_t size, size_t
 namespace tuya {
 
 // Tuya's Matter firmware has no factory partition: the identity is in the encrypted key-value store of the Tuya SDK at
-// the end of the flash, PEM and JSON (ref. tuya_kv_beken.h). Decrypted and converted once, in the loop (backend::start(),
-// MATTER.FACTORY, product()) before the Matter task asks for it, and kept: the library reads it at every
+// the end of the flash, PEM and JSON (ref. tuya_kv_beken.h). Decrypted and converted once, in the loop (backend::prepare(),
+// MATTER.FACTORY, the panel) before the Matter task asks for it, and kept: the library reads it at every
 // commissioning step. Only on the Tuya layout, the store is out of reach of ESPurna's own partitions
 using ::espurna::beken::tuya_kv::MatterFactory;
 
@@ -448,7 +431,8 @@ bool quectel_read(const char* name, uint8_t* out, size_t size, size_t& length) {
             continue;
         }
 
-        if ((entry.offset + entry.length) > DataSize) {
+        // without overflow: a damaged entry must not wrap around to a small sum
+        if ((entry.offset > DataSize) || (entry.length > (DataSize - entry.offset))) {
             return false;
         }
 
@@ -506,15 +490,15 @@ namespace kv {
 
 // 'kvs' partition of the board (0x1D3000, 32 KiB), empty on the boards with Matter factory data
 struct fdb_kvdb db;
-SemaphoreHandle_t mutex { nullptr };
+espurna::system::Mutex mutex;
 bool ready { false };
 
 void lock(fdb_db_t) {
-    xSemaphoreTake(mutex, portMAX_DELAY);
+    mutex.lock();
 }
 
 void unlock(fdb_db_t) {
-    xSemaphoreGive(mutex);
+    mutex.unlock();
 }
 
 bool init() {
@@ -522,7 +506,6 @@ bool init() {
         return true;
     }
 
-    mutex = xSemaphoreCreateMutex();
     fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_LOCK, reinterpret_cast<void*>(lock));
     fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_UNLOCK, reinterpret_cast<void*>(unlock));
 
@@ -646,6 +629,9 @@ int clear_all() {
 
 // ---------------------------------------------------------------------------------------------------------------------
 
+// The library registers its network callbacks from the Matter task (add() / remove()), the loop reports the network
+// to them (backend::network()): the list and the state are only touched under the mutex, the callbacks themselves run
+// outside of it, from a copy (they may register again)
 namespace events {
 
 struct Callback {
@@ -654,29 +640,49 @@ struct Callback {
     void* arg;
 };
 
+espurna::system::Mutex mutex;
 std::vector<Callback> callbacks;
 bool connected { false };
 
+// the loop
 void notify(event_module_t module, int id, void* data) {
-    for (const auto& callback : callbacks) {
+    std::vector<Callback> copy;
+    {
+        espurna::system::MutexLock lock(mutex);
+        copy = callbacks;
+    }
+
+    for (const auto& callback : copy) {
         if (callback.module == module) {
             callback.callback(callback.arg, module, id, data);
         }
     }
 }
 
+// the loop, before notify()
+void network(bool up) {
+    espurna::system::MutexLock lock(mutex);
+    connected = up;
+}
+
+// the Matter task
 void add(event_module_t module, event_cb_t callback, void* arg) {
-    for (auto& entry : callbacks) {
-        if ((entry.module == module) && (entry.callback == callback)) {
-            entry.arg = arg;
-            return;
+    bool up;
+    {
+        espurna::system::MutexLock lock(mutex);
+        for (auto& entry : callbacks) {
+            if ((entry.module == module) && (entry.callback == callback)) {
+                entry.arg = arg;
+                return;
+            }
         }
+
+        callbacks.push_back(Callback{module, callback, arg});
+        up = connected;
     }
 
-    callbacks.push_back(Callback{module, callback, arg});
-
     // Matter starts after ESPurna is already on the network
-    if (connected) {
+    if (up) {
         callback(arg, module,
             (module == EVENT_MOD_NETIF) ? EventNetifGotIp4 : EventWifiStaConnected,
             nullptr);
@@ -684,6 +690,7 @@ void add(event_module_t module, event_cb_t callback, void* arg) {
 }
 
 void remove(event_module_t module, event_cb_t callback) {
+    espurna::system::MutexLock lock(mutex);
     for (auto it = callbacks.begin(); it != callbacks.end(); ++it) {
         if (((*it).module == module) && ((*it).callback == callback)) {
             callbacks.erase(it);
@@ -726,78 +733,6 @@ void fill(unsigned char* out, size_t length) {
 
 } // namespace trng
 
-// ---------------------------------------------------------------------------------------------------------------------
-
-#if defined(MATTER_UDP_LOG)
-// Bring-up aid for boards without a serial wire, off unless built with -DMATTER_UDP_LOG="a.b.c.d": every Matter log
-// line and start step as one UDP packet
-// to MATTER_UDP_LOG (a.b.c.d), port 5514, sent from the tcpip thread, so it works while the loop is stuck
-namespace udplog {
-
-struct Message {
-    size_t length;
-    char text[160];
-};
-
-udp_pcb* pcb { nullptr };
-
-void send_tcpip(void* arg) {
-    auto* message = static_cast<Message*>(arg);
-    if (!pcb) {
-        pcb = udp_new();
-    }
-
-    if (pcb) {
-        auto* buffer = pbuf_alloc(PBUF_TRANSPORT, message->length, PBUF_RAM);
-        if (buffer) {
-            std::memcpy(buffer->payload, message->text, message->length);
-            ip_addr_t address;
-            ipaddr_aton(MATTER_UDP_LOG, &address);
-            udp_sendto(pcb, buffer, &address, 5514);
-            pbuf_free(buffer);
-        }
-    }
-
-    free(message);
-}
-
-void send(const char* text) {
-    auto* message = static_cast<Message*>(malloc(sizeof(Message)));
-    if (!message) {
-        return;
-    }
-
-    message->length = snprintf(message->text, sizeof(message->text), "%u %u %s",
-        static_cast<unsigned>(millis()), static_cast<unsigned>(lt_heap_get_free()), text);
-    message->length = std::min(message->length, sizeof(message->text) - 1);
-    if (tcpip_callback(send_tcpip, message) != ERR_OK) {
-        free(message);
-    }
-}
-
-} // namespace udplog
-#define MATTER_STEP(X) udplog::send(X)
-#else
-#define MATTER_STEP(X)
-#endif
-
-String node_label;
-uint8_t plug_count { 1 };
-
-// device type of the relay endpoints from the factory certification declaration, 0 = the library's own (plug)
-uint16_t device_type { 0 };
-
-// names of the bridged plugs, filled by backend::start() in the loop for the Matter task (matter_plug_name())
-struct PlugName {
-    char label[33];
-    char unique[33];
-};
-
-PlugName plug_names[4];
-
-// Commissioning in progress, from the Matter task: the message trace is only logged then
-std::atomic<bool> commissioning_active { false };
-
 // The lwIP port of the BDK brings the netif up without NETIF_FLAG_IGMP (MLD6 is set), joining an IPv4 multicast
 // group then fails with ERR_VAL, and the minimal mDNS of Matter cannot answer on 224.0.0.251. Runs in the tcpip thread
 void enable_igmp(void*) {
@@ -809,75 +744,14 @@ void enable_igmp(void*) {
     }
 }
 
-#if TERMINAL_SUPPORT
-PROGMEM_STRING(Factory, "MATTER.FACTORY");
-
-// Public part only, no keys, passcode or verifier
-void command_factory(::terminal::CommandContext&& ctx) {
-    std::vector<uint8_t> dac;
-    std::vector<uint8_t> pai;
-    std::vector<uint8_t> cd;
-    factory::read("dac-cert", dac);
-    factory::read("pai-cert", pai);
-    factory::read("cert-dclrn", cd);
-
-    const auto source = factory::source();
-    if (!source.length()) {
-        ctx.output.printf_P(PSTR("identity: own (development DAC made on the board), no factory data\n"));
-        terminalOK(ctx);
-        return;
-    }
-
-    ctx.output.printf_P(PSTR("identity: factory, %s\n"), source.c_str());
-    ctx.output.printf_P(PSTR("vendor: %s (0x%04X), product: %s (0x%04X)\n"),
-        factory::read_text("vendor-name").c_str(), factory::read_number("vendor-id"),
-        factory::read_text("product-name").c_str(), factory::read_number("product-id"));
-    ctx.output.printf_P(PSTR("certificates: DAC %u, PAI %u, declaration %u bytes\n"),
-        dac.size(), pai.size(), cd.size());
-
-    terminalOK(ctx);
-}
-
-PROGMEM_STRING(Reset, "MATTER.RESET");
-
-// Forget every controller (fabrics, ACL), keep the own identity and its pairing code. Not while Matter runs: it
-// holds all of that in memory and writes it back
-void command_reset(::terminal::CommandContext&& ctx) {
-    if (matterStarted()) {
-        terminalError(ctx, F("Matter is running, reboot first (matterAuto 0 keeps it off)"));
-        return;
-    }
-
-    if (kv::clear_all() != BkOk) {
-        terminalError(ctx, F("Key-value store failed"));
-        return;
-    }
-
-    terminalOK(ctx);
-    prepareReset(CustomResetReason::Terminal);
-}
-
-
-static constexpr ::terminal::Command Commands[] PROGMEM {
-    {Factory, command_factory},
-    {Reset, command_reset},
-};
-#endif
+// device type of the certification declaration, read by prepare()
+uint16_t declared_type { 0 };
 
 } // namespace
 
 // ---------------------------------------------------------------------------------------------------------------------
 
 namespace backend {
-
-// A plug endpoint per relay, as many as the data model of libMatterApp has. Asked in start()
-namespace {
-size_t library_plugs { 1 };
-} // namespace
-
-size_t endpoints() {
-    return std::min(relayCount(), library_plugs);
-}
 
 // On the 2 MiB boards the start right at boot, with both controllers reconnecting at once (CASE, subscriptions, reads)
 // while DHCP, MQTT and the WebUI were busy too, filled the 16 KiB lwIP heap and receiving stopped: the board went deaf
@@ -887,42 +761,28 @@ uint32_t start_delay() {
 }
 
 void setup() {
-#if TERMINAL_SUPPORT
-    terminal::add(Commands);
-#endif
 }
 
-bool start() {
-    MATTER_STEP("start");
-
+// FlashDB of the library, and the Tuya factory identity decrypted here in the loop: the Matter task then only reads
+// the copy
+bool prepare() {
     if (!kv::init()) {
-        DEBUG_MSG_P(PSTR("[MATTER] Key-value store failed\n"));
         return false;
     }
 
-    // Tuya factory identity decrypted here in the loop, the Matter task then only reads the copy
     factory::tuya::get();
-    device_type = factory::tuya::declared_device_type();
-    if (device_type) {
-        DEBUG_MSG_P(PSTR("[MATTER] Device type 0x%04X of the certification declaration\n"), device_type);
-    }
+    declared_type = factory::tuya::declared_device_type();
 
-    node_label = systemHostname();
-    library_plugs = matter_app_plugs ? matter_app_plugs() : 1;
-    plug_count = endpoints();
-    for (size_t index = 0; (index < plug_count) && (index < (sizeof(plug_names) / sizeof(plug_names[0]))); ++index) {
-        plug_name(index, plug_names[index].label, sizeof(plug_names[index].label),
-            plug_names[index].unique, sizeof(plug_names[index].unique));
-    }
-    MATTER_STEP("kv ready, matter_app_start");
-    const auto out = matter_app_start() == 0;
-    MATTER_STEP(out ? "matter_app_start OK" : "matter_app_start FAILED");
-    return out;
+    return true;
+}
+
+uint16_t device_type() {
+    return declared_type;
 }
 
 void network(bool up) {
     if (up) {
-        events::connected = true;
+        events::network(true);
         tcpip_callback(enable_igmp, nullptr);
         events::notify(EVENT_MOD_WIFI, EventWifiStaConnected, nullptr);
         events::notify(EVENT_MOD_NETIF, EventNetifGotIp4, nullptr);
@@ -930,86 +790,59 @@ void network(bool up) {
     }
 
     if (events::connected) {
-        events::connected = false;
+        events::network(false);
         matter_sta_disconnected_t data {};
         events::notify(EVENT_MOD_WIFI, EventWifiStaDisconnected, &data);
     }
 }
 
-void set_onoff(size_t index, bool on) {
-    matter_set_onoff(static_cast<uint8_t>(index + 1), on);
+// The certificate steps of a pairing (attestation, CSR, AddNOC: ECDSA ~2 s per sign / verify on this chip) keep the
+// higher priority Matter task busy longer than the 10 s the loop has to feed the watchdog: a 4-relay bridge reset at
+// the hub's step 3. 30 s while a controller commissions, the loop value (system_beken.cpp LoopWdtTimeout) after it
+void commissioning(bool active) {
+    constexpr uint32_t LoopWdtMs { 10000 };
+    constexpr uint32_t CommissioningWdtMs { 30000 };
+    lt_wdt_enable(active ? CommissioningWdtMs : LoopWdtMs);
 }
 
-bool codes(char* manual, size_t manual_size, char* qr, size_t qr_size) {
-    return matter_onboarding_codes(manual, manual_size, qr, qr_size);
-}
-
-int fabrics() {
-    return matter_fabric_count();
-}
-
-// only called while Matter runs (matter.cpp)
-size_t controllers(Controller* out, size_t size) {
-    if (!matter_fabric_info) {
-        return 0;
-    }
-
-    size_t count { 0 };
-    while (count < size) {
-        auto& entry = out[count];
-        if (!matter_fabric_info(count, &entry.index, &entry.vendor, &entry.node, entry.label, sizeof(entry.label))) {
-            break;
-        }
-        ++count;
-    }
-
-    return count;
-}
-
-bool remove_controller(uint8_t index) {
-    if (!matter_remove_fabric) {
-        return false;
-    }
-
-    const auto out = matter_remove_fabric(index);
-    if (out) {
-        DEBUG_MSG_P(PSTR("[MATTER] Removing controller #%u\n"), index);
-    }
-
-    return out;
-}
-
-void open_window() {
-    matter_open_window();
-}
-
-void ping() {
-    matter_ping();
-}
-
-String product() {
+void describe(Identity& out) {
     const auto source = factory::source();
     if (!source.length()) {
-        return F("ESPurna (0xfff1) / ESPurna plug (0x8000), own identity (development DAC)");
+        out.vendor = F("ESPurna");
+        out.vendor_id = 0xfff1;
+        out.product = F("ESPurna plug");
+        out.product_id = 0x8000;
+        out.source = F("own identity (development DAC made on the board), no factory data");
+        return;
     }
 
-    String out;
-    out.reserve(112);
-    out += factory::read_text("vendor-name");
-    out += F(" (0x");
-    out += String(factory::read_number("vendor-id"), 16);
-    out += F(") / ");
-    out += factory::read_text("product-name");
-    out += F(" (0x");
-    out += String(factory::read_number("product-id"), 16);
-    out += F("), factory identity: ");
-    out += source;
+    out.vendor = factory::read_text("vendor-name");
+    out.vendor_id = factory::read_number("vendor-id");
+    out.product = factory::read_text("product-name");
+    out.product_id = factory::read_number("product-id");
+    out.source = F("factory identity, ");
+    out.source += source;
 
-    return out;
+    // sizes only (a read without a buffer)
+    size_t dac { 0 };
+    size_t pai { 0 };
+    size_t cd { 0 };
+    factory::read("dac-cert", nullptr, 0, dac);
+    factory::read("pai-cert", nullptr, 0, pai);
+    factory::read("cert-dclrn", nullptr, 0, cd);
+
+    out.details = F("certificates: DAC ");
+    out.details += String(dac);
+    out.details += F(", PAI ");
+    out.details += String(pai);
+    out.details += F(", declaration ");
+    out.details += String(cd);
+    out.details += F(" bytes");
 }
 
-size_t heap() {
-    return lt_heap_get_free();
+// everything but the own identity of the board (namespace "espurna-id" of the library), so the pairing code stays
+bool reset() {
+    return kv::clear_all() == BkOk;
 }
 
 size_t heap_min() {
@@ -1021,83 +854,9 @@ size_t heap_min() {
 } // namespace espurna
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Callbacks of matter_app.cpp and the bk_* platform API of the Matter library
+// The bk_* platform API of the Matter library
 
 extern "C" {
-
-// Every message in and out is an "EM" progress line, a dozen per exchange: they flood the 8 slots and make
-// the Matter task wait. Errors of every module pass
-void matter_log(const char* line) {
-    // web socket clients are paused while commissioning, the message trace only goes to the serial port then
-    if ((line[0] == 'E') && (line[1] == 'M') && (line[2] == ' ') && !espurna::matter::commissioning_active) {
-        return;
-    }
-
-    // free heap at the time of the line: commissioning runs out of it, this shows which step takes how much
-    char tagged[120];
-    snprintf(tagged, sizeof(tagged), "(%u) %s", static_cast<unsigned>(lt_heap_get_free()), line);
-    espurna::matter::log_line(tagged);
-#if defined(MATTER_UDP_LOG)
-    espurna::matter::udplog::send(line);
-#endif
-}
-
-// filled by backend::start(), in the loop: settings are not read from the Matter task
-const char* matter_node_label(void) {
-    return espurna::matter::node_label.c_str();
-}
-
-// plug endpoints in use (the relays), filled by backend::start() like the label
-uint8_t matter_plug_count(void) {
-    return espurna::matter::plug_count;
-}
-
-// device type of the relay endpoints, 0 = keep On/Off Plug-in Unit (filled by backend::start() like the label)
-uint16_t matter_device_type(void) {
-    return espurna::matter::device_type;
-}
-
-// plug = relay + 1
-bool matter_plug_name(uint8_t plug, char* label, size_t label_size, char* unique, size_t unique_size) {
-    using namespace espurna::matter;
-    if ((plug < 1) || (plug > plug_count) || (plug > (sizeof(plug_names) / sizeof(plug_names[0]))) || !label_size || !unique_size) {
-        return false;
-    }
-
-    const auto& name = plug_names[plug - 1];
-    std::strncpy(label, name.label, label_size - 1);
-    label[label_size - 1] = '\0';
-    std::strncpy(unique, name.unique, unique_size - 1);
-    unique[unique_size - 1] = '\0';
-
-    return true;
-}
-
-// The certificate steps of a pairing (attestation, CSR, AddNOC: ECDSA ~2 s per sign / verify on this chip) keep the
-// higher priority Matter task busy longer than the 10 s the loop has to feed the watchdog: a 4-relay bridge reset at
-// the hub's step 3. 30 s while a controller commissions, the loop value (system_beken.cpp LoopWdtTimeout) after it
-void matter_commissioning(bool active) {
-    constexpr uint32_t LoopWdtMs { 10000 };
-    constexpr uint32_t CommissioningWdtMs { 30000 };
-    lt_wdt_enable(active ? CommissioningWdtMs : LoopWdtMs);
-
-    espurna::matter::commissioning_active = active;
-    espurna::matter::commissioning(active);
-}
-
-void matter_pong(void) {
-    espurna::matter::pong();
-}
-
-void matter_window(bool open) {
-    espurna::matter::window(open);
-}
-
-void matter_onoff_changed(uint8_t endpoint, bool on) {
-    if (endpoint >= 1) {
-        espurna::matter::onoff_changed(endpoint - 1, on);
-    }
-}
 
 // "chip-factory": the keys of the stock factory table are read only, the ones Matter adds there itself (uniqueId)
 // go to the key-value store like every other namespace
@@ -1112,12 +871,12 @@ int bk_read_data(const char* ns, const char* name, char* buf, uint32_t len, uint
             return BkOk;
         }
 
-        // Basic Information SerialNumber: the stock factory data has none, Matter then reports the SDK test value.
-        // the speaker hub reads it while commissioning. The chip id (MAC) is unique and stays across updates
+        // Basic Information SerialNumber: the stock factory data has none, Matter then reports the SDK test value
+        // (matter.cpp: the speaker hub reads it while commissioning)
         if (std::strcmp(name, "serial-num") == 0) {
-            const auto serial = systemChipId();
-            const auto copy = std::min(static_cast<size_t>(len), static_cast<size_t>(serial.length()));
-            std::memcpy(buf, serial.data(), copy);
+            const auto* serial = matter_serial_number();
+            const auto copy = std::min(static_cast<size_t>(len), std::strlen(serial));
+            std::memcpy(buf, serial, copy);
             if (out_len) {
                 *out_len = copy;
             }

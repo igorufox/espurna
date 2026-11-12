@@ -90,4 +90,3 @@ void error(const espurna::terminal::CommandContext&, const String&);
 
 } // namespace terminal
 } // namespace espurna
-

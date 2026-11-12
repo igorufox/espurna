@@ -174,4 +174,3 @@ inline constexpr int last_set_u64(uint64_t value) {
 } // namespace espurna
 
 #undef CONSTEXPR17
-

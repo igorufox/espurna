@@ -1,20 +1,32 @@
 #!/usr/bin/env python3
 """Lint of the PlatformIO configs of the CI (.github/workflows/esp32.yml, first job).
 
-    python scripts/ci_ini_lint.py platformio_esp8266.ini platformio_esp32.ini platformio_beken.ini
+    python scripts/ci_ini_lint.py platformio_esp8266.ini platformio_esp32.ini platformio_beken.ini \
+        safeboot-app/platformio.ini mini-app/platformio.ini
 
-Run from code/ (extra_configs are relative to it, same as for `pio run -c ...`). Fails on:
+Run from code/ (extra_configs are relative to it, same as for `pio run -c ...`). platformio_<chip>.ini are the chips,
+any other config (safeboot-app, mini-app: the separate projects of the release) takes part in the library, macro and
+platform checks. Fails on:
 - `-U<NAME>` in the build_flags / build_src_flags of an env: PlatformIO puts every -U after every -D, so
   `-UX -DX=1` leaves X undefined (06.11: options silently off)
 - a macro defined twice with different values in one env's resolved build_flags + build_src_flags
   (`-DX` counts as `-DX=1`)
+- ARDUINO_ARCH_<...> in the flags: the framework defines it
+- ESPURNA_IMAGE of a chip anywhere but in build_flags, or other than "<chip>" (one form on every chip)
 - a build dir other than .pio/build_esp8266, .pio/build_esp32, .pio/build_beken (one per chip): `build_dir` of
   [platformio] missing (PlatformIO's default .pio/build) or anything else, and `build_dir` in any other section
 - envs: exactly one per chip, named after it (platformio_<chip>.ini has env:<chip> and nothing else, its extra
   configs included): the head, every module and the release images are one build
 - custom_module_flags (the macros of the module objects, scripts/module_link.py): -U or two values for one macro
-- a library in the lib_deps of two chips with two different versions (the same code on every chip; the Beken ini
-  can not take a shared section through extra_configs, so the versions are compared here)
+- a library or a platform with a version anywhere but libraries.ini (owner 11-12: one version, written once; the
+  configs name them as ${libraries.<name>} / ${platforms.<name>}), and an entry of libraries.ini that is not one exact
+  version (a release, a commit, a tag of our forks)
+- a library in the lib_deps of two configs with two different versions (kept as the second line of defence)
+- the libraries of the modules: a library of custom_module_libs that is a lib_deps library or one of the project's
+  lib/ and is not in lib_ignore (scripts/module_link.py compiles it for the modules, the head's LDF must not); a
+  lib_deps library that is a module library on one chip and not on another chip that has it (one lib_ignore)
+- a platform or a platform package not pinned to one version (a version range, a bare name, a branch); the
+  safeboot-app takes the platform of the ESP32, the mini-app the platform and toolchain of the ESP8266
 
 Values are resolved with PlatformIO's ProjectConfig when it can be imported (same resolution as the build: extends,
 [env], ${section.option}, extra_configs), otherwise with configparser and the same rules re-implemented here.
@@ -23,6 +35,7 @@ Values are resolved with PlatformIO's ProjectConfig when it can be imported (sam
 import argparse
 import configparser
 import glob
+import json
 import os
 import re
 import shlex
@@ -33,6 +46,8 @@ DEFAULT_BUILD_DIR = ".pio/build"
 FLAG_OPTIONS = ("build_flags", "build_src_flags")
 MODULE_FLAG_OPTIONS = ("custom_module_flags",)
 CHIP_RE = re.compile(r"platformio_([a-z0-9]+)\.ini$")
+# the separate projects of the release (the folder of their platformio.ini) and the chip whose platform they take
+PROJECT_CHIPS = {"safeboot-app": "esp32", "mini-app": "esp8266"}
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +77,8 @@ def parse_multi_values(items):
 class FallbackConfig:
     """Just enough of ProjectConfig: envs(), get(section, option)"""
 
-    MULTIPLE = {"build_flags", "build_src_flags", "extends", "extra_configs"}
+    MULTIPLE = {"build_flags", "build_src_flags", "extends", "extra_configs", "lib_deps", "lib_ignore",
+                "platform_packages"}
 
     def __init__(self, path):
         self.parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"), interpolation=None)
@@ -76,8 +92,10 @@ class FallbackConfig:
         with open(path, encoding="utf-8") as f:
             self.parser.read_file(f, path)
         if self.parser.has_option("platformio", "extra_configs"):
+            # relative to the project, as PlatformIO takes them (mini-app, safeboot-app: ../libraries.ini)
+            base = os.path.dirname(path)
             for pattern in parse_multi_values(self.parser.get("platformio", "extra_configs")):
-                for item in sorted(glob.glob(os.path.expanduser(pattern))):
+                for item in sorted(glob.glob(os.path.join(base, os.path.expanduser(pattern)))):
                     self.read(item)
 
     def envs(self):
@@ -138,6 +156,29 @@ def load_config(path, force_fallback):
     return FallbackConfig(path), "configparser"
 
 
+def option(config, section, name, default=None):
+    """a resolved option, `default` when the section or the option is missing (ProjectConfig raises for a section)"""
+    try:
+        value = config.get(section, name, default)
+    except Exception:  # pylint: disable=broad-except
+        return default
+    return default if value is None else value
+
+
+def values(config, section, name):
+    """a multi-value option as a list"""
+    value = option(config, section, name, [])
+    if isinstance(value, str):
+        value = parse_multi_values(value)
+    return list(value or [])
+
+
+def chip_of(path):
+    """esp8266 / esp32 / beken of platformio_<chip>.ini, None for any other config"""
+    match = CHIP_RE.search(os.path.basename(path))
+    return match.group(1) if match else None
+
+
 # ---------------------------------------------------------------------------
 # checks
 # ---------------------------------------------------------------------------
@@ -178,16 +219,42 @@ def split_macro(kind, text):
     return kind, name, (value if sep else "1")
 
 
-def check_env(config, env):
-    return check_macros(config, env, FLAG_OPTIONS) + check_macros(config, env, MODULE_FLAG_OPTIONS)
+def check_env(config, env, chip=None):
+    return (check_macros(config, env, FLAG_OPTIONS) + check_macros(config, env, MODULE_FLAG_OPTIONS)
+            + check_arch_macros(config, env) + check_image(config, env, chip))
+
+
+def env_macros(config, env):
+    """[(option, kind, name, value)] of build_flags and build_src_flags"""
+    out = []
+    for name in FLAG_OPTIONS:
+        for kind, macro, value in macros(tokens(option(config, "env:" + env, name, []))):
+            out.append((name, kind, macro, value))
+    return out
+
+
+def check_arch_macros(config, env):
+    return [f"{name}: -D{macro}, the framework defines it"
+            for name, kind, macro, _ in env_macros(config, env) if kind == "D" and macro.startswith("ARDUINO_ARCH_")]
+
+
+def check_image(config, env, chip):
+    """ESPURNA_IMAGE of a chip: once, in build_flags, "<chip>" (the backslashes of the ini are gone after shlex)"""
+    if not chip:
+        return []
+    found = [(name, value) for name, kind, macro, value in env_macros(config, env)
+             if kind == "D" and macro == "ESPURNA_IMAGE"]
+    if found == [("build_flags", f'"{chip}"')]:
+        return []
+    shown = ", ".join(f"{name} {value}" for name, value in found) or "none"
+    return [f"ESPURNA_IMAGE: {shown}; once, in build_flags: -DESPURNA_IMAGE=\\\"{chip}\\\" (one form on every chip)"]
 
 
 def check_envs(config, path):
     """one env per chip, named after the chip of platformio_<chip>.ini"""
-    match = CHIP_RE.search(os.path.basename(path))
-    if not match:
+    chip = chip_of(path)
+    if not chip:
         return []
-    chip = match.group(1)
     envs = list(config.envs())
     if envs == [chip]:
         return []
@@ -265,20 +332,122 @@ def library(dep):
     return name.split("/")[-1].strip().lower(), spec.strip()
 
 
+def lib_deps(config):
+    """lib_deps of every env, and [common] shared_lib_deps of the ESP8266 (installed once by scripts/pio_pre.py)"""
+    out = []
+    for env in config.envs():
+        out += values(config, "env:" + env, "lib_deps")
+    return out + values(config, "common", "shared_lib_deps")
+
+
+def lib_names(config):
+    return {item[0] for item in (library(dep) for dep in lib_deps(config)) if item}
+
+
+def project_libs(path):
+    """{folder name: library name} of the project's lib/ next to the config, lower case"""
+    out = {}
+    folder = os.path.join(os.path.dirname(os.path.abspath(path)), "lib")
+    if not os.path.isdir(folder):
+        return out
+    for entry in sorted(os.listdir(folder)):
+        manifest = os.path.join(folder, entry, "library.json")
+        if os.path.isfile(manifest):
+            with open(manifest, encoding="utf-8") as f:
+                out[entry.lower()] = str(json.load(f).get("name", entry)).lower()
+    return out
+
+
+def check_module_libs(configs):
+    """[problem]: the libraries of the modules are out of the head's LDF, and the same ones on every chip"""
+    problems = []
+    module_libs = {}  # chip -> lib_deps libraries in custom_module_libs and lib_ignore
+    declared = {}     # chip -> lib_deps libraries
+    for path, config in configs:
+        chip = chip_of(path)
+        if not chip:
+            continue
+        own = project_libs(path)
+        names = lib_names(config)
+        declared[chip] = names
+        module_libs[chip] = set()
+        for env in config.envs():
+            section = "env:" + env
+            mods = {name.lower() for name in " ".join(values(config, section, "custom_module_libs")).split()}
+            ignored = {name.lower() for name in values(config, section, "lib_ignore")}
+            module_libs[chip] |= {name for name in names if name in mods and name in ignored}
+            for name in sorted(mods):
+                wanted = own.get(name) or (name if name in names else None)
+                if wanted and wanted not in ignored:
+                    problems.append(f"{path} env:{env}: custom_module_libs {name} without {wanted} in lib_ignore, "
+                                    f"the head's LDF builds it as well")
+
+    for name in sorted(set().union(*module_libs.values()) if module_libs else ()):
+        modular = sorted(chip for chip in module_libs if name in module_libs[chip])
+        for chip in sorted(declared):
+            if (name in declared[chip]) and (chip not in modular):
+                problems.append(f"lib {name}: a module library (custom_module_libs + lib_ignore) on "
+                                f"{', '.join(modular)}, not on {chip}")
+    return problems
+
+
+# one exact version: `name @ 1.2.3`, a release zip, a git URL at a commit
+PINNED_RE = re.compile(r"^(?:[\w./ -]+\s*@\s*)?(?:\d+(?:\.\d+)+|https?://\S+/releases/download/\S+\.zip|"
+                       r"https?://\S+#[0-9a-f]{7,40})$")
+
+
+def pinned(spec):
+    spec = spec.strip()
+    if ("@" not in spec) and not spec.startswith("http"):
+        return False
+    return bool(PINNED_RE.match(spec))
+
+
+def platform_of(config):
+    """(platform, [platform_packages]) of the first env"""
+    envs = list(config.envs())
+    if not envs:
+        return "", []
+    section = "env:" + envs[0]
+    return option(config, section, "platform", "").strip(), values(config, section, "platform_packages")
+
+
+def check_platforms(configs):
+    """[problem]: every platform pinned; the separate projects on the platform of their chip"""
+    problems = []
+    by_chip = {}
+    for path, config in configs:
+        platform, packages = platform_of(config)
+        if not platform:
+            continue
+        for spec in [platform] + packages:
+            if not pinned(spec):
+                problems.append(f"{path}: {spec} is not pinned to one version")
+        chip = chip_of(path)
+        if chip:
+            by_chip[chip] = (platform, packages)
+
+    for path, config in configs:
+        chip = PROJECT_CHIPS.get(os.path.basename(os.path.dirname(os.path.abspath(path))))
+        if (not chip) or (chip not in by_chip):
+            continue
+        platform, packages = platform_of(config)
+        if platform != by_chip[chip][0]:
+            problems.append(f"{path}: platform {platform}, the {chip} build: {by_chip[chip][0]}")
+        if (chip == "esp8266") and (sorted(packages) != sorted(by_chip[chip][1])):
+            problems.append(f"{path}: platform_packages {', '.join(packages)}, the {chip} build: "
+                            f"{', '.join(by_chip[chip][1])}")
+    return problems
+
+
 def check_lib_versions(configs):
-    """[problem] for every library two chips take in different versions"""
+    """[problem] for every library two configs take in different versions"""
     seen = {}
     for path, config in configs:
-        lists = [config.get("env:" + env, "lib_deps", []) for env in config.envs()]
-        # ESP8266: [common] shared_lib_deps, installed once by scripts/pio_pre.py
-        lists.append(config.get("common", "shared_lib_deps", []))
-        for deps in lists:
-            if isinstance(deps, str):
-                deps = parse_multi_values(deps)
-            for dep in deps or []:
-                item = library(dep)
-                if item:
-                    seen.setdefault(item[0], {})[path] = item[1]
+        for dep in lib_deps(config):
+            item = library(dep)
+            if item:
+                seen.setdefault(item[0], {})[path] = item[1]
 
     problems = []
     for name, versions in sorted(seen.items()):
@@ -287,9 +456,61 @@ def check_lib_versions(configs):
     return problems
 
 
+SHARED_INI = "libraries.ini"
+VERSIONED_OPTIONS = ("lib_deps", "shared_lib_deps", "platform", "platform_packages", "git_toolchain_package")
+# one exact version, or a tag of a git URL (our forks are released by tags)
+GIT_TAG_RE = re.compile(r"^(?:https?://|git@)\S+#[\w.+-]+$")
+
+
+def raw_files(path):
+    """the config and its extra configs, as written"""
+    out = [path]
+    parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"), interpolation=None, strict=False)
+    with open(path, encoding="utf-8") as f:
+        parser.read_file(f, path)
+    if parser.has_option("platformio", "extra_configs"):
+        base = os.path.dirname(os.path.abspath(path))
+        for pattern in parse_multi_values(parser.get("platformio", "extra_configs")):
+            for item in sorted(glob.glob(os.path.join(base, os.path.expanduser(pattern)))):
+                out.append(item)
+    return out
+
+
+def check_shared_versions(paths):
+    """[problem]: a library or a platform with a version anywhere but libraries.ini; libraries.ini not exact"""
+    problems = []
+    seen = set()
+    for path in paths:
+        for file in raw_files(path):
+            key = norm(file)
+            if key in seen:
+                continue
+            seen.add(key)
+            parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"), interpolation=None, strict=False)
+            with open(file, encoding="utf-8") as f:
+                parser.read_file(f, file)
+            shared = os.path.basename(file) == SHARED_INI
+            for section in parser.sections():
+                for name in parser.options(section):
+                    value = parser.get(section, name)
+                    if shared:
+                        if section in ("libraries", "platforms") and not (pinned(value) or GIT_TAG_RE.match(value)):
+                            problems.append(f"{file}: [{section}] {name} = {value}: not one exact version")
+                        continue
+                    if name not in VERSIONED_OPTIONS:
+                        continue
+                    for item in parse_multi_values(value):
+                        if (("@" in item) or ("://" in item)) and not item.startswith("${"):
+                            problems.append(f"{file}: [{section}] {name}: {item} - a version of its own, "
+                                            f"take ${{libraries.<name>}} / ${{platforms.<name>}} of {SHARED_INI}")
+    return problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("configs", nargs="+", help="platformio_<chip>.ini, relative to the current directory")
+    parser.add_argument("configs", nargs="+",
+                        help="platformio_<chip>.ini and the platformio.ini of the other projects, relative to the "
+                             "current directory")
     parser.add_argument("--fallback", action="store_true", help="configparser even when PlatformIO is installed")
     args = parser.parse_args(argv)
 
@@ -299,34 +520,42 @@ def main(argv=None):
     for path in args.configs:
         config, how = load_config(path, args.fallback)
         loaded.append((path, config))
-        build_dir, problems = check_build_dir(config, path)
-        print(f"== {path} (resolved with {how}), build_dir {build_dir}")
-        for problem in problems:
-            print(f"   FAIL {problem}")
-        failed += len(problems)
+        chip = chip_of(path)
+        if not chip:
+            print(f"== {path} (resolved with {how}), a project of its own")
+        else:
+            build_dir, problems = check_build_dir(config, path)
+            print(f"== {path} (resolved with {how}), build_dir {build_dir}")
+            for problem in problems:
+                print(f"   FAIL {problem}")
+            failed += len(problems)
 
-        for problem in check_envs(config, path):
-            print(f"   FAIL {problem}")
-            failed += 1
+            for problem in check_envs(config, path):
+                print(f"   FAIL {problem}")
+                failed += 1
 
-        other = used_dirs.get(norm(build_dir))
-        if other:
-            print(f"   FAIL build_dir {build_dir} is the build dir of {other} as well, one dir per chip")
-            failed += 1
-        used_dirs[norm(build_dir)] = path
+            other = used_dirs.get(norm(build_dir))
+            if other:
+                print(f"   FAIL build_dir {build_dir} is the build dir of {other} as well, one dir per chip")
+                failed += 1
+            used_dirs[norm(build_dir)] = path
 
         for env in config.envs():
-            env_problems = check_env(config, env)
+            env_problems = check_env(config, env, chip)
             print(f"   {'FAIL' if env_problems else 'ok  '} env:{env}")
             for problem in env_problems:
                 print(f"        {problem}")
             failed += len(env_problems)
 
-    lib_problems = check_lib_versions(loaded)
-    print(f"== libraries of {len(loaded)} configs")
-    for problem in lib_problems:
-        print(f"   FAIL {problem}")
-    failed += len(lib_problems)
+    for title, problems in (
+            (f"versions only in {SHARED_INI}", check_shared_versions(args.configs)),
+            (f"libraries of {len(loaded)} configs", check_lib_versions(loaded)),
+            ("libraries of the modules", check_module_libs(loaded)),
+            ("platforms", check_platforms(loaded))):
+        print(f"== {title}")
+        for problem in problems:
+            print(f"   FAIL {problem}")
+        failed += len(problems)
 
     if failed:
         print(f"{failed} problem(s)")

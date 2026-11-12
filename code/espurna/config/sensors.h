@@ -85,13 +85,13 @@
 #define SENSOR_LUX_CORRECTION               0.0
 #endif
 
-// Generic images (ESP8266_GENERIC / ESP32_GENERIC / BEKEN_GENERIC) carry the drivers, but no board.
+// Generic images (GENERIC_IMAGE, config/hardware.h) carry the drivers, but no board.
 // Every pin, UART port and enable value below then defaults to 'none', so a compiled-in driver
 // touches nothing (no pinMode, no UART, no I2C bus, no ADC) until the device template or the user
 // writes its settings keys (hlw8012CF, cse7766Port, dhtPin, i2cSDA ...; see sensor.cpp load()).
 // Board builds keep the defaults below, and those become the defaults of the same settings keys.
 #ifndef SENSOR_PINS_FROM_SETTINGS
-#if defined(ESP8266_GENERIC) || defined(ESP32_GENERIC) || defined(BEKEN_GENERIC)
+#if GENERIC_IMAGE
 #define SENSOR_PINS_FROM_SETTINGS           1
 #else
 #define SENSOR_PINS_FROM_SETTINGS           0

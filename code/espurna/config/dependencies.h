@@ -61,6 +61,8 @@
 #if ALEXA_SUPPORT
 #undef RELAY_SUPPORT
 #define RELAY_SUPPORT               1               // alexa needs some switches support to work
+#undef WEB_SUPPORT
+#define WEB_SUPPORT                 1               // fauxmoESP answers through the web server (no TCP server of its own)
 #endif
 
 #if RPN_RULES_SUPPORT
@@ -142,12 +144,6 @@
 #if ASYNC_TCP_SSL_ENABLED && SECURE_CLIENT == SECURE_CLIENT_NONE
 #undef SECURE_CLIENT
 #define SECURE_CLIENT               SECURE_CLIENT_AXTLS
-#endif
-
-#if THINGSPEAK_USE_SSL && THINGSPEAK_USE_ASYNC && (!ASYNC_TCP_SSL_ENABLED)
-#warning "Thingspeak in ASYNC mode requires a globally defined ASYNC_TCP_SSL_ENABLED=1"
-#undef THINGSPEAK_SUPPORT
-#define THINGSPEAK_SUPPORT          0               // Thingspeak in ASYNC mode requires ASYNC_TCP_SSL_ENABLED
 #endif
 
 #if WEB_SUPPORT && WEB_SSL_ENABLED && (!ASYNC_TCP_SSL_ENABLED)

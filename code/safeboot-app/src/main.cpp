@@ -10,17 +10,16 @@ the single big OTA slot (app0) and cannot overwrite itself, so updates go throug
   GitHub Pages, read by the browser), upload an image into app0, download one from an URL, boot ESPurna
 - update from an URL without the web UI: ESPurna stores it in NVS "safeboot"/"url" (and its SHA-256 in "sha256")
   before switching here, the image is downloaded into app0 as soon as Wi-Fi is up and ESPurna boots. http:// and
-  https:// (the ESP-IDF certificate bundle); the result goes to NVS "safeboot"/"result" for ESPurna to show
+  https:// through the one client of ESPurna (espurna/libs/http_client.h, BearSSL with the full TLS of
+  libs/http_client_tls.h; the file is checked against its SHA-256); the result goes to NVS "safeboot"/"result" for
+  ESPurna to show
 - no Wi-Fi in 30 s: own access point <hostname>-SAFEBOOT (WPA2, admin password) at 192.168.4.1
 - the next boot is set back to app0 right at start (when it holds a valid image): a crash or a power cut here always
   returns to ESPurna; nothing done for 15 minutes: back to ESPurna as well
 
 */
 
-#include <esp_crt_bundle.h>
 #include <esp_event.h>
-#include <esp_http_client.h>
-#include <esp_http_server.h>
 #include <esp_mac.h>
 #include <esp_netif.h>
 #include <esp_ota_ops.h>
@@ -30,10 +29,9 @@ the single big OTA slot (app0) and cannot overwrite itself, so updates go throug
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <lwip/inet.h>
-#include <mbedtls/base64.h>
-#include <mbedtls/sha256.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 
@@ -43,6 +41,60 @@ the single big OTA slot (app0) and cannot overwrite itself, so updates go throug
 #include <memory>
 #include <string>
 #include <vector>
+
+// shared with ESPurna and code/mini-app: the settings records, the partition table, the checks of a request
+#include "../../espurna/libs/embedis_records.h"
+#include "../../espurna/libs/esp32_partitions.h"
+#include "../../espurna/libs/fetch_check.h"
+#include "../../espurna/libs/text.h"
+
+// the one http:// and https:// client of ESPurna (libs/http_client.h): its one implementation, with the full TLS
+// (libs/http_client_tls.h) always. lwIP's callbacks run in the tcpip thread, the download in this task
+namespace safeboot {
+
+struct Lock {
+    Lock() :
+        handle(xSemaphoreCreateMutex())
+    {}
+
+    ~Lock() {
+        vSemaphoreDelete(handle);
+    }
+
+    void lock() {
+        xSemaphoreTake(handle, portMAX_DELAY);
+    }
+
+    void unlock() {
+        xSemaphoreGive(handle);
+    }
+
+    SemaphoreHandle_t handle;
+};
+
+} // namespace safeboot
+
+#define HTTP_CLIENT_AGENT "ESPurna-safeboot"
+#define NET_LOG(...) do {} while (false)
+#define NET_LOCK ::safeboot::Lock
+#include "../../espurna/libs/net_impl.h"
+#include "../../espurna/libs/http_client_tls.h"
+
+namespace espurna {
+namespace http {
+namespace tls {
+
+bool extend(br_ssl_client_context* sc) {
+    return full::extend(sc);
+}
+
+void* key(const uint8_t* der, size_t len, br_x509_pkey* out) {
+    return full::key(der, len, out);
+}
+
+} // namespace tls
+} // namespace http
+} // namespace espurna
 
 namespace {
 
@@ -68,55 +120,18 @@ struct Settings {
 
 Settings settings;
 
-// Embedis: records from the end of the blob towards its beginning. An item is its data followed by the data length
-// (2 bytes, big endian, the low byte last); a record is the key item, then the value item. 0xffff is free space
+// the ESPurna settings blob: Embedis records from its end towards its beginning (espurna/libs/embedis_records.h)
 struct Embedis {
     const uint8_t* data;
     size_t size;
 
-    bool item(size_t& pos, const uint8_t*& out, size_t& len) const {
-        if (pos < 2) {
-            return false;
-        }
-
-        const size_t value = data[pos - 1] | (data[pos - 2] << 8);
-        if (value == 0xffff) {
-            return false;
-        }
-
-        pos -= 2;
-        if (pos < value) {
-            return false;
-        }
-
-        pos -= value;
-        out = data + pos;
-        len = value;
-        return true;
-    }
-
     std::string get(const char* key) const {
-        const size_t key_len = strlen(key);
-        size_t pos = size;
-        for (;;) {
-            const uint8_t* k;
-            size_t k_len;
-            if (!item(pos, k, k_len) || !k_len) {
-                break;
-            }
-
-            const uint8_t* v;
-            size_t v_len;
-            if (!item(pos, v, v_len)) {
-                break;
-            }
-
-            if ((k_len == key_len) && (memcmp(k, key, key_len) == 0)) {
-                return std::string(reinterpret_cast<const char*>(v), v_len);
-            }
+        espurna::embedis_records::Record record;
+        if (!espurna::embedis_records::find(data, 0, size, key, record)) {
+            return std::string();
         }
 
-        return std::string();
+        return std::string(reinterpret_cast<const char*>(data + record.value), record.value_len);
     }
 };
 
@@ -278,10 +293,10 @@ bool bootApp(std::string& error) {
 
 // One image write into app0, from the application image (0xE9 magic byte first) or from the merged image of a release
 // (the whole flash from 0x0: bootloader, partition table at 0x8000, safeboot, ESPurna): of that one only the part at
-// the offset of ota_0 in its own partition table goes into app0. end() verifies the image. The SHA-256 is taken over
-// every byte received, the whole file, for the check against the release list
-constexpr size_t MergedTableOffset { 0x8000 };
-constexpr size_t MergedTableSize { 0xC00 };
+// the offset of ota_0 in its own partition table goes into app0. end() verifies the image. A download is checked
+// against the SHA-256 of the release list by the client, over the whole file, before finish()
+constexpr size_t MergedTableOffset { espurna::esp32_partitions::TableOffset };
+constexpr size_t MergedTableSize { espurna::esp32_partitions::TableSize };
 
 struct Writer {
     esp_ota_handle_t handle { 0 };
@@ -294,49 +309,20 @@ struct Writer {
     bool located { false };
     std::vector<uint8_t> head; // merged image, up to the end of its partition table
     std::string error;
-    mbedtls_sha256_context sha;
 
-    Writer() {
-        mbedtls_sha256_init(&sha);
-        mbedtls_sha256_starts(&sha, 0);
-    }
-
-    ~Writer() {
-        mbedtls_sha256_free(&sha);
-    }
-
+    Writer() = default;
     Writer(const Writer&) = delete;
     Writer& operator=(const Writer&) = delete;
 
-    std::string digest() {
-        uint8_t out[32];
-        mbedtls_sha256_finish(&sha, out);
-
-        std::string hex;
-        char byte[3];
-        for (const auto value : out) {
-            snprintf(byte, sizeof(byte), "%02x", value);
-            hex += byte;
-        }
-
-        return hex;
-    }
-
-    // ota_0 entry of the partition table in the merged image (entries of 32 bytes: magic 0x50AA, type, subtype,
-    // offset, size, label, flags; the table ends at the first entry without the magic)
+    // ota_0 entry of the partition table in the merged image (espurna/libs/esp32_partitions.h)
     bool locate() {
-        const uint8_t* table = head.data() + MergedTableOffset;
-        for (size_t entry = 0; (entry + 32) <= MergedTableSize; entry += 32) {
-            const uint8_t* e = table + entry;
-            if ((e[0] != 0xAA) || (e[1] != 0x50)) {
-                break;
-            }
-            const uint32_t offset = e[4] | (e[5] << 8) | (e[6] << 16) | (static_cast<uint32_t>(e[7]) << 24);
-            if ((e[2] == ESP_PARTITION_TYPE_APP) && (e[3] == ESP_PARTITION_SUBTYPE_APP_OTA_0)) {
-                app_offset = offset;
-                located = true;
-                return true;
-            }
+        espurna::esp32_partitions::Entry entry;
+        if (espurna::esp32_partitions::find(head.data() + MergedTableOffset, MergedTableSize,
+                ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, entry))
+        {
+            app_offset = entry.offset;
+            located = true;
+            return true;
         }
 
         error = "a merged image without an ota_0 application in its partition table";
@@ -403,7 +389,6 @@ struct Writer {
 
         const size_t at = received;
         received += len;
-        mbedtls_sha256_update(&sha, reinterpret_cast<const unsigned char*>(data), len);
 
         if (!merged) {
             return writeApp(data, len);
@@ -466,90 +451,74 @@ struct Writer {
 
 std::string last_result;
 
-bool validHex(const std::string& value) {
-    if (value.size() != 64) {
-        return false;
-    }
+// The response into the writer: 200 with the file, the client checks its SHA-256 before end()
+struct DownloadSink : public espurna::http::Sink {
+    explicit DownloadSink(Writer& writer) :
+        writer(writer)
+    {}
 
-    for (const auto c : value) {
-        if (!(((c >= '0') && (c <= '9')) || ((c >= 'a') && (c <= 'f')))) {
-            return false;
+    const char* begin(const espurna::http::Head& head) override {
+        if (head.status != 200) {
+            snprintf(text, sizeof(text), "HTTP %d", head.status);
+            return text;
         }
+
+        writer.expected = (head.length > 0) ? static_cast<size_t>(head.length) : 0;
+        return nullptr;
     }
 
-    return true;
-}
+    const char* write(const uint8_t* data, size_t len) override {
+        return writer.write(reinterpret_cast<const char*>(data), len) ? nullptr : writer.error.c_str();
+    }
 
-// http:// or https:// (servers checked against the ESP-IDF certificate bundle). sha256: hex, lower case, or empty
+    const char* end() override {
+        return writer.finish() ? nullptr : writer.error.c_str();
+    }
+
+    Writer& writer;
+    char text[32];
+};
+
+// http:// or https:// through the one client of ESPurna (the chain is not validated: a release file is checked
+// against the SHA-256 of the release list). sha256: hex, lower case, or empty. This task waits, the client steps
 bool download(const std::string& url, const std::string& sha256) {
-    const bool https = url.rfind("https://", 0) == 0;
-    if (!https && (url.rfind("http://", 0) != 0)) {
-        last_result = "only http:// and https:// URLs";
+    // the same checks as ESPurna (espurna/libs/fetch_check.h)
+    if (!espurna::fetch_check::validUrl(url)) {
+        last_result = "invalid URL: http:// or https://, up to 240 characters";
         return false;
     }
 
-    if (!sha256.empty() && !validHex(sha256)) {
+    if (!sha256.empty() && !espurna::fetch_check::validSha256(sha256)) {
         last_result = "the SHA-256 is not 64 lower case hex digits";
         return false;
     }
 
-    esp_http_client_config_t config {};
-    config.url = url.c_str();
-    config.timeout_ms = 15000;
-    config.buffer_size = 2048;
-    config.max_redirection_count = 5;
-    if (https) {
-        config.crt_bundle_attach = esp_crt_bundle_attach;
-    }
-
-    auto* client = esp_http_client_init(&config);
-    if (!client) {
-        last_result = "invalid URL";
-        return false;
-    }
-
     Writer writer;
-    bool ok = false;
-    if (esp_http_client_open(client, 0) == ESP_OK) {
-        const auto length = esp_http_client_fetch_headers(client);
-        const int status = esp_http_client_get_status_code(client);
-        if (status == 200) {
-            writer.expected = (length > 0) ? static_cast<size_t>(length) : 0;
-            std::unique_ptr<char[]> buffer(new char[4096]);
-            for (;;) {
-                const int len = esp_http_client_read(client, buffer.get(), 4096);
-                if (len < 0) {
-                    writer.error = "read error";
-                    break;
-                }
-                if (!len) {
-                    if (writer.expected && (writer.received != writer.expected)) {
-                        writer.error = "connection closed after " + std::to_string(writer.received) + " of "
-                            + std::to_string(writer.expected) + " bytes";
-                        break;
-                    }
-                    if (!sha256.empty() && writer.part && (writer.digest() != sha256)) {
-                        writer.error = "SHA-256 mismatch, not the file of the release list";
-                        break;
-                    }
-                    ok = writer.finish();
-                    break;
-                }
-                if (!writer.write(buffer.get(), len)) {
-                    break;
-                }
-            }
-        } else {
-            writer.error = "HTTP " + std::to_string(status);
-        }
-    } else {
-        writer.error = https ? "cannot connect (or the server certificate is not trusted)" : "cannot connect";
+    DownloadSink sink(writer);
+    espurna::http::Client client;
+
+    bool finished { false };
+    bool ok { false };
+    std::string message;
+    const bool started = client.start(url.c_str(), sha256.c_str(), sink, [&](const espurna::http::Result& result) {
+        finished = true;
+        ok = result.ok;
+        message = result.message;
+    });
+
+    if (!started && !finished) {
+        finished = true;
+        message = "out of memory";
     }
 
-    esp_http_client_cleanup(client);
+    while (!finished) {
+        client.loop();
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
     if (!ok) {
         writer.abort();
-        last_result = writer.error;
+        last_result = message;
         return false;
     }
 
@@ -655,28 +624,29 @@ void accessPoint() {
 
 // --- web --------------------------------------------------------------------------------------------------------
 
+// The one HTTP server of ESPurna (espurna/libs/http_server.h), driven by app_main's loop
+using WebRequest = espurna::http::server::Request;
+espurna::http::server::Server server;
+
 int64_t last_activity { 0 };
 bool restart { false };
-std::string auth_header;
 
-bool authenticated(httpd_req_t* req) {
+// Basic login: the /safeboot page of ESPurna tells safeboot by its Basic challenge
+bool authenticated(WebRequest& request) {
     last_activity = esp_timer_get_time();
 
-    char value[160];
-    if ((httpd_req_get_hdr_value_str(req, "Authorization", value, sizeof(value)) == ESP_OK)
-        && (auth_header == value))
-    {
+    const std::string realm = settings.hostname + " safeboot";
+    if (request.authenticate("admin", settings.password.c_str(), realm.c_str())) {
         return true;
     }
 
-    const std::string realm = "Basic realm=\"" + settings.hostname + " safeboot\"";
-    httpd_resp_set_status(req, "401 Unauthorized");
-    httpd_resp_set_hdr(req, "WWW-Authenticate", realm.c_str());
-    httpd_resp_send(req, "Authentication required", HTTPD_RESP_USE_STRLEN);
+    const std::string challenge = "Basic realm=\"" + realm + "\"";
+    request.addHeader("WWW-Authenticate", challenge.c_str());
+    request.send(401, "text/plain", "Authentication required");
     return false;
 }
 
-void send(httpd_req_t* req, const std::string& body, const char* status = "200 OK") {
+void send(WebRequest& request, const std::string& body, int code = 200) {
     std::string out;
     out.reserve(2048 + body.size());
     out += "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" "
@@ -690,27 +660,13 @@ void send(httpd_req_t* req, const std::string& body, const char* status = "200 O
     out += body;
     out += "</body></html>";
 
-    httpd_resp_set_status(req, status);
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, out.data(), out.size());
+    request.send(code, "text/html", reinterpret_cast<const uint8_t*>(out.data()), out.size());
 }
 
-// a JS string literal, safe inside <script>
+// a JS string literal, safe inside <script> (the one escaping of ESPurna, libs/text.h)
 std::string jsString(const std::string& value) {
-    std::string out = "\"";
-    for (const auto c : value) {
-        if ((c == '"') || (c == '\\')) {
-            out += '\\';
-            out += c;
-        } else if ((c == '<') || (c == '>') || (static_cast<unsigned char>(c) < 0x20)) {
-            char escaped[8];
-            snprintf(escaped, sizeof(escaped), "\\x%02x", static_cast<unsigned char>(c));
-            out += escaped;
-        } else {
-            out += c;
-        }
-    }
-    out += '"';
+    std::string out;
+    espurna::text::jsonString(out, value);
     return out;
 }
 
@@ -742,9 +698,9 @@ constexpr char PageScript[] =
     "if(!d.childNodes.length)d.textContent='No ESP32 image'+(I?' '+I:'')+' in '+M})"
     ".catch(e=>$('rel').textContent='Cannot read '+M+': '+e);";
 
-esp_err_t onRoot(httpd_req_t* req) {
-    if (!authenticated(req)) {
-        return ESP_OK;
+void onRoot(WebRequest& request) {
+    if (!authenticated(request)) {
+        return;
     }
 
     const auto image = runningImage();
@@ -763,152 +719,110 @@ esp_err_t onRoot(httpd_req_t* req) {
     body += "<script>const M=" + jsString(settings.manifest) + ",I=" + jsString(image) + ";";
     body += PageScript;
     body += "</script>";
-    send(req, body);
-    return ESP_OK;
+    send(request, body);
 }
 
-esp_err_t onBoot(httpd_req_t* req) {
-    if (!authenticated(req)) {
-        return ESP_OK;
+void onBoot(WebRequest& request) {
+    if (!authenticated(request)) {
+        return;
     }
 
     std::string error;
     if (!bootApp(error)) {
-        send(req, "<p>" + error + "</p><p><a href=\"/\">Back</a></p>", "400 Bad Request");
-        return ESP_OK;
-    }
-
-    send(req, "<p>Booting ESPurna</p>");
-    restart = true;
-    return ESP_OK;
-}
-
-std::string formBody(httpd_req_t* req) {
-    char body[512] {};
-    size_t got = 0;
-    while ((got < (sizeof(body) - 1)) && (got < req->content_len)) {
-        const int len = httpd_req_recv(req, body + got, sizeof(body) - 1 - got);
-        if (len == HTTPD_SOCK_ERR_TIMEOUT) {
-            continue;
-        }
-        if (len <= 0) {
-            break;
-        }
-        got += len;
-    }
-
-    return std::string(body, got);
-}
-
-// application/x-www-form-urlencoded "url=...&sha256=..."
-std::string formValue(const std::string& body, const char* key) {
-    char encoded[400] {};
-    if (httpd_query_key_value(body.c_str(), key, encoded, sizeof(encoded)) != ESP_OK) {
-        return std::string();
-    }
-
-    std::string out;
-    for (size_t i = 0; encoded[i]; ++i) {
-        if ((encoded[i] == '%') && encoded[i + 1] && encoded[i + 2]) {
-            const char hex[3] { encoded[i + 1], encoded[i + 2], 0 };
-            out += static_cast<char>(strtol(hex, nullptr, 16));
-            i += 2;
-        } else if (encoded[i] == '+') {
-            out += ' ';
-        } else {
-            out += encoded[i];
-        }
-    }
-
-    return out;
-}
-
-esp_err_t onUrl(httpd_req_t* req) {
-    if (!authenticated(req)) {
-        return ESP_OK;
-    }
-
-    const auto body = formBody(req);
-    const bool ok = download(formValue(body, "url"), formValue(body, "sha256"));
-    storeResult(last_result);
-    if (!ok) {
-        send(req, "<p>" + last_result + "</p><p><a href=\"/\">Back</a></p>", "400 Bad Request");
-        return ESP_OK;
-    }
-
-    send(req, "<p>" + last_result + ", booting ESPurna</p>");
-    restart = true;
-    return ESP_OK;
-}
-
-esp_err_t onUpload(httpd_req_t* req) {
-    if (!authenticated(req)) {
-        return ESP_OK;
-    }
-
-    Writer writer;
-    writer.expected = req->content_len;
-    std::unique_ptr<char[]> buffer(new char[4096]);
-    size_t remaining = req->content_len;
-    bool ok = remaining > 0;
-    while (ok && remaining) {
-        const int len = httpd_req_recv(req, buffer.get(), (remaining < 4096) ? remaining : 4096);
-        if (len == HTTPD_SOCK_ERR_TIMEOUT) {
-            continue;
-        }
-        if (len <= 0) {
-            writer.error = "connection lost";
-            ok = false;
-            break;
-        }
-        ok = writer.write(buffer.get(), len);
-        remaining -= len;
-        last_activity = esp_timer_get_time();
-    }
-
-    if (ok) {
-        ok = writer.finish();
-    } else {
-        writer.abort();
-    }
-
-    last_result = ok ? ("uploaded " + std::to_string(writer.written) + " bytes") : writer.error;
-    storeResult(last_result);
-    httpd_resp_set_status(req, ok ? "200 OK" : "400 Bad Request");
-    httpd_resp_set_type(req, "text/plain");
-    httpd_resp_sendstr(req, ok ? (last_result + ", booting ESPurna").c_str() : last_result.c_str());
-    restart = ok;
-    return ESP_OK;
-}
-
-void web() {
-    // "admin:<password>" for Basic auth, compared as the whole header value
-    const std::string plain = "admin:" + settings.password;
-    unsigned char encoded[160];
-    size_t len = 0;
-    mbedtls_base64_encode(encoded, sizeof(encoded) - 1, &len,
-        reinterpret_cast<const unsigned char*>(plain.data()), plain.size());
-    auth_header = "Basic " + std::string(reinterpret_cast<char*>(encoded), len);
-
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.stack_size = 8192;
-    config.recv_wait_timeout = 15;
-
-    httpd_handle_t server = nullptr;
-    if (httpd_start(&server, &config) != ESP_OK) {
+        send(request, "<p>" + error + "</p><p><a href=\"/\">Back</a></p>", 400);
         return;
     }
 
-    static const httpd_uri_t uris[] {
-        {"/", HTTP_GET, onRoot, nullptr},
-        {"/boot", HTTP_POST, onBoot, nullptr},
-        {"/url", HTTP_POST, onUrl, nullptr},
-        {"/upload", HTTP_POST, onUpload, nullptr},
-    };
+    send(request, "<p>Booting ESPurna</p>");
+    restart = true;
+}
 
-    for (const auto& uri : uris) {
-        httpd_register_uri_handler(server, &uri);
+std::string formValue(WebRequest& request, const char* key) {
+    const char* value = request.param(key);
+    return value ? std::string(value) : std::string();
+}
+
+// the download runs here, the loop waits for it (nothing else to serve meanwhile)
+void onUrl(WebRequest& request) {
+    if (!authenticated(request)) {
+        return;
     }
+
+    const bool ok = download(formValue(request, "url"), formValue(request, "sha256"));
+    storeResult(last_result);
+    if (!ok) {
+        send(request, "<p>" + last_result + "</p><p><a href=\"/\">Back</a></p>", 400);
+        return;
+    }
+
+    send(request, "<p>" + last_result + ", booting ESPurna</p>");
+    restart = true;
+}
+
+// the image of an upload, the request's context
+struct Upload {
+    Writer writer;
+    bool ok { true };
+};
+
+void onUploadBody(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool) {
+    auto* upload = static_cast<Upload*>(request.context());
+    if (!index) {
+        if (!authenticated(request)) {
+            return;
+        }
+
+        upload = new (std::nothrow) Upload();
+        if (!upload) {
+            return;
+        }
+        request.setContext(upload, [](void* ptr) {
+            auto* upload = static_cast<Upload*>(ptr);
+            upload->writer.abort();
+            delete upload;
+        });
+        upload->writer.expected = request.contentLength();
+    }
+
+    if (!upload || !upload->ok) {
+        return;
+    }
+
+    upload->ok = upload->writer.write(reinterpret_cast<const char*>(data), len);
+    last_activity = esp_timer_get_time();
+}
+
+void onUpload(WebRequest& request) {
+    if (!authenticated(request)) {
+        return;
+    }
+
+    auto* upload = static_cast<Upload*>(request.context());
+    bool ok = upload && upload->ok && request.contentLength()
+        && (request.bodyReceived() == request.contentLength());
+    if (ok) {
+        ok = upload->writer.finish();
+    } else if (upload) {
+        upload->writer.abort();
+        if (upload->writer.error.empty()) {
+            upload->writer.error = "connection lost";
+        }
+    }
+
+    last_result = ok ? ("uploaded " + std::to_string(upload->writer.written) + " bytes")
+        : (upload ? upload->writer.error : std::string("no image"));
+    storeResult(last_result);
+    const std::string text = ok ? (last_result + ", booting ESPurna") : last_result;
+    request.send(ok ? 200 : 400, "text/plain", reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    restart = ok;
+}
+
+void web() {
+    server.on("/", espurna::http::server::Method::Get, onRoot);
+    server.on("/boot", espurna::http::server::Method::Post, onBoot);
+    server.on("/url", espurna::http::server::Method::Post, onUrl);
+    server.on("/upload", espurna::http::server::Method::Post, onUpload, onUploadBody);
+    server.begin(80);
 }
 
 } // namespace
@@ -976,10 +890,16 @@ extern "C" void app_main() {
     last_activity = esp_timer_get_time();
 
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(250));
+        server.loop();
+        vTaskDelay(pdMS_TO_TICKS(2));
 
+        // the answer goes out first: the server runs a little longer
         if (restart) {
-            vTaskDelay(pdMS_TO_TICKS(500));
+            const auto until = esp_timer_get_time() + 500 * 1000;
+            while ((esp_timer_get_time() < until) && server.active()) {
+                server.loop();
+                vTaskDelay(pdMS_TO_TICKS(2));
+            }
             esp_restart();
         }
 

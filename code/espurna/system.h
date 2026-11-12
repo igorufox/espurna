@@ -4,10 +4,11 @@ SYSTEM MODULE
 
 Copyright (C) 2019 by Xose Pérez <xose dot perez at gmail dot com>
 
-Common part, shared by every architecture. Chip specific parts (timers, sleep,
-memory, reset) are declared in arch/esp8266/system_esp8266.h, and for the FreeRTOS
-chips (ESP32, BK72xx) in arch/rtos/system_rtos.h; implemented in arch/<arch>/system_<arch>.cpp
-and arch/rtos/system_rtos.cpp
+Common part, shared by every chip, implemented by system.cpp. What follows the execution model of the SDK (timers,
+the loop lock, sleep durations) has one part per model below: the esp8266 NONOS SDK runs network callbacks and timers
+in SYS, between loop() calls (arch/esp8266/system_esp8266.cpp), the FreeRTOS SDKs of ESP32 and LibreTiny run them in
+tasks of their own (arch/rtos/system_rtos.cpp). The chip itself (reboot, watchdog, reset reason, sleep, MAC) is
+arch/<chip>/system_<chip>.cpp, ref. espurna::system::chip
 
 */
 
@@ -17,10 +18,259 @@ and arch/rtos/system_rtos.cpp
 #include "settings.h"
 #include "types.h"
 
+#include <chrono>
+#include <cstdint>
+#include <memory>
+
 #if defined(ESP8266)
-#include "arch/esp8266/system_esp8266.h"
+
+#include <user_interface.h>
+
+namespace espurna {
+namespace sleep {
+
+// Both LIGHT and DEEP sleep accept microseconds as input
+// Effective limit is ~31bit - 1 in size
+using Microseconds = std::chrono::duration<uint32_t, std::micro>;
+
+} // namespace sleep
+
+namespace system {
+
+// Network callbacks run in SYS and never overlap with loop(), nothing to serialize.
+// (ref. arch/esp32, where they run in a separate task)
+struct LoopGuard {
+    LoopGuard() {}
+};
+
+struct AsyncGuard {
+    AsyncGuard() {}
+    explicit AsyncGuard(duration::Milliseconds) {}
+
+    bool locked() const {
+        return true;
+    }
+};
+
+} // namespace system
+
+namespace timer {
+
+struct SystemTimer {
+    using TimeSource = time::CoreClock;
+    using Duration = TimeSource::duration;
+
+    static constexpr Duration DurationMin = Duration(5);
+
+    SystemTimer();
+    ~SystemTimer() {
+        stop();
+    }
+
+    SystemTimer(const SystemTimer&) = delete;
+    SystemTimer& operator=(const SystemTimer&) = delete;
+
+    SystemTimer(SystemTimer&&) = default;
+    SystemTimer& operator=(SystemTimer&&) = default;
+
+    bool armed() const {
+        return _armed != nullptr;
+    }
+
+    explicit operator bool() const {
+        return armed();
+    }
+
+    void once(Duration duration, Callback callback) {
+        start(duration, std::move(callback), false);
+    }
+
+    void repeat(Duration duration, Callback callback) {
+        start(duration, std::move(callback), true);
+    }
+
+    void schedule_once(Duration, Callback);
+    void stop();
+
+private:
+    // limit is per https://www.espressif.com/sites/default/files/documentation/2c-esp8266_non_os_sdk_api_reference_en.pdf
+    // > 3.1.1 os_timer_arm
+    // > with `system_timer_reinit()`, the timer value allowed ranges from 100 to 0x0x689D0.
+    // > otherwise, the timer value allowed ranges from 5 to 0x68D7A3.
+    // with current implementation we use division by 2 until we reach value less than this one
+    static constexpr Duration DurationMax = Duration(6870947);
+
+    void reset();
+    void start(Duration, Callback, bool repeat);
+    void callback();
+
+    struct Tick {
+        size_t total;
+        size_t count;
+    };
+
+    Callback _callback;
+
+    os_timer_t* _armed { nullptr };
+    bool _repeat { false };
+
+    std::unique_ptr<Tick> _tick;
+    std::unique_ptr<os_timer_t> _timer;
+};
+
+} // namespace timer
+
+namespace settings {
+namespace internal {
+
+String serialize(duration::ClockCycles);
+
+} // namespace internal
+} // namespace settings
+} // namespace espurna
+
 #elif defined(ESP32) || defined(LIBRETINY)
-#include "arch/rtos/system_rtos.h"
+
+#include "arch/rtos/compat_rtos.h"
+
+namespace espurna {
+namespace sleep {
+
+using Microseconds = std::chrono::microseconds;
+
+} // namespace sleep
+
+namespace system {
+
+// Common code is written for the esp8266 cooperative model, where network
+// callbacks never overlap with loop(). Here AsyncTCP runs them in its own
+// task (on ESP32 possibly on the other core). The loop task holds this lock for the
+// whole iteration and releases it only while sleeping (see delay_unlocked()),
+// async entry points take it before touching any shared state.
+void lock();
+bool lock(duration::Milliseconds timeout);
+void unlock();
+
+// esp8266 ESP.restart() only happens once the SDK gets to run again, the reboot here is immediate.
+// Network modules report whether some of their output did not reach the peer yet (e.g. +OK of
+// the RESET command, still queued or not acknowledged), restart() keeps waiting for it for a bit.
+// Checks are called from the loop task, with the loop lock held.
+using PendingOutput = bool (*)();
+void registerPendingOutput(PendingOutput);
+
+// loop() / setup() side, waits indefinitely
+struct LoopGuard {
+    LoopGuard() { lock(); }
+    ~LoopGuard() { unlock(); }
+
+    LoopGuard(const LoopGuard&) = delete;
+    LoopGuard& operator=(const LoopGuard&) = delete;
+};
+
+// AsyncTCP side. Waiting is bounded: AsyncTCP task stalling for too long lets
+// its event queue fill up, which blocks the tcpip task and whoever is waiting
+// on it. On timeout, handler should hand the work over to loop() instead
+// (ref. runInLoop() in espurna_tasks.h), or reject it (e.g. HTTP 503). Proceeding unlocked
+// races with loop() and is only acceptable when nothing shared is touched.
+struct AsyncGuard {
+    AsyncGuard();
+
+    // waits longer than the default, e.g. for every chunk of a firmware upload, which cannot be dropped or deferred
+    explicit AsyncGuard(duration::Milliseconds timeout);
+    ~AsyncGuard();
+
+    AsyncGuard(const AsyncGuard&) = delete;
+    AsyncGuard& operator=(const AsyncGuard&) = delete;
+
+    bool locked() const {
+        return _locked;
+    }
+
+private:
+    bool _locked;
+};
+
+// Chip part, arch/<chip>/system_<chip>.cpp. Only the SDK calls, everything around them is in system_rtos.cpp
+namespace chip {
+namespace sdk {
+
+// last thing in systemSetup()
+void setup();
+
+// watchdog of the loop task, from the first loop() on (the rest of setup() is allowed to take its time)
+void enable_loop_wdt();
+
+// every loop(), before the timers and the deferred callbacks
+void loop();
+
+// loop task sleeps in delay_unlocked(), the watchdog that watches it has to be fed
+void feed_loop_wdt();
+
+// the actual reboot, once the network output is flushed and the settings are committed
+[[noreturn]] void reboot();
+
+// mac(), light_sleep() and deep_sleep() are in the common system.h
+
+} // namespace sdk
+} // namespace chip
+} // namespace system
+
+namespace timer {
+
+// Polled from loop() (ref. dispatch()), same as esp8266 os_timer callbacks never overlapping
+// with loop(). Every timer is due at least DurationMin apart, loop() runs a lot more often.
+// All state is guarded by the dispatcher mutex, so methods are also safe to call from other
+// tasks (e.g. AsyncTCP handlers running without the loop lock), callbacks still run from loop().
+struct SystemTimer {
+    using TimeSource = time::CoreClock;
+    using Duration = TimeSource::duration;
+
+    static constexpr Duration DurationMin = Duration(5);
+
+    SystemTimer();
+    ~SystemTimer();
+
+    SystemTimer(const SystemTimer&) = delete;
+    SystemTimer& operator=(const SystemTimer&) = delete;
+
+    // timer is bound to its id, an armed timer is not transferred (both are stopped)
+    SystemTimer(SystemTimer&&);
+    SystemTimer& operator=(SystemTimer&&);
+
+    bool armed() const;
+    explicit operator bool() const { return armed(); }
+
+    void once(Duration duration, Callback callback);
+    void repeat(Duration duration, Callback callback);
+    void schedule_once(Duration, Callback);
+    void stop();
+
+    // runs every timer that is due, from loop()
+    static void dispatch();
+
+private:
+    static constexpr Duration DurationMax = Duration(6870947);
+
+    void start(Duration, Callback, bool repeat);
+
+    // everything below is only touched with the dispatcher mutex held
+    Callback _callback;
+    uint32_t _id { 0 };
+    bool _repeat { false };
+
+    // micros64() based, us
+    int64_t _period { 0 };
+    int64_t _due { 0 };
+
+    // bumped on every start() / stop() / one-shot dispatch
+    uint32_t _generation { 0 };
+
+    bool _armed { false };
+};
+
+} // namespace timer
+} // namespace espurna
+
 #endif
 
 namespace espurna {
@@ -78,8 +328,8 @@ struct RandomDevice {
     uint32_t operator()() const;
 };
 
-// Implemented by arch/<arch>/system_<arch>.cpp, used by the common system module
-namespace arch {
+// Implemented by arch/<chip>/system_<chip>.cpp, used by the common system module
+namespace chip {
 
 // first thing in systemSetup(), before anything else is initialized
 void pre_setup();
@@ -96,7 +346,7 @@ uint32_t reset_reason();
 // actual reboot, custom reason is already stored at this point
 [[noreturn]] void restart();
 
-} // namespace arch
+} // namespace chip
 } // namespace system
 
 struct ReadyFlag {
@@ -369,10 +619,6 @@ bool systemPasswordEquals(espurna::StringView);
 
 String systemHostname();
 String systemDescription();
-
-// Run the callback from loop(), in the order of calls. Safe to call from any task, e.g. from
-// network handlers on ESP32 when the loop lock could not be taken in time (ref. AsyncGuard)
-void systemRunInLoop(std::function<void()>);
 
 void systemSetup();
 void systemSetupUnstable();

@@ -67,7 +67,8 @@ bool download(const uint8_t* block, uint32_t& offset, uint32_t& length) {
     while ((tags + 4) <= end) {
         const size_t len = tags[0];
         const uint32_t type = uint32_t{tags[1]} | (uint32_t{tags[2]} << 8) | (uint32_t{tags[3]} << 16);
-        if (!len || !type || ((tags + len) > end)) {
+        // a tag is at least its own 4 byte header: a shorter length wrapped `len - 4` below (review M1)
+        if ((len < 4) || !type || ((tags + len) > end)) {
             break;
         }
 

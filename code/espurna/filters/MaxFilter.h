@@ -45,4 +45,3 @@ private:
     double _value { 0 };
     bool _status { false };
 };
-

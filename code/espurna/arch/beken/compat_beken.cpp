@@ -29,7 +29,10 @@ uint64_t micros64() {
 }
 
 // ARM968E-S (ARMv5) has no atomic instructions and libatomic is not linked.
-// Same as libatomic for single core MCUs, every operation runs with the interrupts masked
+// Same as libatomic for single core MCUs, every operation runs with the interrupts masked.
+// ESPurna itself has no std::atomic any more (espurna::system::Shared, espurna_tasks.h), these stay for what is built
+// elsewhere: the prebuilt Matter library (libCHIP / libMatterApp: __atomic_compare_exchange_1/4, fetch_add/sub/and_4)
+// and the modules (__atomic_* in modules_exports.txt). Hardware layer, the BK72xx only
 namespace {
 
 struct IrqGuard {
@@ -135,12 +138,6 @@ String EspCompat::getResetInfo() {
     return static_cast<EspClass&>(*this).getResetInfo();
 }
 
-uint32_t EspCompat::getChipId() {
-    uint8_t mac[6] {};
-    lt_get_device_mac(mac);
-    return (uint32_t{mac[3]} << 16) | (uint32_t{mac[4]} << 8) | uint32_t{mac[5]};
-}
-
 uint32_t EspCompat::getFlashChipSpeed() {
     return 0;
 }
@@ -180,7 +177,7 @@ bool EspCompat::flashRead(uint32_t addr, uint32_t* data, size_t size) {
 
 // LibreTiny's ArduinoFamily.h makes noInterrupts() / interrupts() of these two, and ArduinoCore-API declares
 // pulseIn(), none of them has a body on the BK72xx. The modules use them (OneWire, HLW8012): here, kept in the head
-// by espurna/modules_exports_beken.txt
+// by espurna/modules_exports.txt
 extern "C" {
 
 uint32_t ulPortSetInterruptMask(void) {

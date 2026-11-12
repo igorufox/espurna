@@ -46,4 +46,3 @@ constexpr size_t Range::SizeMax;
 
 } // namespace bits
 } // namespace espurna
-

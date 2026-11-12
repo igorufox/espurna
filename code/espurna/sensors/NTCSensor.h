@@ -72,11 +72,7 @@ class NTCSensor : public AnalogSensor {
 
         // Descriptive name of the sensor
         String description() const override {
-#if defined(ARDUINO_ARCH_ESP32)
-            return String(F("NTC @ ")) + address(0);
-#else
-            return F("NTC @ TOUT");
-#endif
+            return String(F("NTC @ ")) + espurna::adc::chip::pad(_pin);
         }
 
         // Type for slot # index

@@ -13,15 +13,16 @@ ref. safeboot_esp32.h
 #include "safeboot_esp32.h"
 #include "terminal.h"
 #include "web.h"
+#include "../../libs/esp32_partitions.h"
+#include "../../libs/fetch_check.h"
+#include "../../libs/http_client.h"
 
 #include <esp_attr.h>
 #include <esp_flash.h>
 #include <esp_image_format.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
-#include <esp_rom_md5.h>
 #include <esp_system.h>
-#include <mbedtls/sha256.h>
 #include <nvs.h>
 
 #include <algorithm>
@@ -145,7 +146,6 @@ void tick() {
 // boot; "image" - ESPURNA_IMAGE, its release list shows the files of that image; "result" - written back by safeboot
 namespace request {
 
-constexpr size_t UrlMax { 240 };
 
 bool write(const String& url, const String& sha256, String& error) {
     nvs_handle_t handle;
@@ -229,29 +229,13 @@ void image() {
     }
 }
 
-// the safeboot image downloads http:// and https:// (ESP-IDF certificate bundle)
+// the same checks as the mini and the head's fetch (libs/fetch_check.h); an empty SHA-256 is fine here
 bool validUrl(const String& url) {
-    return (url.length() > 10) && (url.length() <= UrlMax)
-        && (url.startsWith(F("http://")) || url.startsWith(F("https://")));
+    return ::espurna::fetch_check::validUrl(url);
 }
 
-// empty, or 64 lower case hex digits
 bool validSha256(const String& value) {
-    if (!value.length()) {
-        return true;
-    }
-
-    if (value.length() != 64) {
-        return false;
-    }
-
-    for (const auto c : value) {
-        if (!(((c >= '0') && (c <= '9')) || ((c >= 'a') && (c <= 'f')))) {
-            return false;
-        }
-    }
-
-    return true;
+    return !value.length() || ::espurna::fetch_check::validSha256(value);
 }
 
 } // namespace request
@@ -267,35 +251,28 @@ String partitionSha256(const esp_partition_t* part, size_t size) {
         return String();
     }
 
-    mbedtls_sha256_context ctx;
-    mbedtls_sha256_init(&ctx);
-    mbedtls_sha256_starts(&ctx, 0);
+    // the one hash library of ESPurna: BearSSL
+    br_sha256_context ctx;
+    br_sha256_init(&ctx);
 
     bool ok = true;
     for (size_t offset = 0; ok && (offset < size); offset += 4096) {
         const size_t len = std::min<size_t>(4096, size - offset);
         ok = esp_partition_read(part, offset, buffer.get(), len) == ESP_OK;
         if (ok) {
-            mbedtls_sha256_update(&ctx, buffer.get(), len);
+            br_sha256_update(&ctx, buffer.get(), len);
         }
     }
 
-    uint8_t digest[32];
-    mbedtls_sha256_finish(&ctx, digest);
-    mbedtls_sha256_free(&ctx);
+    uint8_t digest[br_sha256_SIZE];
+    br_sha256_out(&ctx, digest);
     if (!ok) {
         return String();
     }
 
-    String out;
-    out.reserve(64);
-    char hex[3];
-    for (const auto value : digest) {
-        snprintf(hex, sizeof(hex), "%02x", value);
-        out += hex;
-    }
-
-    return out;
+    char out[sizeof(digest) * 2 + 1];
+    ::espurna::http::hex(digest, sizeof(digest), out);
+    return String(out);
 }
 
 // From the two-slot layouts of the Arduino core (min_spiffs.csv, default.csv) to esp32_4mb_safeboot.csv over Wi-Fi.
@@ -353,27 +330,21 @@ void table(uint8_t* out) {
     size_t pos { 0 };
     for (const auto& item : Entries) {
         const auto entry = (item.offset == DataOffset) ? dataEntry(item) : item;
-        auto* row = out + pos;
-        std::memset(row, 0, 32);
-        row[0] = 0xAA;
-        row[1] = 0x50;
-        row[2] = entry.type;
-        row[3] = entry.subtype;
-        std::memcpy(row + 4, &entry.offset, 4);
-        std::memcpy(row + 8, &entry.size, 4);
-        std::strncpy(reinterpret_cast<char*>(row + 12), entry.label, 16);
+        ::espurna::esp32_partitions::write(out + pos, ::espurna::esp32_partitions::Entry{
+            entry.type, entry.subtype, entry.offset, entry.size, entry.label});
         pos += 32;
     }
 
-    md5_context_t ctx;
-    esp_rom_md5_init(&ctx);
-    esp_rom_md5_update(&ctx, out, pos);
+    // MD5 because the table format of ESP-IDF takes it; BearSSL's, the one hash library of ESPurna
+    br_md5_context ctx;
+    br_md5_init(&ctx);
+    br_md5_update(&ctx, out, pos);
 
     auto* row = out + pos;
     row[0] = 0xEB;
     row[1] = 0xEB;
     std::memset(row + 2, 0xFF, 14);
-    esp_rom_md5_final(row + 16, &ctx);
+    br_md5_out(&ctx, row + 16);
 }
 
 bool current() {
@@ -513,23 +484,15 @@ bool uploadWrite(const uint8_t* data, size_t len) {
 
 // factory entry of the partition table (entries of 32 bytes: magic 0x50AA, type, subtype, offset, size)
 bool uploadLocate() {
-    const auto* table = upload.table.get();
-    for (size_t entry = 0; (entry + 32) <= MergedTableSize; entry += 32) {
-        const uint8_t* e = table + entry;
-        if ((e[0] != 0xAA) || (e[1] != 0x50)) {
-            break;
-        }
-        if ((e[2] == ESP_PARTITION_TYPE_APP) && (e[3] == ESP_PARTITION_SUBTYPE_APP_FACTORY)) {
-            uint32_t offset;
-            uint32_t size;
-            std::memcpy(&offset, e + 4, sizeof(offset));
-            std::memcpy(&size, e + 8, sizeof(size));
-            upload.from = offset;
-            upload.until = offset + std::min<size_t>(size, SafebootSize);
-            upload.located = true;
-            upload.table.reset();
-            return true;
-        }
+    ::espurna::esp32_partitions::Entry factory;
+    if (::espurna::esp32_partitions::find(upload.table.get(), MergedTableSize,
+        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, factory))
+    {
+        upload.from = factory.offset;
+        upload.until = factory.offset + std::min<size_t>(factory.size, SafebootSize);
+        upload.located = true;
+        upload.table.reset();
+        return true;
     }
 
     upload.error = F("a merged image without a safeboot (factory) partition in its partition table");
@@ -690,11 +653,11 @@ PROGMEM_STRING(NoOtaMessage,
     "ERROR: this flash layout (safeboot) has no second OTA slot. "
     "Updates go through safeboot, see the /safeboot page\n");
 
-void onNoOta(AsyncWebServerRequest* request) {
-    request->send(400, "text/plain", NoOtaMessage);
+void onNoOta(WebRequest& request) {
+    webSend(request, 400, "text/plain", String(FPSTR(NoOtaMessage)));
 }
 
-void onNoOtaUpload(AsyncWebServerRequest*, String, size_t, uint8_t*, size_t, bool) {
+void onNoOtaUpload(WebRequest&, const char*, size_t, const uint8_t*, size_t, bool) {
 }
 
 PROGMEM_STRING(Page, R"(<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -750,22 +713,22 @@ function show(s){st=s;$('url').value=s.url;$('murl').value=s.url;
 status().then(show).catch(e=>log(e,'err'));
 </script></body></html>)");
 
-bool authenticated(AsyncWebServerRequest* request) {
+bool authenticated(WebRequest& request) {
     if (!webAuthenticate(request)) {
-        request->requestAuthentication(systemHostname().c_str());
+        webRequestAuthentication(request);
         return false;
     }
 
     return true;
 }
 
-void onPage(AsyncWebServerRequest* request) {
+void onPage(WebRequest& request) {
     if (authenticated(request)) {
-        request->send(200, "text/html", Page);
+        webSend(request, 200, "text/html", String(FPSTR(Page)));
     }
 }
 
-void onStatus(AsyncWebServerRequest* request) {
+void onStatus(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
@@ -798,26 +761,25 @@ void onStatus(AsyncWebServerRequest* request) {
     out += F("\",\"result\":\"");
     out += request::read("result");
     // ?size=<bytes of the release safeboot>: SHA-256 of the installed one, to compare with the release list
-    const auto* size = request->getParam("size");
+    const char* size = request.param("size");
     if (current && size) {
         out += F("\",\"sha256\":\"");
-        out += partitionSha256(factory(), size->value().toInt());
+        out += partitionSha256(factory(), strtoul(size, nullptr, 10));
     }
     out += F("\"}");
 
-    request->send(200, "application/json", out);
+    webSend(request, 200, "application/json", out);
 }
 
-String formValue(AsyncWebServerRequest* request, const char* name) {
-    const auto* param = request->getParam(name, true);
-    return param ? param->value() : String();
+String formValue(WebRequest& request, const char* name) {
+    return webParam(request, name);
 }
 
-String formUrl(AsyncWebServerRequest* request) {
+String formUrl(WebRequest& request) {
     return formValue(request, "url");
 }
 
-void onUpdate(AsyncWebServerRequest* request) {
+void onUpdate(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
@@ -825,33 +787,33 @@ void onUpdate(AsyncWebServerRequest* request) {
     const auto url = formUrl(request);
     String error;
     if (!updateFromUrl(url, formValue(request, "sha256"), error)) {
-        request->send(400, "text/plain", error);
+        webSend(request, 400, "text/plain", error);
         return;
     }
 
     setSetting("sbUrl", url);
-    request->send(200, "text/plain", F("Restarting into safeboot"));
+    webSend(request, 200, "text/plain", String(F("Restarting into safeboot")));
     prepareReset(CustomResetReason::Web);
 }
 
-void onSwitch(AsyncWebServerRequest* request) {
+void onSwitch(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
     String error;
     if (!switchToSafeboot(error)) {
-        request->send(400, "text/plain", error);
+        webSend(request, 400, "text/plain", error);
         return;
     }
 
-    request->send(200, "text/plain", F("Restarting into safeboot"));
+    webSend(request, 200, "text/plain", String(F("Restarting into safeboot")));
     prepareReset(CustomResetReason::Web);
 }
 
 // One handler for both images that go into the safeboot slot: the migration (old layout, into the first OTA slot
 // that becomes the factory partition) and install / replace (safeboot layout, into the factory partition itself)
-void onSafebootUpload(AsyncWebServerRequest* request, String, size_t index, uint8_t* data, size_t len, bool final) {
+void onSafebootUpload(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool final) {
     if (!webAuthenticate(request)) {
         return;
     }
@@ -884,7 +846,7 @@ void onSafebootUpload(AsyncWebServerRequest* request, String, size_t index, uint
         return;
     }
 
-    if (!layout::uploadFeed(data, len)) {
+    if (!layout::uploadFeed(const_cast<uint8_t*>(data), len)) {
         layout::upload.part = nullptr;
         return;
     }
@@ -894,9 +856,9 @@ void onSafebootUpload(AsyncWebServerRequest* request, String, size_t index, uint
     }
 }
 
-bool uploadDone(AsyncWebServerRequest* request) {
+bool uploadDone(WebRequest& request) {
     if (!layout::upload.done) {
-        request->send(400, "text/plain",
+        webSend(request, 400, "text/plain",
             layout::upload.error.length() ? layout::upload.error : String(F("no safeboot image received")));
         return false;
     }
@@ -905,35 +867,35 @@ bool uploadDone(AsyncWebServerRequest* request) {
     return true;
 }
 
-void onInstall(AsyncWebServerRequest* request) {
+void onInstall(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
     if (!layout::current()) {
-        request->send(400, "text/plain", F("not the safeboot layout, migrate first"));
+        webSend(request, 400, "text/plain", String(F("not the safeboot layout, migrate first")));
         return;
     }
 
     if (uploadDone(request)) {
-        request->send(200, "text/plain", String(F("Safeboot installed: ")) + layout::describe(factory()));
+        webSend(request, 200, "text/plain", String(F("Safeboot installed: ")) + layout::describe(factory()));
     }
 }
 
-void onMigrate(AsyncWebServerRequest* request) {
+void onMigrate(WebRequest& request) {
     if (!authenticated(request)) {
         return;
     }
 
     const auto url = formUrl(request);
     if (url.length() && !request::validUrl(url)) {
-        request->send(400, "text/plain", F("invalid URL (http:// or https://, up to 240 characters)"));
+        webSend(request, 400, "text/plain", String(F("invalid URL (http:// or https://, up to 240 characters)")));
         return;
     }
 
     const auto sha256 = formValue(request, "sha256");
     if (!request::validSha256(sha256)) {
-        request->send(400, "text/plain", F("invalid SHA-256 (64 lower case hex digits)"));
+        webSend(request, 400, "text/plain", String(F("invalid SHA-256 (64 lower case hex digits)")));
         return;
     }
 
@@ -948,8 +910,8 @@ void onMigrate(AsyncWebServerRequest* request) {
     layout::pending_sha256 = sha256;
     espurnaRegisterOnce(layout::migrate);
 
-    request->send(200, "text/plain",
-        F("Safeboot image written. Writing the partition table, then restarting into safeboot"));
+    webSend(request, 200, "text/plain",
+        String(F("Safeboot image written. Writing the partition table, then restarting into safeboot")));
 }
 #endif
 
@@ -1094,6 +1056,16 @@ void safebootSetup() {
 #endif
 }
 
+// the update by an URL of every chip (ota_fetch.cpp): here safeboot downloads it, ESPurna cannot write its own slot
+bool safebootUpdateFromUrl(const String& url, const String& sha256, String& error) {
+    if (!espurna::safeboot::updateFromUrl(url, sha256, error)) {
+        return false;
+    }
+
+    setSetting("sbUrl", url);
+    return true;
+}
+
 #if WEB_SUPPORT
 // Only after webSetup(): the server does not exist before it (and never in the unstable mode)
 void safebootWebSetup() {
@@ -1101,16 +1073,16 @@ void safebootWebSetup() {
 
     auto& server = webServer();
     // a handler takes its sub-paths as well ("/safeboot" would answer "/safeboot/status"): specific ones first
-    server.on("/safeboot/status", HTTP_GET, onStatus);
-    server.on("/safeboot/update", HTTP_POST, onUpdate);
-    server.on("/safeboot/switch", HTTP_POST, onSwitch);
-    server.on("/safeboot/migrate", HTTP_POST, onMigrate, onSafebootUpload);
-    server.on("/safeboot/install", HTTP_POST, onInstall, onSafebootUpload);
-    server.on("/safeboot", HTTP_GET, onPage);
+    server.on("/safeboot/status", WebMethod::Get, onStatus);
+    server.on("/safeboot/update", WebMethod::Post, onUpdate);
+    server.on("/safeboot/switch", WebMethod::Post, onSwitch);
+    server.on("/safeboot/migrate", WebMethod::Post, onMigrate, onSafebootUpload);
+    server.on("/safeboot/install", WebMethod::Post, onInstall, onSafebootUpload);
+    server.on("/safeboot", WebMethod::Get, onPage);
 
     if (!otaPossible()) {
         server.rewrite("/upgrade", "/safeboot-noota");
-        server.on("/safeboot-noota", HTTP_ANY, onNoOta, onNoOtaUpload);
+        server.on("/safeboot-noota", WebMethod::Any, onNoOta, onNoOtaUpload);
         DEBUG_MSG_P(PSTR("[SAFEBOOT] No second OTA slot, /upgrade is disabled (use /safeboot)\n"));
     }
 }

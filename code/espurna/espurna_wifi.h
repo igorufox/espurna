@@ -10,43 +10,11 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include <Arduino.h>
 
+// SDK, lwIP and WiFi class headers, AUTH_MODE, driver::AuthOpen and driver::ScanResult
 #if defined(ESP8266)
-#include <lwip/init.h>
-#if LWIP_VERSION_MAJOR == 1
-#include <netif/etharp.h>
-#elif LWIP_VERSION_MAJOR >= 2
-#include <lwip/etharp.h>
-#endif
-
-// (HACK) allow us to use internal lwip struct.
-// esp8266 re-defines enum values from tcp header... include them first
-#define LWIP_INTERNAL
-#include <ESP8266WiFi.h>
-#undef LWIP_INTERNAL
-
-extern "C" {
-  #include <lwip/opt.h>
-  #include <lwip/ip.h>
-  #include <lwip/tcp.h>
-  #include <lwip/inet.h> // ip_addr_t
-  #include <lwip/err.h> // ERR_x
-  #include <lwip/dns.h> // dns_getserver, dns_gethostbyname
-  #include <lwip/ip_addr.h> // ip4/ip6 helpers
-};
-
-// ref: https://github.com/me-no-dev/ESPAsyncTCP/pull/115/files#diff-e2e636049095cc1ff920c1bfabf6dcacR8
-// This is missing with Core 2.3.0 and is sometimes missing from the build flags. Assume HIGH_BANDWIDTH version.
-#ifndef TCP_MSS
-#define TCP_MSS (1460)
-#endif
-
+#include "arch/esp8266/wifi_types_esp8266.h"
 #else
-#include <WiFi.h>
-#if defined(ARDUINO_ARCH_ESP32)
-#include <esp_wifi.h>
-#endif
-
-using AUTH_MODE = wifi_auth_mode_t;
+#include "arch/rtos/wifi_types_rtos.h"
 #endif
 
 namespace espurna {

@@ -20,20 +20,11 @@ Provides the magnitude API to the other modules (Home Assistant, Domoticz, Thing
 #include "driver_onewire.h"
 #endif
 
-#if UART_SUPPORT
-#include "uart.h"
-#endif
-
 #include "sensor.h"
 
 ESPURNA_MODULE(sensors, "sensors", 10) {
     using espurna::modules::Api;
 
-#if UART_SUPPORT
-    if (ESPURNA_MODULE_OWNS(sensors, uartSetup)) {
-        uartSetup();
-    }
-#endif
 #if I2C_SUPPORT
     if (ESPURNA_MODULE_OWNS(sensors, i2cSetup)) {
         i2cSetup();

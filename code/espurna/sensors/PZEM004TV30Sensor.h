@@ -642,4 +642,3 @@ void PZEM004TV30Sensor::registerTerminalCommands() {
 }
 
 #undef PZEM_DEBUG_MSG_P
-

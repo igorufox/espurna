@@ -3,7 +3,7 @@
 OTA MODULE, ESP32 part (ref. ota_driver.h)
 
 Update writes the app image into the other app partition, every upload it takes is fine
-(upload_check() of ota_driver_plain.h).
+(the default upload_check() of ota_driver.h).
 
 */
 
@@ -20,7 +20,7 @@ namespace espurna {
 namespace system {
 namespace chip {
 
-// arch/rtos/system_rtos.h: a loop() pass for the stall watcher
+// system.h: a loop() pass for the stall watcher
 void loop();
 
 } // namespace chip
@@ -76,11 +76,10 @@ inline void arduino_ota_started() {
 // (system_esp32.cpp, 60 s without a loop() pass) are both fed between the chunks, a slow upload is not aborted
 inline void arduino_ota_progress() {
     esp_task_wdt_reset();
-    ::espurna::system::chip::loop();
+    ::espurna::system::chip::sdk::loop();
 }
 
 } // namespace driver
 } // namespace ota
 } // namespace espurna
 
-#include "../../ota_driver_plain.h"

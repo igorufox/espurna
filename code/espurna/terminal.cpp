@@ -27,7 +27,7 @@ Copyright (C) 2020-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "telnet.h"
 #include "terminal.h"
 #include "utils.h"
-#include "wifi_orch.h"
+#include "espurna_wifi.h"
 
 #include "libs/PrintString.h"
 #include "libs/Delimiter.h"
@@ -45,7 +45,7 @@ extern "C" uint32_t _FS_start;
 extern "C" uint32_t _FS_end;
 
 #if WEB_SUPPORT
-#include "web_print.ipp"
+#include "web.h"
 #endif
 
 namespace espurna {
@@ -676,15 +676,14 @@ void setup() {
     apiRegister(
         getSetting(Key, Path),
         [](ApiRequest& api) {
-            api.handle([](AsyncWebServerRequest* request) {
-                auto* response = request->beginResponseStream(F("text/plain"));
+            api.handle([](WebRequest& request) {
+                String out;
                 for (const auto view : names()) {
-                    const auto name = view.toString();
-                    response->write(name.c_str(), name.length());
-                    response->write("\r\n", 2);
+                    out += view.toString();
+                    out += "\r\n";
                 }
 
-                request->send(response);
+                webSend(request, 200, "text/plain", out);
             });
 
             return true;
@@ -701,7 +700,7 @@ void setup() {
                 return false;
             }
 
-            api.handle([cmds](AsyncWebServerRequest* request) {
+            api.handle([cmds](WebRequest& request) {
                 API_SCHEDULE_COMMANDS(request, cmds);
             });
 
@@ -709,35 +708,34 @@ void setup() {
         }
     );
 #else
-    webRequestRegister([](AsyncWebServerRequest* request) {
+    webRequestRegister([](WebRequest& request) {
         STRING_VIEW_INLINE(BasePath, API_BASE_PATH);
 
         String path;
         path += BasePath;
         path += getSetting(Key, Path);
 
-        if (path != request->url()) {
+        if (!path.equals(request.url())) {
             return false;
         }
 
         if (!apiAuthenticate(request)) {
-            request->send(403);
+            request.send(403, "text/plain", "");
             return true;
         }
 
         Commands cmds;
 
-        for (size_t n = 0; n < request->params(); ++n) {
-            const auto* param = request->getParam(n);
-            const auto& name = param->name();
-            const auto& value = param->value();
+        for (size_t n = 0; n < request.params(); ++n) {
+            const String name(request.paramName(n));
+            const String value(request.paramValue(n));
             if (!apiReservedParam(name)) {
                 API_UPDATE_COMMANDS(cmds, name, value);
             }
         }
 
         if (!cmds || !cmds->size()) {
-            request->send(500);
+            request.send(500, "text/plain", "");
             return true;
         }
 

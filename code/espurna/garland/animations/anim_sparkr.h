@@ -48,4 +48,3 @@ class AnimSparkr : public Anim {
 };
 
 #endif  // GARLAND_SUPPORT
-
