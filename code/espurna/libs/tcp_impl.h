@@ -72,9 +72,10 @@ void lwipCall(F&& func) {
 
 class Connection::Impl {
 public:
-    // more than a whole TCP window (ESP8266 lwIP2 4 x MSS, ESP32 5744, BK7231N lwIP 4 x MSS): the peer sends no more
-    // than the window until the loop takes it; a segment that does not fit waits in lwIP (refused, given again)
-    static constexpr size_t RingSize { 8192 };
+    // a whole TCP window of this lwIP (ESP8266 lwIP2 4 x MSS, ESP32 5744, BK7231N lwIP 4 x MSS), at least 2 KB: the peer
+    // sends no more than the window until the loop takes it; a segment that does not fit waits in lwIP (refused, given
+    // again). Not more: it is per connection, 8 KB each left the ESP8266 head without heap for an Apply (W22, 11-13)
+    static constexpr size_t RingSize { (static_cast<size_t>(TCP_WND) > 2048) ? static_cast<size_t>(TCP_WND) : 2048 };
 
     Impl() = default;
     Impl(const Impl&) = delete;

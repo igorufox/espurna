@@ -17,6 +17,7 @@ calibration in it. The ESP32 safeboot reads the pool and falls back to that blob
 
 #include <esp_partition.h>
 #include <nvs.h>
+#include <nvs_flash.h>
 
 #include <cstring>
 #include <memory>
@@ -84,9 +85,17 @@ bool keep(uint32_t) {
 }
 
 // the blob is the end of the buffer (a longer one is not ours: its end)
+// The settings are loaded on their first use, a static initializer may come first: before initArduino() started NVS.
+// Not started, nvs_open() fails and the blob was never taken over: the head booted with empty settings, wrote them into
+// the pool, and safeboot took that copy (10.0.5.66 11-13: AP without Wi-Fi). nvs_flash_init() again later is a no-op
 bool legacy(uint8_t* data) {
     nvs_handle_t handle;
-    if (nvs_open(LegacyNamespace, NVS_READONLY, &handle) != ESP_OK) {
+    auto result = nvs_open(LegacyNamespace, NVS_READONLY, &handle);
+    if (result == ESP_ERR_NVS_NOT_INITIALIZED) {
+        nvs_flash_init();
+        result = nvs_open(LegacyNamespace, NVS_READONLY, &handle);
+    }
+    if (result != ESP_OK) {
         return false;
     }
 
@@ -112,6 +121,10 @@ void done() {
         nvs_commit(handle);
         nvs_close(handle);
     }
+}
+
+bool legacyErasedWhenDone() {
+    return true;
 }
 
 void info(Print& out) {

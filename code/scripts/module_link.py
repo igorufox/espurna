@@ -516,8 +516,12 @@ class Linker:
         if self._members_cache is None:
             self._members_cache = {}
             if os.path.exists(cache_path):
-                with open(cache_path) as f:
-                    self._members_cache = json.load(f)
+                # a cache cut by a stopped build is only a cache: read anew
+                try:
+                    with open(cache_path) as f:
+                        self._members_cache = json.load(f)
+                except (OSError, ValueError):
+                    self._members_cache = {}
         stat = os.stat(archive)
         key = f"{archive}|{stat.st_size}|{int(stat.st_mtime)}"
         if key in self._members_cache:
@@ -536,8 +540,11 @@ class Linker:
                 out[member].append((parts[1], parts[2]))
         self._members_cache[key] = out
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        with open(cache_path, "w") as f:
+        # whole or not at all: a stopped build leaves the old file, never a cut one
+        part = cache_path + ".part"
+        with open(part, "w") as f:
             json.dump(self._members_cache, f)
+        os.replace(part, cache_path)
         return out
 
     def lib_archives(self, build_dir, head_names, work_name="mod-libs"):

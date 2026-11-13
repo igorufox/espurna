@@ -405,7 +405,7 @@ void onStatus(WebRequest& request) {
 
     String out;
     root.printTo(out);
-    webSend(request, 200, "application/json", out);
+    webSend(request, 200, "application/json", std::move(out));
 }
 
 // the WebUI screen mirror (OHpanel only): "nspanelScreen" starts it, touches come back as the TFT's own events

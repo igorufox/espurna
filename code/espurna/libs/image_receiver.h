@@ -7,8 +7,10 @@ image) and code/safeboot-app (/upload, the download by an URL). No Arduino, head
 - the image comes a piece at a time: the body of an upload (libs/http_server.h) or the body of a download
   (libs/http_client.h, the receiver is its sink: 200 and Content-Length, the SHA-256 of the release list is checked
   by the client)
-- the first piece goes to the target with the size (0 - not known: a form upload), the target checks the header and
-  refuses what this board does not take before anything is written
+- the first FirstPiece bytes (or the whole file when it is shorter) go to the target at once, with the size (0 - not
+  known: a form upload): the target checks the header and refuses what this board does not take before anything is
+  written. Gathered here, as the pieces of an upload are of any size (the Beken checks a whole UF2 block of 512 bytes;
+  the piece after the form part's headers was shorter and every upload was refused, W30)
 - more bytes than announced, or fewer at the end, fail it; finish() hands the end to the target, abort() whatever
   happened (the client went away)
 - the POSTs that change the firmware are refused for a page of another site (sameOrigin())
@@ -24,6 +26,7 @@ What differs is only where the bytes go, the Target of the image:
 
 #include "http_client.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -80,19 +83,30 @@ public:
         }
 
         if (!_started) {
-            const char* error = _target.begin(data, len, _expected);
+            const size_t take = std::min(len, FirstPiece - _first_len);
+            std::memcpy(&_first[_first_len], data, take);
+            _first_len += take;
+            _received += take;
+            data += take;
+            len -= take;
+            if ((_first_len < FirstPiece) && !(_expected && (_received == _expected))) {
+                return nullptr;
+            }
+
+            const char* error = start();
+            if (error) {
+                return error;
+            }
+        }
+
+        if (len) {
+            const char* error = _target.write(data, len);
             if (error) {
                 return fail(error);
             }
-            _started = true;
+            _received += len;
         }
 
-        const char* error = _target.write(data, len);
-        if (error) {
-            return fail(error);
-        }
-
-        _received += len;
         return nullptr;
     }
 
@@ -103,7 +117,13 @@ public:
         }
 
         if (!_started) {
-            return fail("no image");
+            if (!_first_len) {
+                return fail("no image");
+            }
+            const char* error = start();
+            if (error) {
+                return error;
+            }
         }
 
         if (_expected && (_received != _expected)) {
@@ -166,7 +186,25 @@ public:
         return finish();
     }
 
+    static constexpr size_t FirstPiece { 512 };
+
 private:
+    // the first piece to the target: its check, then its bytes
+    const char* start() {
+        const char* error = _target.begin(_first, _first_len, _expected);
+        if (error) {
+            return fail(error);
+        }
+        _started = true;
+
+        error = _target.write(_first, _first_len);
+        if (error) {
+            return fail(error);
+        }
+
+        return nullptr;
+    }
+
     const char* fail(const char* error) {
         abort();
         _error = error;
@@ -176,6 +214,8 @@ private:
     Target& _target;
     size_t _expected { 0 };
     size_t _received { 0 };
+    uint8_t _first[FirstPiece] {};
+    size_t _first_len { 0 };
     bool _started { false };
     bool _done { false };
     const char* _error { nullptr };

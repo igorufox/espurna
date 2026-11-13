@@ -264,6 +264,11 @@ void setup() {
     rtcmemSetup();
     SETUP_HEAP_PROBE("rtcmem");
 
+    // the safeboot's crash-loop guard before anything that may crash at every boot (settings, modules, Wi-Fi)
+    #if SAFEBOOT_SUPPORT
+        safebootGuard();
+    #endif
+
     // Init EEPROM
     eepromSetup();
     SETUP_HEAP_PROBE("eeprom");

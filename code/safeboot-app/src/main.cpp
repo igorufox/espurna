@@ -173,11 +173,24 @@ size_t readBlob(std::unique_ptr<uint8_t[]>& out) {
 
 void readSettings() {
     std::unique_ptr<uint8_t[]> data(new (std::nothrow) uint8_t[espurna::settings_rotate::SectorSize]);
+    // ESPurna's rule (storage_eeprom.cpp): a pool copy without a single key (0xFFFF at the end) does not replace the
+    // blob while the blob is still there (erased when ESPurna takes it over)
+    constexpr size_t Size { espurna::settings_rotate::SectorSize };
     size_t size = 0;
-    if (data && readPool(data.get())) {
-        size = espurna::settings_rotate::SectorSize;
-    } else {
-        size = readBlob(data);
+    if (data && readPool(data.get())
+        && ((data[Size - 1] != 0xFF) || (data[Size - 2] != 0xFF)))
+    {
+        size = Size;
+    }
+
+    if (!size) {
+        std::unique_ptr<uint8_t[]> blob;
+        size = readBlob(blob);
+        if (size) {
+            data = std::move(blob);
+        } else if (data && readPool(data.get())) {
+            size = Size;
+        }
     }
 
     if (size) {
@@ -265,6 +278,45 @@ std::string appInfo() {
     }
 
     return std::string(desc.project_name) + " " + desc.version + ", built " + desc.date + " " + desc.time;
+}
+
+std::string boot_reason;
+std::string boot_app_state;
+
+std::string resetReasonText(esp_reset_reason_t reason) {
+    switch (reason) {
+    case ESP_RST_POWERON: return "power on";
+    case ESP_RST_EXT: return "external reset";
+    case ESP_RST_SW: return "software restart";
+    case ESP_RST_PANIC: return "a crash (panic)";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    default: break;
+    }
+
+    return "reset reason " + std::to_string(static_cast<int>(reason));
+}
+
+std::string appStateText() {
+    const auto* part = app();
+    esp_ota_img_states_t state;
+    if (!part || (esp_ota_get_state_partition(part, &state) != ESP_OK)) {
+        return "not in otadata";
+    }
+
+    switch (state) {
+    case ESP_OTA_IMG_NEW: return "new";
+    case ESP_OTA_IMG_PENDING_VERIFY: return "pending verify";
+    case ESP_OTA_IMG_VALID: return "valid";
+    case ESP_OTA_IMG_INVALID: return "invalid";
+    case ESP_OTA_IMG_ABORTED: return "aborted (rolled back)";
+    case ESP_OTA_IMG_UNDEFINED: return "undefined";
+    }
+
+    return "state " + std::to_string(static_cast<int>(state));
 }
 
 void forgetAppInfo() {
@@ -655,7 +707,8 @@ void onRoot(WebRequest& request) {
     }
 
     const auto image = runningImage();
-    std::string body = "<p>ESPurna in app0: " + appInfo() + "</p><p>Wi-Fi: " + wifi_result + "</p>";
+    std::string body = "<p>ESPurna in app0: " + appInfo() + "</p><p>Wi-Fi: " + wifi_result + "</p>"
+        + "<p>Here after: " + boot_reason + ", app0 was " + boot_app_state + "</p>";
     if (!last_result.empty()) {
         body += "<p>Last update: " + last_result + "</p>";
     }
@@ -694,6 +747,47 @@ void onBoot(WebRequest& request) {
     }
 
     send(request, "<p>Booting ESPurna</p>");
+    restart = true;
+}
+
+// The core dump ESP-IDF saved when ESPurna crashed (the 'coredump' partition, ELF): the raw partition, a piece at a time.
+// Decoded on a computer with the firmware.elf of that build (esp-coredump info_corefile -t raw ...). Safeboot itself saves
+// none (CONFIG_ESP_COREDUMP_ENABLE_TO_NONE): what is there is ESPurna's last crash
+void onCoredump(WebRequest& request) {
+    if (!authenticated(request)) {
+        return;
+    }
+
+    const auto* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, nullptr);
+    if (!part) {
+        request.send(404, "text/plain", "no coredump partition");
+        return;
+    }
+
+    request.send(200, "application/octet-stream", static_cast<long>(part->size),
+        [part](uint8_t* out, size_t max, size_t index) -> size_t {
+            const size_t take = (index < part->size) ? std::min<size_t>(max, part->size - index) : 0;
+            if (take && (esp_partition_read(part, index, out, take) != ESP_OK)) {
+                return 0;
+            }
+            return take;
+        });
+}
+
+// This image in app0 (a diagnosis: it reads the core dump of ESPurna's crash there too): back to the factory partition,
+// the safeboot, at the next boot
+void onFactory(WebRequest& request) {
+    if (!authenticated(request) || !sameOrigin(request)) {
+        return;
+    }
+
+    const auto* part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+    if (!part || (esp_ota_set_boot_partition(part) != ESP_OK)) {
+        request.send(400, "text/plain", "no factory partition");
+        return;
+    }
+
+    request.send(200, "text/plain", "booting the factory partition");
     restart = true;
 }
 
@@ -760,15 +854,23 @@ void onUpload(WebRequest& request) {
 }
 
 void web() {
-    server.on("/", espurna::http::server::Method::Get, onRoot);
+    // a route takes its sub-paths too: the specific ones first, "/" last
     server.on("/boot", espurna::http::server::Method::Post, onBoot);
     server.on("/upload", espurna::http::server::Method::Post, onUpload, onUploadBody);
+    server.on("/coredump.bin", espurna::http::server::Method::Get, onCoredump);
+    server.on("/factory", espurna::http::server::Method::Post, onFactory);
+    server.on("/", espurna::http::server::Method::Get, onRoot);
     server.begin(80);
 }
 
 } // namespace
 
 extern "C" void app_main() {
+    // why the board is here, before bootApp() rewrites the state of app0 ("aborted": the bootloader came back from a
+    // new ESPurna image that never confirmed itself, the rollback)
+    boot_reason = resetReasonText(esp_reset_reason());
+    boot_app_state = appStateText();
+
     // Next boot goes back to ESPurna whenever app0 holds a valid image: a crash, a power cut, a reset or a broken NVS
     // here must never leave the board in safeboot for good. Before anything else: the boot partition lives in otadata,
     // not in NVS. A finished upload sets app0 again anyway

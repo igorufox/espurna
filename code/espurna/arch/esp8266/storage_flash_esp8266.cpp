@@ -70,6 +70,10 @@ bool legacy(uint8_t*) {
 void done() {
 }
 
+bool legacyErasedWhenDone() {
+    return false;
+}
+
 void info(Print& out) {
     out.printf_P(PSTR("Flash: %u KiB\n"), ESP.getFlashChipSize() / 1024);
 }

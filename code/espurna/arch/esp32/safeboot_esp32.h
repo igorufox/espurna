@@ -15,6 +15,13 @@ Asymmetric flash layout (esp32_4mb_safeboot.csv, Tasmota's offsets): a factory a
 
 #pragma once
 
+// The crash-loop guard, first thing after rtcmem (needs only RTC and the reset reason): a few unstable boots in a row
+// switch to safeboot, whatever crashes after it
+void safebootGuard();
+
+// a new image confirmed for the bootloader (its rollback), before a restart ESPurna asked for itself
+void safebootConfirm();
+
 // Early, right after the basic modules (works in the 'unstable' system mode as well)
 void safebootSetup();
 

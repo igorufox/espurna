@@ -203,6 +203,7 @@ struct Upload {
     PackageHeader header {};
     uint8_t map[MapSize] {};
     std::unique_ptr<uint32_t[]> branches;   // the chunk's branch list, taken when a chunk has one
+    uint32_t branches_size { 0 };           // entries `branches` holds
     uint32_t branch_count { 0 };
     alignas(4) uint8_t chunk[ChunkSize];
     uint32_t chunk_fill { 0 };

@@ -59,9 +59,11 @@ String updateError() {
 
 namespace driver = espurna::ota::driver;
 
-// Update is started for one byte more than a file of a known size: it is never 'finished' by itself, so a download
-// with the wrong SHA-256 (the client checks it before end()) is aborted and never booted. The settings stay in their
-// sectors while the image is written (EEPROM rotation off: on the 1 MB layout Update writes over the second sector)
+// Update is started for the exact size of the file when it is known (an upload of a raw body), else for what the chip
+// takes. Not one byte more: LibreTiny's UF2 writer refuses the first block when the size is not exactly its block
+// count x 512 (the Beken took no raw upload, W30; the +1 kept a download with a wrong SHA-256 from finishing, and the
+// head downloads nothing any more). The settings stay in their sectors while the image is written (EEPROM rotation
+// off: on the 1 MB layout Update writes over the second sector)
 class UpdateTarget final : public espurna::image::Target {
 public:
     const char* begin(const uint8_t* data, size_t len, size_t size) override {
@@ -84,7 +86,7 @@ public:
         driver::update_prepare();
 
         // the size of a form part may not be known in advance
-        if (!Update.begin(size ? (size + 1) : driver::update_size())) {
+        if (!Update.begin(size ? size : driver::update_size())) {
             eepromRotate(true);
             _error = String(F("the image does not fit: ")) + updateError();
             return _error.c_str();

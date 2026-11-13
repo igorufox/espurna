@@ -1293,8 +1293,12 @@ void packageFeed(Upload& up, const uint8_t* data, size_t len) {
                 return;
             }
             if (up.branch_count) {
-                if (!up.branches) {
-                    up.branches.reset(new (std::nothrow) uint32_t[BranchesMax]);
+                // as many as this chunk has (the most of the chunks so far), not BranchesMax: 4 KB at once was what the
+                // ESP8266 head lacked during an Apply (W22)
+                if (!up.branches || (up.branch_count > up.branches_size)) {
+                    up.branches.reset();
+                    up.branches.reset(new (std::nothrow) uint32_t[up.branch_count]);
+                    up.branches_size = up.branches ? up.branch_count : 0;
                 }
                 if (!up.branches) {
                     up.error = PSTR("no memory for the branch list");
@@ -2255,7 +2259,8 @@ void onModulesOff(WebRequest& request) {
         return;
     }
 
-    offWrite("an Apply started and did not finish: Apply again");
+    // the first step of an Apply, or the user's own off: the text says both (W25: it read as a failed Apply)
+    offWrite("turned off (/modules/off): Apply, or /modules/on to start them again");
 
     answer(request, 200, F("OK, modules off, restarting"));
     prepareReset(CustomResetReason::Modules);
@@ -2340,8 +2345,12 @@ void onStatus(WebRequest& request) {
     auto& dir = *dir_box;
     const bool valid = readDirectory(dir);
 
+    // the whole answer at once (~140..175 bytes a module): a String that grows realloc by realloc stopped short on the
+    // fragmented ESP8266 heap and sent broken JSON (cut at 2047 of 2440 bytes, 10.0.5.0 with 14 modules, W28)
     String out;
-    out.reserve(1024);
+    if (!out.reserve(560 + ((valid ? dir.count : 0) * 180))) {
+        request.send(503, "text/plain", "ERROR: no memory"); return;
+    }
     out += F("{\"version\":\"");
     out += buildApp().version.toString();
     out += F("\",\"image\":\"");
@@ -2434,7 +2443,7 @@ void onStatus(WebRequest& request) {
     jsonField(out, F("oom"), arch::failedAllocations());
     out += '}';
 
-    webSend(request, 200, "application/json", out);
+    webSend(request, 200, "application/json", std::move(out));
 }
 
 void onModulesOn(WebRequest& request) {

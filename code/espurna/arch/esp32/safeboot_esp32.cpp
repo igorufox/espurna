@@ -44,9 +44,9 @@ RTC_NOINIT_ATTR uint32_t rtc_count;
 uint32_t count_at_boot { 0 };
 bool cleared { false };
 
-// Only crashes count, plus software restarts that ESPurna did not request itself
-// (ESPurna always stores a custom reason before its own restarts)
-bool counted(esp_reset_reason_t reason) {
+// Crashes count (guardEarly(), before any static initializer of ESPurna), and software restarts that ESPurna did not
+// request itself (guard(), after rtcmem: ESPurna always stores a custom reason before its own restarts)
+bool crashed(esp_reset_reason_t reason) {
     switch (reason) {
     case ESP_RST_PANIC:
     case ESP_RST_INT_WDT:
@@ -54,8 +54,6 @@ bool counted(esp_reset_reason_t reason) {
     case ESP_RST_WDT:
     case ESP_RST_UNKNOWN:
         return true;
-    case ESP_RST_SW:
-        return customResetReason() == CustomResetReason::None;
     default:
         break;
     }
@@ -108,14 +106,73 @@ bool switchToSafeboot(String& error) {
     return true;
 }
 
+// --- rollback by the bootloader ----------------------------------------------------------------------------------
+// A new image in app0 (an upload to safeboot, its "Boot ESPurna") is written as "new" (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE,
+// the Arduino bootloader and safeboot-app). The bootloader starts it once as "pending verify"; a boot before ESPurna
+// confirmed it (a crash anywhere, from the first static initializer on, a hang, a reset) makes the bootloader mark it
+// aborted and start the factory partition: safeboot, on Wi-Fi with the same settings. No code of ESPurna has to run
+// for that (W31: 10.0.5.66 looped and was lost twice on 11-13, the guard in ESPurna itself never ran)
+// Confirmed: after ConfirmUptimeMs with the station connected, or when ESPurna restarts by itself (its loop runs).
+// Not connected after ConfirmTimeoutMs: restart, back to safeboot (wrong Wi-Fi settings in a new image)
+constexpr uint32_t ConfirmUptimeMs { 60000 };
+constexpr uint32_t ConfirmTimeoutMs { 600000 };
+
+bool pending_at_boot { false };
+
+bool pending() {
+    const auto* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    return running
+        && (esp_ota_get_state_partition(running, &state) == ESP_OK)
+        && (state == ESP_OTA_IMG_PENDING_VERIFY);
+}
+
+void confirm() {
+    if (!pending_at_boot) {
+        return;
+    }
+
+    pending_at_boot = false;
+    const auto result = esp_ota_mark_app_valid_cancel_rollback();
+    DEBUG_MSG_P(PSTR("[SAFEBOOT] New image confirmed: %s\n"), esp_err_to_name(result));
+}
+
+void confirmTick() {
+    if (!pending_at_boot) {
+        return;
+    }
+
+    const auto now = millis();
+    if ((now >= ConfirmUptimeMs) && wifiConnected()) {
+        confirm();
+        return;
+    }
+
+    if (now >= ConfirmTimeoutMs) {
+        DEBUG_MSG_P(PSTR("[SAFEBOOT] New image not confirmed (no Wi-Fi), back to safeboot\n"));
+        delay(100);
+        esp_restart();
+    }
+}
+
+// Crashes of a confirmed image (settings that break a working image). A new image is the bootloader's (rollback).
+// Software restarts never count: safeboot hands over to ESPurna with one, and an earlier head that counted them
+// went straight back to safeboot (10.0.5.66 11-13)
 void guard() {
+    pending_at_boot = pending();
+
     const auto reason = esp_reset_reason();
-    if ((rtc_magic != Magic) || (reason == ESP_RST_POWERON)) {
+    if ((rtc_magic != Magic) || (reason == ESP_RST_POWERON) || pending_at_boot) {
         rtc_magic = Magic;
         rtc_count = 0;
     }
 
-    if (counted(reason)) {
+    if (pending_at_boot) {
+        DEBUG_MSG_P(PSTR("[SAFEBOOT] New image, the bootloader returns to safeboot unless it is confirmed\n"));
+        return;
+    }
+
+    if (crashed(reason)) {
         ++rtc_count;
     }
 
@@ -135,6 +192,7 @@ void guard() {
 }
 
 void tick() {
+    confirmTick();
     if (!cleared && (millis() >= CrashLoopUptimeMs)) {
         rtc_count = 0;
         cleared = true;
@@ -708,7 +766,7 @@ void onStatus(WebRequest& request) {
     }
     out += F("\"}");
 
-    webSend(request, 200, "application/json", out);
+    webSend(request, 200, "application/json", std::move(out));
 }
 
 void onSwitch(WebRequest& request) {
@@ -942,10 +1000,24 @@ static constexpr ::terminal::Command Commands[] PROGMEM {
 } // namespace safeboot
 } // namespace espurna
 
+// right after rtcmem
+void safebootGuard() {
+    espurna::safeboot::guard();
+}
+
+// ESPurna restarts by itself: its loop runs, a new image is good enough to stay
+void safebootConfirm() {
+    espurna::safeboot::confirm();
+}
+
+// Arduino confirms a new image before setup() (initArduino) unless this says it is ours to do
+extern "C" bool verifyRollbackLater() {
+    return true;
+}
+
 void safebootSetup() {
     using namespace espurna::safeboot;
 
-    guard();
     request::image();
     espurnaRegisterLoop(tick);
 

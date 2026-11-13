@@ -30,5 +30,7 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
 CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
 CONFIG_BT_ENABLED=n
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
-CONFIG_APP_ROLLBACK_ENABLE=n
-CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=n
+# an image written into app0 (/upload, /boot) is "new": the bootloader (Arduino's, rollback on) starts it once and comes
+# back here unless ESPurna confirms it (arch/esp32/safeboot_esp32.cpp)
+CONFIG_APP_ROLLBACK_ENABLE=y
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

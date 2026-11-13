@@ -222,7 +222,7 @@ public:
         if (!apireq.done()) {
             String out;
             root.printTo(out);
-            webSend(request, 200, "application/json", out);
+            webSend(request, 200, "application/json", std::move(out));
             return;
         }
 

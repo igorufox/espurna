@@ -112,6 +112,10 @@ bool keep(uint32_t sector);
 bool legacy(uint8_t* data);
 void done();
 
+// done() erases the former storage (ESP32): while it is still there, nothing was ever taken over from it, and a copy
+// in the pool without a single key does not replace it. Beken: its slots linger in the pool region, ESP8266: none
+bool legacyErasedWhenDone();
+
 // EEPROM command, a line about the chip's storage
 void info(Print&);
 

@@ -17,6 +17,14 @@ namespace std {
 class mutex {
 public:
     constexpr mutex() noexcept = default;
+
+    // the FreeRTOS mutex goes with the object (a mutex member of a short-lived object leaked it, 11-13)
+    ~mutex() {
+        if (_handle) {
+            vSemaphoreDelete(_handle);
+        }
+    }
+
     mutex(const mutex&) = delete;
     mutex& operator=(const mutex&) = delete;
 

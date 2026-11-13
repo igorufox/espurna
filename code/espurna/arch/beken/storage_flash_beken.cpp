@@ -165,6 +165,10 @@ void done() {
     legacy_slots::taken = 0;
 }
 
+bool legacyErasedWhenDone() {
+    return false;
+}
+
 void info(Print& out) {
     out.printf_P(PSTR("Region 0x%06X..0x%06X\n"), RegionOffset, RegionEnd);
 }

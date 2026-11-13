@@ -75,6 +75,14 @@ void _eepromLoad() {
     if (found.valid) {
         _eeprom.index = found.index;
         _eeprom.counter = found.counter;
+
+        // A copy without a single key (the settings are written from the end: 0xFFFF there is no entry) while the chip
+        // still keeps its former storage (erased right after the first copy taken over from it): written by an image
+        // that could not read that storage (ESP32 11-13, NVS not started yet). The former storage wins
+        const bool keys = (_eeprom.buffer[EepromSize - 1] != 0xFF) || (_eeprom.buffer[EepromSize - 2] != 0xFF);
+        if (!keys && flash::legacyErasedWhenDone() && flash::legacy(_eeprom.buffer)) {
+            _eeprom.legacy = true;
+        }
         return;
     }
 

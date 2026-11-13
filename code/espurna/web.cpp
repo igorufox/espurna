@@ -14,6 +14,7 @@ the modules, the OTA state are read and changed there directly: no lock to wait 
 #if WEB_SUPPORT
 
 #include <algorithm>
+#include <cstring>
 #include <functional>
 #include <memory>
 
@@ -363,6 +364,21 @@ String webParam(WebRequest& request, const char* name) {
 
 void webSend(WebRequest& request, int code, const char* type, const String& body) {
     request.send(code, type, reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
+}
+
+// a String the caller is done with: the response takes it and sends it a piece at a time, no second copy of the whole
+// body (the server's send() copies it: an ESP8266 with its modules had no room for both, /modules answered 500, W27)
+void webSend(WebRequest& request, int code, const char* type, String&& body) {
+    const auto length = static_cast<long>(body.length());
+    request.send(code, type, length,
+        [body = std::move(body)](uint8_t* out, size_t max, size_t index) -> size_t {
+            const size_t size = body.length();
+            const size_t take = (index < size) ? std::min(max, size - index) : 0;
+            if (take) {
+                std::memcpy(out, body.c_str() + index, take);
+            }
+            return take;
+        });
 }
 
 void webSend(WebRequest& request, int code) {

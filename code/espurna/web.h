@@ -48,6 +48,8 @@ void webLog(WebRequest&);
 String webHeader(WebRequest&, const char* name);
 String webParam(WebRequest&, const char* name);
 void webSend(WebRequest&, int code, const char* type, const String& body);
+// the body moved into the response, sent from it (no copy of the whole body)
+void webSend(WebRequest&, int code, const char* type, String&& body);
 void webSend(WebRequest&, int code);
 
 void webBodyRegister(web_body_callback_f);

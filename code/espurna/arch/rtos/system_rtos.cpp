@@ -12,6 +12,10 @@ Chip facts are in arch/<chip>/system_<chip>.cpp, common part of every chip is in
 #include "rtcmem.h"
 #include "storage_eeprom.h"
 
+#if SAFEBOOT_SUPPORT
+#include "safeboot_esp32.h"
+#endif
+
 #include <algorithm>
 #include <vector>
 
@@ -48,6 +52,12 @@ void criticalExit(uint32_t state) {
     port_enable_interrupts_flag(static_cast<int>(state));
 }
 #endif
+
+Mutex::~Mutex() {
+    if (_handle) {
+        vSemaphoreDelete(_handle);
+    }
+}
 
 // made outside of the critical section (allocates), the first one installed wins
 SemaphoreHandle_t Mutex::handle() {
@@ -470,6 +480,11 @@ void loop() {
 
     // settings are committed by the loop, make sure the last change is not lost
     eepromForceCommit();
+
+    // a restart ESPurna asked for: a new image runs well enough, the bootloader keeps it (ESP32 rollback)
+#if SAFEBOOT_SUPPORT
+    safebootConfirm();
+#endif
 
     chip::sdk::reboot();
 }

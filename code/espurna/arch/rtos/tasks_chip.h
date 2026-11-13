@@ -128,6 +128,10 @@ class Mutex {
 public:
     constexpr Mutex() = default;
 
+    // the FreeRTOS mutex goes with the object: every TCP connection has one, ~88 bytes of heap were lost with each
+    // connection on Beken and ESP32 (leak regression 11-13)
+    ~Mutex();
+
     Mutex(const Mutex&) = delete;
     Mutex& operator=(const Mutex&) = delete;
 

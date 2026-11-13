@@ -151,3 +151,9 @@ http _ZN7espurna4http6ClientC1Ev beken
 http _ZN7espurna4http6ClientD1Ev beken
 http _ZNK7espurna4http6Client4busyEv beken
 http _ZN7espurna4http6Client5abortEv beken
+http _ZN7espurna4http6Client4loopEv esp32
+http _ZN7espurna4http6Client5startERKNS0_7RequestERNS0_4SinkESt8functionIFvRKNS0_6ResultEEE esp32
+http _ZN7espurna4http6ClientC1Ev esp32
+http _ZN7espurna4http6ClientD1Ev esp32
+http _ZNK7espurna4http6Client4busyEv esp32
+http _ZN7espurna4http6Client5abortEv esp32
