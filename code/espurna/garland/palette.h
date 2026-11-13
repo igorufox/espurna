@@ -52,10 +52,10 @@ class Palette {
     * Get the interpolated color between two random neighbour colors.
     */
     Color getRndNeighborInterpColor() const {
-        int i0 = secureRandom(_numColors);
+        int i0 = garlandRandom(_numColors);
         int i1 = (i0 + 1) % (_numColors);
 
-        float t0 = (float)(secureRandom(256)) / 256;
+        float t0 = (float)(garlandRandom(256)) / 256;
         return _colors[i0].interpolate(_colors[i1], t0);
     }
 
@@ -63,10 +63,10 @@ class Palette {
     * Get the interpolated color between two random colors.
     */
     Color getRndInterpColor() const {
-        int i0 = secureRandom(_numColors);
-        int i1 = secureRandom(_numColors);
+        int i0 = garlandRandom(_numColors);
+        int i1 = garlandRandom(_numColors);
 
-        float t0 = (float)(secureRandom(256)) / 256;
+        float t0 = (float)(garlandRandom(256)) / 256;
         return _colors[i0].interpolate(_colors[i1], t0);
     }
 
@@ -107,7 +107,7 @@ class Palette {
     }
 
     Color getRndCleanColor() const {
-        return _colors[secureRandom(_numColors)];
+        return _colors[garlandRandom(_numColors)];
     }
 
 

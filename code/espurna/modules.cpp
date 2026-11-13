@@ -1780,7 +1780,9 @@ bool authenticated(WebRequest& request) {
 constexpr uint32_t ModulesFileMagic { 0x32434D45 }; // "EMC2"
 constexpr size_t ModulesFileEntry { 72 };
 // every package of the build: the managers and every sensor driver (a module each)
-constexpr size_t ModulesFileMax { 80 };
+// (scripts/module_link.py CONTAINER_MAX, the build stops above it: 91 packages of 11-13 were refused as "not a modules
+// file" with 80). The Apply state is on the heap only while an Apply runs (the boot without modules)
+constexpr size_t ModulesFileMax { 128 };
 
 // the flags word at the end of an entry of the modules file
 constexpr uint32_t ModuleByteRam { 1 };     // its statics take byte access from interrupts: never in a 32-bit only pool
@@ -1791,16 +1793,24 @@ struct Apply {
     // the new directory, built here as the packages are written and put into flash once, at the end: an Apply that
     // breaks off leaves the old one (with the off mark of /modules/off), never an empty area
     Directory fresh {};
-    uint32_t plan_ram[ModulesFileMax] {};   // RAM offset (RamSecondArena: in the fixed pool) per package of the table
-    uint32_t plan_code[ModulesFileMax] {};  // IRAM code offset in the fixed pool (ESP8266)
-    uint32_t plan_data[ModulesFileMax] {};  // flash of its data (modulesData()), 0 - none
+    // per selected package (its row, see `row_of`): the plan
+    uint32_t plan_ram[DirectoryEntries] {};     // RAM offset (RamSecondArena: in the fixed pool)
+    uint32_t plan_code[DirectoryEntries] {};    // IRAM code offset in the fixed pool (ESP8266)
+    uint32_t plan_data[DirectoryEntries] {};    // flash of its data (modulesData()), 0 - none
     uint32_t ceiling { 0 };                 // no slot over it: the data of the modules
     char names[DirectoryEntries][16] {};
     size_t names_count { 0 };
     bool every { false };                   // every package of the file (the initial image's)
     uint32_t floor { 0 };                   // no slot under it (the initial image's modules file lies there)
     uint8_t head[8] {};
-    uint8_t table[ModulesFileMax * ModulesFileEntry] {};
+    // The table of the file, kept small (the Apply runs on the heap of the boot without modules, ESP8266 ~28 KB, one
+    // block): of every package only where it is in the file; the whole row only of the selected ones (at most a
+    // directory's worth). 91 packages kept whole took 9 KB and the Apply failed for the heap (W21, 11-13)
+    uint32_t span[ModulesFileMax][2] {};    // offset, size in the file
+    int8_t row_of[ModulesFileMax] {};       // its row in `rows`, -1 - not selected
+    uint8_t rows[DirectoryEntries][ModulesFileEntry] {};
+    size_t rows_count { 0 };
+    uint8_t row[ModulesFileEntry] {};       // the row being received
     uint32_t count { 0 };
     size_t received { 0 };
     size_t current { ModulesFileMax };
@@ -1815,17 +1825,29 @@ bool applyRunning() {
     return applying != nullptr;
 }
 
+// a package of the table: its name (empty when not selected: its row is not kept), where it is in the file
 void applyEntry(size_t index, char (&name)[16], uint32_t& offset, uint32_t& size) {
-    const uint8_t* entry = &applying->table[index * ModulesFileEntry];
-    std::memcpy(name, entry, sizeof(name));
-    name[sizeof(name) - 1] = '\0';
-    std::memcpy(&offset, entry + 16, 4);
-    std::memcpy(&size, entry + 20, 4);
+    name[0] = '\0';
+    const int row = applying->row_of[index];
+    if (row >= 0) {
+        std::memcpy(name, applying->rows[row], sizeof(name));
+        name[sizeof(name) - 1] = '\0';
+    }
+    offset = applying->span[index][0];
+    size = applying->span[index][1];
 }
 
+bool applyChosen(size_t index) {
+    return applying->row_of[index] >= 0;
+}
+
+// a word of a selected package's row
 uint32_t applyWord(size_t index, size_t at) {
-    uint32_t out;
-    std::memcpy(&out, &applying->table[(index * ModulesFileEntry) + at], 4);
+    uint32_t out { 0 };
+    const int row = applying->row_of[index];
+    if (row >= 0) {
+        std::memcpy(&out, &applying->rows[row][at], 4);
+    }
     return out;
 }
 
@@ -1857,7 +1879,7 @@ const char* applyPlan() {
         uint32_t offset;
         uint32_t size;
         applyEntry(index, name, offset, size);
-        if (applySelected(name)) {
+        if (applyChosen(index)) {
             order[count++] = index;
         }
     }
@@ -1912,12 +1934,12 @@ const char* applyPlan() {
             uint32_t size;
             applyEntry(index, name, offset, size);
             const uint32_t data = ((applyWord(index, FlagsAt) >> ModuleDataShift) & 0xff) * SectorSize;
-            if (!applySelected(name) || !data) {
+            if (!applyChosen(index) || !data) {
                 continue;
             }
 
             top -= data;
-            state.plan_data[index] = top;
+            state.plan_data[state.row_of[index]] = top;
 
             bool kept = false;
             for (size_t entry = 0; old_valid && (entry < old->count); ++entry) {
@@ -1944,7 +1966,7 @@ const char* applyPlan() {
         if (!pools.code_in_fixed || ((fixed + code) > pools.fixed)) {
             return PSTR("not enough IRAM for the module code");
         }
-        state.plan_code[order[index]] = fixed;
+        state.plan_code[state.row_of[order[index]]] = fixed;
         fixed += code;
     }
 
@@ -1958,10 +1980,10 @@ const char* applyPlan() {
         fixed = roundUp(fixed, 8);
         const bool bytes = (applyWord(order[index], FlagsAt) & ModuleByteRam) != 0;
         if (pools.fixed && !(bytes && pools.fixed_words) && ((fixed + ram) <= pools.fixed)) {
-            state.plan_ram[order[index]] = fixed | RamSecondArena;
+            state.plan_ram[state.row_of[order[index]]] = fixed | RamSecondArena;
             fixed += ram;
         } else {
-            state.plan_ram[order[index]] = heap;
+            state.plan_ram[state.row_of[order[index]]] = heap;
             heap += ram;
         }
     }
@@ -2032,12 +2054,31 @@ void applyData(const uint8_t* data, size_t len) {
 
         const size_t table = state.count * ModulesFileEntry;
         if (state.received < (sizeof(state.head) + table)) {
+            // row by row: where every package is, the whole row only of a selected one
             const size_t at = state.received - sizeof(state.head);
-            const size_t part = std::min(len, table - at);
-            std::memcpy(&state.table[at], data, part);
+            const size_t in_row = at % ModulesFileEntry;
+            const size_t part = std::min(len, ModulesFileEntry - in_row);
+            std::memcpy(&state.row[in_row], data, part);
             state.received += part;
             data += part;
             len -= part;
+            if ((in_row + part) == ModulesFileEntry) {
+                const size_t index = at / ModulesFileEntry;
+                std::memcpy(&state.span[index][0], &state.row[16], 4);
+                std::memcpy(&state.span[index][1], &state.row[20], 4);
+                char name[16];
+                std::memcpy(name, state.row, sizeof(name));
+                name[sizeof(name) - 1] = '\0';
+                state.row_of[index] = -1;
+                if (applySelected(name)) {
+                    if (state.rows_count >= DirectoryEntries) {
+                        state.error = PSTR("more modules than a directory takes");
+                        continue;
+                    }
+                    std::memcpy(state.rows[state.rows_count], state.row, ModulesFileEntry);
+                    state.row_of[index] = static_cast<int8_t>(state.rows_count++);
+                }
+            }
             if ((at + part) == table) {
                 state.error = applyPlan();
                 state.fresh.magic = DirectoryMagic;
@@ -2069,7 +2110,7 @@ void applyData(const uint8_t* data, size_t len) {
             uint32_t offset;
             uint32_t size;
             applyEntry(inside, name, offset, size);
-            if (applySelected(name)) {
+            if (applyChosen(inside)) {
                 if (state.current != inside) {
                     state.upload = boxed<Upload>();
                     if (!state.upload) {
@@ -2079,12 +2120,12 @@ void applyData(const uint8_t* data, size_t len) {
                     state.upload->apply_dir = &state.fresh;
                     state.upload->flash_floor = state.floor;
                     state.upload->flash_ceiling = state.ceiling;
-                    state.upload->data_offset = state.plan_data[inside];
+                    state.upload->data_offset = state.plan_data[state.row_of[inside]];
                     state.upload->data_size = ((applyWord(inside, 68) >> ModuleDataShift) & 0xff) * SectorSize;
-                    std::memcpy(state.upload->needs, &state.table[(inside * ModulesFileEntry) + 36],
+                    std::memcpy(state.upload->needs, &state.rows[state.row_of[inside]][36],
                         sizeof(state.upload->needs));
-                    state.upload->ram_offset = state.plan_ram[inside];
-                    state.upload->code_offset = state.plan_code[inside];
+                    state.upload->ram_offset = state.plan_ram[state.row_of[inside]];
+                    state.upload->code_offset = state.plan_code[state.row_of[inside]];
                     state.current = inside;
                 }
 

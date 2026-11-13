@@ -14,7 +14,7 @@ class AnimSpread : public Anim {
     int GeneratePos() {
         int pos = -1;
         for (auto i = 0; i < numTries; ++i) {
-            pos = secureRandom(0, numLeds);
+            pos = garlandRandom(0, numLeds);
             for (int j = pos - maxWidth; j < pos + maxWidth; ++j) {
                 if (j >= 0 && j < numLeds && seq[j] > 0) {
                     pos = -1;
@@ -32,8 +32,8 @@ class AnimSpread : public Anim {
     }
 
     void SetupImpl() override {
-        fade_ind = secureRandom(1, 20);
-        inc = secureRandom(2, 4);
+        fade_ind = garlandRandom(1, 20);
+        inc = garlandRandom(2, 4);
         // DEBUG_MSG_P(PSTR("[GARLAND] AnimSpread inc = %d, fade_inc = %d\n"), inc, fade_ind);
         for (auto i = 0; i < numLeds; ++i)
             seq[i] = 0;
@@ -63,13 +63,13 @@ class AnimSpread : public Anim {
             }
         }
 
-        if (secureRandom(inc) == 0) {
+        if (garlandRandom(inc) == 0) {
             int pos = GeneratePos();
             if (pos == -1)
                 return;
 
             ledstmp[pos] = palette->getRndInterpColor();
-            seq[pos] = secureRandom(minWidth, maxWidth);
+            seq[pos] = garlandRandom(minWidth, maxWidth);
         }
     }
 };

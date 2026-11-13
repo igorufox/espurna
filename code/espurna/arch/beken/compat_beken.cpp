@@ -27,7 +27,7 @@ uint64_t micros64() {
 }
 
 // __atomic_* of the ARM968E-S (no atomic instructions, no libatomic): only the prebuilt Matter library needs them,
-// its port has them (matter-bk7231n bk7231n_port.c); ESPurna has no std::atomic (espurna::system::Shared)
+// its port has them (matter-espurna bk7231n_port.c); ESPurna has no std::atomic (espurna::system::Shared)
 
 // LibreTiny names what the SDK start type says, which is 'watchdog' after our crash handlers
 String EspCompat::getResetReason() {

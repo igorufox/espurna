@@ -14,7 +14,6 @@ ref. safeboot_esp32.h
 #include "terminal.h"
 #include "web.h"
 #include "../../libs/esp32_partitions.h"
-#include "../../libs/fetch_check.h"
 #include "../../libs/http_client.h"
 #include "../../libs/image_receiver.h"
 
@@ -143,40 +142,9 @@ void tick() {
 }
 
 // ESPurna's own safeboot image (code/safeboot-app) reads Wi-Fi, hostname, the admin password and webFwUrl straight
-// from these settings. NVS "safeboot" passes the rest: "url" + "sha256" - the image to download into app0 on its next
-// boot; "image" - ESPURNA_IMAGE, its release list shows the files of that image; "result" - written back by safeboot
+// from these settings. NVS "safeboot" passes the rest: "image" - ESPURNA_IMAGE, its release list shows the files of that
+// image; "app" - what app0 holds. No URL: an image goes to safeboot as an upload (the browser), never as a download
 namespace request {
-
-
-bool write(const String& url, const String& sha256, String& error) {
-    nvs_handle_t handle;
-    if (nvs_open("safeboot", NVS_READWRITE, &handle) != ESP_OK) {
-        error = F("cannot open NVS");
-        return false;
-    }
-
-    auto result = nvs_set_str(handle, "url", url.c_str());
-    if (result == ESP_OK) {
-        result = sha256.length()
-            ? nvs_set_str(handle, "sha256", sha256.c_str())
-            : nvs_erase_key(handle, "sha256");
-        if (result == ESP_ERR_NVS_NOT_FOUND) {
-            result = ESP_OK;
-        }
-    }
-    if (result == ESP_OK) {
-        nvs_erase_key(handle, "result");
-        result = nvs_commit(handle);
-    }
-    nvs_close(handle);
-
-    if (result != ESP_OK) {
-        error = String(F("cannot store the URL: ")) + esp_err_to_name(result);
-        return false;
-    }
-
-    return true;
-}
 
 String read(const char* key) {
     String out;
@@ -230,15 +198,6 @@ void image() {
     }
 }
 
-// the same checks as the migration image and the head's fetch (libs/fetch_check.h); an empty SHA-256 is fine here
-bool validUrl(const String& url) {
-    return ::espurna::fetch_check::validUrl(url);
-}
-
-bool validSha256(const String& value) {
-    return !value.length() || ::espurna::fetch_check::validSha256(value);
-}
-
 } // namespace request
 
 // SHA-256 of the first `size` bytes of a partition (the image file as it was written), hex
@@ -279,8 +238,8 @@ String partitionSha256(const esp_partition_t* part, size_t size) {
 // From the two-slot layouts of the Arduino core (min_spiffs.csv, default.csv) to esp32_4mb_safeboot.csv over Wi-Fi.
 // ESPurna has to run from the second slot: the safeboot image goes over the first one (0x10000, below the new app0),
 // then the partition table at 0x8000 is replaced and otadata erased, so the next boot starts the factory partition.
-// The safeboot image (code/safeboot-app) joins Wi-Fi with the ESPurna settings and downloads ESPurna into app0 from the
-// stored URL, or waits for an upload in its own web UI. NVS (0x9000) and otadata (0xE000) keep their place
+// The safeboot image (code/safeboot-app) joins Wi-Fi with the ESPurna settings and waits for the upload of ESPurna
+// into app0 in its own web UI. NVS (0x9000) and otadata (0xE000) keep their place
 namespace layout {
 
 constexpr uint32_t TableOffset { 0x8000 };
@@ -311,9 +270,9 @@ constexpr Entry Entries[] {
 constexpr uint32_t DataOffset { 0x3B0000 };
 constexpr uint32_t DataEnd { 0x3F0000 };
 
-// The file system stays where it is when it already lies behind app0 (min_spiffs.csv: 128 KB at 0x3D0000), so its
-// files survive the migration (the NSPanel keeps nspanel.json there). Anywhere else (default.csv) it overlaps app0
-// and becomes the empty 256 KB one of esp32_4mb_safeboot.csv
+// The data partition stays where it is when it already lies behind app0 (min_spiffs.csv: 128 KB at 0x3D0000).
+// Anywhere else (default.csv) it overlaps app0 and becomes the 256 KB one of esp32_4mb_safeboot.csv. All three end at
+// 0x3F0000: the settings pool in its top 8 sectors (storage_flash_esp32.cpp) stays where it is
 Entry dataEntry(const Entry& entry) {
     const auto* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
     if (part && (part->address >= DataOffset) && ((part->address + part->size) <= DataEnd)) {
@@ -454,8 +413,6 @@ struct Upload {
 };
 
 Upload upload;
-String pending_url;
-String pending_sha256;
 String last_error;
 
 bool uploadWrite(const uint8_t* data, size_t len) {
@@ -589,13 +546,6 @@ String describe(const esp_partition_t* part) {
 
 // in loop(): nothing else touches the flash while the table is replaced
 void migrate() {
-    String error;
-    if (pending_url.length() && !request::write(pending_url, pending_sha256, error)) {
-        DEBUG_MSG_P(PSTR("[SAFEBOOT] Migration stopped: %s\n"), error.c_str());
-        last_error = error;
-        return;
-    }
-
     std::unique_ptr<uint8_t[]> data(new (std::nothrow) uint8_t[TableSize]);
     if (!data) {
         DEBUG_MSG_P(PSTR("[SAFEBOOT] Migration stopped: out of memory\n"));
@@ -625,30 +575,6 @@ void migrate() {
 
 } // namespace layout
 
-// Update through safeboot from an URL (safeboot layout): the same settings, factory as the next boot
-bool updateFromUrl(const String& url, const String& sha256, String& error) {
-    if (!layout::current()) {
-        error = F("not the safeboot layout");
-        return false;
-    }
-
-    if (!request::validUrl(url)) {
-        error = F("invalid URL (http:// or https://, up to 240 characters)");
-        return false;
-    }
-
-    if (!request::validSha256(sha256)) {
-        error = F("invalid SHA-256 (64 lower case hex digits)");
-        return false;
-    }
-
-    if (!request::write(url, sha256, error)) {
-        return false;
-    }
-
-    return switchToSafeboot(error);
-}
-
 #if WEB_SUPPORT
 PROGMEM_STRING(NoOtaMessage,
     "ERROR: this flash layout (safeboot) has no second OTA slot. "
@@ -669,21 +595,19 @@ fieldset{margin-top:16px}.err{color:#b00}.ok{color:#070}#log{white-space:pre-wra
 </style></head><body><h2>Flash layout and updates</h2><div id="info">...</div>
 <div id="old" hidden><fieldset><legend>Migrate to the safeboot layout</legend><p>This board has the old two-slot layout:
 the images with Matter (2.1 MB) no longer fit its 1.9 MB slots. The migration puts the ESPurna safeboot image in front
-and one 2880 KB slot for ESPurna after it, then restarts into safeboot. With an URL safeboot downloads ESPurna by itself,
-without one it waits for an upload in its own web UI (same address, user admin, the admin password). Settings stay.</p>
+and one 2880 KB slot for ESPurna after it, then restarts into safeboot, which waits for the ESPurna image in its own
+web UI (same address, user admin, the admin password). Settings stay.</p>
 <p class="err"><b>Keep the power on until ESPurna is back.</b> The flash layout changes: a power cut in between can leave
 the board without an image that boots, then only flashing by wire helps. Not on a board in a wall without a way to reach
 its UART.</p>
 <label>The release image (espurna-esp32-*.bin, its safeboot is used) or a safeboot image<input type="file" id="mfile" accept=".bin"></label>
-<label>ESPurna image URL, optional (http:// or https://, the .bin of the release)<input type="text" id="murl"></label>
 <button id="migrate">Migrate</button></fieldset></div>
 <div id="new" hidden><fieldset><legend>Update ESPurna</legend><p>ESPurna restarts into safeboot, which writes the new
 image into the ESPurna slot and starts it.</p>
-<label>From an URL (http:// or https://, the .bin of the release)<input type="text" id="url"></label><button id="byurl">Update from URL</button>
-<p>Or with a file: <button id="byfile">Restart into safeboot</button> and upload the image there.</p></fieldset>
+<p><button id="byfile">Restart into safeboot</button> and upload the image there.</p></fieldset>
 <fieldset><legend>Install or replace safeboot</legend>
 <p class="err">Keep the power on while safeboot is written: a power cut leaves no safeboot (ESPurna still boots, the
-next update by URL or file needs a new safeboot first).</p><label>The release image (espurna-esp32-*.bin, its safeboot is used) or a safeboot image
+next update needs a new safeboot first).</p><label>The release image (espurna-esp32-*.bin, its safeboot is used) or a safeboot image
 <input type="file" id="sfile" accept=".bin"></label><button id="install">Install</button></fieldset></div>
 <div id="log" hidden></div>
 <script>
@@ -691,11 +615,6 @@ const $=id=>document.getElementById(id);let st;
 function log(t,c){const l=$('log');l.hidden=false;l.className=c||'';l.textContent=t}
 async function status(){const r=await fetch('safeboot/status',{cache:'no-store'});if(!r.ok)throw r.status;return r.json()}
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
-async function espurna(t0,was){for(;;){await wait(5000);const s=Math.round((Date.now()-t0)/1000);
- try{const n=await status();if(n.layout===was&&n.last&&was==='old'){log('Stopped: '+n.last,'err');return}
- if(n.layout==='safeboot'&&n.running!=='safeboot'){log('Done after '+s+' s, ESPurna is back. Reload the WebUI.','ok');return}}
- catch(e){}log('Waiting for ESPurna ('+s+' s): safeboot joins Wi-Fi, downloads and writes the image. If nothing after '
- +'5 minutes, open this address again (safeboot UI) or join its access point <hostname>-SAFEBOOT, 192.168.4.1.')}}
 async function safeboot(t0){for(;;){await wait(3000);const s=Math.round((Date.now()-t0)/1000);
  try{const r=await fetch('/',{cache:'no-store'});if(r.status==401&&(r.headers.get('WWW-Authenticate')||'').indexOf(' safeboot"')>=0){location.href='/';return}}
  catch(e){}log('Restarting into safeboot ('+s+' s)...')}}
@@ -706,14 +625,13 @@ function form(fields){const f=new FormData();for(const k in fields)f.append(k,fi
 $('migrate').onclick=async()=>{const file=$('mfile').files[0];if(!file){log('Pick the safeboot image','err');return}
  if(!confirm('The flash layout changes now. Keep the power on until ESPurna is back: a power cut in between can leave '
   +'the board without an image that boots (then only flashing by wire helps). Continue?'))return;
- const f=form({url:$('murl').value.trim()});f.append('file',file,file.name);
- try{log(await send('safeboot/migrate',f));if($('murl').value.trim())espurna(Date.now(),'old');else safeboot(Date.now())}catch(e){log(e,'err')}};
-$('byurl').onclick=async()=>{try{log(await send('safeboot/update',form({url:$('url').value.trim()})));espurna(Date.now(),'safeboot')}catch(e){log(e,'err')}};
+ const f=form({});f.append('file',file,file.name);
+ try{log(await send('safeboot/migrate',f));safeboot(Date.now())}catch(e){log(e,'err')}};
 $('byfile').onclick=async()=>{try{log(await send('safeboot/switch',form({})));safeboot(Date.now())}catch(e){log(e,'err')}};
 $('install').onclick=async()=>{const file=$('sfile').files[0];if(!file){log('Pick the safeboot image','err');return}
  if(!confirm('Safeboot is written now. Keep the power on until it is done. Continue?'))return;
  const f=new FormData();f.append('file',file,file.name);try{log(await send('safeboot/install',f),'ok');show(await status())}catch(e){log(e,'err')}};
-function show(s){st=s;$('url').value=s.url;$('murl').value=s.url;
+function show(s){st=s;
  $('info').innerHTML='Running: '+s.running+'<br>Layout: '+(s.layout==='old'?'two OTA slots (old)':s.layout)
   +(s.layout==='safeboot'?'<br>Safeboot: '+(s.safeboot||'missing'):'');
  $('old').hidden=s.layout!=='old';$('new').hidden=s.layout!=='safeboot';
@@ -778,15 +696,10 @@ void onStatus(WebRequest& request) {
     // Tasmota (its SHA-256 differs from the release's, the release list installs ours over it first)
     out += F("\",\"safeboot\":\"");
     out += current ? layout::describe(factory()) : String();
-    out += F("\",\"url\":\"");
-    out += getSetting("sbUrl");
     out += F("\",\"error\":\"");
     out += error;
     out += F("\",\"last\":\"");
     out += layout::last_error;
-    // what safeboot did with the last URL ("failed: ..." when it gave up)
-    out += F("\",\"result\":\"");
-    out += request::read("result");
     // ?size=<bytes of the release safeboot>: SHA-256 of the installed one, to compare with the release list
     const char* size = request.param("size");
     if (current && size) {
@@ -796,31 +709,6 @@ void onStatus(WebRequest& request) {
     out += F("\"}");
 
     webSend(request, 200, "application/json", out);
-}
-
-String formValue(WebRequest& request, const char* name) {
-    return webParam(request, name);
-}
-
-String formUrl(WebRequest& request) {
-    return formValue(request, "url");
-}
-
-void onUpdate(WebRequest& request) {
-    if (!allowed(request)) {
-        return;
-    }
-
-    const auto url = formUrl(request);
-    String error;
-    if (!updateFromUrl(url, formValue(request, "sha256"), error)) {
-        webSend(request, 400, "text/plain", error);
-        return;
-    }
-
-    setSetting("sbUrl", url);
-    webSend(request, 200, "text/plain", String(F("Restarting into safeboot")));
-    prepareReset(CustomResetReason::Web);
 }
 
 void onSwitch(WebRequest& request) {
@@ -914,27 +802,10 @@ void onMigrate(WebRequest& request) {
         return;
     }
 
-    const auto url = formUrl(request);
-    if (url.length() && !request::validUrl(url)) {
-        webSend(request, 400, "text/plain", String(F("invalid URL (http:// or https://, up to 240 characters)")));
-        return;
-    }
-
-    const auto sha256 = formValue(request, "sha256");
-    if (!request::validSha256(sha256)) {
-        webSend(request, 400, "text/plain", String(F("invalid SHA-256 (64 lower case hex digits)")));
-        return;
-    }
-
     if (!uploadDone(request)) {
         return;
     }
 
-    if (url.length()) {
-        setSetting("sbUrl", url);
-    }
-    layout::pending_url = url;
-    layout::pending_sha256 = sha256;
     espurnaRegisterOnce(layout::migrate);
 
     webSend(request, 200, "text/plain",
@@ -981,8 +852,8 @@ void command_status(::terminal::CommandContext&& ctx) {
     terminalOK(ctx);
 }
 
-// NVS is 20 KB in this layout (and in min_spiffs.csv): ESPurna settings (one blob, rewritten whole, so it needs
-// as much free space again), Wi-Fi, Matter (chip-*), the safeboot settings. What takes it, per namespace
+// NVS is 20 KB in this layout (and in min_spiffs.csv): Wi-Fi, Matter (chip-*, espurna-id), the safeboot settings; the
+// ESPurna settings blob of before until it is taken over (storage_flash_esp32.cpp). What takes it, per namespace
 PROGMEM_STRING(Nvs, "NVS");
 
 void command_nvs(::terminal::CommandContext&& ctx) {
@@ -1083,24 +954,6 @@ void safebootSetup() {
 #endif
 }
 
-// the update by an URL of every chip (ota_fetch.cpp): here safeboot downloads it, ESPurna cannot write its own slot
-bool safebootUpdateFromUrl(const String& url, const String& sha256, String& error) {
-    if (!espurna::safeboot::updateFromUrl(url, sha256, error)) {
-        return false;
-    }
-
-    setSetting("sbUrl", url);
-    return true;
-}
-
-String safebootResult() {
-    return espurna::safeboot::request::read("result");
-}
-
-String safebootUrl() {
-    return espurna::safeboot::request::read("url");
-}
-
 #if WEB_SUPPORT
 // Only after webSetup(): the server does not exist before it (and never in the unstable mode)
 void safebootWebSetup() {
@@ -1109,7 +962,6 @@ void safebootWebSetup() {
     auto& server = webServer();
     // a handler takes its sub-paths as well ("/safeboot" would answer "/safeboot/status"): specific ones first
     server.on("/safeboot/status", WebMethod::Get, onStatus);
-    server.on("/safeboot/update", WebMethod::Post, onUpdate);
     server.on("/safeboot/switch", WebMethod::Post, onSwitch);
     server.on("/safeboot/migrate", WebMethod::Post, onMigrate, onSafebootUpload);
     server.on("/safeboot/install", WebMethod::Post, onInstall, onSafebootUpload);

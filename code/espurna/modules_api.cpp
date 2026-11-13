@@ -238,6 +238,74 @@ bool ntpSynced() {
     return func ? func() : false;
 }
 
+// --- the relays and buttons of a provider module (ifan, lightfox, tuya), made by the relay and button modules: none
+// until it has started (it calls relayProvidersReady() / buttonProvidersReady() then)
+
+#include "gpio.h"
+#include "fan.h"
+#include "lightfox.h"
+#include "tuya.h"
+
+std::unique_ptr<RelayProviderBase> fanMakeRelayProvider(size_t index) {
+    const auto func = api<decltype(fanMakeRelayProvider)>(Api::FanMakeRelayProvider);
+    return func ? func(index) : nullptr;
+}
+
+std::unique_ptr<RelayProviderBase> lightfoxMakeRelayProvider(size_t index) {
+    const auto func = api<decltype(lightfoxMakeRelayProvider)>(Api::LightfoxMakeRelayProvider);
+    return func ? func(index) : nullptr;
+}
+
+std::unique_ptr<BasePin> lightfoxMakeButtonPin(size_t index) {
+    const auto func = api<decltype(lightfoxMakeButtonPin)>(Api::LightfoxMakeButtonPin);
+    return func ? func(index) : nullptr;
+}
+
+namespace tuya {
+
+std::unique_ptr<RelayProviderBase> makeRelayProvider(size_t index) {
+    const auto func = api<decltype(makeRelayProvider)>(Api::TuyaMakeRelayProvider);
+    return func ? func(index) : nullptr;
+}
+
+} // namespace tuya
+
+// --- the button actions of other modules: the fan speeds (ifan), the display (thermostat); nothing without them
+
+void fanSpeed(FanSpeed speed) {
+    const auto func = api<void(FanSpeed)>(Api::FanSpeed);
+    if (func) {
+        func(speed);
+    }
+}
+
+#include "thermostat.h"
+
+void displayOn() {
+    const auto func = api<decltype(displayOn)>(Api::DisplayOn);
+    if (func) {
+        func();
+    }
+}
+
+// --- rf module, called by the RPN rules (codes as variables, rules that send them); nothing without it
+
+#include "rfbridge.h"
+
+void rfbSend(espurna::StringView code) {
+    const auto func = api<decltype(rfbSend)>(Api::RfbSend);
+    if (func) {
+        func(code);
+    }
+}
+
+void rfbOnCode(RfbCodeHandler handler) {
+    const auto func = api<decltype(rfbOnCode)>(Api::RfbOnCode);
+    if (func) {
+        func(handler);
+    }
+}
+
 // --- Domoticz and Thingspeak modules, called by the sensors module
 
 void domoticzSendMagnitude(unsigned char index, const espurna::sensor::Value& value) {

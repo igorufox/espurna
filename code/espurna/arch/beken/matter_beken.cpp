@@ -2,7 +2,7 @@
 
 MATTER FOR BEKEN (LibreTiny): WHAT ONLY THIS CHIP HAS
 
-The Matter application (the C API of espurna_matter.h: matter_app_start() ...) is libMatterApp.a of matter-bk7231n
+The Matter application (the C API of espurna_matter.h: matter_app_start() ...) is libMatterApp.a of matter-espurna
 (connectedhomeip for the BK7231N), the rest of the Matter layer is matter.cpp. Here only what that library and this
 chip need underneath: the bk_* platform API it was written against (matter_pal.h of the BK7231N port):
 - "chip-factory" namespace: read only, straight from the factory data the stock firmware left in flash: the factory
@@ -885,7 +885,7 @@ bool factory_read(const char* name, uint8_t* out, size_t size, size_t& length) {
 } // namespace matter
 } // namespace espurna
 
-// The library calls it before its server init (matter-bk7231n matter_app.cpp): the providers of the board's identity,
+// The library calls it before its server init (matter-espurna matter_app.cpp): the providers of the board's identity,
 // in the Matter task (the identity is made there on the first start, below the loop's priority)
 extern "C" void matter_identity_install(void) {
     espurna::matter::identity::install();

@@ -135,6 +135,14 @@ enum class Api : size_t {
     NtpOnTick,
     NtpDateTime,
     NtpSynced,
+    FanMakeRelayProvider,
+    FanSpeed,
+    LightfoxMakeRelayProvider,
+    LightfoxMakeButtonPin,
+    TuyaMakeRelayProvider,
+    DisplayOn,
+    RfbSend,
+    RfbOnCode,
     Count,
 };
 

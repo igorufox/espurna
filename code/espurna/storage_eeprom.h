@@ -3,8 +3,9 @@
 EEPROM MODULE
 
 Settings live in a 4 KiB RAM buffer, Embedis writes them from the end towards the beginning. The buffer is committed
-from the loop as a whole (storage_eeprom.cpp). Where the buffer is kept and how it gets to the flash is the chip part,
-arch/<chip>/storage_eeprom_<chip>.cpp (ref. espurna::storage::chip below)
+from the loop as a whole into a pool of flash sectors (storage_eeprom.cpp, one code for every chip, the format of
+libs/settings_rotate.h: EEPROM_Rotate's, the ESP8266 boards keep theirs). The chip part is only its flash and where the
+pool is, arch/<chip>/storage_flash_<chip>.cpp (ref. espurna::storage::flash below)
 
 */
 
@@ -84,48 +85,37 @@ public:
     }
 };
 
-// Chip part, arch/<chip>/storage_eeprom_<chip>.cpp. What both FreeRTOS chips do the same way is in
-// arch/rtos/storage_eeprom_rtos.cpp
+// The flash of the chip under the one storage of storage_eeprom.cpp (arch/<chip>/storage_flash_<chip>.cpp): where the
+// pool of settings sectors is and how a sector gets read, erased, written. The format is libs/settings_rotate.h
 namespace espurna {
 namespace storage {
-namespace chip {
+namespace flash {
 
-// RAM copy of the settings, EepromSize bytes
-uint8_t* buffer();
+struct Pool {
+    uint32_t base;   // flash sector of the copy #0, the others below it
+    uint8_t size;    // sectors in the pool; 0 - no storage, settings only live in RAM
+};
 
-// the saved settings into buffer() from eepromSetup(); false when there is no storage at all, settings only live in RAM
-bool load();
+Pool pool();
 
-// settings are loaded on the first use (esp8266 EEPROM_Rotate), commits work before eepromSetup() as well
-bool early();
+// whole sectors (EepromSize bytes, `data` 4-byte aligned)
+bool read(uint32_t sector, uint8_t* data);
+bool erase(uint32_t sector);
+bool write(uint32_t sector, const uint8_t* data);
 
-// the buffer was changed
-void changed();
+// a sector of the pool that must not be erased right now (Beken: the RF calibration block of the SDK, the slot the
+// settings were taken over from until they are written in this format)
+bool keep(uint32_t sector);
 
-// buffer() to the flash
-bool save();
+// No valid copy in the pool: the settings of the storage this chip had before (ESP32 the NVS blob, Beken its slots)
+// into `data`, once; false - none. done() after they are written in this format
+bool legacy(uint8_t* data);
+void done();
 
-// a failed save() is tried again from the loop every few seconds. Not on esp8266, every attempt erases a sector there
-bool retry();
+// EEPROM command, a line about the chip's storage
+void info(Print&);
 
-// chip specific terminal commands
-void setup();
-
-// EEPROM terminal command, eepromSectors(), eepromSpace(), StorageEEPROM_Rotate::dump()
-void info(Print&, bool dirty);
-String sectors();
-size_t space();
-void dump(Print&);
-
-// flash sectors, ref. StorageEEPROM_Rotate::base() and size()
-uint32_t base();
-uint8_t pool();
-
-// eepromRotate(), true when the storage has to be committed. eepromBackup()
-bool rotate(bool value);
-void backup(uint32_t index);
-
-} // namespace chip
+} // namespace flash
 } // namespace storage
 } // namespace espurna
 

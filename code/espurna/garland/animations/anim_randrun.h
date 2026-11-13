@@ -16,7 +16,7 @@ class AnimRandRun : public Anim {
 
     void SetupImpl() override {
         pos = 0;
-        speed = ((float)secureRandom(20, 90)) / 100;
+        speed = ((float)garlandRandom(20, 90)) / 100;
         DEBUG_MSG_P(PSTR("[GARLAND] speed = %d\n"), (unsigned int)(speed*100));
         dir = randDir();
 

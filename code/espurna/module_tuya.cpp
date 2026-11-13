@@ -8,9 +8,17 @@ The tuya module (docs/modules.md): the Tuya MCU protocol on a UART port: the swi
 
 #include "espurna.h"
 #include "modules.h"
+#include "relay.h"
+#include "button.h"
 #include "tuya.h"
 
 ESPURNA_MODULE(tuya, "tuya", 50) {
+    using espurna::modules::Api;
+
+    // the relays of relayProvider "tuya" (the relay module started first: it needs it)
+    modulesProvide(Api::TuyaMakeRelayProvider, &tuya::makeRelayProvider);
+    relayProvidersReady();
+
     tuya::setup();
 }
 

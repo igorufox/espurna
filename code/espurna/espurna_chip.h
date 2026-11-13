@@ -61,9 +61,6 @@ struct WebGuard {
 
 WebGuard web_guard();
 
-// the SPI clock divider of the RFM69 radio (rfm69.cpp, the select() of the RFM69 library): the chip's SPI speed
-uint32_t rfm69_spi_divider();
-
 // IPv4 part of the lwIP address
 IPAddress address(const ip_addr_t* addr);
 

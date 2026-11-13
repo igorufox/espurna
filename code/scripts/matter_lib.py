@@ -1,20 +1,23 @@
-# Beken: the prebuilt Matter library of github.com/igorufox/matter-bk7231n
+# The prebuilt Matter library of github.com/igorufox/matter-espurna, the same on the BK7231N and the ESP32
 #
-# connectedhomeip built for the BK7231N SDK with its own GN / ninja setup, not something PlatformIO can build. It comes
-# from a release asset of matter-bk7231n, a zip of
+# connectedhomeip (the plug.zap data model, the application with the C API of espurna_matter.h) built for the chip's
+# SDK with its own GN / ninja setup, not something PlatformIO can build. It comes from a release asset of
+# matter-espurna, the zip of the chip (matter-espurna-<chip>.zip, custom_matter_chip = bk7231n | esp32):
 #   lib/libMatterApp.a
-#   include/lwipopts.h   (lwIP options the library was built with: the SDK's lwIP has to be built with the same)
+#   include/lwipopts.h   (bk7231n: the lwIP options the library was built with, the SDK's lwIP has to be built with the
+#                        same; the ESP32 has the lwIP of ESP-IDF)
 #   include/chip/        the headers of the library's API, include/chip/flags.txt its include folders and defines: for
 #                        the modules only (ESPURNA_MODULE_CPPPATH / _CPPDEFINES of scripts/module_link.py), the code
 #                        of the board's identity (matter_identity.cpp, one code with the ESP32) is built against them
 # checked against its SHA-256 and unpacked into .pio/matter-lib/<hash>:
 #
-#   extra_scripts = pre:scripts/beken_matter_lib.py
+#   extra_scripts = pre:scripts/matter_lib.py
+#   custom_matter_chip = bk7231n
 #   custom_matter_lib = latest
 #
-# `latest` (or `github:<owner>/<repo>@latest`) is the newest libmatter-* release of matter-bk7231n (its GitHub
+# `latest` (or `github:<owner>/<repo>@latest`) is the newest libmatter-* release of matter-espurna (its GitHub
 # Actions build one after every change), found through the GitHub API (GITHUB_TOKEN is used when set: 60 requests an
-# hour without it) and checked against the matter-bk7231n-lib.zip.sha256 asset of that release. Without network the
+# hour without it) and checked against the matter-espurna-<chip>.zip.sha256 asset of that release. Without network the
 # last one resolved is used again. A fixed library instead:
 #
 #   custom_matter_lib = <URL of the zip>
@@ -35,11 +38,17 @@ import zipfile
 
 Import("env")  # noqa: F821
 
-FILES = ("lib/libMatterApp.a", "include/lwipopts.h", "include/chip/flags.txt")
+FILES = ("lib/libMatterApp.a", "include/chip/flags.txt")
 
-LATEST_REPO = "igorufox/matter-bk7231n"
+LATEST_REPO = "igorufox/matter-espurna"
 LATEST_TAG = "libmatter-"
-ASSET = "matter-bk7231n-lib.zip"
+
+
+def asset(env):
+    chip = env.GetProjectOption("custom_matter_chip", "").strip()
+    if chip not in ("bk7231n", "esp32"):
+        raise ValueError("custom_matter_chip = bk7231n | esp32 is required for a Matter build")
+    return f"matter-espurna-{chip}.zip"
 
 
 def sha256(data):
@@ -102,7 +111,7 @@ def latest_repo(spec):
     return match.group(1) if match else None
 
 
-def resolve_latest(repo):
+def resolve_latest(repo, name):
     # -> (tag, URL of the zip, SHA-256 of the zip) of the newest libmatter-* release with both assets
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     token = os.environ.get("GITHUB_TOKEN")
@@ -119,14 +128,14 @@ def resolve_latest(repo):
 
     for release in releases:
         assets = {asset["name"]: asset["browser_download_url"] for asset in release["assets"]}
-        if ASSET in assets and f"{ASSET}.sha256" in assets:
-            line = download(assets[f"{ASSET}.sha256"], timeout=30).decode("ascii", "replace")
+        if name in assets and f"{name}.sha256" in assets:
+            line = download(assets[f"{name}.sha256"], timeout=30).decode("ascii", "replace")
             match = re.match(r"\s*([0-9a-fA-F]{64})\b", line)
             if not match:
-                raise ValueError(f"Matter library: no SHA-256 in {ASSET}.sha256 of {release['tag_name']}")
-            return release["tag_name"], assets[ASSET], match.group(1).lower()
+                raise ValueError(f"Matter library: no SHA-256 in {name}.sha256 of {release['tag_name']}")
+            return release["tag_name"], assets[name], match.group(1).lower()
 
-    raise ValueError(f"Matter library: no {LATEST_TAG}* release with {ASSET} in github.com/{repo}")
+    raise ValueError(f"Matter library: no {LATEST_TAG}* release with {name} in github.com/{repo}")
 
 
 def library_dir(env):
@@ -143,7 +152,7 @@ def library_dir(env):
     if repo:
         state = os.path.join(cache, "latest.json")
         try:
-            tag, url, expected = resolve_latest(repo)
+            tag, url, expected = resolve_latest(repo, asset(env))
         except Exception as error:
             # offline / API rate limit: the last release resolved, if it is still unpacked
             try:
@@ -176,8 +185,9 @@ def library_dir(env):
 
 if env.GetProjectOption("custom_matter_lib", "") or os.environ.get("ESPURNA_MATTER_LIB_DIR"):
     folder = library_dir(env)
-    # first in the include path: our lwipopts.h instead of the SDK one, for every library built after this
-    env.Prepend(CPPPATH=[os.path.join(folder, "include")])
+    # bk7231n: first in the include path, our lwipopts.h instead of the SDK one, for every library built after this
+    if os.path.isfile(os.path.join(folder, "include", "lwipopts.h")):
+        env.Prepend(CPPPATH=[os.path.join(folder, "include")])
     # same as `-L<folder> -lMatterApp` in build_flags: LIBS come after the objects of the link
     env.Append(LIBPATH=[os.path.join(folder, "lib")], LIBS=["MatterApp"])
 

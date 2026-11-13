@@ -1845,6 +1845,36 @@ void _buttonSettingsMigrate(int version) {
     }
 }
 
+// the handlers of the buttons, once there is any (buttonSetup(), buttonProvidersReady())
+void _buttonRegister() {
+    static bool done { false };
+    const auto count = espurna::button::internal::buttons.size();
+    DEBUG_MSG_P(PSTR("[BUTTON] Number of buttons: %u\n"), count);
+
+    if (!count) {
+        return;
+    }
+
+    // more buttons after the first registration: only their settings
+    if (done) {
+        _buttonConfigure();
+        return;
+    }
+    done = true;
+
+#if WEB_SUPPORT
+    wsRegister()
+        .onVisible(_buttonWebSocketOnVisible)
+        .onConnected(_buttonWebSocketOnConnected)
+        .onKeyCheck(_buttonWebSocketOnKeyCheck);
+#endif
+
+    _buttonConfigure();
+    espurnaRegisterReload(_buttonConfigure);
+
+    espurnaRegisterLoop(buttonLoop);
+}
+
 } // namespace
 
 void buttonSetup() {
@@ -1890,25 +1920,25 @@ void buttonSetup() {
         }
     }
 
-    auto count = espurna::button::internal::buttons.size();
-    DEBUG_MSG_P(PSTR("[BUTTON] Number of buttons: %u\n"), count);
-
 #if TERMINAL_SUPPORT
     espurna::button::terminal::setup();
 #endif
 
-    if (count) {
-#if WEB_SUPPORT
-        wsRegister()
-            .onVisible(_buttonWebSocketOnVisible)
-            .onConnected(_buttonWebSocketOnConnected)
-            .onKeyCheck(_buttonWebSocketOnKeyCheck);
-#endif
+    _buttonRegister();
+}
 
-        _buttonConfigure();
-        espurnaRegisterReload(_buttonConfigure);
+// A module whose buttons the settings name (lightfox: btnProvider) starts after this one, it needs it: its buttons are
+// added once it has started and provided its pin maker (modules_api.cpp)
+void buttonProvidersReady() {
+    const auto before = espurna::button::internal::buttons.size();
+    for (size_t index = before; index < ButtonsMax; ++index) {
+        if (!_buttonSetupProvider(index, espurna::button::settings::provider(index))) {
+            break;
+        }
+    }
 
-        espurnaRegisterLoop(buttonLoop);
+    if (espurna::button::internal::buttons.size() != before) {
+        _buttonRegister();
     }
 }
 

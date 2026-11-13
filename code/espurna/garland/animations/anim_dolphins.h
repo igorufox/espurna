@@ -53,14 +53,14 @@ class AnimDolphins : public Anim {
     struct Dolphin {
         uint16_t numLeds;
         bool done = false;
-        int len = secureRandom(10, 30);
-        int speed = secureRandom(1, 3);
+        int len = garlandRandom(10, 30);
+        int speed = garlandRandom(1, 3);
         int dir = randDir();
         int head = 0;
         int start;
         Color color;
         std::unique_ptr<Color[]> points;
-        Dolphin(Palette* pal, uint16_t numLeds) : numLeds(numLeds), start(dir > 0 ? secureRandom(0, numLeds - len) : secureRandom(len, numLeds)), color(pal->getRndInterpColor()) {
+        Dolphin(Palette* pal, uint16_t numLeds) : numLeds(numLeds), start(dir > 0 ? garlandRandom(0, numLeds - len) : garlandRandom(len, numLeds)), color(pal->getRndInterpColor()) {
             // DEBUG_MSG_P(PSTR("[GARLAND] Dolphin created start = %d len = %d dir = %d cr = %d cg = %d cb = %d\n"), start, len, dir, color.r, color.g, color.b);
 
             int halflen = len / 2;

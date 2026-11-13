@@ -8,7 +8,6 @@ CHIP DESCRIPTION AND LWIP GLUE, esp8266 part (ref. espurna_chip.h)
 
 #include "../../espurna_chip.h"
 
-#include <SPI.h>
 
 #include <lwip/init.h>
 #include <lwip/tcp.h>
@@ -81,10 +80,6 @@ err_t gethostbyname(const char* name, IPAddress& out, dns_found_callback callbac
 }
 
 // off, as upstream: no limit of connections or heap for new requests (owner, 2026-11-10). The settings turn it on
-// the RFM69 library's select(): DIV2, speeding it up for the ESP8266
-uint32_t rfm69_spi_divider() {
-    return SPI_CLOCK_DIV2;
-}
 
 WebGuard web_guard() {
     return WebGuard{

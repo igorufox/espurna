@@ -233,7 +233,6 @@ Since November 2018, Max Prokhorov (**@mcspr**) is also actively working as a co
     * RF receiver integration
 * **Over-The-Air** (OTA) updates even for 1Mb boards
     * Manually from PlatformIO or Arduino IDE
-    * Automatic updates through the [NoFUSS Library](https://bitbucket.org/xoseperez/nofuss)
     * Update from web interface using pre-built images
 * **Command line configuration**
     * Change configuration

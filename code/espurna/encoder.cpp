@@ -80,22 +80,22 @@ void _encoderConfigure() {
     // encChA<N> / encChB<N>       light channels, 0-based
     for (size_t index = 0; index < EncodersMax; ++index) {
         const auto& defaults = EncoderDefaults[index];
-        const uint8_t pin1 = getSetting({"encAGPIO", index}, defaults.pin1);
-        const uint8_t pin2 = getSetting({"encBGPIO", index}, defaults.pin2);
+        const uint8_t pin1 = getSetting(espurna::settings::Key{"encAGPIO", index}, defaults.pin1);
+        const uint8_t pin2 = getSetting(espurna::settings::Key{"encBGPIO", index}, defaults.pin2);
         // each encoder on its own, as upstream: ENCODER2 works without ENCODER1
         if (!gpioValid(pin1) || !gpioValid(pin2)) {
             continue;
         }
 
-        const uint8_t button = getSetting({"encBtnGPIO", index}, defaults.button_pin);
+        const uint8_t button = getSetting(espurna::settings::Key{"encBtnGPIO", index}, defaults.button_pin);
         _encoders.push_back({
             new Encoder(pin1, pin2),
             gpioValid(button) ? button : static_cast<uint8_t>(GPIO_NONE),
-            getSetting({"encBtnLogic", index}, defaults.button_logic),
-            getSetting({"encBtnMode", index}, defaults.button_mode),
-            getSetting({"encMode", index}, defaults.mode),
-            getSetting({"encChA", index}, defaults.channel1),
-            getSetting({"encChB", index}, defaults.channel2),
+            getSetting(espurna::settings::Key{"encBtnLogic", index}, defaults.button_logic),
+            getSetting(espurna::settings::Key{"encBtnMode", index}, defaults.button_mode),
+            getSetting(espurna::settings::Key{"encMode", index}, defaults.mode),
+            getSetting(espurna::settings::Key{"encChA", index}, defaults.channel1),
+            getSetting(espurna::settings::Key{"encChB", index}, defaults.channel2),
         });
     }
 

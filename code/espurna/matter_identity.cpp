@@ -22,6 +22,7 @@ When: load() before the stack starts (ESP32: the codes for Matter.begin()), inst
 
 #if MATTER_SUPPORT
 
+#include "espurna_matter.h"
 #include "matter_identity.h"
 
 #include <credentials/DeviceAttestationCredsProvider.h>
@@ -46,7 +47,7 @@ using namespace ::chip::DeviceLayer;
 constexpr char KeyIdentity[] = "identity";
 constexpr char KeyCertificate[] = "dac";
 
-// The certificate parts and the SHA-1 below are the ones of the Beken library before (matter-bk7231n matter_app.cpp)
+// The certificate parts and the SHA-1 below are the ones of the Beken library before (matter-bk7231n matter_app.cpp, now matter-espurna)
 
 constexpr uint16_t VendorId  = 0xFFF1;
 constexpr uint16_t ProductId = 0x8000;
@@ -388,7 +389,12 @@ public:
         return _base->GetProductLabel(buf, size);
     }
 
+    // the board's (matter.cpp, its chip id) with the own identity; the factory one may have its own in the factory data
     CHIP_ERROR GetSerialNumber(char* buf, size_t size) override {
+        const char* serial = matter_serial_number();
+        if ((source == Source::Own) && serial && *serial) {
+            return copy(serial, buf, size);
+        }
         return _base->GetSerialNumber(buf, size);
     }
 

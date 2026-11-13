@@ -16,6 +16,8 @@ Copyright (C) 2016-2017 by Xose Pérez <xose dot perez at gmail dot com>
 #include <RFM69_ATC.h>
 #include "spi.h"
 
+#include <spi_chip.h>
+
 #include <SPI.h>
 
 #include <vector>
@@ -166,15 +168,15 @@ String rootTopic() {
 }
 
 String topic(size_t index) {
-    return getSetting({"rfm69Topic", index});
+    return getSetting(espurna::settings::Key{"rfm69Topic", index});
 }
 
 String key(size_t index) {
-    return getSetting({"rfm69Key", index});
+    return getSetting(espurna::settings::Key{"rfm69Key", index});
 }
 
 size_t node(size_t index) {
-    return getSetting({"rfm69Node", index}, build::node(index));
+    return getSetting(espurna::settings::Key{"rfm69Node", index}, build::node(index));
 }
 
 template <typename T>
@@ -230,7 +232,7 @@ protected:
         SPI.setDataMode(SPI_MODE0);
         SPI.setBitOrder(MSBFIRST);
 
-        SPI.setClockDivider(espurna::chip::rfm69_spi_divider());
+        SPI.setClockDivider(espurna::driver::spi::Rfm69Divider);
 
         digitalWrite(_slaveSelectPin, LOW);
     }
@@ -314,9 +316,9 @@ void _rfm69CleanNodes(size_t max) {
     });
 
     while (id < max) {
-        delSetting({"rfm69Node", id});
-        delSetting({"rfm69Key", id});
-        delSetting({"rfm69Topic", id});
+        delSetting(espurna::settings::Key{"rfm69Node", id});
+        delSetting(espurna::settings::Key{"rfm69Key", id});
+        delSetting(espurna::settings::Key{"rfm69Topic", id});
         ++id;
     }
 }

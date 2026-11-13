@@ -72,7 +72,7 @@ uint32_t unpack(uint32_t value) {
 const uint32_t _rtcmem_retention_at_boot = retention();
 
 // RAM does not survive the reset either, so the crash handlers below also write the registers and the top of the stack
-// into the flash sector right above the settings slots (storage_eeprom_beken.cpp) and below the Tuya config, blank
+// into the flash sector right above the settings pool (storage_flash_beken.cpp) and below the Tuya config, blank
 // on every stock dump seen. Its place comes from the layout of the bootloader (layout_beken.cpp): an unknown one,
 // or one whose dumps were not checked, gets no crash record. Picked in rtcmemSetup(), before that nothing is
 // written. The record stays until the next crash, 'pending' goes from all ones to zero (no erase needed) once the

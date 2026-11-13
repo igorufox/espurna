@@ -128,7 +128,7 @@ const DESCRIPTIONS = new Map([
     ["ssdp", "Answers SSDP discovery (UPnP): Windows shows the board under Network."],
     ["llmnr", "Answers <hostname> from Windows on the network (LLMNR)."],
     ["netbios", "Answers the NetBIOS name of the board on the network."],
-    ["nofuss", "NoFUSS: updates the firmware from a NoFUSS server by itself."],
+    ["http", "The HTTP client of the modules (http:// and https://): ThingSpeak, InfluxDB, NSPanel."],
 ]);
 
 // the panel shows the modules by group, in this order; a module not listed goes to the last one
@@ -145,7 +145,7 @@ export const GROUPS = [
         "sm300d2", "mics2710", "mics5525", "ezoph", "sonar", "a02yyu", "vl53l1x", "max6675", "dummy"]],
     ["Automation", ["scheduler", "rpnrules"]],
     ["Integrations", ["mqtt", "api", "ntp", "homeassistant", "alexa", "domoticz", "thingspeak", "influxdb", "mdns",
-        "ssdp", "llmnr", "netbios", "prometheus", "nofuss", "matter"]],
+        "ssdp", "llmnr", "netbios", "prometheus", "http", "matter"]],
 ];
 
 /**

@@ -61,4 +61,7 @@ void buttonOnEvent(ButtonEventHandler);
 size_t buttonCount();
 
 void buttonSetup();
+
+// the buttons of a provider module that started after this one (button.cpp)
+void buttonProvidersReady();
 void buttonSetupUnstable();

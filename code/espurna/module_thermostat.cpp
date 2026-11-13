@@ -11,6 +11,9 @@ The thermostat module (docs/modules.md): a thermostat on a relay and a temperatu
 #include "thermostat.h"
 
 ESPURNA_MODULE(thermostat, "thermostat", 50) {
+    // the button action "display on"
+    modulesProvide(espurna::modules::Api::DisplayOn, &displayOn);
+
     thermostatSetup();
     displaySetup();
 }

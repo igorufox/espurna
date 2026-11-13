@@ -96,35 +96,35 @@ mdns | mdns.cpp.o module_mdns.cpp.o | | mdnsRunning mdnsServiceQuery
 mqtt | mqtt.cpp.o module_mqtt.cpp.o | | mqttHeartbeat mqttRegister mqttOnPublish mqttOnSubscribe mqttTopic mqttTopicSetter mqttMagnitude mqttSendRaw mqttSubscribeRaw mqttSubscribe mqttUnsubscribeRaw mqttUnsubscribe mqttSend mqttSendStatus mqttFlush mqttEnqueue mqttPayloadOnline mqttPayloadOffline mqttPayloadStatus mqttEnabled mqttForward mqttConnected mqttDisconnect mqttSetup
 homeassistant | homeassistant.cpp.o module_homeassistant.cpp.o | | | mqtt
 domoticz | domoticz.cpp.o module_domoticz.cpp.o | | domoticzSendMagnitude | mqtt
-thingspeak | thingspeak.cpp.o module_thingspeak.cpp.o | | tspkEnqueueMagnitude
+thingspeak | thingspeak.cpp.o module_thingspeak.cpp.o | | tspkEnqueueMagnitude | http
 light | light.cpp.o module_light.cpp.o | | lightBlue lightBrightness lightBrightnessPercent lightChannel lightChannels lightColdWhite lightColor lightGreen lightHasColdWhite lightHasColor lightHasWarmWhite lightHasWhite lightHs lightHsv lightMiredsRange lightOnReport lightRed lightRgb lightState lightTemperature lightTransitionStep lightTransitionTime lightUpdate lightUseRGB lightWarmWhite lightBrightnessStep lightMakeStateRelayProvider
 light_pwm | module_light_pwm.cpp.o | pwm.cpp.o | | light
 light_my92xx | module_light_my92xx.cpp.o | | | light
-rf | rfbridge.cpp.o module_rf.cpp.o | |
-matter | matter.cpp.o matter_identity.cpp.o module_matter.cpp.o | |
-nspanel | nspanel.cpp.o nspanel_config.cpp.o nspanel_storage.cpp.o nspanel_net.cpp.o nspanel_link.cpp.o nspanel_flash.cpp.o nspanel_web.cpp.o nspanel_lovelace.cpp.o nspanel_ohpanel.cpp.o module_nspanel.cpp.o | | | uart tls | 32768
+rf | rfbridge.cpp.o module_rf.cpp.o | | rfbSend rfbOnCode
+matter | matter.cpp.o matter_app.cpp.o matter_identity.cpp.o module_matter.cpp.o | |
+nspanel | nspanel.cpp.o nspanel_config.cpp.o nspanel_storage.cpp.o nspanel_net.cpp.o nspanel_link.cpp.o nspanel_flash.cpp.o nspanel_web.cpp.o nspanel_lovelace.cpp.o nspanel_ohpanel.cpp.o module_nspanel.cpp.o | | | uart tls http | 32768
 uart | uart.cpp.o module_uart.cpp.o | | uartPort uartClaim uartClaimed uartOnClaim uartOpen uartBaud
 tls | module_tls.cpp.o | |
+http | http.cpp.o module_http.cpp.o | |
 captive | captive.cpp.o module_captive.cpp.o | |
 spi | spi.cpp.o module_spi.cpp.o | |
 mcp23s08 | mcp23s08.cpp.o module_mcp23s08.cpp.o | | | spi
-rpnrules | rpnrules.cpp.o module_rpnrules.cpp.o | |
+rpnrules | rpnrules.cpp.o module_rpnrules.cpp.o | | | relay ntp
 encoder | encoder.cpp.o module_encoder.cpp.o | | | light
-tuya | tuya.cpp.o module_tuya.cpp.o | | | relay light uart
+tuya | tuya.cpp.o module_tuya.cpp.o | | tuya::makeRelayProvider | relay light uart
 uartmqtt | uartmqtt.cpp.o module_uartmqtt.cpp.o | | | uart mqtt
 ir | ir.cpp.o module_ir.cpp.o | |
 rfm69 | rfm69.cpp.o module_rfm69.cpp.o | | | spi
 garland | garland.cpp.o module_garland.cpp.o | |
-thermostat | thermostat.cpp.o module_thermostat.cpp.o | | | relay sensors i2c
-influxdb | influxdb.cpp.o module_influxdb.cpp.o | |
-prometheus | prometheus.cpp.o module_prometheus.cpp.o | | | api
-curtain_kingart | curtain_kingart.cpp.o module_curtain_kingart.cpp.o | | | uart
-ifan | ifan.cpp.o module_ifan.cpp.o | | | relay
-lightfox | lightfox.cpp.o module_lightfox.cpp.o | | | relay button uart
+thermostat | thermostat.cpp.o module_thermostat.cpp.o | | displayOn | relay sensors i2c ntp
+influxdb | influxdb.cpp.o module_influxdb.cpp.o | | | http
+prometheus | prometheus.cpp.o module_prometheus.cpp.o | | | api sensors
+curtain_kingart | curtain_kingart.cpp.o module_curtain_kingart.cpp.o | | | uart ntp
+ifan | ifan.cpp.o module_ifan.cpp.o | | fanMakeRelayProvider fanSpeed | relay
+lightfox | lightfox.cpp.o module_lightfox.cpp.o | | lightfoxMakeRelayProvider lightfoxMakeButtonPin | relay button uart
 ssdp | ssdp.cpp.o module_ssdp.cpp.o | |
 llmnr | llmnr.cpp.o module_llmnr.cpp.o | |
 netbios | netbios.cpp.o module_netbios.cpp.o | |
-nofuss | nofuss.cpp.o module_nofuss.cpp.o | |
 test | module_test.cpp.o | |
 
 ESPURNA_MODULES */
@@ -244,7 +244,6 @@ ESPURNA_MODULES */
 #define SSDP_SUPPORT                1
 #define LLMNR_SUPPORT               1
 #define NETBIOS_SUPPORT             1
-#define NOFUSS_SUPPORT              1
 
 // what exists only on some chips: Matter (ESP32 and Beken, there is no Matter SDK for the ESP8266, the chip's ini
 // leaves the module out: custom_modules_skip); the NSPanel (its display on a UART port) on every chip

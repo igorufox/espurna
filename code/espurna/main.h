@@ -112,10 +112,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "netbios.h"
 #endif
 
-#if NOFUSS_SUPPORT
-#include "nofuss.h"
-#endif
-
 #if NTP_SUPPORT
 #include "ntp.h"
 #endif

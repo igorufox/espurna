@@ -127,7 +127,7 @@ private:
 
 } // namespace
 
-// constructed on the first use: the receiver of ota_fetch.cpp is a static object of another file
+// constructed on the first use: the receivers of the uploads are static objects of other files
 espurna::image::Target& otaUpdateTarget() {
     static UpdateTarget target;
     return target;
@@ -164,7 +164,6 @@ void otaProgress(size_t bytes) {
 }
 
 void otaSetup() {
-    otaFetchSetup();
 #if OTA_ARDUINOOTA_SUPPORT
     otaArduinoSetup();
 #endif

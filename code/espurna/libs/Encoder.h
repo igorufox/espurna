@@ -38,6 +38,9 @@
 
 #pragma once
 
+// the pin reads of the interrupt: the chip's fast read (arch/<chip>/isr_chip.h)
+#include <isr_chip.h>
+
 //                           _______         _______
 //               Pin1 ______|       |_______|       |______ Pin1
 // negative <---         _______         _______         __      --> positive
@@ -98,8 +101,8 @@ namespace EncoderLibrary {
     // update() is not meant to be called from outside Encoder,
     // but it is public to allow static interrupt routines.
     void IRAM_ATTR update(encoder_values_t *target) {
-        uint8_t p1val = GPIP(target->pin1);
-        uint8_t p2val = GPIP(target->pin2);
+        uint8_t p1val = espurna::isr::read(target->pin1);
+        uint8_t p2val = espurna::isr::read(target->pin2);
         uint8_t state = target->state & 3;
         if (p1val) state |= 4;
         if (p2val) state |= 8;
@@ -155,11 +158,11 @@ namespace EncoderLibrary {
             delayMicroseconds(2000);
 
             uint8_t current = 0;
-            if (GPIP(values.pin1)) {
+            if (espurna::isr::read(values.pin1)) {
                 current |= 1;
             }
 
-            if (GPIP(values.pin2)) {
+            if (espurna::isr::read(values.pin2)) {
                 current |= 2;
             }
 

@@ -4,8 +4,9 @@ NET - the implementations of the one network stack of everything ESPurna builds,
 image: ESPurna's net.cpp (the head of every chip), code/migration-app's and code/safeboot-app's main.cpp.
 - libs/tcp.h            the TCP connection and listener on lwIP's raw API
 - libs/tls.h            the byte stream over TCP, plain or TLS (BearSSL); under the HTTP and the MQTT client
-- libs/http_client.h    the HTTP client
 - libs/http_server.h    the HTTP server
+The HTTP client (libs/http_client.h) is not part of it: its implementation, libs/http_client_impl.h, is included after
+this file by ESPurna's http module (http.cpp) and by the main.cpp of code/migration-app and code/safeboot-app
 (the WebSocket server, libs/websocket.h, is not part of it: the ws module of the head has it, ws_server.cpp)
 
 What that .cpp defines before the include is only how the image logs and locks, never what the stack does:
@@ -50,5 +51,4 @@ static_assert(same(LWIP_VERSION_STRING, ESPURNA_LWIP),
 
 #include "tcp_impl.h"
 #include "tls_impl.h"
-#include "http_client_impl.h"
 #include "http_server_impl.h"

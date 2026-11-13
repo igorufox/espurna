@@ -7,6 +7,8 @@ HTTP SERVER - the implementation (libs/http_server.h), part of libs/net_impl.h. 
 #pragma once
 
 #include "http_server.h"
+// copy(), hex(), UrlMax: the small things the server shares with the client (header only)
+#include "http_client.h"
 #include "text.h"
 #include "url_parse.h"
 
@@ -332,8 +334,7 @@ public:
             return false;
         }
 
-        // the response is checked with the nonce the client used: right with another one (of another boot, of the
-        // full image before the migration image) is stale, not a wrong password
+        // the response is checked with the nonce the client used (of another boot, of another board behind the proxy)
         char client_nonce[48];
         if (!headerParam(auth, "nonce", client_nonce, sizeof(client_nonce))) {
             return false;
@@ -344,12 +345,18 @@ public:
             return false;
         }
 
+        // the realm the client answered for, as ESPurna's server always took it: the proxy of the home network
+        // (lion, conf.d/espurna.conf) gives every board one realm "ESPURNA" for one browser login. The realm is only a
+        // salt of HA1; the password and this board's nonce are what is checked
+        char client_realm[64];
+        const char* used_realm = headerParam(auth, "realm", client_realm, sizeof(client_realm)) ? client_realm : realm;
+
         char ha1[33];
         char ha2[33];
         br_md5_context ctx;
         br_md5_init(&ctx);
         md5Add(ctx, user);
-        md5Add(ctx, realm);
+        md5Add(ctx, used_realm);
         md5Add(ctx, password, false);
         md5Hex(ctx, ha1);
 
@@ -373,13 +380,10 @@ public:
 
         char expected[33];
         md5Hex(ctx, expected);
-        const bool right = headerParam(auth, "response", value, sizeof(value)) && !strcasecmp(value, expected);
-        if (right && strcmp(client_nonce, nonce())) {
-            _stale = true;
-            return false;
-        }
-
-        return right;
+        // the client's nonce is taken as it is, as ESPurna's server always did: behind the proxy of the home network all
+        // boards share one realm, the browser answers each with the nonce it got last (another board's); a check against
+        // this board's nonce made every switch a "stale" round trip and Chrome stopped there (W19)
+        return headerParam(auth, "response", value, sizeof(value)) && !strcasecmp(value, expected);
     }
 
     void requestAuthentication(const char* realm) {
@@ -1232,7 +1236,9 @@ void Request::Impl::step(Server::Impl& server) {
             return;
         }
         stepRespond();
-        if ((_state != State::Done) && (now - _last > IdleTimeout)) {
+        // the time now, not the step's: stepRespond() sets _last after `now`, and `now - _last` would wrap around
+        // (uint32_t) and close the connection as soon as the send buffer was full (ESP8266: a page cut at 1072 bytes)
+        if ((_state != State::Done) && (tcp::now() - _last > IdleTimeout)) {
             finish();
         }
         return;

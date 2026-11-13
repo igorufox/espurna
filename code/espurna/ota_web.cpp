@@ -5,8 +5,8 @@ Part of the WEBSERVER MODULE
 Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
-/upgrade (an image uploaded by the browser, the file of a form or the raw body), /ota/fetch and /ota/status (the update by
-an URL, ota_fetch.cpp). On the one HTTP server of ESPurna (libs/http_server.h): the body comes a piece at a time into
+/upgrade (an image uploaded by the browser, the file of a form or the raw body; the browser also downloads the releases,
+fwinstall.mjs). On the one HTTP server of ESPurna (libs/http_server.h): the body comes a piece at a time into
 the one image receiver (libs/image_receiver.h) and the head's target (Update, ota.cpp), the handlers run in the loop.
 
 */
@@ -150,49 +150,6 @@ void onUpgrade(WebRequest& request) {
     sendResponse(request, 200, F("OK"));
 }
 
-// Install from GitHub (fwinstall.mjs): the board downloads the file itself, ota_fetch.cpp
-bool authenticated(WebRequest& request) {
-    if (!webAuthenticate(request)) {
-        webRequestAuthentication(request);
-        return false;
-    }
-
-    return true;
-}
-
-void onFetchStatus(WebRequest& request) {
-    if (authenticated(request)) {
-        webSend(request, 200, "application/json", otaFetchStatus());
-    }
-}
-
-// url + sha256 (of firmware.json). "OK, fetch" - restarting: the next boot (ESP8266, Beken) or safeboot (ESP32)
-// downloads it, ota_fetch.cpp
-void onFetch(WebRequest& request) {
-    if (!authenticated(request)) {
-        return;
-    }
-
-    if (!sameOrigin(request)) {
-        sendResponse(request, 403, F("ERROR: Origin"));
-        return;
-    }
-
-    if (Update.isRunning()) {
-        sendResponse(request, 409, F("ERROR: Upgrade in progress"));
-        return;
-    }
-
-    String error;
-    if (!otaFetchRequest(webParam(request, "url"), webParam(request, "sha256"), error)) {
-        sendResponse(request, 400, String(F("ERROR: ")) + error);
-        return;
-    }
-
-    sendResponse(request, 200, F("OK, fetch"));
-    prepareReset(CustomResetReason::Web);
-}
-
 } // namespace
 } // namespace web
 } // namespace ota
@@ -203,8 +160,6 @@ bool otaWebUploading() {
 
 void otaWebSetup() {
     auto& server = webServer();
-    server.on("/ota/status", WebMethod::Get, ota::web::onFetchStatus);
-    server.on("/ota/fetch", WebMethod::Post, ota::web::onFetch);
     server.on("/upgrade", WebMethod::Post, ota::web::onUpgrade, ota::web::onFile);
     wsRegister()
         .onVisible(ota::web::onVisible);

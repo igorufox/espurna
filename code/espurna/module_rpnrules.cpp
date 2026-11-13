@@ -10,7 +10,8 @@ The rpnrules module (docs/modules.md): RPN rules (RPNlib): small programs on the
 #include "modules.h"
 #include "rpnrules.h"
 
-ESPURNA_MODULE(rpnrules, "rpnrules", 11) {
+// after the rf module (its codes: rfbOnCode() reaches it only once it has started)
+ESPURNA_MODULE(rpnrules, "rpnrules", 60) {
     rpnSetup();
 }
 

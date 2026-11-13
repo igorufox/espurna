@@ -132,15 +132,15 @@ unsigned long delay() {
 }
 
 String rule(size_t index) {
-    return getSetting({keys::Rule, index});
+    return getSetting(espurna::settings::Key{keys::Rule, index});
 }
 
 String topic(size_t index) {
-    return getSetting({keys::Topic, index});
+    return getSetting(espurna::settings::Key{keys::Topic, index});
 }
 
 String name(size_t index) {
-    return getSetting({keys::Name, index});
+    return getSetting(espurna::settings::Key{keys::Name, index});
 }
 
 } // namespace settings
@@ -584,7 +584,8 @@ using SplitTimestamp = SplitType<time_t, 8>;
 static_assert((sizeof(time_t) == 4) || (sizeof(time_t) == 8), "");
 constexpr size_t TimestampSize { SplitTimestamp{} ? 2 : 1 };
 
-using TimestampFunc = rpn_int(*)(time_t);
+// the time functions of ntp.h (int: not rpn_int, which is int32_t, a long on some chips)
+using TimestampFunc = int(*)(time_t);
 
 rpn_error popTimestampPair(rpn_context& ctxt, TimestampFunc func) {
     rpn_value rhs = rpn_stack_pop(ctxt);
@@ -593,7 +594,7 @@ rpn_error popTimestampPair(rpn_context& ctxt, TimestampFunc func) {
     auto timestamp = (static_cast<long long>(lhs.toInt()) << 32ll)
         | (static_cast<long long>(rhs.toInt()));
 
-    rpn_value value(func(timestamp));
+    rpn_value value(static_cast<rpn_int>(func(timestamp)));
     rpn_stack_push(ctxt, value);
 
     return 0;
@@ -601,7 +602,7 @@ rpn_error popTimestampPair(rpn_context& ctxt, TimestampFunc func) {
 
 rpn_error popTimestampSingle(rpn_context& ctxt, TimestampFunc func) {
     rpn_value input = rpn_stack_pop(ctxt);
-    rpn_value result(func(input.toInt()));
+    rpn_value result(static_cast<rpn_int>(func(input.toInt())));
     rpn_stack_push(ctxt, result);
     return 0;
 }

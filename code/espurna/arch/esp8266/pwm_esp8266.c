@@ -17,6 +17,10 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
  */
 
+// the light_pwm module's (platformio_esp8266.ini: its optional object), never in the head: only the module objects
+// have MODULE_BUILD
+#if MODULE_BUILD
+
 // Should include our own prototypes, since the original code does not provide them
 #include "libs/esp8266_pwm.h"
 
@@ -457,3 +461,4 @@ set_pwm_debug_en(uint8_t print_en)
 	(void) print_en;
 }
 
+#endif // MODULE_BUILD

@@ -9,11 +9,11 @@ Support queueing and handling input without termination by Maxim Prokhorov <prok
 
 */
 
+#include "espurna.h"
 #include "uartmqtt.h"
 
 #if UART_MQTT_SUPPORT
 
-#include "espurna.h"
 #include "mqtt.h"
 #include "utils.h"
 

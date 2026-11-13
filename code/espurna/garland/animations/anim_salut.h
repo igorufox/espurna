@@ -39,8 +39,8 @@ class AnimSalut : public Anim {
        private:
         struct Spark {
             bool done = false;
-            float speed = ((float)secureRandom(1, 25)) / 10;
-            float speed_dec = ((float)secureRandom(1, 3)) / 10;
+            float speed = ((float)garlandRandom(1, 25)) / 10;
+            float speed_dec = ((float)garlandRandom(1, 3)) / 10;
             float pos;
             int dir = randDir();
             Color color;
@@ -56,7 +56,7 @@ class AnimSalut : public Anim {
                     } else {
                         color.fade(5);
                         if (color.is_empty()) {
-                            if (secureRandom(10) > 8)
+                            if (garlandRandom(10) > 8)
                                 leds[(int)pos] = 0xFFFFFF;
                             done = true;
                         }
@@ -68,11 +68,11 @@ class AnimSalut : public Anim {
         };
 
        public:
-        int spark_num = secureRandom(30, 40);
+        int spark_num = garlandRandom(30, 40);
         std::unique_ptr<Spark[]> sparks;
         Shot(Palette* pal, uint16_t numLeds) {
             // DEBUG_MSG_P(PSTR("[GARLAND] Shot created center = %d spark_num = %d\n"), center, spark_num);
-            int center = secureRandom(15, numLeds - 15);
+            int center = garlandRandom(15, numLeds - 15);
             sparks.reset(new Spark[spark_num]);
             for (auto i = 0; i < spark_num; ++i) {
                 sparks[i] = {center, pal, numLeds};

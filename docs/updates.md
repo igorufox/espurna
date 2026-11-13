@@ -86,8 +86,8 @@ The merged `espurna-esp32.bin` (bootloader, partition table, safeboot, ESPurna) 
 at `0x0`; the safeboot takes it as well and writes only its ESPurna part.
 
 **The safeboot itself**: a web page on port 80 (user `admin`, the ESPurna admin password): the releases of the running
-image (from `firmware.json`, read by the browser), an upload of an image (the merged `.bin`, or an application image)
-into app0, a download from a URL over https (ESP-IDF certificate bundle, SHA-256 checked). It joins Wi-Fi with the
+image (from `firmware.json`, read by the browser, which downloads the picked file and uploads it), an upload of an image
+(the merged `.bin`, or an application image) into app0. The board downloads nothing itself. It joins Wi-Fi with the
 ESPurna settings (`ssid0`/`pass0`, `ssid1`/`pass1`, static IP, hostname); without Wi-Fi in 30 s it opens its own access
 point `<hostname>-SAFEBOOT` (WPA2, admin password) at 192.168.4.1. The next boot is set back to app0 right at its start,
 so a crash or a power cut in the safeboot returns to ESPurna; after 15 minutes without activity it boots ESPurna as well.
@@ -163,7 +163,7 @@ server leave 10-20 KB:
 |---------------|-----|-----------|
 | Browser (all chips) | validated https to GitHub Pages | SHA-256 of `firmware.json`; the CRC32 of every part of the `.ota` |
 | The board, a module package | none, the browser uploads | CRC32 of the package and of what was written; the head id |
-| ESP32 safeboot (download from a URL) | ESP-IDF certificate bundle | SHA-256, checked before ESPurna boots it |
+| ESP32 safeboot | none, the browser uploads (its release list too) | the image check of ESP-IDF (`esp_ota_end`) |
 | ESP8266 migration image | BearSSL, TLS 1.2, RSA key exchange + AES-128-GCM, **no certificate check** (no CA store, no clock) | SHA-256 required, taken by the browser from `firmware.json` over validated https |
 | Beken | none, the browser uploads | the UF2's partition table must be the board's |
 

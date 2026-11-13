@@ -93,6 +93,9 @@ struct RelayAddResult {
     }
 };
 
+// the relays of a provider module that started after this one (relay.cpp)
+void relayProvidersReady();
+
 RelayAddResult relayAdd(RelayProviderBasePtr&& provider);
 void relayOnStatusNotify(RelayStatusCallback);
 void relayOnStatusChange(RelayStatusCallback);

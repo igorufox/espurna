@@ -15,7 +15,7 @@ class AnimStars : public Anim {
 
     void SetupImpl() override {
         //inc is (average) interval between appearance of new stars
-        inc = secureRandom(2, 5);
+        inc = garlandRandom(2, 5);
 
         //reset all phases
         for (auto i = 0; i < numLeds; ++i)
@@ -40,8 +40,8 @@ class AnimStars : public Anim {
             }
         }
 
-        if (secureRandom(inc) == 0) {
-            byte pos = secureRandom(numLeds);
+        if (garlandRandom(inc) == 0) {
+            byte pos = garlandRandom(numLeds);
             if (seq[pos] > 250) {
                 seq[pos] = 0;
                 ledstmp[pos] = palette->getRndInterpColor();

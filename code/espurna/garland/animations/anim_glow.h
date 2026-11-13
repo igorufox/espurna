@@ -16,11 +16,11 @@ class AnimGlow : public Anim {
     void SetupImpl() override {
         prevColor = palette->getRndInterpColor();
         curColor = palette->getRndInterpColor();
-        inc = secureRandom(2) * 2 - 1;
+        inc = garlandRandom(2) * 2 - 1;
 
         colorInterp = 0;
-        colorInterpSpeed = ((float)secureRandom(10, 20)) / 1000;
-        flashDeciPercent = fiftyFifty() ? 0 : secureRandom(5, 20);
+        colorInterpSpeed = ((float)garlandRandom(10, 20)) / 1000;
+        flashDeciPercent = fiftyFifty() ? 0 : garlandRandom(5, 20);
         glowSetUp();
     }
 

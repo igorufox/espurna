@@ -87,7 +87,7 @@ class BekenLinker(module_link.Linker):
     link_options = ("-Wl,-q",)
 
     def archives_in(self, build_dir):
-        """the env's libraries, and the prebuilt ones on its LIBPATH (libMatterApp.a of scripts/beken_matter_lib.py)"""
+        """the env's libraries, and the prebuilt ones on its LIBPATH (libMatterApp.a of scripts/matter_lib.py)"""
         out = self.framework_archives()
         out.update(module_link.Linker.archives_in(build_dir))
         return out

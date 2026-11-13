@@ -1,8 +1,8 @@
 /*
 
-The network stack of the head (libs/net_impl.h: TCP, TLS, the HTTP client, the HTTP server): the one implementation,
-every chip. The modules call the head's; the tls module (module_tls.cpp) extends the TLS (HTTP and MQTT) through the two
-hooks below
+The network stack of the head (libs/net_impl.h: TCP, TLS, the HTTP server): the one implementation, every chip. The
+modules call the head's; the HTTP client is the http module (http.cpp). The tls module (module_tls.cpp) extends the
+TLS (HTTP and MQTT) through the hooks below
 
 */
 

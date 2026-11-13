@@ -4224,7 +4224,8 @@ RelayProviderResult _relaySetupProvider(size_t index) {
     return result;
 }
 
-void _relaySetup() {
+// the relays of the settings from the first one not made yet, until one cannot be made
+void _relaySetupProviders() {
     auto relays = _relays.size();
     _relays.reserve(relays + _relayAdhocPins());
 
@@ -4245,7 +4246,10 @@ void _relaySetup() {
 
         _relays.emplace_back(std::move(relay));
     }
+}
 
+void _relaySetup() {
+    _relaySetupProviders();
     relaySetupDummy(espurna::relay::settings::dummyCount());
 }
 
@@ -4312,6 +4316,20 @@ void relaySetup() {
 
     espurnaRegisterLoop(_relayLoop);
     espurnaRegisterReload(_relayConfigure);
+}
+
+// A module whose relays the settings name (ifan, lightfox, tuya: relayProvider) starts after this one, it needs it:
+// its relays are made once it has started and provided its maker (modules_api.cpp)
+void relayProvidersReady() {
+    const auto before = _relays.size();
+    _relaySetupProviders();
+    if (_relays.size() != before) {
+        DEBUG_MSG_P(PSTR("[RELAY] %u more relay(s) from a provider module\n"), _relays.size() - before);
+        espurnaRegisterOnceUnique([]() {
+            _relayConfigure();
+            _relayBootAll();
+        });
+    }
 }
 
 RelayAddResult relayAdd(RelayProviderBasePtr&& provider) {

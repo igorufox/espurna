@@ -31,7 +31,7 @@ class AnimSparkr : public Anim {
         glowRun();
 
         if (phase > numLeds) {
-            if (secureRandom(SPARK_PROB) == 0) {
+            if (garlandRandom(SPARK_PROB) == 0) {
                 int i = (int)rngb() * numLeds / 256;
                 leds[i] = sparkleColor;
             }

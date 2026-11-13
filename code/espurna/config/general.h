@@ -129,8 +129,8 @@
 
 //------------------------------------------------------------------------------
 // MATTER
-// On/Off plug endpoints for the relays (matter.cpp). Beken (libMatterApp of matter-bk7231n) and ESP32 on
-// Arduino-ESP32 core 3.x only, set by their *-matter environments
+// On/Off plug endpoints for the relays (matter.cpp): the matter module of the Beken and the ESP32, libMatterApp.a of
+// matter-espurna on both (there is no Matter SDK for the ESP8266)
 //------------------------------------------------------------------------------
 
 #ifndef MATTER_SUPPORT
@@ -914,10 +914,6 @@
 #define OTA_PORT                    8266        // Port for ArduinoOTA
 #endif
 
-#ifndef OTA_MQTT_SUPPORT
-#define OTA_MQTT_SUPPORT            0           // Listen for "<url> [sha256]" at <root topic>/ota (ota_fetch.cpp)
-#endif
-
 #ifndef OTA_ARDUINOOTA_SUPPORT
 #define OTA_ARDUINOOTA_SUPPORT      1           // Support ArduinoOTA by default (4.2Kb)
                                                 // Implicitly depends on ESP8266mDNS library, thus increasing firmware size
@@ -928,26 +924,6 @@
 #endif
 
 
-
-// -----------------------------------------------------------------------------
-// NOFUSS
-// -----------------------------------------------------------------------------
-
-#ifndef NOFUSS_SUPPORT
-#define NOFUSS_SUPPORT              0          // Do not enable support for NoFuss by default (12.65Kb)
-#endif
-
-#ifndef NOFUSS_ENABLED
-#define NOFUSS_ENABLED              0           // Do not perform NoFUSS updates by default
-#endif
-
-#ifndef NOFUSS_SERVER
-#define NOFUSS_SERVER               ""          // Default NoFuss Server
-#endif
-
-#ifndef NOFUSS_INTERVAL
-#define NOFUSS_INTERVAL             3600000     // Check for updates every hour
-#endif
 
 // -----------------------------------------------------------------------------
 // UART

@@ -9,11 +9,14 @@ Matter On/Off plug endpoints for the relays. One Matter layer for both chips:
   the plug names of a bridge, the controller (fabric) list and removal, the pairing window, the pairing codes, the quiet
   mode while a controller commissions, the log of the Matter task, the terminal commands and the MATTER panel
 - the Matter application C API below (`matter_app_*`, `matter_*`): the same functions on both chips, matter.cpp knows
-  only them. Beken: libMatterApp.a of matter-bk7231n (connectedhomeip for the BK7231N, matter_app.cpp there);
-  ESP32: arch/esp32/matter_esp32.cpp on the Matter library of Arduino-ESP32 core 3.x (esp_matter)
+  only them. The start, the plug endpoints and their On/Off attribute (`matter_app_start`, `matter_app_plugs`,
+  `matter_set_onoff`): libMatterApp.a of matter-espurna on both chips, the same connectedhomeip, plug.zap data model and
+  application, the platform of connectedhomeip of the chip under it. The pairing codes, the controllers, the pairing
+  window, the ping (matter_app.cpp) and the identity of the board (matter_identity.cpp): one code of ESPurna on the
+  server API
 - the callbacks of that API (`matter_onoff_changed`, `matter_commissioning` ...): defined once, in matter.cpp
-- backend::* below: what the SDK of the chip forces and nothing else (Beken: the bk_* platform API, factory identity,
-  FlashDB key-value store, watchdog; ESP32: IPv6 on, own identity in NVS)
+- backend::* below: what the SDK of the chip forces and nothing else (Beken: the bk_* platform API, the factory data,
+  FlashDB key-value store, watchdog; ESP32: IPv6 on, the identity's store in NVS)
 
 */
 

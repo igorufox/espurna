@@ -10,8 +10,8 @@ head itself updates with one /upgrade and never comes here. Same idea as
 code/safeboot-app of ESP32, but here the migration image replaces the full image: there is no ESPurna to go back to until a
 full image is written. Plain Arduino core (core 3.1.2 + NONOS SDK 3.0.5, the 1 MB layout of ESPurna), no ESPurna code,
 every byte counts (the gzip of this image has to fit next to the biggest full image):
-- the ESPurna settings are read in place: the EEPROM_Rotate pool of ESPurna (sectors 251 and 250, the copy with
-  the valid sum and the newest counter), the Embedis key-value records. Wi-Fi ssid0/pass0, ssid1/pass1, static
+- the ESPurna settings are read in place: the settings pool of ESPurna (espurna/libs/settings_rotate.h, sectors
+  251 and 250, the copy with the valid sum and the newest counter), the Embedis key-value records. Wi-Fi ssid0/pass0, ssid1/pass1, static
   ip0/gw0/mask0/dns0, hostname, adminPass, webFwUrl; no settings of its own
 - the request of the full image (POST /ota/fetch there, ota_fetch.cpp): otaFetchUrl + otaFetchSha256. Taken once:
   erased (and a provisional "failed: ..." result stored) before anything else, then Wi-Fi (up to 3 minutes), the
@@ -42,7 +42,6 @@ read with espurna/libs/embedis_records.h, the same as code/safeboot-app
 */
 
 #include <Arduino.h>
-#include <EEPROM_Rotate.h>
 #include <ESP8266WiFi.h>
 #include <eboot_command.h>
 #include <spi_flash.h>
@@ -57,6 +56,7 @@ read with espurna/libs/embedis_records.h, the same as code/safeboot-app
 #include <memory>
 
 #include "../../espurna/libs/embedis_records.h"
+#include "../../espurna/libs/settings_rotate.h"
 #include "../../espurna/libs/fetch_check.h"
 #include "../../espurna/libs/text.h"
 
@@ -124,6 +124,7 @@ struct NoLock {
 #define NET_LOG(fmt, ...) LOG(fmt, ##__VA_ARGS__)
 #define NET_LOCK ::migration::NoLock
 #include "../../espurna/libs/net_impl.h"
+#include "../../espurna/libs/http_client_impl.h"
 #include "../../espurna/libs/image_receiver.h"
 
 // no modules here: the head's TLS of the client only (static RSA + AES-128-GCM, what GitHub Pages offers)
@@ -147,7 +148,8 @@ const br_x509_class** caCheck(const char*, void**) {
 
 namespace {
 
-constexpr char Image[] = "esp8266-1m-migration";
+// the release image (ESPURNA_IMAGE of the ini, as the three chips have it)
+constexpr char Image[] = ESPURNA_IMAGE;
 constexpr char DefaultPassword[] = "fibonacci";
 constexpr char DefaultManifest[] = "https://igorufox.github.io/espurna/firmware.json";
 
@@ -179,11 +181,10 @@ String hex(const uint8_t* data, size_t len) {
 // ESPurna settings
 // -----------------------------------------------------------------------------
 
-// One 4 KB sector of the EEPROM_Rotate pool (storage_eeprom.h, arch/esp8266/storage_eeprom_esp8266.cpp): sum and
-// counter of EEPROM_Rotate at 11..13, the crash record up to 256 (crash.cpp), the Embedis records from the end of the
-// sector down to 256 (settings.cpp), read and walked with espurna/libs/embedis_records.h
-constexpr uint16_t RotateOffset { 11 };
-constexpr uint16_t ReservedEnd { RotateOffset + 3 };
+// One 4 KB sector of the settings pool of ESPurna (the format of espurna/libs/settings_rotate.h, the same code as
+// ESPurna's storage_eeprom.cpp): sum and counter at 11..13, the crash record up to 256 (crash.cpp), the Embedis records
+// from the end of the sector down to 256 (settings.cpp), read and walked with espurna/libs/embedis_records.h
+constexpr uint16_t ReservedEnd { espurna::settings_rotate::ReservedEnd };
 constexpr uint16_t KvBegin { 256 };
 constexpr uint16_t KvEnd { SPI_FLASH_SEC_SIZE };
 
@@ -194,15 +195,28 @@ struct Pair {
     String value;
 };
 
-class Storage : public EEPROM_Rotate {
+class Storage {
 public:
     void load() {
-        // as ESPurna: 2 sectors (251, 250) with the 1 MB layout
-        _pool_size = (last() > 250) ? 2 : 1;
-        _offset = RotateOffset;
-        begin(KvEnd);
-        _valid = _checkCRC();
-        LOG("Settings in sector %d (pool of %d): %s", current(), _pool_size, _valid ? "valid" : "none");
+        // as ESPurna (arch/esp8266/storage_flash_esp8266.cpp): the base sector under the SDK's 4, 2 sectors (251, 250)
+        // with the 1 MB layout
+        _base = (ESP.getFlashChipSize() / SPI_FLASH_SEC_SIZE) - 5;
+        _pool = (_base > 250) ? 2 : 1;
+
+        const auto found = espurna::settings_rotate::find(_pool, _data,
+            [&](size_t index, uint8_t* out) {
+                return ESP.flashRead((_base - index) * SPI_FLASH_SEC_SIZE, reinterpret_cast<uint32_t*>(out),
+                    SPI_FLASH_SEC_SIZE);
+            });
+
+        _valid = found.valid;
+        _counter = found.counter;
+        _current = _base - found.index;
+        LOG("Settings in sector %d (pool of %d): %s", _current, _pool, _valid ? "valid" : "none");
+    }
+
+    int current() const {
+        return _current;
     }
 
     String get(const char* key) const {
@@ -220,7 +234,7 @@ public:
     bool write(const Pair* pairs, size_t count, const char* drop = nullptr, const char* drop2 = nullptr) {
         if (!_valid) {
             // no valid copy, ESPurna starts with empty settings as well
-            memset(_data + ReservedEnd, 0xff, _size - ReservedEnd);
+            memset(_data + ReservedEnd, 0xff, KvEnd - ReservedEnd);
         }
 
         auto dropped = [&](const Record& record) {
@@ -292,8 +306,6 @@ public:
         _data[out - 1] = 0xff;
 
         // the first sector of the pool, counter + 1: newer than the second one whatever is left of it
-        _dirty = true;
-        rotate(false);
         const bool ok = commit();
         _valid = _valid || ok;
 
@@ -311,6 +323,24 @@ private:
         return espurna::embedis_records::next(_data, KvBegin, pos, out, clean);
     }
 
+    bool commit() {
+        espurna::settings_rotate::seal(_data, static_cast<uint8_t>(_counter + 1));
+        if (!ESP.flashEraseSector(_base)
+            || !ESP.flashWrite(_base * SPI_FLASH_SEC_SIZE, reinterpret_cast<uint32_t*>(_data), SPI_FLASH_SEC_SIZE))
+        {
+            return false;
+        }
+
+        ++_counter;
+        _current = _base;
+        return true;
+    }
+
+    alignas(4) uint8_t _data[KvEnd];
+    uint32_t _base { 0 };
+    uint8_t _pool { 1 };
+    uint8_t _counter { 0 };
+    int _current { 0 };
     bool _valid { false };
 };
 

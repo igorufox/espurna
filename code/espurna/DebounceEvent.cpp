@@ -27,6 +27,11 @@
 
 */
 
+#include "espurna.h"
+
+// the button module's (config/head.h: its optional objects); never in the head
+#if BUTTON_SUPPORT
+
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -187,3 +192,4 @@ types::Event EventEmitter::loop() {
 
 } // namespace debounce_event
 
+#endif // BUTTON_SUPPORT

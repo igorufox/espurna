@@ -480,10 +480,6 @@ void setup() {
         alexaSetup();
         SETUP_HEAP_PROBE("alexa");
     #endif
-    #if NOFUSS_SUPPORT
-        nofussSetup();
-        SETUP_HEAP_PROBE("nofuss");
-    #endif
     #if SENSOR_SUPPORT
         sensorSetup();
         SETUP_HEAP_PROBE("sensor");

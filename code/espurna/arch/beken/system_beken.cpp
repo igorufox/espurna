@@ -193,7 +193,7 @@ uint32_t hardware_random() {
 // Tuya Matter firmware keeps the RF calibration block in another sector than the LibreTiny 'calibration' partition
 // (MOES MS-104B Matter with a CBU module, 2026-11-07: 0x1E3000, 0x1D0000 blank). Without it the SDK runs on its
 // defaults and the radio is too weak for even the softAP to be seen. The block goes where the SDK reads it, on the first
-// boot: our settings slots (storage_eeprom_beken.cpp, 0x1DB000..0x1EB000) cover that sector and erase it later on
+// boot: our settings pool (storage_flash_beken.cpp, 0x1DB000..0x1EB000) covers that sector and erase it later on
 constexpr uint32_t OtherCalibrationOffsets[] { 0x1E3000 };
 
 bool is_ours(const uint8_t* header) {
@@ -393,7 +393,7 @@ void report() {
 } // namespace mac
 } // namespace
 
-// the settings slots (storage_eeprom_beken.cpp) cover the other calibration sectors: until the block is known to be
+// the settings pool (storage_flash_beken.cpp) covers the other calibration sectors: until the block is known to be
 // where the SDK reads it, none of them is erased. Tells the storage which flash sector to keep, 0 - none
 uint32_t bekenCalibrationKeep() {
     if (mac::calibration == mac::Calibration::Unchecked) {

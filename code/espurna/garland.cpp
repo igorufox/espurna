@@ -55,11 +55,26 @@ Infinite commands can be interrupted by immediate command or by reset command.
 #include <queue>
 #include <vector>
 
+#include "espurna_chip.h"
 #include "garland.h"
 #include "mqtt.h"
 #include "ws.h"
 
 namespace {
+
+namespace {
+
+// [0, howbig) and [howsmall, howbig), as the ESP8266 core's secureRandom() the animations were written for: the one
+// random source of every chip (randomNumber() of system.h)
+long garlandRandom(long howbig) {
+    return (howbig > 0) ? static_cast<long>(randomNumber(0, static_cast<uint32_t>(howbig - 1))) : 0;
+}
+
+long garlandRandom(long howsmall, long howbig) {
+    return (howbig > howsmall) ? (howsmall + garlandRandom(howbig - howsmall)) : howsmall;
+}
+
+} // namespace
 
 #include "garland/color.h"
 #include "garland/palette.h"
@@ -378,9 +393,9 @@ bool executeCommand(const String& command) {
 // Loop
 //------------------------------------------------------------------------------
 void garlandLoop(void) {
-    if (!_immediate_command.isEmpty()) {
+    if (_immediate_command.length()) {
         executeCommand(_immediate_command);
-        _immediate_command.clear();
+        _immediate_command = String();
     }
 
     if (!garlandEnabled())
@@ -404,15 +419,15 @@ void garlandLoop(void) {
         if (!scene_setup_done) {
             Anim* newAnim = scene.getAnim();
             while (newAnim == scene.getAnim()) {
-                newAnim = anims[secureRandom(START_ANIMATION + 1, anims.size())];
+                newAnim = anims[garlandRandom(START_ANIMATION + 1, anims.size())];
             }
 
             Palette* newPalette = scene.getPalette();
             while (newPalette == scene.getPalette()) {
-                newPalette = &pals[secureRandom(pals.size())];
+                newPalette = &pals[garlandRandom(pals.size())];
             }
 
-            unsigned long newAnimDuration = secureRandom(EFFECT_UPDATE_INTERVAL_MIN, EFFECT_UPDATE_INTERVAL_MAX);
+            unsigned long newAnimDuration = garlandRandom(EFFECT_UPDATE_INTERVAL_MIN, EFFECT_UPDATE_INTERVAL_MAX);
 
             setupScene(newAnim, newPalette, newAnimDuration);
         }
@@ -447,7 +462,7 @@ void garlandMqttCallback(unsigned int type, espurna::StringView topic, espurna::
                 std::swap(_command_queue, empty_queue);
                 std::vector<String> empty_sequence;
                 std::swap(_command_sequence, empty_sequence);
-                _immediate_command.clear();
+                _immediate_command = String();
                 _currentDuration = 0;
                 setDefault();
                 garlandEnabled(true);
@@ -644,15 +659,15 @@ void Anim::shuffleSeq() {
 }
 
 void Anim::glowSetUp() {
-    braPhaseSpd = secureRandom(4, 13);
+    braPhaseSpd = garlandRandom(4, 13);
     if (braPhaseSpd > 8) {
         braPhaseSpd = braPhaseSpd - 17;
     }
-    braFreq = secureRandom(20, 60);
+    braFreq = garlandRandom(20, 60);
 }
 
 void Anim::glowForEachLed(uint16_t i) {
-    int8 bra = braPhase + i * braFreq;
+    int8_t bra = braPhase + i * braFreq;
     bra = BRA_OFFSET + (abs(bra) >> BRA_AMP_SHIFT);
     leds[i] = leds[i].brightness(bra);
 }
@@ -664,7 +679,7 @@ void Anim::glowRun() {
 void Anim::flashRandomLeds(uint16_t deciPercent) {
     int numLedsToFlash = numLeds * deciPercent / 1000;
     for (int i = 0; i < numLedsToFlash; ++i) {
-        int ind = secureRandom(numLeds);
+        int ind = garlandRandom(numLeds);
         leds[ind] = sparkleColor;
     }
 }
@@ -685,11 +700,11 @@ byte Anim::rngb() {
 }
 
 bool fiftyFifty() {
-    return secureRandom(2) == 0;
+    return garlandRandom(2) == 0;
 }
 
 int randDir() {
-    return secureRandom(2) == 0 ? -1 : 1;
+    return garlandRandom(2) == 0 ? -1 : 1;
 }
 
 } // namespace

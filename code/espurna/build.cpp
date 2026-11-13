@@ -129,9 +129,6 @@ alignas(4) static constexpr char Modules[] PROGMEM_STRING_ATTR =
 #if NETBIOS_SUPPORT
     "NETBIOS "
 #endif
-#if NOFUSS_SUPPORT
-    "NOFUSS "
-#endif
 #if NTP_SUPPORT
     "NTP "
 #endif

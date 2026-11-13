@@ -99,10 +99,6 @@
     #define RFM69_SUPPORT           0
     #endif
 
-    #ifndef NOFUSS_SUPPORT
-    #define NOFUSS_SUPPORT          0
-    #endif
-
     #ifndef LLMNR_SUPPORT
     #define LLMNR_SUPPORT           0
     #endif
@@ -277,10 +273,6 @@
     #define RFM69_SUPPORT           0
     #endif
 
-    #ifndef NOFUSS_SUPPORT
-    #define NOFUSS_SUPPORT          0
-    #endif
-
     #ifndef LLMNR_SUPPORT
     #define LLMNR_SUPPORT           0
     #endif
@@ -349,10 +341,6 @@
 
     #ifndef RFM69_SUPPORT
     #define RFM69_SUPPORT           0
-    #endif
-
-    #ifndef NOFUSS_SUPPORT
-    #define NOFUSS_SUPPORT          0
     #endif
 
     #ifndef LLMNR_SUPPORT
@@ -452,10 +440,6 @@
     #define RFM69_SUPPORT           0
     #endif
 
-    #ifndef NOFUSS_SUPPORT
-    #define NOFUSS_SUPPORT          0
-    #endif
-
     #ifndef LLMNR_SUPPORT
     #define LLMNR_SUPPORT           0
     #endif
@@ -539,8 +523,7 @@
     #define OTA_ARDUINOOTA_SUPPORT  0
     #define OTA_WEB_SUPPORT         1
 
-    // The update by an URL (ota_fetch.cpp, https, SHA-256) is in every image; no captive portal in the AP mode (the
-    // page is at 192.168.4.1)
+    // No captive portal in the AP mode (the page is at 192.168.4.1)
     #ifndef WIFI_AP_CAPTIVE_SUPPORT
     #define WIFI_AP_CAPTIVE_SUPPORT 0
     #endif
@@ -5880,10 +5863,6 @@
 
     #ifndef OTA_ARDUINOOTA_SUPPORT
     #define OTA_ARDUINOOTA_SUPPORT  0
-    #endif
-
-    #ifndef NOFUSS_SUPPORT
-    #define NOFUSS_SUPPORT          0
     #endif
 
     #ifndef LLMNR_SUPPORT

@@ -67,10 +67,17 @@ namespace tuya {
     Transport* tuyaSerial { nullptr };
     std::priority_queue<DataFrame> outputFrames;
 
-    template <typename T>
-    void send(unsigned char dp, T value) {
+    // the two kinds of the protocol (tuya_protocol.h): not a template of the value's type, an `unsigned int` is a
+    // uint32_t on the ESP8266 and the BK7231N, not on the ESP32 (unsigned long)
+    void send(unsigned char dp, bool value) {
         outputFrames.emplace(
-            Command::SetDP, DataProtocol<T>(dp, value).serialize()
+            Command::SetDP, DataProtocol<bool>(dp, value).serialize()
+        );
+    }
+
+    void send(unsigned char dp, uint32_t value) {
+        outputFrames.emplace(
+            Command::SetDP, DataProtocol<uint32_t>(dp, value).serialize()
         );
     }
 
@@ -151,7 +158,7 @@ namespace tuya {
 
             // input dimmer channel value when lights are OFF is 16
             // for the same reason as above, don't send OFF values
-            send(entry->dp_id, static_cast<unsigned int>(value));
+            send(entry->dp_id, static_cast<uint32_t>(value));
         }
 
     private:
@@ -551,7 +558,7 @@ error:
     void setupChannels() {
         bool done { false };
         for (size_t id = 0; id < espurna::light::ChannelsMax; ++id) {
-            auto dp = getSetting({"tuyaChannel", id}, build::channelDpId(id));
+            auto dp = getSetting(espurna::settings::Key{"tuyaChannel", id}, build::channelDpId(id));
             if (!dp) {
                 break;
             }
@@ -634,7 +641,7 @@ error:
         RelayProviderBasePtr out;
 
         // relayProv<N> tuya, DP id from `tuyaSwitch<N>` (TUYA_RELAY<N+1>_DPID by default)
-        const auto dpId = getSetting({"tuyaSwitch", index}, build::switchDpId(index));
+        const auto dpId = getSetting(espurna::settings::Key{"tuyaSwitch", index}, build::switchDpId(index));
         if (dpId && switchIds.add(index, dpId)) {
             out = std::make_unique<TuyaRelayProvider>(dpId);
             configDone.set();

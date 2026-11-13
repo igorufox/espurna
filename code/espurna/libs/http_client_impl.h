@@ -1,7 +1,7 @@
 /*
 
-HTTP CLIENT - the implementation (libs/http_client.h), included by exactly one .cpp of an image: ESPurna's
-net.cpp (the head, through libs/net_impl.h), code/migration-app's and code/safeboot-app's main.cpp. No Arduino here: lwIP, BearSSL and the C
+HTTP CLIENT - the implementation (libs/http_client.h), included by exactly one .cpp of an image, after
+libs/net_impl.h: ESPurna's http module (http.cpp), code/migration-app's and code/safeboot-app's main.cpp. No Arduino here: lwIP, BearSSL and the C
 library, the same on every chip. What that .cpp defines before the include is only how the image logs and locks,
 never what the client does (libs/net_impl.h lists them). The connection is libs/tcp.h
 
@@ -74,18 +74,6 @@ long hexNumber(const char* text) {
             return out;
         }
         out = (out * 16) + digit;
-    }
-}
-
-void copy(char* out, size_t size, const char* text) {
-    if (!size) {
-        return;
-    }
-
-    out[0] = '\0';
-    if (text) {
-        strncpy(out, text, size - 1);
-        out[size - 1] = '\0';
     }
 }
 

@@ -1,7 +1,7 @@
 /*
 
 IMAGE RECEIVER - the one code that takes a firmware image in, everything ESPurna builds: the head of every chip
-(/upgrade, the update by an URL: ota_web.cpp, ota_fetch.cpp), code/migration-app (/upgrade, the download of the full
+(/upgrade: ota_web.cpp), code/migration-app (/upgrade, the download of the full
 image) and code/safeboot-app (/upload, the download by an URL). No Arduino, header only.
 
 - the image comes a piece at a time: the body of an upload (libs/http_server.h) or the body of a download

@@ -12,9 +12,9 @@ class AnimFly : public Anim {
 
     void SetupImpl() override {
         //length of particle tail
-        pos = secureRandom(2, 15);
+        pos = garlandRandom(2, 15);
         //probability of the tail
-        inc = secureRandom(5, 15) * randDir();
+        inc = garlandRandom(5, 15) * randDir();
         phase = 0;
     }
 
@@ -32,7 +32,7 @@ class AnimFly : public Anim {
             }
         }
 
-        if (secureRandom(abs(inc)) == 0) {
+        if (garlandRandom(abs(inc)) == 0) {
             curColor = palette->getRndInterpColor();
             phase = pos;
         }

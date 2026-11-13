@@ -1,7 +1,7 @@
 /*
 
 The checks of an image download request (the URL and the SHA-256 of the file), one version for every image that
-takes one: ESPurna (ota_fetch.cpp, arch/esp32/safeboot_esp32.cpp), code/migration-app and code/safeboot-app.
+takes one: ESPurna (arch/esp32/safeboot_esp32.cpp), code/migration-app and code/safeboot-app.
 Plain C++, no framework: any string type with c_str() and length() (Arduino String, std::string).
 
 */

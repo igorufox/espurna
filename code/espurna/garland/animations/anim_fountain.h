@@ -46,15 +46,15 @@ class AnimFountain : public Anim {
    private:
     struct Fountain {
         bool done = false;
-        int len = secureRandom(5, 10);
-        int speed = secureRandom(1, 3);
+        int len = garlandRandom(5, 10);
+        int speed = garlandRandom(1, 3);
         int dir = 1;
         int head = 0;
         int start;
         // Color color;
         std::unique_ptr<Color[]> points;
-        Fountain(Palette* pal, uint16_t numLeds) : start(secureRandom(len, numLeds - len)) /*, color(pal->getRndInterpColor())*/ {
-            if (secureRandom(10) > 5) {
+        Fountain(Palette* pal, uint16_t numLeds) : start(garlandRandom(len, numLeds - len)) /*, color(pal->getRndInterpColor())*/ {
+            if (garlandRandom(10) > 5) {
                 start = numLeds - start - 1;
                 dir = -1;
             }

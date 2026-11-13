@@ -4,11 +4,10 @@ HTTP CLIENT
 
 The one http:// and https:// client of everything ESPurna runs: the head of every chip (ESP8266, ESP32, Beken), the
 ESP32 safeboot (code/safeboot-app, plain ESP-IDF) and code/migration-app. One build of it, no variants, no Arduino:
-- ESPurna: the head (net.cpp, libs/net_impl.h); the modules call the head's
+- ESPurna: the http module (http.cpp, module_http.cpp); the modules that use it need it (head.h) and link against it
 - code/migration-app, code/safeboot-app: their main.cpp includes the same implementation (libs/http_client_impl.h)
 
-Users: the update by an URL (ota_fetch.cpp: /ota/fetch, the `ota <url>` command, MQTT ota; the safeboot; the migration image),
-the NSPanel (weather, the URL requests of its screens, the TFT upload), ThingSpeak and InfluxDB (POST).
+Users: the migration image (its download of the full image), the NSPanel (weather, the URL requests of its screens, the TFT upload), ThingSpeak and InfluxDB (POST).
 
 - the connection is lwIP's raw TCP API, which every one of them has (libs/tcp.h, under it libs/tls.h). The lwIP
   callbacks only copy what arrived into a ring buffer, the TCP window stays closed until the loop took the bytes (no tcp_recved() before); a segment that does not fit is refused, lwIP gives it again. Nothing else runs
@@ -44,6 +43,7 @@ body when one is given. The sink gets the head first and decides (a download tak
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 
@@ -67,6 +67,19 @@ inline long number(const char* text) {
     }
 
     return out;
+}
+
+// `text` into `out` of `size` bytes, cut and always terminated (nullptr: empty). Shared with the HTTP server
+inline void copy(char* out, size_t size, const char* text) {
+    if (!size) {
+        return;
+    }
+
+    out[0] = '\0';
+    if (text) {
+        strncpy(out, text, size - 1);
+        out[size - 1] = '\0';
+    }
 }
 
 // lower case into `out` (2 * len + 1 bytes), as the SHA-256 of the release list
@@ -136,7 +149,7 @@ struct Request {
     const uint8_t* body { nullptr };    // copied by start()
     size_t body_len { 0 };
     uint32_t from { 0 };                // > 0: only the file from that byte on (Range): 206 (or 200 with all of it)
-    const char* headers { nullptr };    // more lines of the head, each "Name: value\r\n" (NoFUSS), up to 255 bytes
+    const char* headers { nullptr };    // more lines of the head, each "Name: value\r\n" , up to 255 bytes
 };
 
 // --- the client --------------------------------------------------------------------------------------------------

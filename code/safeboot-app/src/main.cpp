@@ -5,14 +5,12 @@ ESPurna safeboot (ESP32, ESP-IDF)
 Small recovery / update image for the factory partition of esp32_4mb_safeboot.csv (0x10000, 832 KB). ESPurna lives in
 the single big OTA slot (app0) and cannot overwrite itself, so updates go through this image:
 - Wi-Fi (ssid0/pass0, ssid1/pass1, static ip0/gw0/mask0/dns0), hostname and adminPass are read straight from the
-  ESPurna settings (NVS "eeprom"/"eeprom", Embedis key-value format written right to left); no settings of its own
+  ESPurna settings: the settings pool of ESPurna (espurna/libs/settings_rotate.h: the top 8 sectors of the "spiffs"
+  data partition, arch/esp32/storage_flash_esp32.cpp), or the NVS blob "eeprom"/"eeprom" ESPurna had before and takes
+  over on its next boot; Embedis key-value format written right to left; no settings of its own
 - web UI on port 80, user admin + the ESPurna admin password: pick a release (the list comes from firmware.json on
-  GitHub Pages, read by the browser), upload an image into app0, download one from an URL, boot ESPurna
-- update from an URL without the web UI: ESPurna stores it in NVS "safeboot"/"url" (and its SHA-256 in "sha256")
-  before switching here, the image is downloaded into app0 as soon as Wi-Fi is up and ESPurna boots. http:// and
-  https:// through the one client of ESPurna (espurna/libs/http_client.h, BearSSL with the full TLS of
-  libs/tls_full.h; the file is checked against its SHA-256); the result goes to NVS "safeboot"/"result" for
-  ESPurna to show
+  GitHub Pages, the browser downloads the file and uploads it here), upload an image into app0, boot ESPurna. The
+  board downloads nothing itself: every image comes from the browser, as in ESPurna's WebUI (no update by an URL)
 - no Wi-Fi in 30 s: own access point <hostname>-SAFEBOOT (WPA2, admin password) at 192.168.4.1
 - the next boot is set back to app0 right at start (when it holds a valid image): a crash or a power cut here always
   returns to ESPurna; nothing done for 15 minutes: back to ESPurna as well
@@ -42,14 +40,14 @@ the single big OTA slot (app0) and cannot overwrite itself, so updates go throug
 #include <string>
 #include <vector>
 
-// shared with ESPurna and code/migration-app: the settings records, the partition table, the checks of a request
+// shared with ESPurna and code/migration-app: the settings records, the partition table
 #include "../../espurna/libs/embedis_records.h"
+#include "../../espurna/libs/settings_rotate.h"
 #include "../../espurna/libs/esp32_partitions.h"
-#include "../../espurna/libs/fetch_check.h"
 #include "../../espurna/libs/text.h"
 
-// the one http:// and https:// client of ESPurna (libs/http_client.h): its one implementation, with the full TLS
-// (libs/tls_full.h) always. lwIP's callbacks run in the tcpip thread, the download in this task
+// the one network stack of ESPurna (libs/net_impl.h: TCP and its HTTP server; no client here). lwIP's callbacks run in
+// the tcpip thread, the server in this task
 namespace safeboot {
 
 struct Lock {
@@ -78,22 +76,22 @@ struct Lock {
 #define NET_LOG(...) do {} while (false)
 #define NET_LOCK ::safeboot::Lock
 #include "../../espurna/libs/net_impl.h"
-#include "../../espurna/libs/tls_full.h"
 #include "../../espurna/libs/image_receiver.h"
 
 namespace espurna {
 namespace tls {
 
-bool extend(br_ssl_client_context* sc) {
-    return full::extend(sc);
+// the hooks of the one TLS (libs/tls.h): nothing connects out of safeboot
+bool extend(br_ssl_client_context*) {
+    return false;
 }
 
-void* key(const uint8_t* der, size_t len, br_x509_pkey* out) {
-    return full::key(der, len, out);
+void* key(const uint8_t*, size_t, br_x509_pkey*) {
+    return nullptr;
 }
 
-const br_x509_class** caCheck(const char* pem, void** block) {
-    return full::caCheck(pem, block);
+const br_x509_class** caCheck(const char*, void**) {
+    return nullptr;
 }
 
 } // namespace tls
@@ -103,7 +101,6 @@ namespace {
 
 constexpr char DefaultPassword[] = "fibonacci";
 constexpr char DefaultManifest[] = "https://igorufox.github.io/espurna/firmware.json";
-constexpr int DownloadAttempts { 3 };
 constexpr int ConnectTimeoutMs { 30000 };
 constexpr int64_t IdleTimeoutUs { 15LL * 60 * 1000 * 1000 };
 
@@ -138,28 +135,64 @@ struct Embedis {
     }
 };
 
-void readSettings() {
+// the newest valid copy of ESPurna's pool: the top 8 sectors of the "spiffs" data partition
+bool readPool(uint8_t* data) {
+    constexpr size_t Sectors { 8 };
+    constexpr size_t Size { espurna::settings_rotate::SectorSize };
+
+    const auto* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+    if (!part || (part->size < (Sectors * Size))) {
+        return false;
+    }
+
+    const auto found = espurna::settings_rotate::find(Sectors, data,
+        [&](size_t index, uint8_t* out) {
+            return esp_partition_read(part, part->size - ((index + 1) * Size), out, Size) == ESP_OK;
+        });
+
+    return found.valid;
+}
+
+// the NVS blob ESPurna had before the pool (the end of its buffer)
+size_t readBlob(std::unique_ptr<uint8_t[]>& out) {
+    size_t size = 0;
     nvs_handle_t handle;
     if (nvs_open("eeprom", NVS_READONLY, &handle) == ESP_OK) {
-        size_t size = 0;
         if ((nvs_get_blob(handle, "eeprom", nullptr, &size) == ESP_OK) && size) {
-            std::unique_ptr<uint8_t[]> blob(new (std::nothrow) uint8_t[size]);
-            if (blob && (nvs_get_blob(handle, "eeprom", blob.get(), &size) == ESP_OK)) {
-                const Embedis kv{blob.get(), size};
-                settings.ssid[0] = kv.get("ssid0");
-                settings.pass[0] = kv.get("pass0");
-                settings.ssid[1] = kv.get("ssid1");
-                settings.pass[1] = kv.get("pass1");
-                settings.ip = kv.get("ip0");
-                settings.gw = kv.get("gw0");
-                settings.mask = kv.get("mask0");
-                settings.dns = kv.get("dns0");
-                settings.hostname = kv.get("hostname");
-                settings.password = kv.get("adminPass");
-                settings.manifest = kv.get("webFwUrl");
+            out.reset(new (std::nothrow) uint8_t[size]);
+            if (!out || (nvs_get_blob(handle, "eeprom", out.get(), &size) != ESP_OK)) {
+                out.reset();
+                size = 0;
             }
         }
         nvs_close(handle);
+    }
+
+    return out ? size : 0;
+}
+
+void readSettings() {
+    std::unique_ptr<uint8_t[]> data(new (std::nothrow) uint8_t[espurna::settings_rotate::SectorSize]);
+    size_t size = 0;
+    if (data && readPool(data.get())) {
+        size = espurna::settings_rotate::SectorSize;
+    } else {
+        size = readBlob(data);
+    }
+
+    if (size) {
+        const Embedis kv{data.get(), size};
+        settings.ssid[0] = kv.get("ssid0");
+        settings.pass[0] = kv.get("pass0");
+        settings.ssid[1] = kv.get("ssid1");
+        settings.pass[1] = kv.get("pass1");
+        settings.ip = kv.get("ip0");
+        settings.gw = kv.get("gw0");
+        settings.mask = kv.get("mask0");
+        settings.dns = kv.get("dns0");
+        settings.hostname = kv.get("hostname");
+        settings.password = kv.get("adminPass");
+        settings.manifest = kv.get("webFwUrl");
     }
 
     if (settings.hostname.empty()) {
@@ -193,31 +226,6 @@ std::string nvsString(nvs_handle_t handle, const char* key) {
     return out;
 }
 
-// what ESPurna asked for before switching here: the image URL and its SHA-256 (hex, optional)
-struct Request {
-    std::string url;
-    std::string sha256;
-};
-
-Request takeRequest() {
-    Request out;
-
-    nvs_handle_t handle;
-    if (nvs_open("safeboot", NVS_READWRITE, &handle) == ESP_OK) {
-        out.url = nvsString(handle, "url");
-        out.sha256 = nvsString(handle, "sha256");
-        if (!out.url.empty()) {
-            // taken once: a broken URL must not keep the board here over the next boots
-            nvs_erase_key(handle, "url");
-            nvs_erase_key(handle, "sha256");
-            nvs_commit(handle);
-        }
-        nvs_close(handle);
-    }
-
-    return out;
-}
-
 // the image ESPurna in app0 was built as (ESPURNA_IMAGE, written by ESPurna): the release list shows its files
 std::string runningImage() {
     std::string out;
@@ -229,15 +237,6 @@ std::string runningImage() {
     }
 
     return out;
-}
-
-void storeResult(const std::string& result) {
-    nvs_handle_t handle;
-    if (nvs_open("safeboot", NVS_READWRITE, &handle) == ESP_OK) {
-        nvs_set_str(handle, "result", result.c_str());
-        nvs_commit(handle);
-        nvs_close(handle);
-    }
 }
 
 // --- app0 -------------------------------------------------------------------------------------------------------
@@ -296,8 +295,7 @@ bool bootApp(std::string& error) {
 
 // One image write into app0, from the application image (0xE9 magic byte first) or from the merged image of a release
 // (the whole flash from 0x0: bootloader, partition table at 0x8000, safeboot, ESPurna): of that one only the part at
-// the offset of ota_0 in its own partition table goes into app0. end() verifies the image. A download is checked
-// against the SHA-256 of the release list by the client, over the whole file, before finish()
+// the offset of ota_0 in its own partition table goes into app0. end() verifies the image
 constexpr size_t MergedTableOffset { espurna::esp32_partitions::TableOffset };
 constexpr size_t MergedTableSize { espurna::esp32_partitions::TableSize };
 
@@ -451,8 +449,8 @@ struct Writer final : public espurna::image::Target {
         }
     }
 
-    // --- the target of the image receiver (espurna/libs/image_receiver.h): the size is known (Content-Length of an
-    // upload or a download) or 0, the first byte is checked by write() (an application, or a merged image)
+    // --- the target of the image receiver (espurna/libs/image_receiver.h): the size is known (Content-Length of the
+    // upload) or 0, the first byte is checked by write() (an application, or a merged image)
     const char* begin(const uint8_t* data, size_t len, size_t size) override {
         if (!len || ((data[0] != 0xE9) && (data[0] != 0xFF))) {
             return "not an ESP32 image (no 0xE9 magic byte, no merged image)";
@@ -478,55 +476,6 @@ struct Writer final : public espurna::image::Target {
 };
 
 std::string last_result;
-
-// http:// or https:// through the one client of ESPurna (the chain is not validated: a release file is checked
-// against the SHA-256 of the release list). sha256: hex, lower case, or empty. This task waits, the client steps
-bool download(const std::string& url, const std::string& sha256) {
-    // the same checks as ESPurna (espurna/libs/fetch_check.h)
-    if (!espurna::fetch_check::validUrl(url)) {
-        last_result = "invalid URL: http:// or https://, up to 240 characters";
-        return false;
-    }
-
-    if (!sha256.empty() && !espurna::fetch_check::validSha256(sha256)) {
-        last_result = "the SHA-256 is not 64 lower case hex digits";
-        return false;
-    }
-
-    Writer writer;
-    espurna::image::Receiver sink(writer);
-    espurna::http::Client client;
-
-    bool finished { false };
-    bool ok { false };
-    std::string message;
-    const bool started = client.start(url.c_str(), sha256.c_str(), sink, [&](const espurna::http::Result& result) {
-        finished = true;
-        ok = result.ok;
-        message = result.message;
-    });
-
-    if (!started && !finished) {
-        finished = true;
-        message = "out of memory";
-    }
-
-    while (!finished) {
-        client.loop();
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-
-    if (!ok) {
-        sink.abort();
-        last_result = message;
-        return false;
-    }
-
-    last_result = "downloaded " + std::to_string(writer.received) + " bytes"
-        + (writer.merged ? ", " + std::to_string(writer.written) + " of them ESPurna" : "")
-        + (sha256.empty() ? "" : ", SHA-256 checked");
-    return true;
-}
 
 // --- Wi-Fi ------------------------------------------------------------------------------------------------------
 
@@ -672,7 +621,8 @@ std::string jsString(const std::string& value) {
 // The image goes up as the raw request body (no multipart), the page script sends the picked file with fetch().
 // Releases: the browser reads firmware.json (GitHub Pages sends it with Access-Control-Allow-Origin: *) and lists the
 // update files ("ota": the merged image of a release, -ota.bin of the older ones) of the ESPurna image in app0 (all
-// ESP32 images when it is not known); the board downloads the picked one itself (/url) and checks its SHA-256
+// ESP32 images when it is not known); the browser downloads the picked one and uploads it (/upload), as the button
+// below does with a file (GitHub Pages sends the files with Access-Control-Allow-Origin: * as well)
 constexpr char PageScript[] =
     "const $=i=>document.getElementById(i);"
     // the answers are whole pages: their first paragraph is the result
@@ -682,9 +632,11 @@ constexpr char PageScript[] =
     "const l=$('log');if(!f){l.textContent='Pick a file';return}l.textContent='Uploading...';"
     "try{const r=await fetch('/upload',{method:'POST',body:f});l.textContent=await msg(r);"
     "if(r.ok)setTimeout(()=>location.href='/',30000)}catch(e){l.textContent=e}};"
-    "async function get(u,h){const l=$('rlog');l.textContent='Downloading '+u+' (about a minute)...';"
+    "async function get(u){const l=$('rlog');l.textContent='Downloading '+u+'...';"
     "for(const b of document.querySelectorAll('#rel button'))b.disabled=true;"
-    "try{const r=await fetch('/url',{method:'POST',body:new URLSearchParams({url:u,sha256:h||''})});"
+    "try{const d=await fetch(u,{cache:'no-store'});if(!d.ok)throw'HTTP '+d.status+' for '+u;"
+    "const body=await d.blob();l.textContent='Uploading '+Math.round(body.size/1024)+' KB...';"
+    "const r=await fetch('/upload',{method:'POST',body});"
     "l.textContent=await msg(r);if(r.ok)setTimeout(()=>location.href='/',30000)}"
     "catch(e){l.textContent=e}}"
     "fetch(M,{cache:'no-store'}).then(r=>r.json()).then(m=>{const d=$('rel');d.textContent='';"
@@ -692,7 +644,7 @@ constexpr char PageScript[] =
     "for(const n of Object.keys(im)){if(!n.startsWith('esp32')||(I&&n!==I))continue;"
     "for(const f of im[n]){if(f.kind!=='ota')continue;const b=document.createElement('button');"
     "b.textContent=r.tag+': '+f.name+' ('+Math.round(f.size/1024)+' KB)';"
-    "b.onclick=()=>{if(confirm('Install '+f.name+' of '+r.tag+'?'))get(new URL(f.url,M).href,f.sha256)};"
+    "b.onclick=()=>{if(confirm('Install '+f.name+' of '+r.tag+'?'))get(new URL(f.url,M).href)};"
     "d.append(b,document.createElement('br'))}}}"
     "if(!d.childNodes.length)d.textContent='No ESP32 image'+(I?' '+I:'')+' in '+M})"
     ".catch(e=>$('rel').textContent='Cannot read '+M+': '+e);";
@@ -711,9 +663,6 @@ void onRoot(WebRequest& request) {
           + "</legend><div id=\"rel\">Reading the release list...</div><div id=\"rlog\"></div></fieldset>"
             "<fieldset><legend>Upload an image</legend><input type=\"file\" id=\"file\" accept=\".bin\"><br>"
             "<button id=\"up\">Upload and boot</button><div id=\"log\"></div></fieldset>"
-            "<fieldset><legend>Download an image</legend><form method=\"post\" action=\"/url\">"
-            "<input type=\"text\" name=\"url\" placeholder=\"https://.../espurna-esp32-matter.bin\">"
-            "<br><button>Download and boot</button></form></fieldset>"
             "<form method=\"post\" action=\"/boot\"><button>Boot ESPurna</button></form>";
     body += "<script>const M=" + jsString(settings.manifest) + ",I=" + jsString(image) + ";";
     body += PageScript;
@@ -745,28 +694,6 @@ void onBoot(WebRequest& request) {
     }
 
     send(request, "<p>Booting ESPurna</p>");
-    restart = true;
-}
-
-std::string formValue(WebRequest& request, const char* key) {
-    const char* value = request.param(key);
-    return value ? std::string(value) : std::string();
-}
-
-// the download runs here, the loop waits for it (nothing else to serve meanwhile)
-void onUrl(WebRequest& request) {
-    if (!authenticated(request) || !sameOrigin(request)) {
-        return;
-    }
-
-    const bool ok = download(formValue(request, "url"), formValue(request, "sha256"));
-    storeResult(last_result);
-    if (!ok) {
-        send(request, "<p>" + last_result + "</p><p><a href=\"/\">Back</a></p>", 400);
-        return;
-    }
-
-    send(request, "<p>" + last_result + ", booting ESPurna</p>");
     restart = true;
 }
 
@@ -827,7 +754,6 @@ void onUpload(WebRequest& request) {
 
     const char* error = upload ? upload->receiver.finish() : "no image";
     last_result = !error ? ("uploaded " + std::to_string(upload->writer.written) + " bytes") : std::string(error);
-    storeResult(last_result);
     const std::string text = !error ? (last_result + ", booting ESPurna") : last_result;
     request.send(!error ? 200 : 400, "text/plain", reinterpret_cast<const uint8_t*>(text.data()), text.size());
     restart = !error;
@@ -836,7 +762,6 @@ void onUpload(WebRequest& request) {
 void web() {
     server.on("/", espurna::http::server::Method::Get, onRoot);
     server.on("/boot", espurna::http::server::Method::Post, onBoot);
-    server.on("/url", espurna::http::server::Method::Post, onUrl);
     server.on("/upload", espurna::http::server::Method::Post, onUpload, onUploadBody);
     server.begin(80);
 }
@@ -846,7 +771,7 @@ void web() {
 extern "C" void app_main() {
     // Next boot goes back to ESPurna whenever app0 holds a valid image: a crash, a power cut, a reset or a broken NVS
     // here must never leave the board in safeboot for good. Before anything else: the boot partition lives in otadata,
-    // not in NVS. A finished upload / download sets app0 again anyway
+    // not in NVS. A finished upload sets app0 again anyway
     {
         std::string error;
         bootApp(error);
@@ -859,9 +784,6 @@ extern "C" void app_main() {
     if (nvs_ok) {
         readSettings();
     }
-
-    // taken once, before the network: a request that finds no network must not fire at a later visit here
-    const auto request = nvs_ok ? takeRequest() : Request{};
 
     events = xEventGroupCreate();
     esp_netif_init();
@@ -876,29 +798,7 @@ extern "C" void app_main() {
     esp_wifi_init(&init);
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
 
-    if (nvs_ok && connect()) {
-        // picked in the ESPurna WebUI: a few attempts (Wi-Fi, the server), then the result for ESPurna. A failure
-        // before the first written byte leaves ESPurna in app0, it starts again; otherwise the web UI here waits
-        if (!request.url.empty()) {
-            bool ok = false;
-            for (int attempt = 1; !ok && (attempt <= DownloadAttempts); ++attempt) {
-                ok = download(request.url, request.sha256);
-                if (!ok && (attempt < DownloadAttempts)) {
-                    vTaskDelay(pdMS_TO_TICKS(3000));
-                }
-            }
-
-            storeResult(ok ? last_result : ("failed: " + last_result));
-            std::string error;
-            if (ok || bootApp(error)) {
-                vTaskDelay(pdMS_TO_TICKS(100));
-                esp_restart();
-            }
-        }
-    } else {
-        if (!request.url.empty()) {
-            storeResult("failed: no network");
-        }
+    if (!nvs_ok || !connect()) {
         accessPoint();
     }
 

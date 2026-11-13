@@ -12,6 +12,10 @@ PROTOTYPE: the rf module (docs/modules.md), env:esp8266-1m-modules of platformio
 #include "rfbridge.h"
 
 ESPURNA_MODULE(rf, "rf", 50) {
+    // the codes for the RPN rules (they start after this one)
+    modulesProvide(espurna::modules::Api::RfbSend, &rfbSend);
+    modulesProvide(espurna::modules::Api::RfbOnCode, &rfbOnCode);
+
     rfbSetup();
 }
 

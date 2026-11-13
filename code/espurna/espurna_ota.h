@@ -27,13 +27,6 @@ bool otaVerifyHeader(uint8_t* data, size_t len);
 void otaProgress(size_t bytes, size_t each);
 void otaProgress(size_t bytes);
 
-// Update from an URL, every chip (ota_fetch.cpp): the WebUI (/ota/fetch), `ota <url>`, MQTT ota. The next boot
-// (ESP8266, Beken) or safeboot (ESP32) downloads it
-void otaFetchSetup();
-bool otaFetchRequest(const String& url, const String& sha256, String& error);
-String otaFetchStatus();
-String otaFetchResult();
-
 #if OTA_WEB_SUPPORT
 // An upload to /upgrade is being received, or went in and the board is about to restart into it
 bool otaWebUploading();

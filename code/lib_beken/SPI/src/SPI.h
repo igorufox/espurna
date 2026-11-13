@@ -28,6 +28,10 @@ board, the modules on SPI (rfm69, mcp23s08) and their libraries are linked again
 #define MSBFIRST 1
 #endif
 
+// the default chip select of libraries (RFM69: RF69_SPI_CS); the BK7231N has no SPI pins of its own, ESPurna passes
+// the pin from its settings
+static constexpr uint8_t SS { 0xff };
+
 // dividers of a 16 MHz clock, as the AVR core has them (RFM69 sets them)
 #define SPI_CLOCK_DIV2 2
 #define SPI_CLOCK_DIV4 4

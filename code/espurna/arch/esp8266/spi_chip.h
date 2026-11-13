@@ -16,6 +16,9 @@ namespace espurna {
 namespace driver {
 namespace spi {
 
+// the clock divider of the RFM69 radio (rfm69.cpp, the select() of the RFM69 library): DIV2, faster than the library's own for the ESP8266
+constexpr uint32_t Rfm69Divider { SPI_CLOCK_DIV2 };
+
 constexpr uint8_t DefaultSck { 14 };
 constexpr uint8_t DefaultMiso { 12 };
 constexpr uint8_t DefaultMosi { 13 };

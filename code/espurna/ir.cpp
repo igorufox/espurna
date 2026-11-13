@@ -548,7 +548,8 @@ String encode(uint64_t input) {
 namespace payload {
 
 decode_type_t type(StringView view) {
-    static_assert(std::is_same<int, std::underlying_type<decode_type_t>::type>::value, "");
+    // the codes as int on every chip (the enum is int on the ESPs, may be shorter on ARM)
+    static_assert(std::is_integral<std::underlying_type<decode_type_t>::type>::value, "");
     constexpr int First { -1 };
     constexpr int Last { static_cast<int>(decode_type_t::kLastDecodeType) };
 
@@ -1630,11 +1631,11 @@ namespace relay {
 namespace settings {
 
 String relayOn(size_t id) {
-    return getSetting({"irRelayOn", id});
+    return getSetting(espurna::settings::Key{"irRelayOn", id});
 }
 
 String relayOff(size_t id) {
-    return getSetting({"irRelayOff", id});
+    return getSetting(espurna::settings::Key{"irRelayOff", id});
 }
 
 } // namespace settings

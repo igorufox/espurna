@@ -75,7 +75,7 @@ String response() {
     // <URLBase>http://%s:%u/</URLBase>
     String base;
     base += F("http://");
-    base += WiFi.localIP().toString();
+    base += ipToString(WiFi.localIP());
     base += ':';
     base += String(webPort(), 10);
     base += '/';
@@ -174,7 +174,7 @@ void answer(const String& st, const IPAddress& to, uint16_t port) {
         out += st;
     }
     out += F("\r\nLOCATION: http://");
-    out += WiFi.localIP().toString();
+    out += ipToString(WiFi.localIP());
     out += ':';
     out += String(webPort(), 10);
     out += F("/description.xml\r\n\r\n");

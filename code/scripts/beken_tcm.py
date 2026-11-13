@@ -34,7 +34,7 @@ def src_pattern(env, name="*.o"):
 
 
 def patterns(env):
-    # `custom_tcm_main_ram = <object> ...` (e.g. arch/beken/storage_eeprom_beken.cpp.o): sources of the project whose
+    # `custom_tcm_main_ram = <object> ...` (e.g. arch/beken/system_beken.cpp.o): sources of the project whose
     # .bss stays in the main RAM, room in the TCM for something bigger (the module arena of platformio_beken.ini)
     objects = env.GetProjectOption("custom_tcm_main_ram", "").split()
     if not objects:

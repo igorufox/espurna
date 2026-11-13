@@ -62,7 +62,9 @@ import re
 import shutil
 import struct
 import subprocess
+import threading
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 
 # loaded with this file: the folder of the scripts is on sys.path only while the env's scripts run
 import module_ota  # noqa: E402  pylint: disable=wrong-import-position
@@ -88,6 +90,8 @@ RENAMED = "espmod_"
 
 # the modules file: name, offset, package bytes, image bytes, RAM, IRAM code, the modules it needs, flags (EMC2)
 CONTAINER_MAGIC = 0x32434D45  # "EMC2"
+# packages in one modules file: modules.cpp ModulesFileMax, the head refuses a file with more
+CONTAINER_MAX = 128
 CONTAINER_ENTRY = struct.Struct("<16sIIIII32sI")
 # flags of a container entry: its RAM takes byte access from interrupts (custom_module_byte_ram), not into a pool that
 # takes 32-bit access only (ESP8266: the IRAM tail); the upper 16 bits: its links to the modules it needs (the slot
@@ -317,6 +321,10 @@ class Linker:
         self.projenv = projenv if projenv is not None else env
         self._executors = []
         self._members_cache = None
+        # the modules of one wave link in parallel (link_all): the caches and the shared files behind locks
+        self._members_lock = threading.Lock()
+        self._libs_lock = threading.Lock()
+        self._libs = {}
         assert len({b - a for _, a, b, _ in self.bases}) == len(self.bases), "every base needs its own delta"
 
     # --- chip hooks ------------------------------------------------------------------------------------------------
@@ -475,13 +483,18 @@ class Linker:
         return out
 
     def framework_archives(self):
-        """the prebuilt libraries the head links (LIBS of the env, found on LIBPATH)"""
+        """the prebuilt libraries the head links (LIBS of the env, found on LIBPATH), but those of
+        custom_module_lib_exclude (ESP32: espressif__esp_matter, the connectedhomeip of esp_matter, another build of
+        the stack than the one of the matter module's libMatterApp.a)"""
         paths = [self.env.subst(str(p)) for p in self.env.get("LIBPATH", [])]
+        exclude = set(self.env.GetProjectOption("custom_module_lib_exclude", "").split())
         out = {}
         for lib in self.env.get("LIBS", []):
             name = self.env.subst(str(lib))
             if name.startswith("-l"):
                 name = name[2:]
+            if name in exclude:
+                continue
             if os.path.isabs(name) and name.endswith(".a"):
                 out[os.path.basename(name)] = name
                 continue
@@ -495,6 +508,10 @@ class Linker:
     def archive_members(self, archive):
         """{member: [(type, name)]} of the defined symbols, locals too; cached by size + mtime (ESP32: ~150 framework
         libraries)"""
+        with self._members_lock:
+            return self._archive_members(archive)
+
+    def _archive_members(self, archive):
         cache_path = os.path.join(self.env.subst("$BUILD_DIR"), "mod-libs", "members.json")
         if self._members_cache is None:
             self._members_cache = {}
@@ -756,9 +773,10 @@ class Linker:
             counts[kind] += 1
         return kinds, counts
 
-    def provider_symbols(self, ctx, provider, tag):
+    def provider_symbols(self, ctx, name, provider, tag):
         """the link argument with the global symbols of a provider module linked at its bases A or B, without the
-        head's and its own private ones"""
+        head's and its own private ones; written into the folder of the module `name` (the modules that need the same
+        provider link in parallel)"""
         build_dir = ctx["build_dir"]
         elf = os.path.join(build_dir, f"module-{provider}.elf" if tag == "a" else f"module-{provider}-b.elf")
         head = ctx["head_syms"]
@@ -771,7 +789,7 @@ class Linker:
             if symbol in head or symbol.startswith(PROVIDER_PRIVATE):
                 continue
             names.append(symbol)
-        return self.symbols_arg(build_dir, elf, names, os.path.join(build_dir, f"mod-{provider}", f"provided-{tag}"))
+        return self.symbols_arg(build_dir, elf, names, os.path.join(build_dir, f"mod-{name}", f"provided-{provider}-{tag}"))
 
     def provider_links(self, ctx, name, objects, archives, providers, extra_a, image_a):
         """{offset: kind} of the words (and Beken's branches) that hold an address of a provider: linked once more
@@ -781,7 +799,7 @@ class Linker:
         out = {}
         for position, (index, provider) in enumerate(providers):
             extra = list(extra_a)
-            extra[position] = self.provider_symbols(ctx, provider, "b")
+            extra[position] = self.provider_symbols(ctx, name, provider, "b")
             elf_p, map_p, image_p = self.link(build_dir, name, ctx["head_elf"], objects, archives, f"p{index}",
                                               [(base[0], base[1]) for base in self.bases], extra)
             if len(image_p) != len(image_a):
@@ -815,7 +833,7 @@ class Linker:
         need it want of it"""
         build_dir = ctx["build_dir"]
         head_id = ctx["head_id"]
-        extra_a = [self.provider_symbols(ctx, provider, "a") for _, provider in providers]
+        extra_a = [self.provider_symbols(ctx, name, provider, "a") for _, provider in providers]
         links = [self.link(build_dir, name, ctx["head_elf"], objects, archives, tag,
                            [(base[0], base[1 + index]) for base in self.bases], extra_a, keep)
                  for index, tag in enumerate("ab")]
@@ -996,6 +1014,10 @@ class Linker:
             with open(path, "rb") as f:
                 packages.append(f.read())
 
+        if len(packages) > CONTAINER_MAX:
+            raise RuntimeError(f"{len(packages)} packages, the head takes at most {CONTAINER_MAX} in one modules file "
+                               f"(modules.cpp ModulesFileMax)")
+
         byte_ram = set(self.option("byte_ram").split())
         offset = 8 + (CONTAINER_ENTRY.size * len(packages))
         table = b""
@@ -1044,10 +1066,11 @@ class Linker:
         rest = {key: value for key, value in parsed.items() if value}
         if rest:
             menv.Append(**rest)
-        # what a pre: script of the chip gives the modules alone (scripts/beken_matter_lib.py: the include folders and
-        # defines of the Matter library's API for matter_identity.cpp), not the head
-        menv.Append(CPPPATH=list(self.env.get("ESPURNA_MODULE_CPPPATH", [])),
-                    CPPDEFINES=list(self.env.get("ESPURNA_MODULE_CPPDEFINES", [])))
+        # what a pre: script of the chip gives the modules alone (scripts/matter_lib.py: the include folders and
+        # defines of the Matter library's API for matter.cpp, matter_app.cpp, matter_identity.cpp), not the head. First
+        # on the include path: the ESP32 framework has the headers of esp_matter's own connectedhomeip build too
+        menv.Prepend(CPPPATH=list(self.env.get("ESPURNA_MODULE_CPPPATH", [])))
+        menv.Append(CPPDEFINES=list(self.env.get("ESPURNA_MODULE_CPPDEFINES", [])))
         return menv
 
     def library_dir(self, name):
@@ -1119,10 +1142,19 @@ class Linker:
             if len(parts) == 2:
                 filters[parts[0]] = parts[1]
 
+        # The libraries themselves without ESPurna's src/ on the include path, as PlatformIO builds a library:
+        # IRremoteESP8266 includes the core's <gpio.h>, src/gpio.h of ESPurna would be found first. A library without
+        # src/ (Adafruit NeoPixel) leaves out its examples and tests, as PlatformIO does
+        lenv = menv.Clone()
+        project_src = os.path.normcase(os.path.abspath(self.env.subst("$PROJECT_SRC_DIR")))
+        lenv.Replace(CPPPATH=[path for path in menv.get("CPPPATH", [])
+                              if os.path.normcase(os.path.abspath(lenv.subst(str(path)))) != project_src])
+        default_filter = "+<*> -<.git/> -<.svn/> -<examples/> -<example/> -<test/> -<tests/> -<extras/>"
+
         out = []
         for name, src in libraries:
-            out += menv.Flatten([menv.BuildLibrary(os.path.join("$BUILD_DIR", MODULE_LIBS, name), src,
-                                                   filters.get(name))])
+            out += lenv.Flatten([lenv.BuildLibrary(os.path.join("$BUILD_DIR", MODULE_LIBS, name), src,
+                                                   filters.get(name, default_filter))])
             self.precompiled(name, src)
 
         src_filter = "-<*> " + " ".join(f"+<{source}>" for source in self.module_sources())
@@ -1182,56 +1214,92 @@ class Linker:
         ctx["provider_inputs"] = {}
         ordered = self.ordered_modules()
         in_build = {module["name"] for module in ordered}
+        # the head's symbols file of the chip (ESP32: one head-symbols.ld) before the threads
+        self.head_symbols(build_dir, ctx["head_elf"])
+        self._libs = {}
+
+        # waves: a module links once every module of this build it needs did; the modules of a wave link in
+        # parallel, as many as the jobs of the build (-j)
+        depth = {}
         for module in ordered:
-            name = module["name"]
-            waiting = [need for need in module["requires"] if need in in_build and need not in linked]
-            if waiting:
-                # a module it needs did not link in this pass: after that one is fixed (the next pass)
-                print(f"  {name}: waits for {' '.join(waiting)}")
-                continue
-            providers = [(index, need) for index, need in enumerate(module["requires"]) if need in linked]
-            if len(module["requires"]) > LINK_PROVIDERS:
-                raise RuntimeError(f"module {name}: more than {LINK_PROVIDERS} modules it needs")
-            objects = [os.path.join(src, o) for o in module["objects"]]
-            optional = []
-            for object_name in module["optional"]:
-                if self.head_object(head_dir, head_map, head_env, object_name):
+            needs = [depth[need] for need in module["requires"] if need in in_build]
+            depth[module["name"]] = 1 + max(needs) if needs else 0
+        jobs = max(1, int(self.env.GetOption("num_jobs") or 1))
+        for wave in range(max(depth.values(), default=-1) + 1):
+            todo = []
+            for module in ordered:
+                if depth[module["name"]] != wave:
                     continue
-                if os.path.exists(os.path.join(src, object_name)):
-                    optional.append(os.path.join(src, object_name))
-
-            work = os.path.join(build_dir, f"mod-{name}")
-            renamed, api = self.rename_api(work, objects + optional, set(module["provides"]))
-            objects = renamed[: len(objects)]
-            archives = []
-            if optional:
-                archive = os.path.join(build_dir, f"module-{name}-optional.a")
-                if os.path.exists(archive):
-                    os.remove(archive)
-                self.run([self.tool("ar"), "rcs", archive] + renamed[len(objects):])
-                archives.append(archive)
-            if providers:
-                # the library members with state the providers have stay theirs (Wire of the i2c module)
-                names = set(head_names)
-                for _, provider in providers:
-                    names.update(self.symbols(os.path.join(build_dir, f"module-{provider}.elf")))
-                tag = "-".join(sorted(provider for _, provider in providers))
-                archives += self.lib_archives(build_dir, names, f"mod-libs-{tag}")[0]
-            else:
-                archives += libraries
-            if api:
-                print(f"  {name} provides {len(api)} functions through the head")
-
-            ctx["provider_inputs"][name] = objects + archives
-            try:
-                first, second = self.package(ctx, name, objects, archives, providers, provided.get(name, []))
-                totals[0] += first
-                totals[1] += second
-                linked.add(name)
-            except MissingSymbols as e:
-                e.providers = [provider for _, provider in providers]
-                missing[name] = e
+                waiting = [need for need in module["requires"] if need in in_build and need not in linked]
+                if waiting:
+                    # a module it needs did not link in this pass: after that one is fixed (the next pass)
+                    print(f"  {module['name']}: waits for {' '.join(waiting)}")
+                    continue
+                todo.append(module)
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                results = list(pool.map(lambda module: self.link_one(ctx, module, head_dir, head_map, head_env, src,
+                                                                        head_names, libraries, provided, linked),
+                                        todo))
+            for module, (sizes, error) in zip(todo, results):
+                if error is not None:
+                    missing[module["name"]] = error
+                    continue
+                totals[0] += sizes[0]
+                totals[1] += sizes[1]
+                linked.add(module["name"])
         return missing, totals, head_only
+
+    def provider_libs(self, build_dir, names, tag):
+        """lib_archives() for the modules linked against the providers `tag`: once per pass, the modules with the same
+        providers share it"""
+        with self._libs_lock:
+            if tag not in self._libs:
+                self._libs[tag] = self.lib_archives(build_dir, names, f"mod-libs-{tag}")[0]
+            return self._libs[tag]
+
+    def link_one(self, ctx, module, head_dir, head_map, head_env, src, head_names, libraries, provided, linked):
+        """one module of link_all(); returns ((RAM, IRAM), None) or (None, MissingSymbols)"""
+        build_dir = ctx["build_dir"]
+        name = module["name"]
+        providers = [(index, need) for index, need in enumerate(module["requires"]) if need in linked]
+        if len(module["requires"]) > LINK_PROVIDERS:
+            raise RuntimeError(f"module {name}: more than {LINK_PROVIDERS} modules it needs")
+        objects = [os.path.join(src, o) for o in module["objects"]]
+        optional = []
+        for object_name in module["optional"]:
+            if self.head_object(head_dir, head_map, head_env, object_name):
+                continue
+            if os.path.exists(os.path.join(src, object_name)):
+                optional.append(os.path.join(src, object_name))
+
+        work = os.path.join(build_dir, f"mod-{name}")
+        renamed, api = self.rename_api(work, objects + optional, set(module["provides"]))
+        objects = renamed[: len(objects)]
+        archives = []
+        if optional:
+            archive = os.path.join(build_dir, f"module-{name}-optional.a")
+            if os.path.exists(archive):
+                os.remove(archive)
+            self.run([self.tool("ar"), "rcs", archive] + renamed[len(objects):])
+            archives.append(archive)
+        if providers:
+            # the library members with state the providers have stay theirs (Wire of the i2c module)
+            names = set(head_names)
+            for _, provider in providers:
+                names.update(self.symbols(os.path.join(build_dir, f"module-{provider}.elf")))
+            tag = "-".join(sorted(provider for _, provider in providers))
+            archives += self.provider_libs(build_dir, names, tag)
+        else:
+            archives += libraries
+        if api:
+            print(f"  {name} provides {len(api)} functions through the head")
+
+        ctx["provider_inputs"][name] = objects + archives
+        try:
+            return self.package(ctx, name, objects, archives, providers, provided.get(name, [])), None
+        except MissingSymbols as e:
+            e.providers = [provider for _, provider in providers]
+            return None, e
 
     def provider_defined(self, ctx, provider):
         """the global symbols the inputs of a provider's link define (before --gc-sections): its objects and the

@@ -28,7 +28,8 @@
 #define SSDP_SUPPORT                0           // SSDP support requires web support
 #endif
 
-#if UART_MQTT_SUPPORT
+// a build for one board; generic images (the modules) claim the port of the log / terminal at runtime instead
+#if UART_MQTT_SUPPORT && !UART_DRIVERS_CLAIM_PORT
 #undef MQTT_SUPPORT
 #define MQTT_SUPPORT                1           // UART<->MQTT requires MQTT and no serial debug & terminal
 #undef UART_SUPPORT

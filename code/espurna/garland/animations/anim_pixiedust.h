@@ -16,7 +16,7 @@ class AnimPixieDust : public Anim {
         phase = 0;
         curColor = palette->getRndInterpColor();
         prevColor = palette->getRndInterpColor();
-        inc = secureRandom(2) * 2 - 1;
+        inc = garlandRandom(2) * 2 - 1;
         if (inc > 0) {
             phase = -DUST_LENGTH / 2;
         } else {

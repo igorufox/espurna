@@ -9,7 +9,9 @@
 MEMORY
 {
   mflash (rx) : org = @FLASH@, len = 0x80000
-  mram (rw)   : org = @RAM@, len = 0x4000
+  /* a bound of the link only (nspanel has more than 16 KB): whether the RAM of a module fits is the board's Apply,
+     from its heap */
+  mram (rw)   : org = @RAM@, len = 0x10000
   miram (rx)  : org = @IRAM@, len = 0x2000
 }
 

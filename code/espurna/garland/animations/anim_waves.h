@@ -29,10 +29,10 @@ class AnimWaves : public Anim {
                 wave1 = generateCometWave();
                 break;
             case CrossWaves:
-                WaveType wave1Type = secureRandom(100) > 70 ? WaveType::Comet : WaveType::Wave;
+                WaveType wave1Type = garlandRandom(100) > 70 ? WaveType::Comet : WaveType::Wave;
                 wave1 = generateCrossingWave(1, wave1Type, ledstmp);
 
-                WaveType wave2Type = secureRandom(100) > 60 ? WaveType::Comet : WaveType::Wave;
+                WaveType wave2Type = garlandRandom(100) > 60 ? WaveType::Comet : WaveType::Wave;
 
                 // if first wave is comet - inverse second wave probability to be comer to 60%
                 if (wave1Type == WaveType::Comet) {
@@ -70,36 +70,36 @@ class AnimWaves : public Anim {
 
     private:
     ColorWave generateLongWave() {
-        uint16_t waveLen = secureRandom(50, 100);
-        bool cleanColors = secureRandom(10) > 7;
-        float speed = secureRandom(5, 15) / 10.0;
+        uint16_t waveLen = garlandRandom(50, 100);
+        bool cleanColors = garlandRandom(10) > 7;
+        float speed = garlandRandom(5, 15) / 10.0;
         int dir = randDir();
         return ColorWave(ColorWave::Params{numLeds, palette, waveLen, cleanColors, 0, ledstmp, WaveType::Wave, speed, dir, false});
     }
 
     ColorWave generateShortWave() {
-        uint16_t waveLen = secureRandom(10, 30);
-        bool cleanColors = secureRandom(10) > 7;
-        byte fade = palette->bright() ? secureRandom(180, 220) : 0;
-        float speed = secureRandom(5, 15) / 10.0;
+        uint16_t waveLen = garlandRandom(10, 30);
+        bool cleanColors = garlandRandom(10) > 7;
+        byte fade = palette->bright() ? garlandRandom(180, 220) : 0;
+        float speed = garlandRandom(5, 15) / 10.0;
         int dir = randDir();
         return ColorWave(ColorWave::Params{numLeds, palette, waveLen, cleanColors, fade, ledstmp, WaveType::Wave, speed, dir, false});
     }
 
     ColorWave generateCometWave() {
-        uint16_t waveLen = secureRandom(10, 40);
-        bool cleanColors = secureRandom(10) > 5;
-        float speed = secureRandom(5, 15) / 10.0;
+        uint16_t waveLen = garlandRandom(10, 40);
+        bool cleanColors = garlandRandom(10) > 5;
+        float speed = garlandRandom(5, 15) / 10.0;
         int dir = randDir();
         return ColorWave(ColorWave::Params{numLeds, palette, waveLen, cleanColors, 0, ledstmp, WaveType::Comet, speed, dir, false});
     }
 
     ColorWave generateCrossingWave(int dir,  WaveType waveType, Color* pixelCache) {
-        Palette* wavePal = &pals[secureRandom(palsNum)];
-        uint16_t waveLen = secureRandom(10, 50);
+        Palette* wavePal = &pals[garlandRandom(palsNum)];
+        uint16_t waveLen = garlandRandom(10, 50);
         bool cleanColors = fiftyFifty();
-        byte fade = fiftyFifty() ? 0 : palette->bright() ? secureRandom(180, 220) : 120;
-        float speed = secureRandom(5, 20) / 10.0;
+        byte fade = fiftyFifty() ? 0 : palette->bright() ? garlandRandom(180, 220) : 120;
+        float speed = garlandRandom(5, 20) / 10.0;
         bool startEmpty = fiftyFifty();
         return ColorWave(ColorWave::Params{numLeds, wavePal, waveLen, cleanColors, fade, pixelCache, waveType, speed, dir, startEmpty});
     }
