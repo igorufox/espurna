@@ -13,7 +13,16 @@ through the head: they work without the API too.
 #include "modules.h"
 #include "api.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_api.ipp"
+#endif
+
 ESPURNA_MODULE(api, "api", 4) {
+#if WEB_SUPPORT
+    modulesUi("api", ui_api_data, sizeof(ui_api_data));
+#endif
+
     using espurna::modules::Api;
 
     modulesProvide(Api::ApiRegisterBasic, static_cast<void(*)(String, espurna::api::BasicHandler&&,

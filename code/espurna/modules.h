@@ -3,12 +3,12 @@
 PROTOTYPE: installable modules of the ESP8266 1 MB head image (docs/modules.md)
 
 The head (MODULES_SUPPORT) keeps a directory of modules in the last sector of the sketch area, places an uploaded
-module package at a free flash slot (adding the slot / arena bases to the relocated words as they arrive) and at boot
+module package at a free flash slot (adding the slot / pool bases to the relocated words as they arrive) and at boot
 starts every module made for its own image (MD5 of the running sketch).
 
 A module (MODULE_<NAME>, scripts/esp8266_module_link.py) is linked against the head's firmware.elf: it calls the head
 directly; its code, PSTR strings and vtables run from its flash slot, its .data / .rodata / .bss live in the head's
-RAM arena, its IRAM functions in the head's IRAM arena.
+RAM pool, its IRAM functions in the head's IRAM pool.
 
 */
 
@@ -115,9 +115,7 @@ enum class Api : size_t {
     UartOnClaim,
     UartOpen,
     UartBaud,
-    TlsExtend,
-    TlsKey,
-    TlsCaCheck,
+    TlsStart,
     RelayCount,
     RelayStatusGet,
     RelayStatusSet,
@@ -158,8 +156,8 @@ struct PackageHeader {
     char name[16];
     uint8_t head_md5[16];
     uint32_t image_size;    // module image bytes (multiple of 4)
-    uint32_t ram_size;      // .data + .rodata + .bss, RAM arena bytes
-    uint32_t iram_size;     // IRAM arena bytes
+    uint32_t ram_size;      // .data + .rodata + .bss, RAM pool bytes
+    uint32_t iram_size;     // IRAM pool bytes
     uint32_t link_flash;    // placeholder bases the module was linked at
     uint32_t link_ram;
     uint32_t link_iram;
@@ -242,6 +240,12 @@ uint32_t modulesDataSize(const char* name);
 bool modulesDataRead(const char* name, uint32_t at, void* data, size_t len);
 bool modulesDataWrite(const char* name, uint32_t at, const void* data, size_t len);
 bool modulesDataErase(const char* name, uint32_t at, size_t len);
+
+// the part of the WebUI a module brings (U31): its panels, status lines, templates, styles and script, one gzip'ed
+// fragment in the module's flash (html/build/ui-<name>.html.gz, espurna/static/ui_<name>.ipp). The module adds it when
+// it starts, the head serves it (GET /ui: the names, GET /ui/part?name=<name>: the fragment) and the page of the
+// webui module puts every part in before it connects. In the head, for the modules
+void modulesUi(const char* name, const uint8_t* data, size_t size);
 
 #if MODULES_SUPPORT
 // first thing after the settings storage: the heap block of the modules' statics, before ESPurna allocates much

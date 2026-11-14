@@ -8,6 +8,7 @@ TCP - the implementation (libs/tcp.h), part of libs/net_impl.h. Needs, defined b
 #pragma once
 
 #include "tcp.h"
+#include "lwip_call.h"
 
 #include <algorithm>
 #include <cstring>
@@ -20,6 +21,7 @@ TCP - the implementation (libs/tcp.h), part of libs/net_impl.h. Needs, defined b
 #include <lwip/pbuf.h>
 #include <lwip/sys.h>
 #include <lwip/tcp.h>
+#include <lwip/stats.h>
 #if !NO_SYS
 #include <lwip/tcpip.h>
 #include <lwip/priv/tcpip_priv.h>
@@ -34,41 +36,38 @@ uint32_t now() {
 
 namespace {
 
-// --- lwIP: the pcb only in lwIP's own context ------------------------------------------------------------------------
+// --- lwIP: the pcb only in lwIP's own context (libs/lwip_call.h) ------------------------------------------------
 
-#if NO_SYS
-
-// no OS: the loop is lwIP's context
-template <typename F>
-void lwipCall(F&& func) {
-    func();
-}
-
-#else
-
-template <typename F>
-struct LwipCall {
-    tcpip_api_call_data base;   // first: lwIP passes this pointer back
-    F* func;
-};
-
-// runs `func` in the tcpip thread and waits for it
-template <typename F>
-void lwipCall(F&& func) {
-    using Func = typename std::remove_reference<F>::type;
-    LwipCall<Func> call {};
-    call.func = &func;
-    tcpip_api_call([](tcpip_api_call_data* data) -> err_t {
-        (*reinterpret_cast<LwipCall<Func>*>(data)->func)();
-        return ERR_OK;
-    }, &call.base);
-}
-
-#endif
+using ::espurna::lwip::lwipCall;
 
 } // namespace
 
 // --- a connection --------------------------------------------------------------------------------------------------
+
+namespace {
+
+// lwIP's own heap (MEM_LIBC_MALLOC 0: the BK7231N, 16 KB) holds the data queued for sending (TCP_WRITE_FLAG_COPY) AND
+// every frame received. Parallel answers (the 96 KB page, the WebSocket, MQTT) filled it: no frame could be received,
+// so no ACK either, so the queued data was never freed - the stack stopped receiving for good and netwatch restarted
+// the board after 2 min (10.0.5.139 11-14 08:33, W35: lwip max 16360 of 16384, 99 errors). Sending leaves RxReserve of
+// that heap free; with the system heap (MEM_LIBC_MALLOC 1: ESP8266, ESP32) nothing is held back here
+constexpr size_t RxReserve { 6144 };
+
+// lwIP's context
+size_t queueRoom() {
+#if !MEM_LIBC_MALLOC && LWIP_STATS && MEM_STATS
+    const size_t avail = lwip_stats.mem.avail;
+    const size_t used = lwip_stats.mem.used;
+    const size_t free = (avail > used) ? (avail - used) : 0;
+    // a segment costs its header and the pbuf besides the data
+    constexpr size_t Overhead { 256 };
+    return (free > (RxReserve + Overhead)) ? (free - RxReserve - Overhead) : 0;
+#else
+    return static_cast<size_t>(-1);
+#endif
+}
+
+} // namespace
 
 class Connection::Impl {
 public:
@@ -196,7 +195,7 @@ public:
         size_t out { 0 };
         lwipCall([&]() {
             if (_pcb) {
-                out = tcp_sndbuf(_pcb);
+                out = std::min<size_t>(tcp_sndbuf(_pcb), queueRoom());
             }
         });
         return out;
@@ -209,7 +208,7 @@ public:
                 return;
             }
 
-            const size_t size = std::min<size_t>(len, tcp_sndbuf(_pcb));
+            const size_t size = std::min<size_t>(std::min<size_t>(len, tcp_sndbuf(_pcb)), queueRoom());
             if (size && (tcp_write(_pcb, data, size, TCP_WRITE_FLAG_COPY) == ERR_OK)) {
                 tcp_output(_pcb);
                 out = size;

@@ -11,7 +11,16 @@ PROTOTYPE: the light module (docs/modules.md), env:esp8266-1m-modules of platfor
 #include "modules.h"
 #include "light.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_light.ipp"
+#endif
+
 ESPURNA_MODULE(light, "light", 10) {
+#if WEB_SUPPORT
+    modulesUi("light", ui_light_data, sizeof(ui_light_data));
+#endif
+
     using espurna::modules::Api;
 
     // the real ones (renamed in this module), before the integrations call them

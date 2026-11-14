@@ -8,6 +8,7 @@ library, the same on every chip
 #pragma once
 
 #include "tls.h"
+#include "tls_engine.h"
 #include "tcp.h"
 
 #include <algorithm>
@@ -122,190 +123,6 @@ make_stack_thunk(espurna_tls_flush);
 namespace espurna {
 namespace tls {
 namespace {
-
-// --- the server key, without validating the chain; the fingerprint when asked for ---------------------------------
-
-// The server certificate (the first one) is kept. Its key: the tls module's X.509 decoder (RSA or EC) when installed,
-// else the RSA key from SubjectPublicKeyInfo: the rsaEncryption OID, then BIT STRING { SEQUENCE { INTEGER n,
-// INTEGER e } } (smaller than the decoder)
-constexpr size_t CertMax { 4096 };
-
-struct Insecure {
-    const br_x509_class* vtable;
-    uint8_t* cert;
-    size_t size;
-    size_t len;
-    br_x509_pkey pkey;
-    void* key;          // the tls module's block the key points into
-
-    bool first;         // the server certificate is being received
-    bool check;
-    uint8_t fingerprint[FingerprintSize];
-    br_sha1_context sha;
-    bool mismatch;
-};
-
-bool tag(const uint8_t* der, size_t len, size_t& pos, uint8_t type, size_t& out) {
-    if ((pos + 2 > len) || (der[pos] != type)) {
-        return false;
-    }
-
-    out = der[pos + 1];
-    pos += 2;
-    if (out & 0x80) {
-        size_t bytes = out & 0x7f;
-        if ((bytes > 2) || (pos + bytes > len)) {
-            return false;
-        }
-
-        out = 0;
-        while (bytes--) {
-            out = (out << 8) | der[pos++];
-        }
-    }
-
-    return pos + out <= len;
-}
-
-bool rsaKey(const uint8_t* der, size_t len, br_rsa_public_key& out) {
-    static const uint8_t Oid[] { 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
-    for (size_t pos = 0; pos + sizeof(Oid) < len; ++pos) {
-        if (memcmp(der + pos, Oid, sizeof(Oid)) != 0) {
-            continue;
-        }
-
-        pos += sizeof(Oid);
-        if ((pos + 2 <= len) && (der[pos] == 0x05) && !der[pos + 1]) {
-            pos += 2;
-        }
-
-        size_t size;
-        if (!tag(der, len, pos, 0x03, size) || der[pos++] || !tag(der, len, pos, 0x30, size)
-            || !tag(der, len, pos, 0x02, size))
-        {
-            return false;
-        }
-
-        out.n = const_cast<uint8_t*>(der + pos);
-        out.nlen = size;
-        pos += size;
-        while (out.nlen && !*out.n) {
-            ++out.n;
-            --out.nlen;
-        }
-
-        if (!tag(der, len, pos, 0x02, size)) {
-            return false;
-        }
-
-        out.e = const_cast<uint8_t*>(der + pos);
-        out.elen = size;
-        return out.nlen && size;
-    }
-
-    return false;
-}
-
-void insecureStartChain(const br_x509_class** ctx, const char*) {
-    auto* self = reinterpret_cast<Insecure*>(ctx);
-    self->size = 0;
-    self->len = 0;
-    self->first = true;
-    self->mismatch = false;
-}
-
-void insecureStartCert(const br_x509_class** ctx, uint32_t length) {
-    auto* self = reinterpret_cast<Insecure*>(ctx);
-    if (!self->first) {
-        return;
-    }
-
-    br_sha1_init(&self->sha);
-    if (!self->cert && (length <= CertMax)) {
-        self->cert = static_cast<uint8_t*>(malloc(length));
-        self->size = self->cert ? length : 0;
-    }
-}
-
-void insecureAppend(const br_x509_class** ctx, const unsigned char* buf, size_t len) {
-    auto* self = reinterpret_cast<Insecure*>(ctx);
-    if (!self->first) {
-        return;
-    }
-
-    br_sha1_update(&self->sha, buf, len);
-    if (self->cert && (self->len + len <= self->size)) {
-        memcpy(self->cert + self->len, buf, len);
-        self->len += len;
-    }
-}
-
-void insecureEndCert(const br_x509_class** ctx) {
-    auto* self = reinterpret_cast<Insecure*>(ctx);
-    if (self->first && self->check) {
-        uint8_t digest[br_sha1_SIZE];
-        br_sha1_out(&self->sha, digest);
-        self->mismatch = memcmp(digest, self->fingerprint, sizeof(digest)) != 0;
-    }
-
-    self->first = false;
-}
-
-unsigned insecureEndChain(const br_x509_class** ctx) {
-    auto* self = reinterpret_cast<Insecure*>(ctx);
-    if (self->mismatch) {
-        return BR_ERR_X509_NOT_TRUSTED;
-    }
-
-    if (!self->cert || (self->len != self->size)) {
-        return BR_ERR_X509_UNSUPPORTED;
-    }
-
-    free(self->key);
-    self->key = tls::key(self->cert, self->len, &self->pkey);
-    if (self->key) {
-        return 0;
-    }
-
-    self->pkey.key_type = BR_KEYTYPE_RSA;
-    return rsaKey(self->cert, self->len, self->pkey.key.rsa) ? 0 : BR_ERR_X509_UNSUPPORTED;
-}
-
-const br_x509_pkey* insecureGetPkey(const br_x509_class* const* ctx, unsigned* usages) {
-    if (usages) {
-        *usages = BR_KEYTYPE_KEYX | BR_KEYTYPE_SIGN;
-    }
-
-    return &reinterpret_cast<const Insecure*>(ctx)->pkey;
-}
-
-const br_x509_class InsecureClass PROGMEM {
-    sizeof(Insecure),
-    insecureStartChain,
-    insecureStartCert,
-    insecureAppend,
-    insecureEndCert,
-    insecureEndChain,
-    insecureGetPkey,
-};
-
-// the base ones; the tls module replaces the list with its own (these included)
-const uint16_t Suites[] PROGMEM {
-    BR_TLS_RSA_WITH_AES_128_GCM_SHA256,
-};
-
-// the engine (~4 KB) and its record buffers are two blocks, a fragmented heap has a better chance
-struct Engine {
-    ~Engine() {
-        free(x509.cert);
-        free(x509.key);
-        free(ca);
-    }
-
-    br_ssl_client_context sc;
-    Insecure x509;
-    void* ca { nullptr };   // the block of the tls module's chain check
-};
 
 // a record: the fragment plus its header, MAC and padding (BR_SSL_BUFSIZE_INPUT holds a 16384 one)
 constexpr size_t RecordOverhead { BR_SSL_BUFSIZE_INPUT - 16384 };
@@ -577,53 +394,13 @@ private:
         _thunk = true;
 #endif
 
-        auto* eng = &_engine->sc.eng;
-        br_ssl_client_zero(&_engine->sc);
-        br_ssl_engine_set_versions(eng, BR_TLS12, BR_TLS12);
-
-        uint16_t suites[sizeof(Suites) / sizeof(Suites[0])];
-        memcpy_P(suites, Suites, sizeof(Suites));
-        br_ssl_engine_set_suites(eng, suites, sizeof(suites) / sizeof(suites[0]));
-
-        br_ssl_client_set_default_rsapub(&_engine->sc);
-        br_ssl_engine_set_hash(eng, br_sha256_ID, &br_sha256_vtable);
-        br_ssl_engine_set_prf_sha256(eng, &br_tls12_sha256_prf);
-
-        // the smallest AES and GHASH of BearSSL (not constant-time, no secret worth a timing attack here)
-        br_ssl_engine_set_gcm(eng, &br_sslrec_in_gcm_vtable, &br_sslrec_out_gcm_vtable);
-        br_ssl_engine_set_aes_ctr(eng, &br_aes_small_ctr_vtable);
-        br_ssl_engine_set_ghash(eng, &br_ghash_ctmul);
-
-        // ESPurna's tls module, when installed: its suites (ECDHE, ECDSA, ChaCha20) and their algorithms
-        tls::extend(&_engine->sc);
-
-        if (_options.ca) {
-            // the chain against trust anchors, by the tls module
-            auto* check = tls::caCheck(_options.ca_pem, &_engine->ca);
-            if (!check) {
-                fail(Failure::NoCa);
-                return false;
-            }
-            br_ssl_engine_set_x509(eng, check);
-        } else {
-            auto& x509 = _engine->x509;
-            x509.vtable = &InsecureClass;
-            x509.check = _options.check;
-            memcpy(x509.fingerprint, _options.fingerprint, sizeof(x509.fingerprint));
-            br_ssl_engine_set_x509(eng, &x509.vtable);
-        }
-
-        // an input buffer below the full record size makes the client ask for max_fragment_length
-        br_ssl_engine_set_buffers_bidi(eng,
-            _buffers.get(), _input_size,
-            _buffers.get() + _input_size, OutputSize);
-
+        // the TLS of this connection: the tls module's (ESPurna's head has only the records), Failure::NoTls without it
         uint8_t seed[32];
         chip::random(seed, sizeof(seed));
-        br_ssl_engine_inject_entropy(eng, seed, sizeof(seed));
-
-        if (!br_ssl_client_reset(&_engine->sc, _host, 0)) {
-            fail(Failure::Tls);
+        const auto failure = tls::start(*_engine, _host, _options, seed, sizeof(seed),
+            _buffers.get(), _input_size, _buffers.get() + _input_size, OutputSize);
+        if (failure != Failure::None) {
+            fail(failure);
             return false;
         }
 

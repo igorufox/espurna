@@ -10,7 +10,7 @@ import { setInputValue } from './settings/input.mjs';
 import { setSelectValue } from './settings/select.mjs';
 import { setSpanValue } from './settings/span.mjs';
 
-import { listenEnumerable } from './settings/enumerable.mjs';
+import { listenEnumerable, listenEnumerableTarget } from './settings/enumerable.mjs';
 
 import { setGroupElement, setGroupElements, setGroupMax } from './settings/group.elem.mjs';
 import { emitSettingsGroupChange, onGroupSettingsDel } from './settings/group.mjs';
@@ -202,4 +202,29 @@ export class NumberInput extends BaseInput {
     constructor() {
         super("number-input");
     }
+}
+
+// a list of number inputs, one per relay (DOMOTICZ, THINGSPEAK: the index of every relay)
+/**
+ * @param {string} id
+ * @param {any[]} values
+ * @param {string} keyPrefix
+ */
+export function createNodeList(id, values, keyPrefix) {
+    const container = document.getElementById(id);
+    if (!container || container.childElementCount > 0) {
+        return;
+    }
+
+    // TODO generic template to automatically match elems to (limited) schema?
+    const template = new NumberInput();
+    values.forEach((value, index) => {
+            const merged = mergeTemplate(container, template.with(
+                (label, input) => {
+                    listenEnumerableTarget(label, index, "relay");
+                    input.name = keyPrefix;
+                    input.value = value;
+                }));
+            setOriginalsFromValuesForNode(merged);
+        });
 }

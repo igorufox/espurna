@@ -1,5 +1,5 @@
 # The install image of a chip, espurna-<chip>.ota: the head (Beken: both, one per bootloader) and the modules file (EMC2)
-# in one file. Its name keeps it off a serial flash tool; the MODULES panel takes it apart (html/src/modules.mjs, otaParts):
+# in one file. Its name keeps it off a serial flash tool; the MODULES panel takes it apart (html/src/install.mjs, otaParts):
 # a head of another build goes on first (/upgrade, the ESP32 through its safeboot), then the modules file to
 # /modules/apply with the ticked names.
 #

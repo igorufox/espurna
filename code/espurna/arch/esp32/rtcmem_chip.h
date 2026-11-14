@@ -14,3 +14,8 @@ RTCMEM of the ESP32 (rtcmem.h): RTC_NOINIT memory (arch/esp32/rtcmem_esp32.cpp),
 inline bool rtcmemSysStatus() {
     return rtcmemStatus();
 }
+
+// the module guard found the loop stalled: the Beken saves the context of every task (CRASH prints it), here the
+// chip's own stall report (ESP32 coredump) or nothing
+inline void rtcmemStallSnapshot() {
+}

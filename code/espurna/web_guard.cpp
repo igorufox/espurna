@@ -47,6 +47,8 @@ system_<chip>.cpp). The ESP8266 head keeps its SDK reserve in arch/esp8266/heap_
 #include <lwip/priv/tcp_priv.h>
 #include <lwip/stats.h>
 
+#include "libs/lwip_call.h"
+
 #if !NO_SYS
 #include <lwip/tcpip.h>
 #include <lwip/priv/tcpip_priv.h>
@@ -214,21 +216,12 @@ void install() {
     }
 }
 
-#if NO_SYS
+// in lwIP's context, the one way of every chip (libs/lwip_call.h: the tcpip thread, or the loop without an OS)
 void installInLwip() {
-    install();
+    ::espurna::lwip::lwipCall([]() {
+        install();
+    });
 }
-#else
-err_t installCall(struct tcpip_api_call_data*) {
-    install();
-    return ERR_OK;
-}
-
-void installInLwip() {
-    struct tcpip_api_call_data call {};
-    tcpip_api_call(installCall, &call);
-}
-#endif
 
 // --- loop ----------------------------------------------------------------------------------------------------------
 

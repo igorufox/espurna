@@ -89,6 +89,8 @@ const char* reasonText(DisconnectReason reason) {
         return "the broker certificate is not signed by the CA (or the clock is not set yet)";
     case DisconnectReason::NoCa:
         return "the CA check needs the tls module and a certificate (mqttCA) or the built-in root";
+    case DisconnectReason::NoTls:
+        return "a secure connection needs the tls module (MODULES: tls)";
     case DisconnectReason::Fingerprint:
         return "the broker certificate does not match the fingerprint";
     case DisconnectReason::Refused:
@@ -694,6 +696,9 @@ private:
             break;
         case tls::Failure::NoCa:
             reason = DisconnectReason::NoCa;
+            break;
+        case tls::Failure::NoTls:
+            reason = DisconnectReason::NoTls;
             break;
         case tls::Failure::None:
         case tls::Failure::Connect:

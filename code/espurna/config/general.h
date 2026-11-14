@@ -192,12 +192,6 @@
 #define TELNET_LINE_BUFFER_SIZE 256             // Temporary buffer, when data arrives in multiple packets without a new-line
 #endif
 
-// Enable this flag to add support for reverse telnet (+800 bytes)
-// This is useful to telnet to a device behind a NAT or firewall
-// To use this feature, start a listen server on a publicly reachable host with e.g. "ncat -vlp <port>" and use the MQTT reverse telnet command to connect
-#ifndef TELNET_REVERSE_SUPPORT
-#define TELNET_REVERSE_SUPPORT  0
-#endif
 
 //------------------------------------------------------------------------------
 // TERMINAL
@@ -910,13 +904,16 @@
 // OTA
 // -----------------------------------------------------------------------------
 
+
 #ifndef OTA_PORT
 #define OTA_PORT                    8266        // Port for ArduinoOTA
 #endif
 
+// ArduinoOTA (espota) in the head of the ESP8266 and the Beken: the update of a board in the unstable mode, which has
+// no web server (main.cpp: the web starts after systemCheck()), over its access point as well (D390FC, TERRACE1).
+// Owner 2026-11-14: «возвращай ArduinoOTA в голову». The ESP32 updates through its safeboot (platformio_esp32.ini)
 #ifndef OTA_ARDUINOOTA_SUPPORT
-#define OTA_ARDUINOOTA_SUPPORT      1           // Support ArduinoOTA by default (4.2Kb)
-                                                // Implicitly depends on ESP8266mDNS library, thus increasing firmware size
+#define OTA_ARDUINOOTA_SUPPORT      1
 #endif
 
 #ifndef OTA_WEB_SUPPORT

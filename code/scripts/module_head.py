@@ -11,7 +11,8 @@
 #   ESP.getSketchMD5() read the flash for every check). The linker computes it over the output without the note
 #   itself, so the id is in the image it identifies. Where the note goes, by the linker script of the chip:
 #   ESP8266 - .irom0.text of the generated local.eagle.app.v6.common.ld (patched before the link);
-#   ESP32 - .flash.rodata of the framework's sections.ld (a patched copy in the build dir, first on LIBPATH);
+#   ESP32 - .flash.rodata of the framework's sections.ld, after its input sections (a patched copy in the build dir,
+#   first on LIBPATH);
 #   Beken - .rodata of the board's linker script in the build dir
 
 import os
@@ -81,8 +82,14 @@ def build_id():
             text = f.read()
         with open(copy, "w") as f:
             f.write(text)
-        patch_script(copy, "    _flash_rodata_start = ABSOLUTE(.);\n")
+        # after the input sections of rodata, not first: the output section takes the type of its first input, a NOTE
+        # first made .flash.rodata a NOTE section, which esptool's elf2image leaves out of the image ("Unknown section
+        # type 0x07"): 180 KB of constants missing, every head since the build id hung before its first constructor
+        # (10.0.5.66 11-13/14, the bootloader rolled it back)
+        patch_script(copy, "    *(.rodata1)\n")
         env.Prepend(LIBPATH=[folder])
+        # a change of the script (here, or the framework's) links the head again
+        env.Depends("$BUILD_DIR/${PROGNAME}.elf", copy)
     else:
         board = env.BoardConfig()
         patch_script(os.path.join(env.subst("$BUILD_DIR"), board.get("build.ldscript")), "\t.rodata ALIGN(8) :\n\t{\n")

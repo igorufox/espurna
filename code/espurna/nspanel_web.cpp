@@ -21,7 +21,7 @@ WebUI NSPANEL section with its screen mirror
 
 #include <ArduinoJson.h>
 
-#include <atomic>
+#include "espurna_tasks.h"
 #include <memory>
 #include <new>
 
@@ -56,7 +56,7 @@ struct Job {
 Job job;
 
 // a body is being received into the async_tcp buffer (read by loop() without the lock)
-std::atomic<bool> receiving { false };
+::espurna::system::Shared<bool> receiving { false };
 
 } // namespace
 

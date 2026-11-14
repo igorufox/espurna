@@ -13,7 +13,16 @@ the Matter stack needs (the Beken: lwIP with IPv6 and the library's lwipopts.h)
 #include "modules.h"
 #include "espurna_matter.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_matter.ipp"
+#endif
+
 ESPURNA_MODULE(matter, "matter", 60) {
+#if WEB_SUPPORT
+    modulesUi("matter", ui_matter_data, sizeof(ui_matter_data));
+#endif
+
     matterSetup();
 }
 

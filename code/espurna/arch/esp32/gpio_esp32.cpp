@@ -52,15 +52,15 @@ void setup() {
     // Pads latched before the software reset (ref. system_esp32.cpp reboot()).
     // Relay module marks its pins again during setup, anything that is no longer used
     // after the first loop() is released right away instead of staying latched.
-    static uint32_t previous;
+    static uint64_t previous;
     previous = Rtcmem->gpio_ignore;
     Rtcmem->gpio_ignore = 0;
 
     if (previous) {
         espurnaRegisterOnce([]() {
             const auto unused = previous & ~Rtcmem->gpio_ignore;
-            for (uint8_t pin = 0; pin < 32; ++pin) {
-                if (unused & (uint32_t{1} << pin)) {
+            for (uint8_t pin = 0; pin < GPIO_NUM_MAX; ++pin) {
+                if (unused & (uint64_t{1} << pin)) {
                     gpio_hold_dis(static_cast<gpio_num_t>(pin));
                 }
             }

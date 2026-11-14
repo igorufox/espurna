@@ -16,7 +16,16 @@ the toggle, the payloads, the status callbacks.
 #include "modules.h"
 #include "relay.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_relay.ipp"
+#endif
+
 ESPURNA_MODULE(relay, "relay", 12) {
+#if WEB_SUPPORT
+    modulesUi("relay", ui_relay_data, sizeof(ui_relay_data));
+#endif
+
     using espurna::modules::Api;
 
     modulesProvide(Api::RelayCount, &relayCount);

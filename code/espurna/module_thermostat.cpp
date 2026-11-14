@@ -10,7 +10,16 @@ The thermostat module (docs/modules.md): a thermostat on a relay and a temperatu
 #include "modules.h"
 #include "thermostat.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_thermostat.ipp"
+#endif
+
 ESPURNA_MODULE(thermostat, "thermostat", 50) {
+#if WEB_SUPPORT
+    modulesUi("thermostat", ui_thermostat_data, sizeof(ui_thermostat_data));
+#endif
+
     // the button action "display on"
     modulesProvide(espurna::modules::Api::DisplayOn, &displayOn);
 

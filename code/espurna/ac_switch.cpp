@@ -185,14 +185,15 @@ bool IRAM_ATTR AcSwitch::_level() const {
 }
 
 AcSwitch::Window AcSwitch::_take_window() {
-    const unsigned long now = micros();
-
     unsigned long count;
     unsigned long low;
     unsigned long length;
 
     {
         isr::Lock::Guard guard(_lock);
+        // the time under the lock: an edge between micros() and the lock moved the segment start past `now`, and
+        // `now - since` wrapped into a duty above 100 % (review 8.6)
+        const unsigned long now = micros();
         count = _pulses;
         _pulses = 0;
 

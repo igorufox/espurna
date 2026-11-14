@@ -51,7 +51,8 @@ constexpr Known KnownLayouts[] {
         0x011000, 0x1A9000,
         0x3E0000, 0x020000,     // Quectel Matter factory data ("chip-factory")
         true,
-        0x1EB000}},
+        0x1EB000,
+        {{0x210000, 0x1000}, {0x220000, 0x2000}}}},  // written in both stock dumps of the XH-CB2S
 };
 
 using ::espurna::crc32_ieee::crc32Update;

@@ -4,82 +4,75 @@ MDNS MODULE
 
 Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
-*/
+One responder on every chip (libs/mdns_responder.h): the host, ESPurna's services, the broker query of MQTT, and
+Matter's services (the Matter library publishes through espurna_mdns_*). It replaced the three libraries of the
+chips (LEAmDNS of the ESP8266 core, ESPmDNS on the IDF mdns component, the lwIP responder of LibreTiny; U28, W38)
 
-// -----------------------------------------------------------------------------
-// mDNS Server
-// -----------------------------------------------------------------------------
+*/
 
 #include "espurna.h"
 
 #if MDNS_SERVER_SUPPORT
 
 #include "espurna_mdns.h"
-#include "modules.h"
+#include "espurna_tasks.h"
 #include "telnet.h"
 #include "utils.h"
 #include "web.h"
 
-// the mDNS library of the chip and what differs between them
-#include "mdns_driver.h"
+#define MDNS_LOCK ::espurna::system::Mutex
+#define MDNS_LOG(fmt, ...) DEBUG_MSG_P(PSTR(fmt), ##__VA_ARGS__)
+#include "libs/mdns_responder_impl.h"
 
-// -----------------------------------------------------------------------------
-
+namespace espurna {
 namespace mdns {
 namespace {
 
+constexpr char Owner[] = "espurna";
+
 void addServices() {
+    namespace responder = ::espurna::mdns::responder;
+    const auto hostname = systemHostname();
+
+    responder::update(Owner);
+
 #if WEB_SUPPORT
-    MDNS.addService("http", "tcp", webPort());
+    responder::add(Owner, hostname.c_str(), "_http", true, webPort(), 0, nullptr, 0, nullptr, 0);
 #endif
 
 #if TELNET_SUPPORT
-    MDNS.addService("telnet", "tcp", telnetPort());
+    responder::add(Owner, hostname.c_str(), "_telnet", true, telnetPort(), 0, nullptr, 0, nullptr, 0);
 #endif
 
 #if OTA_ARDUINOOTA_SUPPORT
-    // MDNS implementation has its weird way of accessing strings;
-    // can't pass `String`s directly and must use a char pointer
-    // to RAM so it could copy it for internal use via `strcpy`
-    // Since all we use here is build data exposed with `StringView`s,
-    // force everything in RAM first to avoid a runtime exception.
-    if (espurna::mdns::driver::enable_arduino(OTA_PORT, systemPassword().length() > 0)) {
+    {
         const auto app = buildApp();
-        MDNS.addServiceTxt("arduino", "tcp",
-            "app_name", String(app.name).c_str());
-        MDNS.addServiceTxt("arduino", "tcp",
-            "app_version", String(app.version).c_str());
-        MDNS.addServiceTxt("arduino", "tcp",
-            "build_date", String(app.build_time).c_str());
-
-        MDNS.addServiceTxt("arduino", "tcp",
-            "mac", String(systemChipId()).c_str());
-        MDNS.addServiceTxt("arduino", "tcp",
-            "target_board", String(systemDevice()).c_str());
-
-        MDNS.addServiceTxt("arduino", "tcp", "mem_size",
-                String(static_cast<int>(ESP.getFlashChipRealSize() / 1024), 10));
-        MDNS.addServiceTxt("arduino", "tcp", "sdk_size",
-                String(static_cast<int>(ESP.getFlashChipSize() / 1024), 10));
-        MDNS.addServiceTxt("arduino", "tcp", "free_space",
-                String(static_cast<int>(ESP.getFreeSketchSpace() / 1024), 10));
+        const String entries[] {
+            String(F("app_name=")) + String(app.name),
+            String(F("app_version=")) + String(app.version),
+            String(F("build_date=")) + String(app.build_time),
+            String(F("mac=")) + String(systemChipId()),
+            String(F("target_board=")) + String(systemDevice()),
+            String(F("auth_upload=")) + ((systemPassword().length() > 0) ? F("yes") : F("no")),
+        };
+        const char* txt[sizeof(entries) / sizeof(entries[0])];
+        for (size_t index = 0; index < (sizeof(entries) / sizeof(entries[0])); ++index) {
+            txt[index] = entries[index].c_str();
+        }
+        responder::add(Owner, hostname.c_str(), "_arduino", true, OTA_PORT, 0,
+            txt, sizeof(txt) / sizeof(txt[0]), nullptr, 0);
     }
 #endif
+
+    responder::commit(Owner);
 }
 
 void start() {
-    // one mDNS responder per chip, and with Matter it is Matter's (the ESP8266 has no matter module: never enabled): on the Beken its own responder takes 5353 (ours is
-    // a second one, lwIP refuses it: ERR_USE, the commissioner never sees the board); on the ESP32 both sit on the IDF
-    // mdns component, the second mdns_init() fails and our MDNS.end() would take Matter's records down
-    if (modulesEnabled("matter")) {
-        DEBUG_MSG_P(PSTR("[MDNS] Off: the matter module answers mDNS on this chip\n"));
-        return;
-    }
-
     const auto hostname = systemHostname();
-    if (espurna::mdns::driver::begin(hostname)) {
+    if (::espurna::mdns::responder::begin(hostname)) {
         DEBUG_MSG_P(PSTR("[MDNS] Started with hostname %s\n"), hostname.c_str());
         addServices();
+        espurnaRegisterLoop(::espurna::mdns::responder::loop);
         return;
     }
 
@@ -87,28 +80,20 @@ void start() {
 }
 
 } // namespace
-} // namespace mdsn
+} // namespace mdns
+} // namespace espurna
 
-// As of right now, this needs to be request -> response operation in the same block,
-// so we don't end up using someone else's query results.
-// `queryService()` 3rd arg is timeout, by default it blocks for MDNS_QUERYSERVICES_WAIT_TIME (1000)
-
-// TODO: esp8266 allows async pyzeroconf-like API to have this running independently.
-// In case something other than MQTT needs this, consider extending the API
-// (and notice that RTOS SDK alternative would need to use mdns_query_* ESP-IDF API)
-// TODO: both implementations also have separate queries for A and AAAA records :/
-
+// a blocking query for the first broker (MQTT): the answers of one second
 bool mdnsServiceQuery(const String& service, const String& protocol, MdnsServerQueryCallback callback) {
-    return espurna::mdns::driver::query(service, protocol, callback);
+    return ::espurna::mdns::responder::query(service.c_str(), protocol.c_str(), 1000, callback);
 }
 
 bool mdnsRunning() {
-    return espurna::mdns::driver::running();
+    return ::espurna::mdns::responder::running();
 }
 
 void mdnsServerSetup() {
-    espurna::mdns::driver::setup(mdns::start);
+    ::espurna::mdns::start();
 }
 
 #endif // MDNS_SERVER_SUPPORT
-

@@ -12,7 +12,16 @@ The lightfox module (docs/modules.md): the LightFox dual relay board (its MCU on
 #include "button.h"
 #include "lightfox.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_lightfox.ipp"
+#endif
+
 ESPURNA_MODULE(lightfox, "lightfox", 50) {
+#if WEB_SUPPORT
+    modulesUi("lightfox", ui_lightfox_data, sizeof(ui_lightfox_data));
+#endif
+
     using espurna::modules::Api;
 
     // its relays and buttons (relayProvider / btnProvider "lightfox"; the relay and button modules started first)

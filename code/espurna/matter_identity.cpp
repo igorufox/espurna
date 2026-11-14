@@ -13,8 +13,8 @@ MATTER: THE IDENTITY OF THE BOARD (one code on ESP32 and Beken)
   the QR code / pairing code stays.
 
 The chip's part (arch/<chip>/matter_*.cpp): store_read() / store_write() of the key-value store, factory_read().
-When: load() before the stack starts (ESP32: the codes for Matter.begin()), install() where the providers are set
-(ESP32 after Matter.begin() with the stack lock held, Beken from the library's server init: matter_identity_install()).
+When: install() where the providers are set - the library's server init calls matter_identity_install() (below) on both
+chips, in the Matter task; it loads the identity first (makes it on the first start).
 
 */
 
@@ -735,5 +735,13 @@ String status() {
 } // namespace identity
 } // namespace matter
 } // namespace espurna
+
+// The library calls it before its server init on both chips (matter-espurna matter_app.cpp): the providers of the
+// board's identity, in the Matter task (made there on the first start, below the loop's priority). It was defined in
+// the Beken backend only: the ESP32 got the library's empty one and ran on the SDK test providers, its PAI request
+// failed every commissioning (10.0.5.66 2026-11-14: 'SendPAICertificateRequest' IM 0x01 FAILURE)
+extern "C" void matter_identity_install(void) {
+    espurna::matter::identity::install();
+}
 
 #endif // MATTER_SUPPORT

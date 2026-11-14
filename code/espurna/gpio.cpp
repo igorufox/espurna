@@ -404,8 +404,8 @@ void gpioSetup() {
 
 // Pins whose state is kept through the software reset (ref. arch/<chip>/gpio_<chip>.cpp)
 void hardwareGpioIgnore(unsigned char gpio) {
-    if (gpio < 32) {
-        Rtcmem->gpio_ignore |= (uint32_t{1} << gpio);
+    if (gpio < 64) {
+        Rtcmem->gpio_ignore |= (uint64_t{1} << gpio);
     }
 }
 

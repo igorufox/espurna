@@ -1,7 +1,6 @@
 import { sendAction } from './connection.mjs';
 
 import {
-    NumberInput,
     addFromTemplate,
     addOriginalsFromTemplateWithPreparedSchema,
     fromSchema,
@@ -9,7 +8,6 @@ import {
 } from './template.mjs';
 
 import { addEnumerables, listenEnumerableTarget } from './settings/enumerable.mjs';
-import { setOriginalsFromValuesForNode } from './settings/dataset.mjs';
 import { groupSettingsOnAddElem } from './settings/group.mjs';
 
 import { variableListeners } from './settings.mjs';
@@ -137,30 +135,6 @@ function updateFromConfig(configs, schema) {
     addEnumerables("relay", names);
     addOriginalsFromTemplateWithPreparedSchema(
         container, "relay-config", prepared);
-}
-
-/**
- * @param {string} id
- * @param {any[]} values
- * @param {string} keyPrefix
- */
-export function createNodeList(id, values, keyPrefix) {
-    const container = document.getElementById(id);
-    if (!container || container.childElementCount > 0) {
-        return;
-    }
-
-    // TODO generic template to automatically match elems to (limited) schema?
-    const template = new NumberInput();
-    values.forEach((value, index) => {
-            const merged = mergeTemplate(container, template.with(
-                (label, input) => {
-                    listenEnumerableTarget(label, index, "relay");
-                    input.name = keyPrefix;
-                    input.value = value;
-                }));
-            setOriginalsFromValuesForNode(merged);
-        });
 }
 
 /** @returns {import('./settings.mjs').KeyValueListeners} */

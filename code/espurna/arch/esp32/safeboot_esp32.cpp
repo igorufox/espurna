@@ -16,6 +16,7 @@ ref. safeboot_esp32.h
 #include "../../libs/esp32_partitions.h"
 #include "../../libs/http_client.h"
 #include "../../libs/image_receiver.h"
+#include "../../libs/boot_trace.h"
 
 #include <esp_attr.h>
 #include <esp_flash.h>
@@ -133,6 +134,7 @@ void confirm() {
     }
 
     pending_at_boot = false;
+    boot_trace::write("confirmed");
     const auto result = esp_ota_mark_app_valid_cancel_rollback();
     DEBUG_MSG_P(PSTR("[SAFEBOOT] New image confirmed: %s\n"), esp_err_to_name(result));
 }
@@ -999,6 +1001,15 @@ static constexpr ::terminal::Command Commands[] PROGMEM {
 } // namespace
 } // namespace safeboot
 } // namespace espurna
+
+void safebootTrace(const char* name) {
+    espurna::boot_trace::write(name);
+}
+
+// before every static initializer of ESPurna: only the RTC memory is written
+__attribute__((constructor(101))) static void safebootTraceCtors() {
+    espurna::boot_trace::write("ctors");
+}
 
 // right after rtcmem
 void safebootGuard() {

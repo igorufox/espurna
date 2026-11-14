@@ -885,11 +885,6 @@ bool factory_read(const char* name, uint8_t* out, size_t size, size_t& length) {
 } // namespace matter
 } // namespace espurna
 
-// The library calls it before its server init (matter-espurna matter_app.cpp): the providers of the board's identity,
-// in the Matter task (the identity is made there on the first start, below the loop's priority)
-extern "C" void matter_identity_install(void) {
-    espurna::matter::identity::install();
-}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The bk_* platform API of the Matter library

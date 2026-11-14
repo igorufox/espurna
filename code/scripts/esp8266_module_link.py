@@ -42,6 +42,19 @@ class Esp8266Linker(module_link.Linker):
     system_libs = module_link.Linker.system_libs + ("-lhal",)
     has_iram = True
 
+    # the allocation calls the head links with --wrap (custom_head_wraps, arch/esp8266/heap_reserve_esp8266.cpp): a
+    # module takes the same wrappers. Without them a module's operator new was the core's own, which aborts when the
+    # heap is out ("OOM", restart reason 254 from the module area: 10.0.5.0 after 22 min of the leak regression,
+    # 2026-11-14, W37). Not the mDNS stubs of that list: the mdns module is the real mDNS
+    module_wraps = ("pvPortZalloc", "sdk3_pvPortMalloc", "pvPortRealloc", "_Znwj", "_Znaj")
+
+    def machine_flags(self):
+        head = set(self.env.GetProjectOption("custom_head_wraps", "").split())
+        missing = [name for name in self.module_wraps if name not in head]
+        if missing:
+            raise ValueError(f"custom_head_wraps lacks {missing}: modules would call wrappers the head does not have")
+        return super().machine_flags() + [f"-Wl,--wrap={name}" for name in self.module_wraps]
+
     def library_flags(self):
         return [f"-L{self.env.subst(p)}" for p in self.env["LIBPATH"]]
 

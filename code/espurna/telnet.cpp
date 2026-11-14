@@ -693,10 +693,10 @@ bool listen() {
     return true;
 }
 
-#if TELNET_REVERSE_SUPPORT
 namespace reverse {
 
-// Outgoing connections share the client limit with the accepted ones; the connection resolves the name itself
+// An outgoing session (the telnet_reverse module: TELNET.REVERSE, MQTT <root>/telnet_reverse): shares the client limit
+// with the accepted ones; the connection resolves the name itself
 bool connect(String host, uint16_t port) {
     if (active() >= build::ClientsMax) {
         return false;
@@ -711,92 +711,7 @@ bool connect(String host, uint16_t port) {
     return true;
 }
 
-#if TERMINAL_SUPPORT
-namespace terminal {
-namespace commands {
-
-PROGMEM_STRING(Reverse, "TELNET.REVERSE");
-
-void reverse(::terminal::CommandContext&& ctx) {
-    if (ctx.argv.size() != 3) {
-        terminalError(ctx, F("TELNET.REVERSE <HOST> <PORT>"));
-        return;
-    }
-
-    const auto convert_port = espurna::settings::internal::convert<uint16_t>;
-    auto port = convert_port(ctx.argv[2]);
-    if (!port) {
-        terminalError(ctx, F("Invalid port"));
-        return;
-    }
-
-    if (connect(ctx.argv[1], port)) {
-        terminalOK(ctx);
-        return;
-    }
-
-    terminalError(ctx, F("Unable to connect"));
-}
-
-static constexpr ::terminal::Command List[] PROGMEM {
-    {Reverse, commands::reverse},
-};
-
-} // namespace commands
-
-void setup() {
-    espurna::terminal::add(commands::List);
-}
-
-} // namespace terminal
-#endif
-
-#if MQTT_SUPPORT
-namespace mqtt {
-
-void connect_url(String url) {
-    URL parsed(std::move(url));
-    if (!parsed.host.length() || !parsed.port) {
-        DEBUG_MSG_P(PSTR("[TELNET] Cannot parse the url\n"));
-        return;
-    }
-
-    connect(std::move(parsed.host), parsed.port);
-}
-
-void setup() {
-    mqttRegister([](unsigned int type, StringView topic, StringView payload) {
-        switch (type) {
-        case MQTT_CONNECT_EVENT:
-            mqttSubscribe(MQTT_TOPIC_TELNET_REVERSE);
-            break;
-
-        case MQTT_MESSAGE_EVENT: {
-            auto t = mqttMagnitude(topic);
-            if (t.equals(MQTT_TOPIC_TELNET_REVERSE)) {
-                connect_url(payload.toString());
-            }
-            break;
-        }
-
-        }
-    });
-}
-
-} // namespace mqtt
-#endif // MQTT_SUPPORT
-
-void setup() {
-#if TERMINAL_SUPPORT
-    terminal::setup();
-#endif
-#if MQTT_SUPPORT
-    mqtt::setup();
-#endif
-}
-
 } // namespace reverse
-#endif // TELNET_REVERSE_SUPPORT
 
 #if WEB_SUPPORT
 namespace web {
@@ -826,9 +741,6 @@ void setup() {
 #endif
 
 void setup() {
-#if TELNET_REVERSE_SUPPORT
-    reverse::setup();
-#endif
 #if WEB_SUPPORT
     web::setup();
 #endif
@@ -846,6 +758,11 @@ void setup() {
 
 uint16_t telnetPort() {
     return espurna::telnet::settings::port();
+}
+
+// the telnet_reverse module's: a session out to a listener (a board behind NAT)
+bool telnetReverse(const char* host, uint16_t port) {
+    return host && *host && port && espurna::telnet::reverse::connect(String(host), port);
 }
 
 bool telnetConnected() {

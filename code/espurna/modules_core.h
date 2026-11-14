@@ -48,7 +48,7 @@ struct Entry {
                             // its relocation maps (the boot relocates it from them when its bases moved)
     uint32_t size;          // image bytes
     uint32_t crc32;         // of the image as it runs
-    uint32_t ram_offset;    // its statics (.data + .bss) in the heap block; RamSecondArena set: in the fixed pool
+    uint32_t ram_offset;    // its statics (.data + .bss) in the heap block; RamInFixedPool set: in the fixed pool
     uint32_t ram_size;
     uint32_t code_size;     // its IRAM code in the fixed pool (ESP8266), else 0
     uint32_t bases[3];      // the addresses its words hold now: BaseFlash, BaseCode, BaseRam
@@ -68,7 +68,7 @@ constexpr uint32_t EntryDisabled { 1 };
 
 // Entry::ram_offset: the statics of the module are in the chip's fixed pool (arch::Pools), the rest of the word is
 // the offset in it
-constexpr uint32_t RamSecondArena { 0x80000000 };
+constexpr uint32_t RamInFixedPool { 0x80000000 };
 
 // the directory format, one for every chip
 constexpr uint32_t DirectoryMagic { 0x37524445 }; // "EDR7": Entry::data_offset, data_size
@@ -220,7 +220,7 @@ struct Upload {
     uint32_t flash_ceiling { 0 };   // no slot over it (the data of the modules, placed first), 0 - the area's top
     uint32_t data_offset { 0 }; // its data, planned (modulesData())
     uint32_t data_size { 0 };
-    uint32_t ram_offset { 0 };  // planned (RamSecondArena: in the fixed pool)
+    uint32_t ram_offset { 0 };  // planned (RamInFixedPool: in the fixed pool)
     uint32_t code_offset { 0 }; // planned, in the fixed pool (ESP8266)
 
     uint32_t slot { 0 };        // flash offset of the slot
@@ -268,6 +268,28 @@ struct Area {
     uint32_t start;
     uint32_t lo;
     uint32_t hi;
+    // where the initial image put its modules file (module_initial_image.py), 0 - at lo. Beken: the area starts right
+    // behind the head in the app partition, the flasher writes the file into the download partition
+    uint32_t initial { 0 };
+    // flash inside lo..hi no module may take (Beken: the RBL headers, the settings pool and calibration, the
+    // bootloader's own sectors), size 0 - unused
+    struct Range {
+        uint32_t offset;
+        uint32_t size;
+    };
+    static constexpr size_t KeepMax { 6 };
+    Range keep[KeepMax] {};
+
+    // bytes of lo..hi in the ranges kept
+    uint32_t kept(uint32_t from, uint32_t to) const {
+        uint32_t out { 0 };
+        for (const auto& range : keep) {
+            const uint32_t lo = (range.offset > from) ? range.offset : from;
+            const uint32_t hi = ((range.offset + range.size) < to) ? (range.offset + range.size) : to;
+            out += (range.size && (hi > lo)) ? (hi - lo) : 0;
+        }
+        return out;
+    }
 };
 
 Area area();
@@ -309,7 +331,7 @@ bool rewritable();
 // access only), largest module first; the rest in one heap block that the next boot takes before the modules start
 struct Pools {
     uint32_t heap;          // bytes the heap block may have: the free heap minus what the head keeps for itself
-    uint32_t fixed;         // bytes of the fixed pool (RamSecondArena), 0 - none
+    uint32_t fixed;         // bytes of the fixed pool (RamInFixedPool), 0 - none
     uint32_t fixed_base;    // its address
     bool fixed_words;       // the fixed pool takes 32-bit access only: no module with ModuleByteRam there
     bool code_in_fixed;     // module IRAM code goes to the fixed pool from its start, copied there at the start

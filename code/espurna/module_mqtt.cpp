@@ -65,7 +65,16 @@ const MqttModuleApi Table {
 } // namespace
 
 // before the modules that need it (Home Assistant, Domoticz)
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_mqtt.ipp"
+#endif
+
 ESPURNA_MODULE(mqtt, "mqtt", 5) {
+#if WEB_SUPPORT
+    modulesUi("mqtt", ui_mqtt_data, sizeof(ui_mqtt_data));
+#endif
+
     mqttSetup();
     modulesMqttProvide(&Table);
 }

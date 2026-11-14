@@ -400,7 +400,9 @@ class Linker:
         """the webui data module"""
         page = self.webui_page()
         if not page:
-            return []
+            # never a release without the WebUI (W10: the CI build job had no WebUI build, the module went missing
+            # without a word)
+            raise RuntimeError("webui: html/build/index.html.gz is missing, run `gulp build` in code/ first")
         with open(page, "rb") as f:
             data = data_package("webui", f.read(), ctx["head_id"], [base[1] for base in self.bases], self.image_align,
                                 self.requires_bytes("webui"))

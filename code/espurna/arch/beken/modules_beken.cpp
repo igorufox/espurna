@@ -307,23 +307,74 @@ bool blocksValid(uint32_t logical, uint32_t size) {
 // --- the area -------------------------------------------------------------------------------------
 
 struct Region {
-    uint32_t start { 0 };   // the download partition (for the meters)
-    uint32_t lo { 0 };      // first sector for modules
-    uint32_t hi { 0 };      // the directory sector
+    uint32_t start { 0 };       // where the head starts (the meters: lo - start is the head)
+    uint32_t lo { 0 };          // first sector for modules
+    uint32_t hi { 0 };          // the directory sector
+    uint32_t download { 0 };    // the download partition: its first sector holds the RBL of an OTA image
+    uint32_t initial { 0 };     // the modules file of the initial image (module_initial_image.py)
+    arch::Area::Range keep[arch::Area::KeepMax] {};
     bool valid { false };
 };
 
 Region region;
 
+// ESPurna's own sectors of every Beken layout, at fixed offsets: the RF calibration (0x1D0000), Matter's 'kvs'
+// (0x1D3000), the settings pool (0x1DB000, storage_flash_beken.cpp), the crash record (0x1EB000, rtcmem_beken.cpp),
+// the Tuya config (0x1ED000)
+constexpr uint32_t SystemOffset { 0x1D0000 };
+constexpr uint32_t SystemEnd { 0x1F0000 };
+
+void keepRange(size_t& count, uint32_t offset, uint32_t size) {
+    if (size && (offset < region.hi) && ((offset + size) > region.lo) && (count < arch::Area::KeepMax)) {
+        region.keep[count++] = arch::Area::Range{offset, size};
+    }
+}
+
+// All the flash the layout leaves free, for the modules (owner 2026-11-14: «используем весь предоставленный объём,
+// вдруг я все модули захочу включить»): from right behind the head in the app partition (the head takes ~750 KB of
+// it) to the end of 'download' (its last sector the directory). The head as linked ends at its logical size, stored as
+// 34 bytes per 32 from the app partition on; a sector of room after it. Out of it:
+// - the last sector of the app partition (its RBL header, the last 102 bytes: ltchiptool bk72xx binary.py) and the
+//   first one of 'download' (the RBL of an OTA image)
+// - ESPurna's own sectors (SystemOffset .. SystemEnd) where they lie in between (the Quectel layout: the app ends at
+//   0x1BA000, 'download' starts at 0x286000)
+// - what the bootloader keeps there (FlashLayout::reserved)
+// A head update goes through 'download' and the bootloader writes the app partition: the modules are off for it and
+// the Apply writes them anew, as always (W23 2026-11-14: 676 KB -> 1.83 MB on the Tuya layout)
 bool findArea() {
     const auto& layout = ::espurna::beken::flashLayout();
     if ((layout.layout == ::espurna::beken::Layout::Unknown) || (layout.download_length < (SectorSize * 4))) {
         return false;
     }
 
-    region.start = layout.download_offset;
-    region.lo = layout.download_offset + SectorSize;
+    region = Region{};
+    region.download = layout.download_offset;
+    region.initial = layout.download_offset + SectorSize;
     region.hi = layout.download_offset + layout.download_length - SectorSize;
+
+    constexpr uint32_t Origin { 0x10000 };
+    const uint32_t logical = ESP.getSketchSize() + Origin;
+    const uint32_t stored = layout.app_offset + ((logical - Origin + BlockData - 1) / BlockData * BlockSize);
+    const uint32_t behind = roundUp(stored, SectorSize) + SectorSize;
+    const uint32_t app_end = layout.app_offset + layout.app_length;
+
+    if ((behind + SectorSize) < app_end) {
+        region.start = layout.app_offset;
+        region.lo = behind;
+    } else {
+        // no room behind the head: 'download' alone
+        region.start = layout.download_offset;
+        region.lo = layout.download_offset + SectorSize;
+    }
+
+    size_t count { 0 };
+    keepRange(count, app_end - SectorSize, SectorSize);
+    keepRange(count, layout.download_offset, SectorSize);
+    keepRange(count, SystemOffset, SystemEnd - SystemOffset);
+    for (const auto& range : layout.reserved) {
+        keepRange(count, range.offset, range.size);
+    }
+
     region.valid = region.hi > region.lo;
     return region.valid;
 }
@@ -634,7 +685,10 @@ Area area() {
         return Area{0, 0, 0};
     }
 
-    return Area{region.start, region.lo, region.hi};
+    Area out{region.start, region.lo, region.hi};
+    out.initial = region.initial;
+    std::memcpy(out.keep, region.keep, sizeof(out.keep));
+    return out;
 }
 
 bool rawRead(uint32_t offset, void* data, size_t size) {
@@ -706,12 +760,12 @@ const char* imageBegin(Upload& up) {
 
     // an OTA image left in the partition: with its header erased the bootloader sees no update to install
     uint8_t probe[16];
-    if (lt_flash_read(region.start, probe, sizeof(probe)) == sizeof(probe)) {
+    if (lt_flash_read(region.download, probe, sizeof(probe)) == sizeof(probe)) {
         bool blank = true;
         for (const auto byte : probe) {
             blank = blank && (byte == 0xff);
         }
-        if (!blank && !lt_flash_erase_block(region.start)) {
+        if (!blank && !lt_flash_erase_block(region.download)) {
             return PSTR("flash erase");
         }
     }

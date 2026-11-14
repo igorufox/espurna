@@ -1,4 +1,4 @@
-import { createNodeList } from './relay.mjs';
+import { createNodeList } from './template.mjs';
 import { variableListeners } from './settings.mjs';
 
 /** @returns {import('./settings.mjs').KeyValueListeners} */

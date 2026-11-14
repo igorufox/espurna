@@ -492,6 +492,9 @@ void task(void*) {
         }
 
         write();
+        // the reset that follows is ours, not the SDK's watchdog: the register keeps the kind until then (a feed
+        // that still comes in time writes the whole register over, and that boot has no stall to report)
+        retention() = rtcmemRetention() | static_cast<uint32_t>(RtcmemCrash::Stall);
         vTaskDelete(nullptr);
     }
 }
@@ -601,6 +604,10 @@ void rtcmemCrashSetup() {
         }
     });
 #endif
+}
+
+void rtcmemStallSnapshot() {
+    stall::write();
 }
 
 void rtcmemCrashDump(Print& print) {

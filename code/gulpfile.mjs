@@ -54,6 +54,7 @@ import * as url from 'node:url';
 import * as zlib from 'node:zlib';
 
 import { maybeInline } from './html/lib/inline.mjs';
+import { CORE, PARTS, coreName } from './html/parts.mjs';
 
 // -----------------------------------------------------------------------------
 // Configuration
@@ -153,6 +154,7 @@ export const BUILD_SCRIPTS = [
     'vitest.config.mjs',
     `${HTML_LIB_DIR}/**/*.mjs`,
     `${MODE_DIR}/**/*.mjs`,
+    `${HTML_DIR}/parts.mjs`,
 ];
 
 // files relevant to the vitest
@@ -892,6 +894,194 @@ function buildWebUI() {
         dest(STATIC_DIR));
 }
 
+// -----------------------------------------------------------------------------
+// The parts of the modules (U31, html/parts.mjs)
+// -----------------------------------------------------------------------------
+
+// an import of a head's file from a part: the page's own (window.EspurnaUi), never a copy in the part
+const CORE_EXTERNAL = 'espurna-ui:';
+
+/** @type {Map<string, string>} absolute path -> the EspurnaUi property */
+const CORE_FILES = new Map(CORE.map((file) => [path.join(HTML_DIR, file), coreName(file)]));
+
+/** @returns {import('rollup').Plugin} */
+function rollupCoreExternal() {
+    return {
+        name: 'espurna-ui-core',
+        resolveId(source, importer) {
+            if (!importer || !source.startsWith('.')) {
+                return null;
+            }
+            const name = CORE_FILES.get(path.resolve(path.dirname(importer), source));
+            return name ? {id: `${CORE_EXTERNAL}${name}`, external: true} : null;
+        },
+    };
+}
+
+/**
+ * the script of a part: its .mjs bundled with what it alone imports, the head's files from the page; the bundle
+ * registers the part's init() with the page (src/parts.mjs register())
+ * @param {string} name
+ * @param {string} script
+ * @param {BuildOptions} options
+ * @param {BuildStats} stats
+ * @returns {Promise<string>}
+ */
+async function bundlePart(name, script, options, stats) {
+    const entry = path.join(HTML_DIR, script);
+    const result = await rollup({
+        input: 'part',
+        treeshake: {
+            moduleSideEffects: () => false,
+        },
+        plugins: [
+            rollupCoreExternal(),
+            rollupAlias({
+                entries: makeImportAlias(options.mode),
+            }),
+            rollupVirtual({
+                part: `import { init } from ${JSON.stringify(entry)};\nwindow.EspurnaUi.register(${JSON.stringify(name)}, init);\n`,
+            }),
+            rollupEsbuild({
+                platform: 'browser',
+                target: 'es2022',
+                minify: options.minify,
+                format: 'esm',
+            }),
+        ],
+    });
+
+    for (const id of result.watchFiles) {
+        if (path.isAbsolute(id)) {
+            try {
+                stats[id] = await fs.promises.stat(id);
+            } catch {
+                // virtual ids have no file
+            }
+        }
+    }
+
+    const bundle = await result.generate({
+        format: 'iife',
+        globals: (id) => id.startsWith(CORE_EXTERNAL)
+            ? `window.EspurnaUi.${id.slice(CORE_EXTERNAL.length)}`
+            : id,
+    });
+
+    if (bundle.output.length !== 1) {
+        throw ERR_SINGLE_BUNDLE;
+    }
+
+    return bundle.output[0].code;
+}
+
+/**
+ * one part: <template data-into=...> of its html, <style> of its css, <script> of its .mjs (the dev server: the .mjs
+ * itself, <script data-src>)
+ * @param {string} name
+ * @param {import('./html/parts.mjs').Part} part
+ * @param {BuildOptions} options
+ * @param {BuildStats} stats
+ * @returns {Promise<string>}
+ */
+async function partFragment(name, part, options, stats) {
+    /** @param {string} file */
+    async function read(file) {
+        const full = path.join(HTML_DIR, file);
+        stats[full] = await fs.promises.stat(full);
+        return (await fs.promises.readFile(full)).toString();
+    }
+
+    const out = [];
+
+    /** @type {[string, string[] | undefined][]} */
+    const targets = [
+        ['status', part.status],
+        ['panels', part.panels],
+        ['templates', part.templates],
+    ];
+
+    for (const [into, list] of targets) {
+        if (list?.length) {
+            const html = [];
+            for (const file of list) {
+                html.push(await read(file));
+            }
+            out.push(`<template data-into="${into}">${html.join('\n')}</template>`);
+        }
+    }
+
+    for (const file of part.css ?? []) {
+        out.push(`<style>${await read(file)}</style>`);
+    }
+
+    if (part.script) {
+        if (options.mode === MODE_DEV) {
+            out.push(`<script data-src="${part.script.replace(/^src\//, '')}"></script>`);
+        } else {
+            out.push(`<script>${await bundlePart(name, part.script, options, stats)}</script>`);
+        }
+    }
+
+    let html = out.join('\n');
+    if (options.minify) {
+        html = await htmlMinify(html, {
+            collapseWhitespace: true,
+            removeComments: true,
+            minifyCSS: true,
+            minifyJS: false,
+        });
+        html = html.replaceAll('pure-', 'p-');
+    }
+
+    return html;
+}
+
+/**
+ * @param {string} name
+ * @param {Buffer} data
+ */
+function partIpp(name, data) {
+    return [
+        '#pragma once',
+        '#include <pgmspace.h>',
+        '#include <cstdint>',
+        `// the WebUI part of the ${name} module (html/parts.mjs), gzip: gulp build`,
+        `alignas(4) static const uint8_t ui_${name}_data[] PROGMEM = {`,
+        formatBufferLines(data),
+        '};\n',
+    ].join('\n');
+}
+
+// html/build/ui-<name>.html{,.gz} and espurna/static/ui_<name>.ipp of every part
+async function buildParts() {
+    /** @type {BuildOptions} */
+    const options = {
+        compress: 'gz',
+        minify: true,
+        mode: MODE_WEBUI,
+    };
+
+    for (const [name, part] of Object.entries(PARTS)) {
+        /** @type {BuildStats} */
+        const stats = {};
+
+        const html = Buffer.from(await partFragment(name, part, options, stats));
+        const gz = zlib.gzipSync(html, {level: zlib.constants.Z_BEST_COMPRESSION});
+        // the same gzip header as the page's (toCompressed()): no mtime, os 255
+        gz[4] = 0;
+        gz[5] = 0;
+        gz[6] = 0;
+        gz[7] = 0;
+        gz[9] = 0xff;
+
+        await fs.promises.writeFile(path.join(BUILD_DIR, `ui-${name}.html`), html);
+        await fs.promises.writeFile(path.join(BUILD_DIR, `ui-${name}.html.gz`), gz);
+        await fs.promises.writeFile(path.join(STATIC_DIR, `ui_${name}.ipp`), partIpp(name, gz));
+        log(`html/build/ui-${name}.html.gz: ${gz.length} bytes`);
+    }
+}
+
 /** @typedef ServeOptions
  * @property {string} host
  * @property {number} port
@@ -990,6 +1180,33 @@ function serveWebUI({host, port}) {
         case '/index.htm':
         case '/index.html':
             await responseIndex(response);
+            return;
+        }
+
+        // the parts of the modules: every one of html/parts.mjs, the .mjs of a part imported as it is
+        if (url.pathname === '/ui') {
+            response.setHeader('Content-Type', 'application/json');
+            response.end(JSON.stringify(Object.keys(PARTS)));
+            return;
+        }
+
+        if (url.pathname === '/ui/part') {
+            const name = url.searchParams.get('name') ?? '';
+            const part = PARTS[name];
+            if (!part) {
+                response.writeHead(404, {'content-type': 'text/plain'});
+                response.end('not found');
+                return;
+            }
+
+            try {
+                response.setHeader('Content-Type', 'text/html');
+                response.end(await partFragment(name, part, opts, {}));
+            } catch (e) {
+                log_error(e);
+                response.writeHead(500, {'content-type': 'text/plain'});
+                response.end('500');
+            }
             return;
         }
 
@@ -1140,11 +1357,12 @@ export { html_validate as 'html-validate' };
 const ERR_PARSE_STRING = new Error('flag type !== string');
 const ERR_PARSE_NUMBER = new Error('flag type !== number');
 
-export function build() {
-    return buildWebUI();
+export async function build() {
+    await buildWebUI();
+    await buildParts();
 }
 
-build.description = `builds the WebUI of the firmware, ${path.relative(ROOT, path.join(STATIC_DIR, WEBUI_NAME))}.ipp`;
+build.description = `builds the WebUI of the firmware, ${path.relative(ROOT, path.join(STATIC_DIR, WEBUI_NAME))}.ipp, and the parts of the modules (espurna/static/ui_<name>.ipp)`;
 
 export function dev() {
     const HOST = 'host';

@@ -815,3 +815,8 @@ _ZN7espurna3tls6Stream7pendingEv beken
 _ZN7espurna3tls6StreamC1Ev beken
 _ZN7espurna3tls6StreamD1Ev beken
 _ZNK7espurna3tls6Stream8tlsErrorEv beken
+_Z9modulesUiPKcPKhj
+_ZN7espurna3tcp10ConnectionD1Ev esp8266
+_ZN7espurna3tcp10ConnectionD1Ev esp32
+_Z13telnetReversePKct
+_ZN6StringC1Emh esp8266

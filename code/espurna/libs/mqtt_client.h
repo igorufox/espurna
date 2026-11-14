@@ -45,6 +45,7 @@ enum class DisconnectReason : uint8_t {
     Fingerprint,
     Untrusted,      // the chain did not lead to the CA (or the clock is not set yet)
     NoCa,           // the CA check is not available: no tls module, or no certificate in mqttCA
+    NoTls,          // a secure connection, and the tls module is not installed
     Refused,        // CONNACK with an error code (code())
     Protocol,       // something the client could not parse
     Timeout,        // no CONNACK, or no answer to PINGREQ

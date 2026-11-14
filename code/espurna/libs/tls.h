@@ -6,9 +6,10 @@ HTTP client and the MQTT client: a byte stream over the TCP connection of libs/t
 - BearSSL's engine has no I/O of its own: the loop moves its records to and from the TCP connection and runs its
   crypto there (never in lwIP's context, which would stop the network for the length of a handshake). The ESP8266
   core has BearSSL, the others take the same sources as a library (igorufox/bearssl-esp8266)
-- the base: TLS 1.2, static RSA + AES-128-GCM, the server's RSA key from its certificate (the least code). The tls
-  module (module_tls.cpp, libs/tls_full.h) adds ECDHE with RSA and ECDSA certificates, ChaCha20-Poly1305 and the
-  X.509 decoder through the two hooks below
+- the TCP connection, the plain stream and the records of a TLS connection are here (ESPurna: the head); making a TLS
+  connection - the client, the handshake, RSA, AES-GCM, the server's certificate - is libs/tls_setup.h: ESPurna's tls
+  module (module_tls.cpp, with ECDHE, ECDSA, ChaCha20-Poly1305 and the X.509 decoder of libs/tls_full.h), the base
+  alone in code/migration-app. Without it a secure connection fails with Failure::NoTls (libs/tls_engine.h start())
 - the server: not checked (a download is checked against its SHA-256 instead), the SHA-1 fingerprint of its
   certificate (MQTT `mqttFP`), or its chain against trust anchors (MQTT `mqttCA`, else the built-in root; the tls
   module does it, the head has only the hook)
@@ -21,7 +22,7 @@ HTTP client and the MQTT client: a byte stream over the TCP connection of libs/t
     stream.connect("host", 443, options);
     ... from the loop: stream.ready() / read() / write() / drained() ...
 
-The implementation is libs/tls_impl.h, part of libs/net_impl.h.
+The implementation is libs/tls_impl.h, part of libs/net_impl.h; the setup of a TLS connection libs/tls_setup.h.
 
 */
 
@@ -37,20 +38,6 @@ The implementation is libs/tls_impl.h, part of libs/net_impl.h.
 
 namespace espurna {
 namespace tls {
-
-// --- the extension (ESPurna's tls module, always in the ESP32 safeboot) ------------------------------------------
-
-// after the base setup of every TLS connection: the extension's suites and algorithms. false - none installed
-bool extend(br_ssl_client_context* sc);
-
-// the server key from its certificate (DER) by the X.509 decoder: `out` points into the returned block (free() it
-// after the connection). nullptr - none installed or not decoded
-void* key(const uint8_t* der, size_t len, br_x509_pkey* out);
-
-// the X.509 engine that checks the chain of the server against the CA certificates of `pem` (PEM; nullptr or empty -
-// the built-in root): it lives in the returned block (free() it after the connection). nullptr - no tls module, no
-// memory, or no certificate in `pem`
-const br_x509_class** caCheck(const char* pem, void** block);
 
 // --- the stream ---------------------------------------------------------------------------------------------------
 
@@ -81,6 +68,7 @@ enum class Failure : uint8_t {
     Fingerprint,
     Untrusted,      // the chain did not lead to a trust anchor (or the clock is not set)
     NoCa,           // the CA check is not available: no tls module, or no certificate in the PEM
+    NoTls,          // a secure connection, and the image has no TLS (ESPurna: the tls module is not installed)
 };
 
 class Stream {

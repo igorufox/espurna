@@ -17,7 +17,16 @@ driver needs this module and is linked against it directly.
 #include "modules.h"
 #include "sensor.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_sensors.ipp"
+#endif
+
 ESPURNA_MODULE(sensors, "sensors", 10) {
+#if WEB_SUPPORT
+    modulesUi("sensors", ui_sensors_data, sizeof(ui_sensors_data));
+#endif
+
     using espurna::modules::Api;
 
     // the real ones (renamed in this module), before anything else calls them

@@ -5,8 +5,6 @@
 #   py -3 code/scripts/board_modules.py <host> status                 GET /modules: the head, the pools, every module
 #   py -3 code/scripts/board_modules.py <host> remove <name>          POST /modules/remove
 #   py -3 code/scripts/board_modules.py <host> restart                POST /modules/restart
-#   py -3 code/scripts/board_modules.py <host> sbupdate <url>         ESP32: POST /safeboot/update, the safeboot fetches
-#                                                                     the image (merged from 0x0 or app0) from <url>
 #   py -3 code/scripts/board_modules.py <host> get <uri>              any GET with the login
 #   py -3 code/scripts/board_modules.py <host> off                    POST /modules/off: restart without module code
 #   py -3 code/scripts/board_modules.py <host> apply <file> <a,b,c>   the Apply of the MODULES panel: off, wait, POST
@@ -98,7 +96,7 @@ def apply(dev, path, names):
 def main(argv):
     if len(argv) < 2:
         print("usage: board_modules.py <host> status | off | apply <file> <a,b,c> | remove <name> | restart | "
-              "sbupdate <url> | get <uri>")
+              "get <uri>")
         return 2
     dev = firmware_esp_net.Device(argv[0])
     cmd, args = argv[1], argv[2:]
@@ -108,8 +106,6 @@ def main(argv):
         print(*form(dev, "/modules/remove", {"name": args[0]}))
     elif cmd == "restart":
         print(*form(dev, "/modules/restart", {}))
-    elif cmd == "sbupdate":
-        print(*form(dev, "/safeboot/update", {"url": args[0]}))
     elif cmd == "off":
         print(*form(dev, "/modules/off", {}))
     elif cmd == "apply":

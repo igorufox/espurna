@@ -38,6 +38,13 @@ struct FlashLayout {
     // the sector of the crash record (rtcmem_beken.cpp), 0 - none: only where the stock dumps of that bootloader
     // show it blank (firmware-dumps/: CB3S, CBU, the slot board, the square QFN, two XH-CB2S - 0x1EB000 blank)
     uint32_t crash_offset { 0 };
+    // what the bootloader / the stock firmware keeps between the app and the end of 'download' (never modules there):
+    // the sectors the stock dumps of that bootloader show written (firmware-dumps/, two XH-CB2S: 0x210000, 0x220000)
+    struct Range {
+        uint32_t offset;
+        uint32_t size;
+    };
+    Range reserved[2] {};
 };
 
 const FlashLayout& flashLayout();

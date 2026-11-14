@@ -1,8 +1,8 @@
 /*
 
-The network stack of the head (libs/net_impl.h: TCP, TLS, the HTTP server): the one implementation, every chip. The
-modules call the head's; the HTTP client is the http module (http.cpp). The tls module (module_tls.cpp) extends the
-TLS (HTTP and MQTT) through the hooks below
+The network stack of the head (libs/net_impl.h: TCP, the stream with the records of TLS, the HTTP server): the one
+implementation, every chip. The modules call the head's; the HTTP client is the http module (http.cpp). Making a TLS
+connection (HTTP and MQTT) is the tls module's (module_tls.cpp), through the hook below
 
 */
 
@@ -19,31 +19,16 @@ TLS (HTTP and MQTT) through the hooks below
 namespace espurna {
 namespace tls {
 
-// the tls module's, when installed (Apply + reboot)
-bool extend(br_ssl_client_context* sc) {
+// a TLS connection is the tls module's (libs/tls_setup.h): the head has the records only. Without the module a secure
+// connection fails, plain ones work (Apply + reboot installs it)
+Failure start(Engine& engine, const char* host, const Options& options, const uint8_t* seed, size_t seed_len,
+    unsigned char* input, size_t input_len, unsigned char* output, size_t output_len)
+{
 #if MODULES_SUPPORT
-    const auto func = modulesApi<decltype(extend)>(modules::Api::TlsExtend);
-    return func ? func(sc) : false;
+    const auto func = modulesApi<decltype(start)>(modules::Api::TlsStart);
+    return func ? func(engine, host, options, seed, seed_len, input, input_len, output, output_len) : Failure::NoTls;
 #else
-    return false;
-#endif
-}
-
-void* key(const uint8_t* der, size_t len, br_x509_pkey* out) {
-#if MODULES_SUPPORT
-    const auto func = modulesApi<decltype(key)>(modules::Api::TlsKey);
-    return func ? func(der, len, out) : nullptr;
-#else
-    return nullptr;
-#endif
-}
-
-const br_x509_class** caCheck(const char* pem, void** block) {
-#if MODULES_SUPPORT
-    const auto func = modulesApi<decltype(caCheck)>(modules::Api::TlsCaCheck);
-    return func ? func(pem, block) : nullptr;
-#else
-    return nullptr;
+    return Failure::NoTls;
 #endif
 }
 

@@ -13,7 +13,16 @@ no time. TLS works without it, except the CA check of the tls module (the validi
 #include "modules.h"
 #include "ntp.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_ntp.ipp"
+#endif
+
 ESPURNA_MODULE(ntp, "ntp", 6) {
+#if WEB_SUPPORT
+    modulesUi("ntp", ui_ntp_data, sizeof(ui_ntp_data));
+#endif
+
     using espurna::modules::Api;
 
     modulesProvide(Api::NtpOnTick, &ntpOnTick);

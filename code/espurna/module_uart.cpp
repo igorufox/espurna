@@ -14,7 +14,16 @@ it once this module started. Starts before the modules that use it.
 #include "modules.h"
 #include "uart.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_uart.ipp"
+#endif
+
 ESPURNA_MODULE(uart, "uart", 5) {
+#if WEB_SUPPORT
+    modulesUi("uart", ui_uart_data, sizeof(ui_uart_data));
+#endif
+
     using espurna::modules::Api;
 
     uartSetup();

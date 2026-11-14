@@ -8,6 +8,9 @@ esp8266 Core API shims, BK72xx (LibreTiny) part (ref. compat_chip.h)
 
 #include "rtcmem.h"
 
+#include <cstdlib>
+#include <new>
+
 // 32bit micros() wraps every ~71 minutes, extend it. Called often enough (every loop())
 // that a single wrap between the two calls is the only one possible
 uint64_t micros64() {
@@ -31,7 +34,12 @@ uint64_t micros64() {
 
 // LibreTiny names what the SDK start type says, which is 'watchdog' after our crash handlers
 String EspCompat::getResetReason() {
-    if (rtcmemCrash() != RtcmemCrash::None) {
+    switch (rtcmemCrash()) {
+    case RtcmemCrash::None:
+        break;
+    case RtcmemCrash::Stall:
+        return String(F("Watchdog"));
+    default:
         return String(F("Crash"));
     }
 
@@ -53,6 +61,8 @@ String EspCompat::getResetInfo() {
         return String(F("Crash (reserved exception)"));
     case RtcmemCrash::MallocFailed:
         return String(F("Crash (out of memory)"));
+    case RtcmemCrash::Stall:
+        return String(F("Loop stalled (watchdog)"));
     }
 
     return static_cast<EspClass&>(*this).getResetInfo();
@@ -140,3 +150,16 @@ unsigned long pulseIn(pin_size_t pin, uint8_t state, unsigned long timeout) {
 
 } // extern "C"
 
+
+// new (std::nothrow) of libstdc++ calls the throwing operator new, which aborts when the heap has no block of that size
+// (no exceptions here), and abort() of the BK72xx spins forever. The tcpip thread (priority 7) then held the CPU while
+// it accepted a connection with the heap short (the receive ring of libs/tcp_impl.h), the loop could not feed the
+// watchdog, and the board reset 75-120 s after Matter started under load (10.0.5.139 2026-11-14, W1: the stall record
+// had tcp/ip in abort <- operator new <- new[](nothrow) <- the ring's unique_ptr). Here nothrow means nothrow: nullptr
+void* operator new(size_t size, const std::nothrow_t&) noexcept {
+    return malloc(size ? size : 1);
+}
+
+void* operator new[](size_t size, const std::nothrow_t&) noexcept {
+    return malloc(size ? size : 1);
+}

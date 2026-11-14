@@ -656,7 +656,7 @@ void resetPins() {
         if (!hardware.valid(pin)) {
             continue;
         }
-        if ((ignore & (1 << pin)) > 0) {
+        if ((ignore & (uint64_t{1} << pin)) > 0) {
             continue;
         }
 #if DEBUG_SERIAL_SUPPORT

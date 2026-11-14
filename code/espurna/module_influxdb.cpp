@@ -10,7 +10,16 @@ The influxdb module (docs/modules.md): sends the relays and the sensors to Influ
 #include "modules.h"
 #include "influxdb.h"
 
+#if WEB_SUPPORT
+// its part of the WebUI (html/parts.mjs, gulp build)
+#include "static/ui_influxdb.ipp"
+#endif
+
 ESPURNA_MODULE(influxdb, "influxdb", 50) {
+#if WEB_SUPPORT
+    modulesUi("influxdb", ui_influxdb_data, sizeof(ui_influxdb_data));
+#endif
+
     idbSetup();
 }
 

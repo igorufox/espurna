@@ -79,14 +79,17 @@ err_t gethostbyname(const char* name, IPAddress& out, dns_found_callback callbac
     return dns_gethostbyname(name, out, callback, arg);
 }
 
-// off, as upstream: no limit of connections or heap for new requests (owner, 2026-11-10). The settings turn it on
-
+// on (owner 2026-11-11, plan section 7: «D2 (лимит соединений и порог heap) оставлены»; the 11-10 «as upstream» was
+// replaced by it). The 1 MB head with modules runs at 4-9 KB free and one request takes several KB: without the gate
+// 12 parallel requests ran it out, hundreds of failed allocations a round and an OOM abort (10.0.5.0 2026-11-14, W47).
+// The connections limit is what holds it; the heap floor only below what the board has idle: 5120 locked 10.0.5.0
+// out of the web and telnet (4 KB idle with 9 modules and MQTT, 2026-11-14)
 WebGuard web_guard() {
     return WebGuard{
-        .heap = 0,
+        .heap = 2048,
         .block = 0,
         .lwip = 0,
-        .conns = 0,
+        .conns = 3,
     };
 }
 

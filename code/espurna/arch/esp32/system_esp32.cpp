@@ -150,9 +150,9 @@ void sdk::feed_loop_wdt() {
     // first write after the boot, when the relay module already restored the same state.
     // (ref. gpio_esp32.cpp HardwarePin)
     if (Rtcmem) {
-        const uint32_t ignore = Rtcmem->gpio_ignore;
-        for (uint8_t pin = 0; pin < 32; ++pin) {
-            if (ignore & (uint32_t{1} << pin)) {
+        const uint64_t ignore = Rtcmem->gpio_ignore;
+        for (uint8_t pin = 0; pin < GPIO_NUM_MAX; ++pin) {
+            if (ignore & (uint64_t{1} << pin)) {
                 gpio_hold_en(static_cast<gpio_num_t>(pin));
             }
         }

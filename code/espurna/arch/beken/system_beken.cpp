@@ -507,9 +507,14 @@ uint32_t reset_reason() {
     // SDK sees the system word written by restart() or our crash handlers as an unknown start type,
     // i.e. a watchdog reset
     if (rtcmemSysStatus()) {
-        return (rtcmemCrash() != RtcmemCrash::None)
-            ? REASON_EXCEPTION_RST
-            : REASON_SOFT_RESTART;
+        switch (rtcmemCrash()) {
+        case RtcmemCrash::None:
+            return REASON_SOFT_RESTART;
+        case RtcmemCrash::Stall:
+            return REASON_WDT_RST;
+        default:
+            return REASON_EXCEPTION_RST;
+        }
     }
 
     switch (lt_get_reboot_reason()) {

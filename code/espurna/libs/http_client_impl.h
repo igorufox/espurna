@@ -250,7 +250,12 @@ private:
             break;
         case tls::Failure::Tls:
         case tls::Failure::Fingerprint:
+        case tls::Failure::Untrusted:
+        case tls::Failure::NoCa:
             finishf(false, PSTR("TLS handshake failed, BearSSL error %d"), _stream.tlsError());
+            break;
+        case tls::Failure::NoTls:
+            finish(false, PSTR("https needs the tls module"));
             break;
         }
     }

@@ -126,10 +126,17 @@ struct NoLock {
 #include "../../espurna/libs/net_impl.h"
 #include "../../espurna/libs/http_client_impl.h"
 #include "../../espurna/libs/image_receiver.h"
+#include "../../espurna/libs/tls_setup.h"
 
-// no modules here: the head's TLS of the client only (static RSA + AES-128-GCM, what GitHub Pages offers)
+// no modules here: the base TLS of libs/tls_setup.h only (static RSA + AES-128-GCM, what GitHub Pages offers)
 namespace espurna {
 namespace tls {
+
+Failure start(Engine& engine, const char* host, const Options& options, const uint8_t* seed, size_t seed_len,
+    unsigned char* input, size_t input_len, unsigned char* output, size_t output_len)
+{
+    return setup::start(engine, host, options, seed, seed_len, input, input_len, output, output_len);
+}
 
 bool extend(br_ssl_client_context*) {
     return false;

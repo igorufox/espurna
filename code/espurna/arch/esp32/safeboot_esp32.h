@@ -19,6 +19,9 @@ Asymmetric flash layout (esp32_4mb_safeboot.csv, Tasmota's offsets): a factory a
 // switch to safeboot, whatever crashes after it
 void safebootGuard();
 
+// the step of the boot reached last (libs/boot_trace.h), shown by safeboot after a rollback
+void safebootTrace(const char* name);
+
 // a new image confirmed for the bootloader (its rollback), before a restart ESPurna asked for itself
 void safebootConfirm();
 

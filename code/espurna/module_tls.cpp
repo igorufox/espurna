@@ -1,10 +1,11 @@
 /*
 
-The TLS module (docs/modules.md), every chip alike: the rest of TLS 1.2 for the head's one TLS (libs/tls.h: the
-HTTP client and MQTT), for any server (the NSPanel's weather, URL tiles, ThingSpeak, InfluxDB): ECDHE with RSA and
-ECDSA certificates, ChaCha20-Poly1305, the X.509 decoder. The code is libs/tls_full.h (the ESP32 safeboot has
-the same); this module hands it to the head through three hooks: Api::TlsExtend, Api::TlsKey and Api::TlsCaCheck
-(the chain check of MQTT mqttScCheck 2).
+The TLS module (docs/modules.md), every chip alike: all of TLS for the head's one stream (libs/tls.h: the HTTP client
+and MQTT), for any server (the NSPanel's weather, URL tiles, ThingSpeak, InfluxDB). The head has the TCP connection
+and the records only; making a TLS connection is here (libs/tls_setup.h): the client, the handshake, static RSA +
+AES-128-GCM, and libs/tls_full.h - ECDHE with RSA and ECDSA certificates, ChaCha20-Poly1305, the X.509 decoder, the
+chain check (MQTT mqttScCheck 2). The head asks for it through one hook, Api::TlsStart; without the module a secure
+connection fails (owner 2026-11-14: all of TLS out of the head).
 Installed (Apply + reboot), every https connection of the head's client offers its suites. The module also has
 the MFLN.PROBE terminal command (does a server take smaller TLS records, mqttScMFLN). Starts before the modules
 that use it.
@@ -17,9 +18,29 @@ that use it.
 
 #include "modules.h"
 #include "libs/tls_full.h"
+#include "libs/tls_setup.h"
 #include "libs/URL.h"
 
 #include <memory>
+
+// the three extensions of libs/tls_setup.h: all of libs/tls_full.h
+namespace espurna {
+namespace tls {
+
+bool extend(br_ssl_client_context* sc) {
+    return full::extend(sc);
+}
+
+void* key(const uint8_t* der, size_t len, br_x509_pkey* out) {
+    return full::key(der, len, out);
+}
+
+const br_x509_class** caCheck(const char* pem, void** block) {
+    return full::caCheck(pem, block);
+}
+
+} // namespace tls
+} // namespace espurna
 
 #if TERMINAL_SUPPORT
 namespace {
@@ -103,9 +124,7 @@ static constexpr ::terminal::Command Commands[] PROGMEM {
 ESPURNA_MODULE(tls, "tls", 4) {
     using espurna::modules::Api;
 
-    modulesProvide(Api::TlsExtend, &espurna::tls::full::extend);
-    modulesProvide(Api::TlsKey, &espurna::tls::full::key);
-    modulesProvide(Api::TlsCaCheck, &espurna::tls::full::caCheck);
+    modulesProvide(Api::TlsStart, &espurna::tls::setup::start);
 
 #if TERMINAL_SUPPORT
     espurna::terminal::add(Commands);

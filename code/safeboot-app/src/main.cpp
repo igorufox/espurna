@@ -44,6 +44,7 @@ the single big OTA slot (app0) and cannot overwrite itself, so updates go throug
 #include "../../espurna/libs/embedis_records.h"
 #include "../../espurna/libs/settings_rotate.h"
 #include "../../espurna/libs/esp32_partitions.h"
+#include "../../espurna/libs/boot_trace.h"
 #include "../../espurna/libs/text.h"
 
 // the one network stack of ESPurna (libs/net_impl.h: TCP and its HTTP server; no client here). lwIP's callbacks run in
@@ -81,17 +82,11 @@ struct Lock {
 namespace espurna {
 namespace tls {
 
-// the hooks of the one TLS (libs/tls.h): nothing connects out of safeboot
-bool extend(br_ssl_client_context*) {
-    return false;
-}
-
-void* key(const uint8_t*, size_t, br_x509_pkey*) {
-    return nullptr;
-}
-
-const br_x509_class** caCheck(const char*, void**) {
-    return nullptr;
+// nothing connects out of safeboot: no TLS (libs/tls_engine.h)
+Failure start(Engine&, const char*, const Options&, const uint8_t*, size_t, unsigned char*, size_t, unsigned char*,
+    size_t)
+{
+    return Failure::NoTls;
 }
 
 } // namespace tls
@@ -282,6 +277,7 @@ std::string appInfo() {
 
 std::string boot_reason;
 std::string boot_app_state;
+std::string boot_trace_step;
 
 std::string resetReasonText(esp_reset_reason_t reason) {
     switch (reason) {
@@ -708,7 +704,8 @@ void onRoot(WebRequest& request) {
 
     const auto image = runningImage();
     std::string body = "<p>ESPurna in app0: " + appInfo() + "</p><p>Wi-Fi: " + wifi_result + "</p>"
-        + "<p>Here after: " + boot_reason + ", app0 was " + boot_app_state + "</p>";
+        + "<p>Here after: " + boot_reason + ", app0 was " + boot_app_state
+        + ", ESPurna reached: " + (boot_trace_step.empty() ? std::string("nothing") : boot_trace_step) + "</p>";
     if (!last_result.empty()) {
         body += "<p>Last update: " + last_result + "</p>";
     }
@@ -870,6 +867,11 @@ extern "C" void app_main() {
     // new ESPurna image that never confirmed itself, the rollback)
     boot_reason = resetReasonText(esp_reset_reason());
     boot_app_state = appStateText();
+    {
+        char step[espurna::boot_trace::NameSize];
+        espurna::boot_trace::take(step);
+        boot_trace_step = step;
+    }
 
     // Next boot goes back to ESPurna whenever app0 holds a valid image: a crash, a power cut, a reset or a broken NVS
     // here must never leave the board in safeboot for good. Before anything else: the boot partition lives in otadata,
@@ -879,13 +881,13 @@ extern "C" void app_main() {
         bootApp(error);
     }
 
-    // never erase here: the partition holds the ESPurna settings. Without NVS: no settings, the access point
+    // never erase here: the partition holds the ESPurna settings. The settings live in the pool (spiffs partition), NVS
+    // only holds the old blob: without NVS the pool still gives the network and the login, and the defaults (hostname
+    // from the MAC, the default password) are set either way, never an empty password
     const auto nvs = nvs_flash_init();
     const bool nvs_ok = (nvs == ESP_OK);
 
-    if (nvs_ok) {
-        readSettings();
-    }
+    readSettings();
 
     events = xEventGroupCreate();
     esp_netif_init();
@@ -900,7 +902,7 @@ extern "C" void app_main() {
     esp_wifi_init(&init);
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
 
-    if (!nvs_ok || !connect()) {
+    if (!connect()) {
         accessPoint();
     }
 

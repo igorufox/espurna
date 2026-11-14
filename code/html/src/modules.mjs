@@ -187,8 +187,8 @@ const SECTOR = 4096;
  * @typedef {{
  *   version: string, image: string, md5?: string, list: string, off: string, modules: Installed[],
  *   area: number, head: number, free: number, free_max: number,
- *   ram_arena: number, ram_used: number, ram_max: number,
- *   iram_arena: number, iram_used: number, iram_max: number,
+ *   ram_pool: number, ram_used: number, ram_max: number,
+ *   iram_pool: number, iram_used: number, iram_max: number,
  *   iram_data: number, iram_data_used: number, iram_data_max: number,
  *   ram_dynamic?: number, pool?: string, iram_code?: number,
  *   heap: number, heap_boot: number, chip?: number, oom?: number,
@@ -431,9 +431,9 @@ export function moduleRows(status, packages, ramIn) {
         const fits = !short.length;
         const ramTaken = (where === "iram")
             ? ((status.iram_data_used + ram) >= TIGHT * status.iram_data)
-            : ((status.ram_used + ram) >= TIGHT * status.ram_arena);
+            : ((status.ram_used + ram) >= TIGHT * status.ram_pool);
         const tight = fits && (ramTaken
-            || (iram && ((status.iram_used + iram) >= TIGHT * status.iram_arena))
+            || (iram && ((status.iram_used + iram) >= TIGHT * status.iram_pool))
             || ((status.area - status.free + sectors(flash)) >= TIGHT * status.area));
 
         return {

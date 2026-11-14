@@ -157,3 +157,9 @@ http _ZN7espurna4http6ClientC1Ev esp32
 http _ZN7espurna4http6ClientD1Ev esp32
 http _ZNK7espurna4http6Client4busyEv esp32
 http _ZN7espurna4http6Client5abortEv esp32
+mdns espurna_mdns_add beken
+mdns espurna_mdns_commit beken
+mdns espurna_mdns_update beken
+mdns espurna_mdns_add esp32
+mdns espurna_mdns_commit esp32
+mdns espurna_mdns_update esp32

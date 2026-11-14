@@ -18,12 +18,15 @@ extern "C" {
 void* espurna_module_api[static_cast<size_t>(espurna::modules::Api::Count)] {};
 }
 
+#include "espurna_chip.h"
 #include "espurna_ota.h"
 #include "espurna_tasks.h"
 #include "modules_core.h"
+#include "rtcmem.h"
 #include "modules_page.h"
 #include "modules_package.h"
 #include "libs/crc32_ieee.h"
+#include "libs/image_receiver.h"
 #include "libs/text.h"
 #include "terminal.h"
 #include "web.h"
@@ -234,7 +237,7 @@ uint32_t heapNeed(const Directory& dir) {
     uint32_t need = 0;
     for (size_t index = 0; index < dir.count; ++index) {
         const auto& entry = dir.entries[index];
-        if (entry.ram_size && !(entry.ram_offset & RamSecondArena)) {
+        if (entry.ram_size && !(entry.ram_offset & RamInFixedPool)) {
             need = std::max<uint32_t>(need, entry.ram_offset + entry.ram_size);
         }
     }
@@ -505,8 +508,8 @@ struct Runs {
 
 // the address of the statics of an entry with this offset, in this boot
 uint32_t ramAddress(uint32_t ram_offset, const arch::Pools& pools) {
-    return (ram_offset & RamSecondArena)
-        ? (pools.fixed_base + (ram_offset & ~RamSecondArena))
+    return (ram_offset & RamInFixedPool)
+        ? (pools.fixed_base + (ram_offset & ~RamInFixedPool))
         : (heapBlockBase() + ram_offset);
 }
 
@@ -527,7 +530,7 @@ const char* runsOf(const Entry& entry, const Header& header, Runs& out) {
         return PSTR("not relocated for this boot: Apply again");
     }
 
-    if (entry.ram_size && !(entry.ram_offset & RamSecondArena)
+    if (entry.ram_size && !(entry.ram_offset & RamInFixedPool)
         && ((entry.ram_offset + entry.ram_size) > heapBlockSize()))
     {
         return PSTR("not in this boot's heap block: Apply again");
@@ -822,6 +825,11 @@ void spaces(const Directory& dir, bool valid, Spaces& out) {
     const auto area = arch::area();
     out.flash.lo = area.lo;
     out.flash.hi = (area.hi >= (area.lo + SectorSize)) ? (area.hi - SectorSize) : area.lo;
+    for (const auto& range : area.keep) {
+        if (range.size) {
+            out.flash.add(range.offset, range.size);
+        }
+    }
 
     arch::Pools pools {};
     arch::pools(pools);
@@ -836,8 +844,8 @@ void spaces(const Directory& dir, bool valid, Spaces& out) {
         if (entry.data_size) {
             out.flash.add(entry.data_offset, entry.data_size);
         }
-        if (entry.ram_offset & RamSecondArena) {
-            out.fixed.add(entry.ram_offset & ~RamSecondArena, entry.ram_size);
+        if (entry.ram_offset & RamInFixedPool) {
+            out.fixed.add(entry.ram_offset & ~RamInFixedPool, entry.ram_size);
         } else {
             out.ram.add(entry.ram_offset, entry.ram_size);
         }
@@ -1567,6 +1575,20 @@ void guardTick() {
     static uint32_t oom_last { 0 };
     static uint32_t passes_last { 0 };
     static uint32_t stalled { 0 };
+    static uint32_t tick_last { 0 };
+    static bool ticked { false };
+
+    // one tick a second of real time. The FreeRTOS timer task has the lowest priority: a busy higher task (Matter's
+    // CASE on the Beken, several seconds of ECDSA) keeps it waiting, then it runs the missed periods back to back,
+    // and twenty of those in a row with the loop (higher priority, running all along) not passing in between were
+    // taken for "the loop stalled for 20 s" (10.0.5.139, 2026-11-14: the loop was in delay(), the watchdog fed 10 ms
+    // before)
+    const auto now = millis();
+    if (ticked && ((now - tick_last) < 900)) {
+        return;
+    }
+    ticked = true;
+    tick_last = now;
     ++seconds;
 
     if (seconds >= MODULES_BOOT_SECONDS) {
@@ -1596,7 +1618,11 @@ void guardTick() {
     stalled = (loop_passes == passes_last) ? (stalled + 1) : 0;
     passes_last = loop_passes;
     if (stalled >= MODULES_LOOP_STALL_SECONDS) {
-        snprintf_P(reason, sizeof(reason), PSTR("the loop stalled for %u s, free heap %u"), stalled, free);
+        // in: the loop callback it sits in (an address of the head or of a module, the map of the build names it)
+        snprintf_P(reason, sizeof(reason), PSTR("the loop stalled for %u s in %08X, free heap %u"), stalled,
+            static_cast<unsigned>(espurnaLoopCurrent()), free);
+        // where every task was (Beken: CRASH prints it after the restart)
+        rtcmemStallSnapshot();
         guardDecide(reason);
     }
 }
@@ -1620,6 +1646,8 @@ size_t data_count { 0 };
 
 void guardArm();
 
+// the one way a status is written: the slot of that module (offset and CRC), else the first free one. Never by the
+// directory index: a module started earlier may hold that slot (review W44)
 Status* statusSlot(const Entry& entry) {
     for (auto& out : status) {
         if ((out.state != State::None) && (out.offset == entry.offset) && (out.crc32 == entry.crc32)) {
@@ -1632,6 +1660,12 @@ Status* statusSlot(const Entry& entry) {
         }
     }
     return nullptr;
+}
+
+void statusClear() {
+    for (auto& out : status) {
+        out = Status{};
+    }
 }
 
 bool runningByName(const char* name) {
@@ -1768,6 +1802,27 @@ bool authenticated(WebRequest& request) {
     return true;
 }
 
+// the POSTs that change the modules: the login and a page of this board, as /upgrade (ota_web.cpp, review 6.2): the
+// browser sends the login along with a form of another site too
+bool sameOrigin(WebRequest& request) {
+    return espurna::image::sameOrigin(
+        request.header("Origin"), request.header("Host"), request.header("X-Forwarded-Host"));
+}
+
+bool allowed(WebRequest& request) {
+    if (!authenticated(request)) {
+        return false;
+    }
+
+    if (!sameOrigin(request)) {
+        DEBUG_MSG_P(PSTR("[MODULES] Refused, Origin %s is not this board\n"), webHeader(request, "Origin").c_str());
+        request.send(403, "text/plain", "ERROR: Origin");
+        return false;
+    }
+
+    return true;
+}
+
 
 // --- apply: the whole module area anew ------------------------------------------------------------------------------
 //
@@ -1798,7 +1853,7 @@ struct Apply {
     // breaks off leaves the old one (with the off mark of /modules/off), never an empty area
     Directory fresh {};
     // per selected package (its row, see `row_of`): the plan
-    uint32_t plan_ram[DirectoryEntries] {};     // RAM offset (RamSecondArena: in the fixed pool)
+    uint32_t plan_ram[DirectoryEntries] {};     // RAM offset (RamInFixedPool: in the fixed pool)
     uint32_t plan_code[DirectoryEntries] {};    // IRAM code offset in the fixed pool (ESP8266)
     uint32_t plan_data[DirectoryEntries] {};    // flash of its data (modulesData()), 0 - none
     uint32_t ceiling { 0 };                 // no slot over it: the data of the modules
@@ -1906,7 +1961,9 @@ const char* applyPlan() {
         constexpr size_t ImageAt { 24 };
         const auto area = arch::area();
         const uint32_t lo = std::max(area.lo, state.floor);
-        const uint32_t room = (area.hi > (lo + SectorSize)) ? (area.hi - SectorSize - lo) : 0;
+        uint32_t room = (area.hi > (lo + SectorSize)) ? (area.hi - SectorSize - lo) : 0;
+        const uint32_t kept = area.kept(lo, area.hi - SectorSize);
+        room = (room > kept) ? (room - kept) : 0;
         uint32_t flash = 0;
         constexpr size_t PlanFlagsAt { 68 };
         for (size_t index = 0; index < count; ++index) {
@@ -1984,7 +2041,7 @@ const char* applyPlan() {
         fixed = roundUp(fixed, 8);
         const bool bytes = (applyWord(order[index], FlagsAt) & ModuleByteRam) != 0;
         if (pools.fixed && !(bytes && pools.fixed_words) && ((fixed + ram) <= pools.fixed)) {
-            state.plan_ram[state.row_of[order[index]]] = fixed | RamSecondArena;
+            state.plan_ram[state.row_of[order[index]]] = fixed | RamInFixedPool;
             fixed += ram;
         } else {
             state.plan_ram[state.row_of[order[index]]] = heap;
@@ -2176,7 +2233,7 @@ const char* applyEnd(String& missing) {
 }
 
 void onApplyData(WebRequest& request, const char*, size_t index, const uint8_t* bytes, size_t len, bool) {
-    if (!webAuthenticate(request)) {
+    if (!webAuthenticate(request) || !sameOrigin(request)) {
         return;
     }
 
@@ -2227,7 +2284,7 @@ void onApplyData(WebRequest& request, const char*, size_t index, const uint8_t* 
 }
 
 void onApplyDone(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -2255,7 +2312,7 @@ void onApplyDone(WebRequest& request) {
 // area free to be rewritten. The Apply writes a new directory without the mark; one that breaks off leaves the old
 // modules off, MODULES.ON (the panel's "Start the modules again") brings them back
 void onModulesOff(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -2270,8 +2327,9 @@ void onModulesOff(WebRequest& request) {
 // no directory of this head, then a restart (their statics are taken at boot). true - restarting
 bool applyInitial(const Directory& dir, bool valid) {
     const auto area = arch::area();
+    const uint32_t at = area.initial ? area.initial : area.lo;
     uint32_t head[2];
-    if (!area.hi || !arch::rawRead(area.lo, head, sizeof(head)) || (head[0] != ModulesFileMagic) || !head[1]
+    if (!area.hi || !arch::rawRead(at, head, sizeof(head)) || (head[0] != ModulesFileMagic) || !head[1]
         || (head[1] > ModulesFileMax))
     {
         return false;
@@ -2295,18 +2353,18 @@ bool applyInitial(const Directory& dir, bool valid) {
     uint32_t size = 8 + (head[1] * ModulesFileEntry);
     for (uint32_t index = 0; index < head[1]; ++index) {
         uint32_t row[ModulesFileEntry / 4];
-        if (!arch::rawRead(area.lo + 8 + (index * ModulesFileEntry), row, sizeof(row))) {
+        if (!arch::rawRead(at + 8 + (index * ModulesFileEntry), row, sizeof(row))) {
             applyRelease();
             return false;
         }
         size = std::max(size, row[4] + row[5]);
     }
-    applying->floor = area.lo + roundUp(size, SectorSize);
+    applying->floor = at + roundUp(size, SectorSize);
 
     alignas(4) uint8_t part[256];
     for (uint32_t done = 0; (done < size) && !applying->error; done += sizeof(part)) {
         const uint32_t length = std::min<uint32_t>(sizeof(part), size - done);
-        if (!arch::rawRead(area.lo + done, part, roundUp(length, 4))) {
+        if (!arch::rawRead(at + done, part, roundUp(length, 4))) {
             applying->error = PSTR("read");
             break;
         }
@@ -2322,7 +2380,7 @@ bool applyInitial(const Directory& dir, bool valid) {
 
     // the file goes: the area is the modules' now (and a directory erased later does not bring them back)
     if (!error) {
-        flashErase(area.lo, roundUp(size, SectorSize));
+        flashErase(at, roundUp(size, SectorSize));
         prepareReset(CustomResetReason::Modules);
         return true;
     }
@@ -2354,7 +2412,9 @@ void onStatus(WebRequest& request) {
     out += F("{\"version\":\"");
     out += buildApp().version.toString();
     out += F("\",\"image\":\"");
-    out += F(ESPURNA_IMAGE);
+    // the release image of this board (the WebUI picks the head of an install image by it): Beken "beken-tuya" or
+    // "beken-quectel" by its bootloader, not the env's "beken" - the head of a .ota was never found (W7, 2026-11-14)
+    out += espurna::chip::image();
     out += F("\",\"md5\":\"");
     out += headText();
     out += F("\",\"list\":");
@@ -2385,7 +2445,7 @@ void onStatus(WebRequest& request) {
             }
             out += '"';
         }
-        out += (entry.ram_offset & RamSecondArena) ? F(",\"ram_in\":\"iram\"") : F(",\"ram_in\":\"dram\"");
+        out += (entry.ram_offset & RamInFixedPool) ? F(",\"ram_in\":\"iram\"") : F(",\"ram_in\":\"dram\"");
         jsonField(out, F("iram"), entry.code_size);
         out += F(",\"state\":\"");
         out += stateName(statusOf(entry));
@@ -2393,7 +2453,7 @@ void onStatus(WebRequest& request) {
     }
     out += ']';
 
-    // the meters: Flash from the area's start (the head) to the directory, the arenas
+    // the meters: Flash from the area's start (the head) to the directory, the pools
     auto space_box = boxed<Spaces>();
     if (!space_box) {
         request.send(503, "text/plain", "ERROR: no memory"); return;
@@ -2405,7 +2465,7 @@ void onStatus(WebRequest& request) {
     jsonField(out, F("head"), area.lo - area.start);
     jsonField(out, F("free"), space.flash.free());
     jsonField(out, F("free_max"), space.flash.largest());
-    jsonField(out, F("ram_arena"), space.ram.hi);
+    jsonField(out, F("ram_pool"), space.ram.hi);
     jsonField(out, F("ram_used"), space.ram.hi - space.ram.free());
     jsonField(out, F("ram_max"), space.ram.largest());
     {
@@ -2421,7 +2481,7 @@ void onStatus(WebRequest& request) {
         jsonField(out, F("iram_code"), code);
     }
     // the fixed pool: the code and the statics in it
-    jsonField(out, F("iram_arena"), space.fixed.hi);
+    jsonField(out, F("iram_pool"), space.fixed.hi);
     jsonField(out, F("iram_used"), space.fixed.hi - space.fixed.free());
     jsonField(out, F("iram_max"), space.fixed.largest());
     jsonField(out, F("iram_data"), space.fixed.hi);
@@ -2447,7 +2507,7 @@ void onStatus(WebRequest& request) {
 }
 
 void onModulesOn(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -2458,7 +2518,7 @@ void onModulesOn(WebRequest& request) {
 
 // a module out of the directory; its code keeps running until the restart
 void onRemove(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -2479,7 +2539,7 @@ void onRemove(WebRequest& request) {
 
 // POST name=, on=1|0
 void onEnable(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -2501,7 +2561,7 @@ void onEnable(WebRequest& request) {
 }
 
 void onRestart(WebRequest& request) {
-    if (!authenticated(request)) {
+    if (!allowed(request)) {
         return;
     }
 
@@ -2526,6 +2586,7 @@ PROGMEM_STRING(Remove, "MODULES.REMOVE");
 PROGMEM_STRING(On, "MODULES.ON");
 PROGMEM_STRING(TestLowHeap, "MODULES.TEST.LOWHEAP");
 PROGMEM_STRING(TestCrash, "MODULES.TEST.CRASH");
+PROGMEM_STRING(TestStall, "MODULES.TEST.STALL");
 PROGMEM_STRING(Enable, "MODULES.ENABLE");
 PROGMEM_STRING(Disable, "MODULES.DISABLE");
 
@@ -2565,6 +2626,16 @@ void commandTestCrash(::terminal::CommandContext&& ctx) {
     arch::crashNow();
 }
 
+// the loop stops for 15 s without feeding the watchdog: what a hung loop leaves behind (the reset reason, Beken:
+// the stall record of CRASH; W41)
+void commandTestStall(::terminal::CommandContext&& ctx) {
+    terminalOK(ctx);
+    ctx.output.flush();
+    const auto start = millis();
+    while (millis() - start < 15000) {
+    }
+}
+
 void commandOn(::terminal::CommandContext&& ctx) {
     modulesOffClear();
     terminalOK(ctx);
@@ -2595,8 +2666,8 @@ void commandList(::terminal::CommandContext&& ctx) {
             const auto& entry = dir.entries[index];
             const auto status = statusOf(entry);
             ctx.output.printf_P(PSTR("%-15s 0x%06x %6u bytes, RAM %u @%u%s, code %u, bases %08x %08x %08x: %s%s%s\n"),
-                entry.name, entry.offset, entry.size, entry.ram_size, entry.ram_offset & ~RamSecondArena,
-                (entry.ram_offset & RamSecondArena) ? " (fixed pool)" : "", entry.code_size,
+                entry.name, entry.offset, entry.size, entry.ram_size, entry.ram_offset & ~RamInFixedPool,
+                (entry.ram_offset & RamInFixedPool) ? " (fixed pool)" : "", entry.code_size,
                 entry.bases[BaseFlash], entry.bases[BaseCode], entry.bases[BaseRam],
                 String(stateName(status)).c_str(), status.reason ? " - " : "",
                 status.reason ? String(FPSTR(status.reason)).c_str() : "");
@@ -2639,6 +2710,7 @@ static constexpr ::terminal::Command Commands[] PROGMEM {
     {On, commandOn},
     {TestLowHeap, commandTestLowHeap},
     {TestCrash, commandTestCrash},
+    {TestStall, commandTestStall},
     {Enable, commandEnable},
     {Disable, commandDisable},
 };
@@ -2780,6 +2852,17 @@ bool modulesOffMark(const char* reason) {
     return true;
 }
 
+namespace espurna {
+namespace modules {
+namespace {
+
+void onUiList(WebRequest&);
+void onUiPart(WebRequest&);
+
+} // namespace
+} // namespace modules
+} // namespace espurna
+
 void modulesBootSetup() {
     using namespace espurna::modules;
 
@@ -2811,8 +2894,9 @@ void modulesBootSetup() {
         return;
     }
 
+    statusClear();
     for (size_t index = 0; index < dir.count; ++index) {
-        status[index] = Status{State::Skipped, nullptr, dir.entries[index].offset, dir.entries[index].crc32};
+        setStatus(dir.entries[index], State::Skipped, nullptr);
     }
 }
 
@@ -2829,6 +2913,8 @@ void modulesSetup() {
     server.on("/modules/enable", WebMethod::Post, onEnable);
     server.on("/modules.html", WebMethod::Get, onPage);
     server.on("/modules", WebMethod::Get, onStatus);
+    server.on("/ui", WebMethod::Get, onUiList);
+    server.on("/ui/part", WebMethod::Get, onUiPart);
 
     // the MODULES menu entry of the WebUI module
     wsRegister().onVisible([](JsonObject& root) {
@@ -2842,8 +2928,9 @@ void modulesSetup() {
     }
 
     if (offReason().length()) {
+        statusClear();
         for (size_t index = 0; index < dir.count; ++index) {
-            status[index] = Status{State::Off, nullptr, dir.entries[index].offset, dir.entries[index].crc32};
+            setStatus(dir.entries[index], State::Off, nullptr);
         }
         DEBUG_MSG_P(PSTR("[MODULES] Off (%s), MODULES.ON starts them again\n"), offReason().c_str());
         return;
@@ -2922,14 +3009,12 @@ void modulesSetup() {
     }
 
     bool done[DirectoryEntries] {};
+    statusClear();
     for (size_t index = 0; index < dir.count; ++index) {
         const auto& entry = dir.entries[index];
         if (entry.flags & EntryDisabled) {
-            status[index] = Status{State::Disabled, nullptr, entry.offset, entry.crc32};
-            std::memcpy(status[index].name, entry.name, sizeof(status[index].name));
+            setStatus(entry, State::Disabled, nullptr);
             done[index] = true;
-        } else {
-            status[index] = Status{};
         }
     }
 
@@ -2962,8 +3047,7 @@ void modulesSetup() {
     for (size_t index = 0; index < dir.count; ++index) {
         if (!done[index]) {
             const auto& entry = dir.entries[index];
-            status[index] = Status{State::Broken, PSTR("needs a module that is not running"), entry.offset, entry.crc32};
-            std::memcpy(status[index].name, entry.name, sizeof(status[index].name));
+            setStatus(entry, State::Broken, PSTR("needs a module that is not running"));
             DEBUG_MSG_P(PSTR("[MODULES] %s not started: needs a module that is not running\n"), entry.name);
         }
     }
@@ -3052,6 +3136,80 @@ bool modulesEnabled(const char* name) {
     return false;
 }
 
+// the parts of the WebUI the started modules added (modulesUi()), in the order they started
+namespace espurna {
+namespace modules {
+namespace {
+
+struct UiPart {
+    const char* name;
+    const uint8_t* data;
+    size_t size;
+};
+
+UiPart ui_parts[DirectoryEntries];
+size_t ui_count { 0 };
+
+// GET /ui: ["relay","light",...]
+void onUiList(WebRequest& request) {
+    if (!authenticated(request)) {
+        return;
+    }
+
+    String out;
+    out.reserve(16 + (ui_count * 20));
+    out += '[';
+    for (size_t index = 0; index < ui_count; ++index) {
+        if (index) {
+            out += ',';
+        }
+        jsonString(out, ui_parts[index].name);
+    }
+    out += ']';
+    webSend(request, 200, "application/json", std::move(out));
+}
+
+// GET /ui/part?name=<name>: the gzip'ed fragment, out of the module's flash
+void onUiPart(WebRequest& request) {
+    if (!authenticated(request)) {
+        return;
+    }
+
+    const char* name = request.param("name");
+    for (size_t index = 0; name && (index < ui_count); ++index) {
+        if (std::strcmp(ui_parts[index].name, name) == 0) {
+            sendFlash(request, ui_parts[index].data, ui_parts[index].size, true);
+            return;
+        }
+    }
+
+    request.send(404, "text/plain", "ERROR: no such part");
+}
+
+} // namespace
+} // namespace modules
+} // namespace espurna
+
+void modulesUi(const char* name, const uint8_t* data, size_t size) {
+    using namespace espurna::modules;
+    if (!name || !data || !size || (ui_count >= DirectoryEntries)) {
+        return;
+    }
+
+    for (size_t index = 0; index < ui_count; ++index) {
+        if (std::strcmp(ui_parts[index].name, name) == 0) {
+            ui_parts[index] = UiPart{name, data, size};
+            return;
+        }
+    }
+
+    ui_parts[ui_count++] = UiPart{name, data, size};
+}
+
+void modulesForget() {
+    espurna::modules::eraseDirectory();
+}
+
 void modulesOnHome(WebRequest& request) {
     using namespace espurna::modules;
     if (!authenticated(request)) {
@@ -3068,8 +3226,5 @@ void modulesOnHome(WebRequest& request) {
     headPage(request);
 }
 
-void modulesForget() {
-    espurna::modules::eraseDirectory();
-}
 
 #endif // MODULES_SUPPORT

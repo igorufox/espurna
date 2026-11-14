@@ -20,7 +20,7 @@ Where it lives is the chip's:
 #include <cstdint>
 
 // Change this when modifying RtcmemData
-#define RTCMEM_MAGIC 0x46535076
+#define RTCMEM_MAGIC 0x46535077
 
 struct RtcmemEnergy {
     uint32_t kwh;
@@ -34,7 +34,8 @@ struct RtcmemData {
     uint32_t mqtt;
     uint64_t light;
     RtcmemEnergy energy[4];
-    uint32_t gpio_ignore;
+    // one bit per GPIO, 64 bits: the ESP32 has pins above 31 (relays on GPIO32/33)
+    uint64_t gpio_ignore;
 };
 
 extern volatile RtcmemData* Rtcmem;

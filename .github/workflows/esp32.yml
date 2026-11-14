@@ -138,6 +138,26 @@ jobs:
         - { arch: esp8266-migration, config: migration-app/platformio.ini, env: esp8266-1m-migration, name: esp8266-1m-migration }
     steps:
     - uses: actions/checkout@v7
+    # the WebUI before the firmware: the webui module of every chip is html/build/index.html.gz (in .gitignore) and
+    # scripts/module_link.py leaves the module out silently when the file is not there (W10); the parts of the modules
+    # (espurna/static/ui_<name>.ipp) are written by the same build
+    - uses: actions/setup-node@v7
+      if: matrix.arch != 'esp8266-migration'
+      with:
+        node-version: 'lts/*'
+    - name: Cache Node
+      if: matrix.arch != 'esp8266-migration'
+      uses: actions/cache@v6
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-npm-${{ hashFiles('code/package-lock.json', 'code/package.json') }}
+    - name: WebUI
+      if: matrix.arch != 'esp8266-migration'
+      working-directory: code
+      run: |
+        npm ci
+        node node_modules/gulp/bin/gulp.js build
+        test -s html/build/index.html.gz
     - uses: actions/setup-python@v7
       with:
         # not '3.x': 3.15 broke the build (pioarduino takes 3.10..3.14, LibreTiny could not make its venv)

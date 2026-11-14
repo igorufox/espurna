@@ -38,6 +38,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #if SAFEBOOT_SUPPORT
 #include "safeboot_esp32.h"
+// the step of the boot reached last, for the safeboot page after a rollback (no serial log on most boards)
+#define SETUP_TRACE(NAME) safebootTrace(NAME)
+#else
+#define SETUP_TRACE(NAME)
 #endif
 
 // -----------------------------------------------------------------------------
@@ -150,6 +154,13 @@ void push_once_unique(Callback::Type callback) {
 }
 
 void loop() {
+#if SAFEBOOT_SUPPORT
+    static bool traced { false };
+    if (!traced) {
+        traced = true;
+        SETUP_TRACE("loop");
+    }
+#endif
     {
         // network callbacks (ESP32) are handled while we are in delay()
         system::LoopGuard guard;
@@ -234,12 +245,13 @@ void setup() {
 }
 
 } // namespace heap_probe
-#define SETUP_HEAP_PROBE(NAME) heap_probe::add(NAME)
+#define SETUP_HEAP_PROBE(NAME) do { heap_probe::add(NAME); SETUP_TRACE(NAME); } while (0)
 #else
-#define SETUP_HEAP_PROBE(NAME)
+#define SETUP_HEAP_PROBE(NAME) SETUP_TRACE(NAME)
 #endif
 
 void setup() {
+    SETUP_TRACE("setup");
     system::LoopGuard guard;
 
     // -------------------------------------------------------------------------

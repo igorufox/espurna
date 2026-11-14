@@ -32,35 +32,15 @@ import {
     sendAction,
 } from './connection.mjs';
 
-import { init as initApi } from './api.mjs';
-import { init as initCurtain } from './curtain.mjs';
 import { init as initDebug } from './debug.mjs';
-import { init as initDomoticz } from './domoticz.mjs';
-import { init as initGarland } from './garland.mjs';
-import { init as initHa } from './ha.mjs';
-import { init as initLed } from './led.mjs';
-import { init as initLight } from './light.mjs';
-import { init as initLightfox } from './lightfox.mjs';
-import { init as initMatter } from './matter.mjs';
 import { init as initModules, modulesApplyRunning } from './modules.mjs';
-import { init as initNspanel } from './nspanel.mjs';
-import { init as initNtp } from './ntp.mjs';
 import { init as initOta } from './ota.mjs';
 import { installRunning } from './install.mjs';
-import { init as initButton } from './button.mjs';
-import { init as initRelay } from './relay.mjs';
-import { init as initRfbridge } from './rfbridge.mjs';
-import { init as initRfm69 } from './rfm69.mjs';
-import { init as initRules } from './rules.mjs';
-import { init as initSchedule } from './schedule.mjs';
-import { init as initSensor } from './sensor.mjs';
-import { init as initThermostat } from './thermostat.mjs';
-import { init as initThingspeak } from './thingspeak.mjs';
 
 import { init as initDev } from './dev.mjs';
+import { initParts, loadParts } from './parts.mjs';
 import { init as initTasmota } from './tasmota.mjs';
 import { init as initTemplates } from './templates.mjs';
-import { init as initUart } from './uart.mjs';
 
 /** @type {number | null} */
 let KeepTime = null;
@@ -376,6 +356,9 @@ function onJsonPayload(event) {
 async function init() {
     connectingShow();
 
+    // the parts of the modules first: the panels, templates and scripts the rest of the page sets up
+    await loadParts(new URL("./", window.location.href));
+
     // Sidebar menu & buttons
     document.querySelector(".menu-link")
         ?.addEventListener("click", onMenuLinkClick);
@@ -407,34 +390,14 @@ async function init() {
     initPassword();
     initWiFi();
     initGpio();
-    initNtp();
     initTasmota();
     initTemplates();
 
-    // one WebUI for every chip and board: every panel is set up, the device shows the ones it has (modulesVisible)
+    // the head's own panels (firmware, MODULES); every other panel is the part of a module (src/parts.mjs)
     initOta();
-    initHa();
-    initSensor();
-    initGarland();
-    initThermostat();
-    initLightfox();
-    initRelay();
-    initButton();
-    initUart();
-    initRfm69();
-    initRfbridge();
     initDebug();
-    initApi();
-    initLed();
-    initLight();
-    initSchedule();
-    initRules();
-    initDomoticz();
-    initThingspeak();
-    initCurtain();
-    initNspanel();
-    initMatter();
     initModules();
+    initParts();
 
     if (MODULE_DEV) {
         initDev();

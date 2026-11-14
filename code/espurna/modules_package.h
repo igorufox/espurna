@@ -12,7 +12,7 @@ namespace espurna {
 namespace modules {
 namespace package {
 
-// the most RAM (or IRAM) a package may ask for: above every chip's arena, far below a size that wraps when rounded
+// the most RAM (or IRAM) a package may ask for: above every chip's pool, far below a size that wraps when rounded
 constexpr uint32_t RamLimit { 256 * 1024 };
 
 // rounds up to a multiple of `to`; saturates instead of wrapping, so a huge value never rounds down to 0
