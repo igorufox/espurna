@@ -170,6 +170,11 @@ void setup() {
     areaReady();
 }
 
+// the flash API takes every offset of the chip
+uint32_t flashReach() {
+    return 0xFFFFFFFF;
+}
+
 // the Flash meter from the start of app0 (the head) to the directory
 Area area() {
     if (!areaReady()) {

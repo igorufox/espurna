@@ -17,6 +17,8 @@ ArduinoOTA receives the whole image inside of a single loop() call
 Web OTA (ref. ota_web.cpp)
 - upload_check(data, len)         first chunk of an upload: nullptr - this board takes it, else a PSTR() error
                                   answered with 400 before anything is written (Beken: the bootloader it is for)
+- own_image(data, len)            the chip writes this upload itself instead of Update (Beken: the RBL head of the .ota),
+  own_begin/write/end/abort       its writer; other chips: never
 
 */
 

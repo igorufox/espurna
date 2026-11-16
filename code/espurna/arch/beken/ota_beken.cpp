@@ -18,6 +18,8 @@ would install an image in the wrong format (the Tuya one is encrypted, the Quect
 
 #include <cstring>
 
+#include <fal.h>
+
 namespace espurna {
 namespace ota {
 namespace driver {
@@ -119,6 +121,140 @@ const char* upload_check(const uint8_t* data, size_t len) {
     }
 
     return nullptr;
+}
+
+// --- the RBL head of the install image ---------------------------------------------------------------------------
+// The .ota carries the head as the RBL package only (~450 KB; the .uf2 of the wire around it was 2.5 / 4.5 MB, W62),
+// the same package for both bootloaders. It goes into 'download' of this board's layout; its first bytes (the RBL
+// magic) are written last, so an interrupted upload leaves no package for the bootloader to install.
+
+namespace {
+
+constexpr uint32_t RblMagic { 0x004C4252 }; // "RBL\0"
+constexpr size_t RblHeader { 96 };          // ltchiptool bk72xx RBL: magic .. size_package (at 88), info_crc32
+constexpr size_t RblFirst { 16 };
+constexpr uint32_t Sector { 0x1000 };
+
+struct Rbl {
+    bool active { false };
+    uint32_t offset { 0 };      // 'download' of this layout
+    uint32_t length { 0 };      // header + package
+    uint32_t written { 0 };
+    uint32_t erased { 0 };      // bytes of 'download' erased so far
+    uint8_t first[RblFirst] {};
+};
+
+Rbl rbl;
+
+void rbl_drop() {
+    if (rbl.erased) {
+        lt_flash_erase_block(rbl.offset);
+    }
+    rbl = Rbl{};
+}
+
+} // namespace
+
+bool own_image(const uint8_t* data, size_t len) {
+    return (len >= 4) && (word(data) == RblMagic);
+}
+
+const char* own_begin(const uint8_t* data, size_t len) {
+    const auto& layout = ::espurna::beken::flashLayout();
+    if (layout.layout == ::espurna::beken::Layout::Unknown) {
+        return PSTR("ERROR: Unknown bootloader, no OTA on this board (flash it by wire)");
+    }
+
+    if (!layout.installs_rbl) {
+        return PSTR("ERROR: Tuya bootloader 3.00 does not install this image, update over UART or replace the bootloader");
+    }
+
+    if (len < RblHeader) {
+        return PSTR("ERROR: Upload too short for an RBL header");
+    }
+
+    const uint32_t length = RblHeader + word(&data[88]);
+    if (length > layout.download_length) {
+        return PSTR("ERROR: The image does not fit the download partition");
+    }
+
+    // nothing is erased when the flash API of this head does not reach 'download' (the FAL 'root' partition)
+    if (!fal_root_part || ((layout.download_offset + length) > static_cast<uint32_t>(fal_root_part->len))) {
+        return PSTR("ERROR: The download partition is past the flash this head can write");
+    }
+
+    rbl = Rbl{};
+    rbl.active = true;
+    rbl.offset = layout.download_offset;
+    rbl.length = length;
+    return nullptr;
+}
+
+const char* own_write(const uint8_t* data, size_t len) {
+    if (!rbl.active) {
+        return PSTR("ERROR: No upload");
+    }
+
+    if ((rbl.written + len) > rbl.length) {
+        rbl_drop();
+        return PSTR("ERROR: More data than the RBL header says");
+    }
+
+    while (rbl.erased < (rbl.written + len)) {
+        if (!lt_flash_erase_block(rbl.offset + rbl.erased)) {
+            rbl_drop();
+            return PSTR("ERROR: Flash erase failed");
+        }
+        rbl.erased += Sector;
+    }
+
+    // the first bytes wait for the end
+    if (rbl.written < RblFirst) {
+        const size_t keep = std::min<size_t>(RblFirst - rbl.written, len);
+        std::memcpy(&rbl.first[rbl.written], data, keep);
+        rbl.written += keep;
+        data += keep;
+        len -= keep;
+    }
+
+    if (len) {
+        if (lt_flash_write(rbl.offset + rbl.written, data, len) != len) {
+            rbl_drop();
+            return PSTR("ERROR: Flash write failed");
+        }
+        rbl.written += len;
+    }
+
+    return nullptr;
+}
+
+const char* own_end() {
+    if (!rbl.active || (rbl.written != rbl.length)) {
+        rbl_drop();
+        return PSTR("ERROR: Incomplete image");
+    }
+
+    if (lt_flash_write(rbl.offset, rbl.first, RblFirst) != RblFirst) {
+        rbl_drop();
+        return PSTR("ERROR: Flash write failed");
+    }
+
+    uint32_t magic { 0 };
+    lt_flash_read(rbl.offset, reinterpret_cast<uint8_t*>(&magic), sizeof(magic));
+    if (magic != RblMagic) {
+        rbl_drop();
+        return PSTR("ERROR: Not an OTA package");
+    }
+
+    DEBUG_MSG_P(PSTR("[OTA] RBL written, %u bytes\n"), rbl.written);
+    rbl = Rbl{};
+    return nullptr;
+}
+
+void own_abort() {
+    if (rbl.active) {
+        rbl_drop();
+    }
 }
 
 } // namespace driver

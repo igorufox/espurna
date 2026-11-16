@@ -158,6 +158,8 @@ void deep_sleep(CommandContext&& ctx) {
 }
 
 PROGMEM_STRING(Reset, "RESET");
+// the same restart under the name people type first
+PROGMEM_STRING(Reboot, "REBOOT");
 
 void reset(CommandContext&& ctx) {
     prepareReset(CustomResetReason::Terminal);
@@ -449,6 +451,7 @@ static constexpr ::terminal::Command List[] PROGMEM {
     {DeepSleep, commands::deep_sleep},
 
     {Reset, commands::reset},
+    {Reboot, commands::reset},
     {EraseConfig, commands::erase_config},
 
 #if SYSTEM_CHECK_ENABLED

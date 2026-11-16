@@ -92,6 +92,26 @@ constexpr const char* upload_check(const uint8_t*, size_t) {
     return nullptr;
 }
 
+// the chip writes this upload itself, not Update (Beken: the RBL head of the install image, ref. ota_beken.cpp)
+constexpr bool own_image(const uint8_t*, size_t) {
+    return false;
+}
+
+constexpr const char* own_begin(const uint8_t*, size_t) {
+    return nullptr;
+}
+
+constexpr const char* own_write(const uint8_t*, size_t) {
+    return nullptr;
+}
+
+constexpr const char* own_end() {
+    return nullptr;
+}
+
+inline void own_abort() {
+}
+
 } // namespace driver
 } // namespace ota
 } // namespace espurna

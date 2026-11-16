@@ -95,6 +95,24 @@ constexpr auto EventWait = duration::Milliseconds{ 50 };
 // log only goes out then
 bool commissioning_active { false };
 
+// The pairing window is open (the Matter task): the message trace goes out too, a controller that tries and never
+// gets to the PASE step shows in the log (2026-11-14: the speaker hub "did not even start", the log had nothing)
+bool window_open { false };
+
+// A controller that keeps opening CASE with a fabric the device does not have (it thinks the device is still its own:
+// a pairing that did not complete, the device reset meanwhile): five lines a try, a few tries a second. One line a
+// minute says what it is instead (the Matter task)
+struct UnknownCase {
+    uint32_t last { 0 };
+    uint32_t reported { 0 };
+    uint32_t count { 0 };
+};
+
+UnknownCase unknown_case;
+
+constexpr uint32_t UnknownCaseReportMs { 60000 };
+constexpr uint32_t UnknownCaseFloodMs { 10000 };
+
 // Fabrics a device keeps (CHIP_CONFIG_MAX_FABRICS is 5 by default)
 constexpr size_t MaxControllers { 8 };
 
@@ -297,6 +315,35 @@ void quiet(bool active) {
 }
 
 void start();
+int fabrics();
+
+// controllers when the last commissioning started, -1 when none is going on (the loop)
+int fabrics_before { -1 };
+
+// The verdict on a commissioning that ended, this long after its end: the fabric table the loop reads is a copy, taken
+// only when the CHIP stack lock is free, and right at the end the Matter task still holds it (2026-11-15: "did not
+// complete" logged a second before "Commissioning complete", the second controller was there 4 s later)
+constexpr uint32_t VerdictMs { 10000 };
+uint32_t verdict_at { 0 };
+
+void verdict() {
+    if (!verdict_at || ((millis() - verdict_at) < VerdictMs)) {
+        return;
+    }
+
+    verdict_at = 0;
+    if (fabrics_before < 0) {
+        return;
+    }
+
+    if (fabrics() <= fabrics_before) {
+        DEBUG_MSG_P(PSTR("[MATTER] Pairing did not complete, no controller was added: if the controller's app "
+            "lists the device, remove it there and pair again\n"));
+    } else {
+        DEBUG_MSG_P(PSTR("[MATTER] Pairing complete, controllers: %d\n"), fabrics());
+    }
+    fabrics_before = -1;
+}
 
 void loop() {
     if (start_at && connected && (static_cast<int32_t>(millis() - start_at) >= 0) && !pendingDeferredReset()
@@ -307,6 +354,8 @@ void loop() {
         start_at = 0;
         start();
     }
+
+    verdict();
 
     const auto lost = events.dropped();
     if (lost) {
@@ -328,6 +377,14 @@ void loop() {
             commissioning = true;
             DEBUG_MSG_P(PSTR("[MATTER] Commissioning %s\n"), event.value ? "started" : "ended");
             quiet(event.value);
+            // a commissioning that ends without a new controller: the fail-safe ran out before the controller's
+            // CommissioningComplete and the stack rolled its fabric back. The controller may still list the device
+            if (event.value) {
+                fabrics_before = fabrics();
+                verdict_at = 0;
+            } else if (fabrics_before >= 0) {
+                verdict_at = millis() | 1;
+            }
             break;
 
         case Event::Type::Window:
@@ -828,6 +885,9 @@ void setup() {
     wifiRegister(wifi_event);
     relayOnStatusChange(set_onoff);
     espurnaRegisterLoop(loop);
+    // no restart of ESPurna (Apply, settings, an update) while a controller commissions: it would roll the new fabric
+    // back with the controller already holding the device
+    systemOnResetHold([]() { return commissioning_active; });
 }
 
 } // namespace
@@ -857,6 +917,7 @@ void matter_commissioning(bool active) {
 
 void matter_window(bool open) {
     using namespace espurna::matter;
+    window_open = open;
     events.push(Event{Event::Type::Window, 0, open}, EventWait);
 }
 
@@ -869,7 +930,28 @@ void matter_pong(void) {
 // task wait. They only pass while a controller commissions, errors of every module always do
 void matter_log(const char* line) {
     using namespace espurna::matter;
-    if ((line[0] == 'E') && (line[1] == 'M') && (line[2] == ' ') && !commissioning_active) {
+    const auto now = millis();
+    if (strstr(line, "failed to match destination ID")) {
+        ++unknown_case.count;
+        unknown_case.last = now | 1;
+        if (!unknown_case.reported || ((now - unknown_case.reported) >= UnknownCaseReportMs)) {
+            char text[log::Length];
+            snprintf(text, sizeof(text), "A controller connects with a fabric this device does not have (%u tries): "
+                "remove the device in that controller's app and pair it again", static_cast<unsigned>(unknown_case.count));
+            log::push(text);
+            unknown_case.reported = now | 1;
+            unknown_case.count = 0;
+        }
+        return;
+    }
+
+    // the rest of such a try: its Sigma1 lines and the two failures after the mismatch
+    if (unknown_case.last && ((now - unknown_case.last) < UnknownCaseFloodMs)
+        && (strstr(line, "Sigma1") || strstr(line, "establishment failed: 10") || strstr(line, "failed, err = 10"))) {
+        return;
+    }
+
+    if ((line[0] == 'E') && (line[1] == 'M') && (line[2] == ' ') && !commissioning_active && !window_open) {
         return;
     }
 

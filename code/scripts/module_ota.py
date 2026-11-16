@@ -4,7 +4,7 @@
 # /modules/apply with the ticked names.
 #
 #   "EOT1", u32 count, then count entries: u32 kind (1 head, 2 modules file), char name[16] (head: esp8266, esp32,
-#   tuya, quectel; modules: modules), u32 offset, u32 size, u32 crc32; then the parts, each at its offset
+#   beken; modules: modules), u32 offset, u32 size, u32 crc32; then the parts, each at its offset
 
 import os
 import struct

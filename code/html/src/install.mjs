@@ -171,13 +171,14 @@ export function modulesHeadId(file) {
 }
 
 /**
- * The name of the head a board takes out of the install image: its chip ("esp8266", "esp32"), on the Beken its
- * bootloader ("beken-tuya" - "tuya", "beken-quectel" - "quectel")
+ * The name of the head a board takes out of the install image: its chip ("esp8266", "esp32", "beken": the one Beken head
+ * of both bootloaders, "beken-tuya" and "beken-quectel")
  * @param {string} image the board's image (/modules "image", fwImage)
  * @returns {string}
  */
 export function headName(image) {
-    return image.startsWith("beken-") ? image.slice("beken-".length) : image.split("-")[0];
+    // one Beken head for both bootloaders: the OTA package (RBL) is the same, only the wire images differ
+    return image.split("-")[0];
 }
 
 /**
@@ -213,8 +214,7 @@ export function runningNames(status) {
 export const HEAD_ROUTES = {
     esp8266: {restart: "modules/off", away: 200, upload: "upgrade", field: "upgrade"},
     esp32: {restart: "safeboot/switch", away: 404, upload: "upload", field: ""},
-    tuya: {restart: "modules/off", away: 200, upload: "upgrade", field: "upgrade"},
-    quectel: {restart: "modules/off", away: 200, upload: "upgrade", field: "upgrade"},
+    beken: {restart: "modules/off", away: 200, upload: "upgrade", field: "upgrade"},
 };
 
 /**

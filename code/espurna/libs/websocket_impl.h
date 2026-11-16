@@ -10,6 +10,7 @@ WEBSOCKET - the implementation (libs/websocket.h), part of libs/net_impl.h. No A
 #include "text.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <strings.h>
 #include <new>
@@ -27,6 +28,8 @@ constexpr char Guid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 constexpr uint32_t PingInterval { 30000 };
 constexpr uint32_t DeadInterval { 90000 };
 constexpr size_t ClientsDefault { 4 };
+// what the out queue and the message buffer of a client keep between messages, the rest goes back to the heap
+constexpr size_t KeepCapacity { 512 };
 
 enum Opcode : uint8_t {
     Continuation = 0x0,
@@ -36,6 +39,26 @@ enum Opcode : uint8_t {
     Ping = 0x9,
     Pong = 0xA,
 };
+
+// Room for `extra` more bytes, tried before the vector grows: std::vector allocates with the throwing new, a failed
+// allocation is an abort, which spins on the BK7231N until the watchdog (10.0.5.139 2026-11-15: Matter starting with
+// the heap at 2.7 KB while WebUI sessions were sent to, the loop ended in operator new <- this module's vector).
+// false: no heap for it, the caller drops the data
+bool grow(std::vector<uint8_t>& vector, size_t extra) {
+    const size_t need = vector.size() + extra;
+    if (need <= vector.capacity()) {
+        return true;
+    }
+
+    void* probe = ::malloc(need);
+    if (!probe) {
+        return false;
+    }
+
+    ::free(probe);
+    vector.reserve(need);
+    return true;
+}
 
 struct Client {
     uint32_t id { 0 };
@@ -68,7 +91,8 @@ struct Client {
         return out.size() - out_sent;
     }
 
-    void frame(uint8_t opcode, const uint8_t* data, size_t len) {
+    // false: no heap for the frame, nothing queued
+    bool frame(uint8_t opcode, const uint8_t* data, size_t len) {
         uint8_t header[10];
         size_t header_len { 0 };
         header[header_len++] = 0x80 | opcode;
@@ -91,10 +115,16 @@ struct Client {
             out_sent = 0;
         }
 
+        if (!grow(out, header_len + len)) {
+            return false;
+        }
+
         out.insert(out.end(), header, header + header_len);
         if (len) {
             out.insert(out.end(), data, data + len);
         }
+
+        return true;
     }
 };
 
@@ -208,7 +238,10 @@ public:
             return false;
         }
 
-        client->frame(Opcode::Text, reinterpret_cast<const uint8_t*>(data), len);
+        if (!client->frame(Opcode::Text, reinterpret_cast<const uint8_t*>(data), len)) {
+            return false;
+        }
+
         flush(*client);
         return true;
     }
@@ -287,8 +320,14 @@ private:
         }
 
         if (client.out_sent == client.out.size()) {
-            client.out.clear();
             client.out_sent = 0;
+            // clear() keeps the capacity: every client held the most it ever queued (up to QueueMax), a log burst
+            // to two WebUI tabs left 2 x ~6 KB of the Beken heap taken while idle (2026-11-15). Drained: given back
+            if (client.out.capacity() > KeepCapacity) {
+                std::vector<uint8_t>().swap(client.out);
+            } else {
+                client.out.clear();
+            }
         }
     }
 
@@ -405,10 +444,15 @@ private:
 
     void payloadData(Client& client, const uint8_t* data, size_t len) {
         if (client.opcode >= Opcode::Close) {
-            if (client.control.size() + len <= 125) {
+            if ((client.control.size() + len <= 125) && grow(client.control, len)) {
                 client.control.insert(client.control.end(), data, data + len);
             }
             return;
+        }
+
+        if (!client.dropping && !grow(client.message, len)) {
+            client.dropping = true;
+            client.message.clear();
         }
 
         if (!client.dropping) {
@@ -444,7 +488,7 @@ private:
             return;
         }
 
-        if (!client.dropping && _handler) {
+        if (!client.dropping && _handler && grow(client.message, 1)) {
             const size_t len = client.message.size();
             client.message.push_back(0);
             _handler(Event::Message, client.id, client.ip, client.message.data(), len);

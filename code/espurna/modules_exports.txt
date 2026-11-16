@@ -820,3 +820,5 @@ _ZN7espurna3tcp10ConnectionD1Ev esp8266
 _ZN7espurna3tcp10ConnectionD1Ev esp32
 _Z13telnetReversePKct
 _ZN6StringC1Emh esp8266
+_Z17systemOnResetHoldPFbvE beken
+_Z17systemOnResetHoldPFbvE esp32

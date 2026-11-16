@@ -180,7 +180,7 @@ export function groupOf(name) {
 export const TIGHT = 0.85;
 const SECTOR = 4096;
 
-/** @typedef {{name: string, size: number, offset: number, ram: number, ram_in: string, iram: number, state: string, enabled?: number, requires?: string}} Installed */
+/** @typedef {{name: string, size: number, slot?: number, offset: number, ram: number, ram_in: string, iram: number, state: string, enabled?: number, requires?: string}} Installed */
 /** @typedef {import('./install.mjs').Package} Package */
 
 /**
@@ -282,12 +282,6 @@ export function switchOnOrder(name, status, packages) {
  */
 export function selectionAfter(selected, name, on, status, packages) {
     const out = new Set(selected);
-    // ticking a module unticks the ones that cannot run next to it on this chip
-    if (on) {
-        for (const other of conflictsOf(name, status)) {
-            out.delete(other);
-        }
-    }
     /** @type {Set<string>} */
     const seen = new Set();
     if (on) {
@@ -321,32 +315,6 @@ export function selectionAfter(selected, name, on, status, packages) {
     };
     drop(name);
     return out;
-}
-
-/**
- * Modules that cannot run next to this one on the board's chip: with Matter the mDNS responder is Matter's (Beken: both
- * want port 5353; ESP32: both on the one IDF mdns component). The ESP8266 has no Matter
- * @param {string} name
- * @param {Status} status
- * @returns {string[]}
- */
-export function conflictsOf(name, status) {
-    if ((status?.image ?? "esp8266").startsWith("esp8266")) {
-        return [];
-    }
-
-    return (name === "matter") ? ["mdns"] : [];
-}
-
-/**
- * Ticked modules that keep this one off (conflictsOf the other way round)
- * @param {string} name
- * @param {Set<string>} selected
- * @param {Status} status
- * @returns {string[]}
- */
-export function blockedBy(name, selected, status) {
-    return [...selected].filter((other) => conflictsOf(other, status).includes(name));
 }
 
 /**
@@ -457,7 +425,10 @@ export function moduleRows(status, packages, ramIn) {
  * @returns {Meter[]}
  */
 export function meters(status, preview) {
-    const used = status.modules.reduce((sum, x) => sum + sectors(x.size), 0);
+    // what the modules take in the flash (`slot`: the image in the chip's format with its maps and links), the image
+    // size of an older head that does not report it; what is left is kept by the chip (the bootloader's sectors)
+    const used = status.modules.reduce((sum, x) => sum + (x.slot ?? sectors(x.size)), 0);
+    const reserved = Math.max(0, status.area - status.head - used - status.free);
     const add = (preview && !preview.installed) ? preview : null;
     const dynamic = status.ram_dynamic ?? 0;
 
@@ -467,7 +438,8 @@ export function meters(status, preview) {
             title: "Flash", total: status.area, head: status.head, used,
             added: add ? sectors(add.flash) : 0,
             free: `free ${sizeText(status.free)} of ${sizeText(status.area)}`,
-            legend: [`head ${sizeText(status.head)}`, `modules ${sizeText(used)}`],
+            legend: [`head ${sizeText(status.head)}`, `modules ${sizeText(used)}`]
+                .concat(reserved ? [`kept by the chip ${sizeText(reserved)}`] : []),
         },
         {
             title: "RAM", total: status.ram_used + dynamic + status.heap, head: 0, used: status.ram_used, dynamic,
@@ -738,8 +710,7 @@ function cardElement(status, row) {
     toggle.classList.add("checkbox-toggle");
     // ticked here, written by *Apply*: the whole module area anew from the modules file
     toggle.checked = selection(status).has(row.name);
-    const blockers = blockedBy(row.name, selection(status), status);
-    toggle.disabled = state.busy || !row.package || (blockers.length > 0);
+    toggle.disabled = state.busy || !row.package;
     toggle.addEventListener("change", () => {
         state.selected = selectionAfter(selection(status), row.name, toggle.checked, status, state.packages);
         draw();
@@ -806,11 +777,6 @@ function cardElement(status, row) {
     const needs = requiresOf(row.name, status, state.packages);
     if (needs.length) {
         sizes.append(chip(`needs ${needs.join(", ")}`));
-    }
-
-    // one mDNS responder per chip: with Matter it is Matter's (mdns.cpp start())
-    if (blockers.length) {
-        sizes.append(chip(`off while ${blockers.join(", ")} is on: it answers mDNS on this chip`, true));
     }
 
     if (row.ram && status.iram_data) {

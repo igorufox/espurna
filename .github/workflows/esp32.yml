@@ -2,10 +2,10 @@ name: Firmware Build
 
 on:
   push:
-    branches: [esp32-port]
+    branches: [unify]
     tags: ['esp32-*']
   pull_request:
-    branches: [esp32-port]
+    branches: [unify]
   # Release channels: every build above becomes a PRE-release ("preview", not tested on hardware). A stable release
   # is only made by hand: Actions -> Firmware Build -> Run workflow, `promote` = the tag of a preview, `bench` = what was
   # tested on hardware. The stable release gets the files of that preview (tag esp32-stable-<the preview's tag>) and
@@ -252,7 +252,7 @@ jobs:
       run: |
         python code/scripts/ci_budget.py --arch ${{ matrix.arch }} --name ${{ matrix.name }} dist/espurna-${{ matrix.name }}.elf
 
-  # every push to esp32-port (or esp32-* tag, or manual run without `promote`) becomes a single PRE-release
+  # every push to unify (or esp32-* tag, or manual run without `promote`) becomes a single PRE-release
   # ("preview") with the images of all boards; boards offer it only from the preview list (pages job)
   release:
     needs: [ini-lint, host-tests, webui-tests, build]

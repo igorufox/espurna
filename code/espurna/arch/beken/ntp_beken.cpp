@@ -25,12 +25,23 @@ void got_ip_setup(void (*restart_in_tcpip)(void*));
 
 namespace {
 
+// a clock before this has not been set: no sync yet
+constexpr time_t SetSince { 1577836800 }; // 2020-01-01
+
 // Plain lwip SNTP has no sync notification, it only calls settimeofday() (ref. LibreTiny lwipopts.h), which
-// LibreTiny already wraps. Clock is millis() + epoch offset there, a changed offset is a new sync (a manual one too)
+// LibreTiny already wraps. Clock is millis() + epoch offset there, a changed offset is a new sync (a manual one too).
+// Only a clock that is set counts: time() and millis() run on different timers of the BK7231N and drift apart by
+// seconds while nothing set the clock, that was taken for a sync - NTP "SYNC'D" with 1970-01-01 in the WebUI
+// (10.0.5.139 2026-11-15, W51)
 void watch_sync() {
     static time_t last { 0 };
 
-    const auto offset = ::time(nullptr) - static_cast<time_t>(::millis() / 1000);
+    const auto now = ::time(nullptr);
+    if (now < SetSince) {
+        return;
+    }
+
+    const auto offset = now - static_cast<time_t>(::millis() / 1000);
     if ((offset - last > 1) || (last - offset > 1)) {
         last = offset;
         on_synced();

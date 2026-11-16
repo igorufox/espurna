@@ -283,6 +283,29 @@ String joined(const std::vector<String>& labels) {
     return out;
 }
 
+// an address for the log, without lwIP's ipaddr_ntoa(): the ESP8266 head has no ip4addr_ntoa (a macro of lwIP 2.1 there,
+// the module could not link, 2026-11-16)
+struct AddressText {
+    char text[48];
+};
+
+AddressText address_text(const ip_addr_t* address) {
+    AddressText out {};
+#if LWIP_IPV6
+    if (IP_IS_V6(address)) {
+        const auto* v6 = ip_2_ip6(address);
+        snprintf(out.text, sizeof(out.text), "%x:%x:%x:%x:%x:%x:%x:%x",
+            IP6_ADDR_BLOCK1(v6), IP6_ADDR_BLOCK2(v6), IP6_ADDR_BLOCK3(v6), IP6_ADDR_BLOCK4(v6),
+            IP6_ADDR_BLOCK5(v6), IP6_ADDR_BLOCK6(v6), IP6_ADDR_BLOCK7(v6), IP6_ADDR_BLOCK8(v6));
+        return out;
+    }
+#endif
+    const auto* v4 = ip_2_ip4(address);
+    snprintf(out.text, sizeof(out.text), "%u.%u.%u.%u",
+        ip4_addr1_16(v4), ip4_addr2_16(v4), ip4_addr3_16(v4), ip4_addr4_16(v4));
+    return out;
+}
+
 // --- the records -----------------------------------------------------------------------------------------------------
 
 enum class Kind : uint8_t {
@@ -568,11 +591,15 @@ void sendTo(const uint8_t* data, size_t size, const ip_addr_t* address, uint16_t
 
     auto* buffer = pbuf_alloc(PBUF_TRANSPORT, size, PBUF_RAM);
     if (!buffer) {
+        MDNS_LOG("[MDNS] No memory for a reply of %u bytes\n", static_cast<unsigned>(size));
         return;
     }
 
     std::memcpy(buffer->payload, data, size);
-    udp_sendto_if(state().pcb, buffer, address, port, interface);
+    const auto sent = udp_sendto_if(state().pcb, buffer, address, port, interface);
+    if (sent != ERR_OK) {
+        MDNS_LOG("[MDNS] Send to %s failed: %d\n", address_text(address).text, static_cast<int>(sent));
+    }
     pbuf_free(buffer);
 }
 
@@ -740,6 +767,7 @@ void onRecv(void*, udp_pcb*, pbuf* buffer, const ip_addr_t* source, u16_t source
     std::vector<Record> answers;
     std::vector<Record> additional;
     bool unicast = legacy;
+    bool pairing = false;
     size_t at = 12;
     size_t question_at = 0;
     size_t question_size = 0;
@@ -758,6 +786,20 @@ void onRecv(void*, udp_pcb*, pbuf* buffer, const ip_addr_t* source, u16_t source
 
         const auto before = answers.size();
         answer(self, name, type, answers, additional);
+
+        // the log: the questions of a commissioner looking for a board to pair (_matterc), nothing else. Every
+        // question of the LAN (_http, _matter._tcp of the hubs, several a second) filled the WebUI queues of the log
+        // and the heap with them (2026-11-15)
+        {
+            const auto full = joined(name);
+            if (full.indexOf(F("_matterc")) >= 0) {
+                pairing = true;
+                MDNS_LOG("[MDNS] %s:%u asks %s type %u%s: %u answer(s)\n",
+                    address_text(source).text, static_cast<unsigned>(source_port), full.c_str(),
+                    static_cast<unsigned>(type), (qclass & Unicast) ? " (QU)" : "",
+                    static_cast<unsigned>(answers.size() - before));
+            }
+        }
         if (legacy && (answers.size() != before) && !question_size) {
             // a legacy answer repeats its question (the first one answered; names uncompressed only)
             bool compressed = false;
@@ -781,6 +823,65 @@ void onRecv(void*, udp_pcb*, pbuf* buffer, const ip_addr_t* source, u16_t source
         return;
     }
 
+    // known-answer suppression (RFC 6762 7.1): a PTR the asker already holds with at least half of its TTL is not
+    // sent again. The speaker hub repeats its _matterc question with our PTR as a known answer; a board answering
+    // anyway is not what the stock responders (CHIP, IDF) do, and that hub never started the pairing (2026-11-16)
+    if (!legacy) {
+        const uint16_t known = (data[6] << 8) | data[7];
+        std::vector<String> owner;
+        std::vector<String> target;
+        for (uint16_t index = 0; index < known; ++index) {
+            if (!readName(data.get(), size, at, owner) || (at + 10 > size)) {
+                break;
+            }
+            const uint16_t type = (data[at] << 8) | data[at + 1];
+            const uint32_t ttl = (static_cast<uint32_t>(data[at + 4]) << 24) | (static_cast<uint32_t>(data[at + 5]) << 16)
+                | (static_cast<uint32_t>(data[at + 6]) << 8) | data[at + 7];
+            const uint16_t length = (data[at + 8] << 8) | data[at + 9];
+            at += 10;
+            if (at + length > size) {
+                break;
+            }
+            size_t rdata = at;
+            at += length;
+            if ((type != TypePtr) || !readName(data.get(), size, rdata, target)) {
+                continue;
+            }
+
+            const auto owner_name = joined(owner);
+            const auto target_name = joined(target);
+            answers.erase(std::remove_if(answers.begin(), answers.end(),
+                [&](const Record& record) {
+                    if (record.service >= self.services.size()) {
+                        return false;
+                    }
+                    const auto& service = self.services[record.service];
+                    String name;
+                    switch (record.kind) {
+                    case Kind::TypePtr:
+                        name = lower(service.type + '.' + service.proto + ".local");
+                        break;
+                    case Kind::SubtypePtr:
+                        name = lower(service.subtypes[record.subtype] + "._sub." + service.type + '.' + service.proto
+                            + ".local");
+                        break;
+                    default:
+                        return false;
+                    }
+                    const auto instance = lower(service.instance + '.' + service.type + '.' + service.proto + ".local");
+                    return (owner_name == name) && (target_name == instance)
+                        && (ttl * 2 >= ttlOf(self, record, false, false));
+                }), answers.end());
+        }
+
+        if (answers.empty()) {
+            if (pairing) {
+                MDNS_LOG("[MDNS] Known answer, no reply\n");
+            }
+            return;
+        }
+    }
+
     std::unique_ptr<uint8_t[]> out(new (std::nothrow) uint8_t[PacketMax]);
     if (!out) {
         return;
@@ -792,11 +893,19 @@ void onRecv(void*, udp_pcb*, pbuf* buffer, const ip_addr_t* source, u16_t source
         return;
     }
 
+    if (pairing) {
+        MDNS_LOG("[MDNS] Reply %u bytes, %u answer(s) + %u more, %s\n", static_cast<unsigned>(out_size),
+            static_cast<unsigned>(answers.size()), static_cast<unsigned>(additional.size()),
+            unicast ? "unicast" : "multicast");
+    }
+
     if (unicast) {
         sendTo(out.get(), out_size, source, source_port, self.addresses.interface);
         return;
     }
 
+    // a question without QU from port 5353: the group only, like the stock responders (RFC 6762 6). The extra unicast
+    // copy to the asker's 5353 (added 2026-11-14) went with every answer to the speaker hub, which never paired since
 #if LWIP_IPV6
     if (IP_IS_V6(source)) {
         ip_addr_t group;

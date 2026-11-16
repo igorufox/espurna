@@ -12,6 +12,8 @@ Chip part, the FreeRTOS chips part is in arch/rtos/system_rtos.cpp, common part 
 #include <algorithm>
 #include <cstring>
 
+#include <fal.h>
+
 #include "espurna.h"
 #include "rtcmem.h"
 #include "crash.h"
@@ -474,8 +476,39 @@ bool deep_sleep(sleep::Microseconds) {
 void early_setup() {
 }
 
+// macSet = aa:bb:cc:dd:ee:ff: another MAC in the RF calibration block (the SDK updates the MAC item of the block that is
+// there, the calibration stays), used from the next boot on; the key is removed once written. A bench tool: a controller
+// that knows a board by its MAC sees a new one (2026-11-16)
+extern "C" int manual_cal_write_macaddr_to_flash(uint8_t* mac);
+
+void mac_set() {
+    if (!hasSetting("macSet")) {
+        return;
+    }
+
+    String text = getSetting("macSet");
+    delSetting("macSet");
+    text.replace(":", "");
+    text.replace("-", "");
+
+    uint8_t out[6];
+    uint8_t stored[6];
+    if ((text.length() != 12) || (hexDecode(text.c_str(), text.length(), out, sizeof(out)) != sizeof(out))
+        || (out[0] & 0x01) || !manual_cal_get_macaddr_from_flash(stored))
+    {
+        DEBUG_MSG_P(PSTR("[MAIN] macSet: not a unicast MAC or no RF calibration block\n"));
+        return;
+    }
+
+    manual_cal_write_macaddr_to_flash(out);
+    const bool written = manual_cal_get_macaddr_from_flash(stored) && (std::memcmp(stored, out, sizeof(out)) == 0);
+    DEBUG_MSG_P(PSTR("[MAIN] macSet: %02X:%02X:%02X:%02X:%02X:%02X %s\n"),
+        out[0], out[1], out[2], out[3], out[4], out[5], written ? "written, used from the next boot on" : "NOT written");
+}
+
 void sdk::setup() {
     ::mac::report();
+    mac_set();
 }
 
 // hardware WDT, fed by LibreTiny yield() after every loop()
@@ -487,8 +520,25 @@ void sdk::enable_loop_wdt() {
 
 namespace chip {
 
+// One head for both bootloaders, built with the 2 MiB Tuya layout: FLASH_LENGTH, and with it the FAL 'root' partition
+// every lt_flash_*() goes through, ends at 2 MiB. On a 4 MiB board (the Quectel layout) FAL refused all past it: the
+// 'download' partition at 0x286000 (the head's RBL, the module area in it) and Matter's factory data at 0x3E0000 -
+// "flash erase" of every Apply on 10.0.4.214 (2026-11-16). FAL checks the partition length only, then the driver
+void flash_root() {
+    static fal_partition root;
+    const uint32_t size = lt_flash_get_size();
+    if (fal_root_part && (size > static_cast<uint32_t>(fal_root_part->len))) {
+        root = *fal_root_part;
+        root.len = size;
+        fal_root_part = &root;
+    }
+}
+
 void pre_setup() {
     loopTaskHandle = xTaskGetCurrentTaskHandle();
+
+    // before anything reads or writes the flash past 2 MiB
+    flash_root();
 
     // The TCP servers (libs/tcp.h: web, telnet) are started before WiFi is, make sure the TCP/IP stack is up.
     // LibreTiny only initializes the SDK (lwip tcpip thread included) on the first WiFi.mode()

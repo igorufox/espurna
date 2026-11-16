@@ -8,6 +8,9 @@ esp8266 Core API shims, BK72xx (LibreTiny) part (ref. compat_chip.h)
 
 #include "rtcmem.h"
 
+#include <lwip/sys.h>
+#include <lwip/tcpip.h>
+
 #include <cstdlib>
 #include <new>
 
@@ -163,3 +166,30 @@ void* operator new(size_t size, const std::nothrow_t&) noexcept {
 void* operator new[](size_t size, const std::nothrow_t&) noexcept {
     return malloc(size ? size : 1);
 }
+
+// The lwIP core lock (LOCK_TCPIP_CORE, tcpip.c) without priority inheritance: a binary semaphore instead of the
+// FreeRTOS mutex of the BDK's sys_mutex_new(). With the mutex the Matter task (priority 5) took the core lock for its
+// UDP endpoints (EndPointStateLwIP::RunOnTCPIP), the tcpip thread waited on it and lent the Matter task its 7. The
+// FreeRTOS V9 of the BDK gives a task its own priority back only when it holds no mutex at all, and the Matter task
+// holds the lock of its stack through a whole event: the server init (~25 s of certificate crypto) then ran at 7, the
+// loop (6) got no CPU and the watchdog reset the board ~10 s after Matter started (10.0.5.139 2026-11-15, the stall
+// record: CHIP 7/5, tcp/ip idle on its mailbox). Every other lwIP mutex stays a mutex
+extern "C" {
+
+err_t __real_sys_mutex_new(sys_mutex_t* mutex);
+
+err_t __wrap_sys_mutex_new(sys_mutex_t* mutex) {
+    if (mutex != &lock_tcpip_core) {
+        return __real_sys_mutex_new(mutex);
+    }
+
+    *mutex = xSemaphoreCreateBinary();
+    if (!*mutex) {
+        return ERR_MEM;
+    }
+
+    xSemaphoreGive(*mutex);
+    return ERR_OK;
+}
+
+} // extern "C"

@@ -67,8 +67,20 @@ namespace driver = espurna::ota::driver;
 class UpdateTarget final : public espurna::image::Target {
 public:
     const char* begin(const uint8_t* data, size_t len, size_t size) override {
-        if (Update.isRunning()) {
+        if (Update.isRunning() || _own) {
             return "an update is in progress";
+        }
+
+        // a file the chip writes itself (Beken: the RBL head of the install image)
+        if (driver::own_image(data, len)) {
+            const auto* refused = driver::own_begin(data, len);
+            if (refused) {
+                _error = FPSTR(refused);
+                return _error.c_str();
+            }
+            eepromRotate(false);
+            _own = true;
+            return nullptr;
         }
 
         // the chip's word on this file (Beken: the bootloader it is for), before anything is written
@@ -96,6 +108,15 @@ public:
     }
 
     const char* write(const uint8_t* data, size_t len) override {
+        if (_own) {
+            const auto* error = driver::own_write(data, len);
+            if (error) {
+                _error = FPSTR(error);
+                return _error.c_str();
+            }
+            return nullptr;
+        }
+
         if (Update.write(const_cast<uint8_t*>(data), len) != len) {
             _error = String(F("write failed: ")) + updateError();
             return _error.c_str();
@@ -106,6 +127,18 @@ public:
     }
 
     const char* end(size_t size) override {
+        if (_own) {
+            _own = false;
+            const auto* error = driver::own_end();
+            if (error) {
+                eepromRotate(true);
+                _error = FPSTR(error);
+                return _error.c_str();
+            }
+            DEBUG_MSG_P(PSTR("[OTA] Success: %7u bytes\n"), size);
+            return nullptr;
+        }
+
         if (!Update.end(true)) {
             eepromRotate(true);
             _error = String(F("image check failed: ")) + updateError();
@@ -117,6 +150,11 @@ public:
     }
 
     void abort() override {
+        if (_own) {
+            _own = false;
+            driver::own_abort();
+        }
+
         if (Update.isRunning()) {
             Update.end(false);
         }
@@ -125,6 +163,7 @@ public:
 
 private:
     String _error;
+    bool _own { false };
 };
 
 } // namespace

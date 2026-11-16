@@ -106,9 +106,19 @@ bool inArea(uint32_t offset, uint32_t size) {
 
 } // namespace
 
+// where the last refused erase was: the answer of the Apply names it (a Quectel board refused every Apply with a bare
+// "flash erase", 2026-11-16)
+uint32_t erase_refused_at { 0 };
+uint32_t erase_refused_size { 0 };
+
 bool flashErase(uint32_t offset, uint32_t size) {
-    return inArea(offset, size) && ((offset % SectorSize) == 0) && ((size % SectorSize) == 0)
+    const bool ok = inArea(offset, size) && ((offset % SectorSize) == 0) && ((size % SectorSize) == 0)
         && arch::rawErase(offset, size);
+    if (!ok) {
+        erase_refused_at = offset;
+        erase_refused_size = size;
+    }
+    return ok;
 }
 
 bool flashWrite(uint32_t offset, const void* data, size_t size) {
@@ -1928,6 +1938,15 @@ bool applySelected(const char* name) {
 // then the statics into what the fixed pool has left, the rest into the heap block. Every Apply anew: no gaps
 const char* applyPlan() {
     auto& state = *applying;
+
+    // nothing is erased unless the head reaches the whole area: a refusal half way left a board half erased
+    {
+        const auto area = arch::area();
+        if ((area.hi + SectorSize) > arch::flashReach()) {
+            return PSTR("the module area is past the flash this head can write");
+        }
+    }
+
     arch::Pools pools {};
     arch::pools(pools);
 
@@ -2297,7 +2316,15 @@ void onApplyDone(WebRequest& request) {
     const auto* error = applyEnd(missing);
     if (error) {
         const int code = running ? 409 : (strcmp_P("directory write", error) == 0) ? 500 : 400;
-        answer(request, code, String(F("ERROR: ")) + FPSTR(error) + (missing.length() ? (String(F(": ")) + missing) : String()));
+        String where;
+        if (erase_refused_size && (strcmp_P("flash erase", error) == 0)) {
+            char text[96];
+            snprintf_P(text, sizeof(text), PSTR(" 0x%06X+0x%X (area 0x%06X..0x%06X, reach 0x%X)"),
+                erase_refused_at, erase_refused_size, arch::area().lo, arch::area().hi, arch::flashReach());
+            where = text;
+        }
+        answer(request, code, String(F("ERROR: ")) + FPSTR(error) + where
+            + (missing.length() ? (String(F(": ")) + missing) : String()));
     } else {
         answer(request, 200, String(F("OK, applied: ")) + (applying->done.length() ? applying->done : String(F("no modules")))
             + F(", restarting"));
@@ -2430,6 +2457,10 @@ void onStatus(WebRequest& request) {
         out += F("{\"name\":");
         jsonString(out, entry.name);
         jsonField(out, F("size"), entry.size);
+        // what it takes in the flash: the image in the chip's format (Beken: 34 bytes per 32, the CRC), its maps and
+        // links, sectors - the Flash meter counts this (2026-11-15: the image sizes left ~140 KB of a Beken
+        // unaccounted for)
+        jsonField(out, F("slot"), entry.slot);
         jsonField(out, F("offset"), entry.offset);
         jsonField(out, F("ram"), entry.ram_size);
         jsonField(out, F("heap"), statusOf(entry).heap);

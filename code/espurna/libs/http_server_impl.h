@@ -34,6 +34,7 @@ constexpr uint32_t HeadTimeout { 10000 };       // the request line and the head
 constexpr uint32_t IdleTimeout { 30000 };       // nothing moved (body, response, an answer that does not come)
 constexpr size_t HeadersMax { 24 };
 constexpr size_t PieceSize { 512 };
+constexpr uint32_t BodySlice { 100 };          // ms of body handling in one loop pass
 
 const char* statusText(int code) {
     switch (code) {
@@ -1193,6 +1194,12 @@ void Request::Impl::step(Server::Impl& server) {
     case State::Body: {
         uint8_t buffer[PieceSize];
         while (_body_received < _content_length) {
+            // back to the loop now and then: a body that is all in already (a proxy sends the whole request at once)
+            // would keep the loop here while the handler writes flash, the loop watchdog fired (Beken Apply through
+            // the proxy, 2026-11-14: 8.7 s in one pass)
+            if ((tcp::now() - now) > BodySlice) {
+                return;
+            }
             const auto got = _conn->read(buffer, std::min(sizeof(buffer), _content_length - _body_received));
             if (!got) {
                 if (now - _last > IdleTimeout) {

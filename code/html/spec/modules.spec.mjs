@@ -14,8 +14,6 @@ import {
     runningNames,
 } from '../src/install.mjs';
 import {
-    blockedBy,
-    conflictsOf,
     dependentsOf,
     groupCounts,
     groupOf,
@@ -72,6 +70,21 @@ function status(extra = {}) {
         ...extra,
     };
 }
+
+test('meters: flash counts the slot of a module (its flash format), the rest is kept by the chip', () => {
+    // a Beken module: 467520 bytes of image take 524288 in the flash (CRC, maps, links)
+    const st = status({
+        modules: [{name: 'matter', size: 467520, slot: 524288, offset: 0x14C000, ram: 0, ram_in: 'iram', iram: 0, state: 'running'}],
+        area: 1826816, head: 753664, free: 77824,
+    });
+    const [flash] = meters(st, null);
+    expect(flash.used).toBe(524288);
+    expect(flash.legend).toEqual(['head 736.0 KB', 'modules 512.0 KB', 'kept by the chip 460.0 KB']);
+
+    // an older head without the slot: the image size in whole sectors
+    const [old] = meters(status(), null);
+    expect(old.used).toBe(sectors(50000));
+});
 
 test('sizes are shown in bytes and kilobytes, flash goes by sectors', () => {
     expect(sizeText(512)).toBe('512 B');
@@ -260,12 +273,10 @@ describe('install image and the ticked set', async () => {
     });
 });
 
-test('matter unticks mdns on the ESP32 and the Beken, not on the ESP8266', () => {
-    const beken = status({image: 'beken'});
-    expect(selectionAfter(new Set(['mdns', 'mqtt']), 'matter', true, beken, new Map())).toEqual(new Set(['mqtt', 'matter']));
-    expect(blockedBy('mdns', new Set(['matter']), beken)).toEqual(['matter']);
-    expect(blockedBy('mdns', new Set(['matter']), status())).toEqual([]);
-    expect(conflictsOf('matter', status())).toEqual([]);
+test('matter keeps mdns ticked: one mDNS responder, Matter publishes through it (W38)', () => {
+    const beken = status({image: 'beken-tuya'});
+    expect(selectionAfter(new Set(['mdns', 'mqtt']), 'matter', true, beken, new Map()))
+        .toEqual(new Set(['mdns', 'mqtt', 'matter']));
 });
 
 test('the head id of the modules file and the head of an install image for the board', () => {
@@ -283,26 +294,25 @@ test('the head id of the modules file and the head of an install image for the b
     expect(needsHead({md5: 'ffff'}, file)).toBe(true);
     expect(needsHead({}, file)).toBe(true);
 
+    // one Beken head for both bootloaders
     const parts = [
-        {kind: 1, name: 'tuya', data: new Uint8Array(1)},
-        {kind: 1, name: 'quectel', data: new Uint8Array(2)},
+        {kind: 1, name: 'beken', data: new Uint8Array(1)},
         {kind: 2, name: 'modules', data: new Uint8Array(3)},
     ];
-    expect(headFor(parts, 'beken-quectel')?.name).toBe('quectel');
-    expect(headFor(parts, 'beken-tuya')?.name).toBe('tuya');
+    expect(headFor(parts, 'beken-quectel')?.name).toBe('beken');
+    expect(headFor(parts, 'beken-tuya')?.name).toBe('beken');
     expect(headFor(parts, 'esp32')).toBeNull();
 });
 
 test('every head of an install image has its route, the chips differ only in that data', () => {
     expect(['esp8266', 'esp32', 'beken-tuya', 'beken-quectel', 'esp32-matter'].map(headName))
-        .toEqual(['esp8266', 'esp32', 'tuya', 'quectel', 'esp32']);
-    for (const name of ['esp8266', 'esp32', 'tuya', 'quectel']) {
+        .toEqual(['esp8266', 'esp32', 'beken', 'beken', 'esp32']);
+    for (const name of ['esp8266', 'esp32', 'beken']) {
         expect(HEAD_ROUTES[name]).toBeDefined();
     }
     // the ESP32 runs from its only application slot: its safeboot writes the head, the file as the body
     expect(HEAD_ROUTES.esp32).toEqual({restart: 'safeboot/switch', away: 404, upload: 'upload', field: ''});
-    expect(HEAD_ROUTES.tuya).toEqual(HEAD_ROUTES.esp8266);
-    expect(HEAD_ROUTES.quectel).toEqual(HEAD_ROUTES.esp8266);
+    expect(HEAD_ROUTES.beken).toEqual(HEAD_ROUTES.esp8266);
 });
 
 describe('one install for every chip', () => {
@@ -398,7 +408,7 @@ describe('one install for every chip', () => {
     test('ESP8266 and Beken: the head to /upgrade after a restart without modules, then the Apply', async () => {
         const head = ['POST modules/off', 'GET modules', 'POST upgrade', 'form upgrade', 'GET modules'];
         expect(await run('esp8266', 'esp8266', 'ff')).toEqual([...head, ...APPLY]);
-        expect(await run('beken-quectel', 'quectel', 'ff')).toEqual([...head, ...APPLY]);
+        expect(await run('beken-quectel', 'beken', 'ff')).toEqual([...head, ...APPLY]);
     });
 
     test('ESP32: the head through the safeboot, then the same Apply', async () => {

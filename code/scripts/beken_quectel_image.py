@@ -82,11 +82,21 @@ def build(folder, board_json, quectel_json, extra=()):
             rblh_data += data
 
     rbl_offs = to_offset(app_size) - 102
-    padding = rbl_offs - len(crc_data)
-    if padding < 0:
+    if rbl_offs < len(crc_data):
         raise ValueError("the image overlaps the RBL header of the Quectel layout")
-    app_path = write(os.path.join(folder, "image_quectel_app.0x011000.rbl"), crc_data, bytes([0xFF]) * padding,
-                     rblh_data)
+    # the RBL header in its own aligned run, the last sector of the partition (0xFF before the header in it): not the
+    # whole gap from the image to it, ~1 MB of 0xFF in the UF2 (W62). An image reaching into that sector: one run
+    tail_at = rbl_offs & ~0xFFF
+    runs = []
+    if len(crc_data) <= tail_at:
+        app_path = write(os.path.join(folder, "image_quectel_app.0x011000.rbl"), crc_data)
+        tail_path = write(os.path.join(folder, "image_quectel_app.rblh.bin"), bytes([0xFF]) * (rbl_offs - tail_at),
+                          rblh_data)
+        runs = [f"{app_path}=flasher:app", f"{tail_path}+0x{tail_at:X}=flasher:app"]
+    else:
+        app_path = write(os.path.join(folder, "image_quectel_app.0x011000.rbl"), crc_data,
+                         bytes([0xFF]) * (rbl_offs - len(crc_data)), rblh_data)
+        runs = [f"{app_path}=flasher:app"]
 
     uf2_path = release_path(folder, "beken", "quectel", ext=".uf2")
     subprocess.run(
@@ -97,7 +107,7 @@ def build(folder, board_json, quectel_json, extra=()):
             "--fw", f"espurna:{datetime.now():%y.%m.%d}",
             "--date", str(int(datetime.now().timestamp())),
             "--legacy",
-            f"{app_path}=flasher:app",
+        ] + runs + [
             f"{ota_path}=device:download",
         ] + list(extra),
         check=True,

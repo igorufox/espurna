@@ -16,6 +16,7 @@ branch list of the package). The fixed pool: the data TCM the head leaves free (
 
 */
 
+#include <fal.h>
 #include "espurna.h"
 #include "modules.h"
 
@@ -676,6 +677,11 @@ void setup() {
 // an undefined instruction, as module code would crash (a write to an unmapped address does not fault on BK7231N)
 void crashNow() {
     __asm__ volatile(".inst.n 0xde00");
+}
+
+// every lt_flash_*() goes through the FAL 'root' partition: its length (system_beken.cpp flash_root())
+uint32_t flashReach() {
+    return fal_root_part ? static_cast<uint32_t>(fal_root_part->len) : 0;
 }
 
 // Flash = the OTA partition, its first sector shown as the "head"

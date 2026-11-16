@@ -38,6 +38,30 @@ extern "C" int wlan_ap_sta_num(int* num);
 extern "C" void bk_wlan_ap_set_default_channel(uint8_t channel);
 extern "C" uint8_t bk_wlan_ap_get_channel_config(void);
 
+// "The station has its IP" of the BDK (lwIP port net.c) is a flag the supplicant sets at WPA_COMPLETED and clears at
+// WPA_DISCONNECTED. This driver stops the supplicant once associated (wlan_sta_disconnect() above, it would
+// associate again by itself otherwise): the flag went down with the link and the address still up, and every
+// getter behind it answered nothing - LibreTiny WiFi.localIP() / BSSID() / channel() / RSSI() (WiFiPrivate.h), the
+// SDK's bk_wlan_get_link_status(): IP 0.0.0.0, BSSID 00:..., channel 0, 0 dBm in the WebUI and MQTT, the Matter
+// network diagnostics empty (10.0.5.139 2026-11-15). Linked with --wrap (platformio_beken.ini): the station is up
+// when the SDK says so or its netif has the link and an IPv4 address
+extern "C" {
+
+void* net_get_sta_handle(void);
+uint32_t __real_sta_ip_is_start(void);
+
+uint32_t __wrap_sta_ip_is_start(void) {
+    if (__real_sta_ip_is_start()) {
+        return 1;
+    }
+
+    const auto* netif = static_cast<const struct netif*>(net_get_sta_handle());
+    return (netif && netif_is_up(netif) && netif_is_link_up(netif) && !ip4_addr_isany_val(*netif_ip4_addr(netif)))
+        ? 1 : 0;
+}
+
+} // extern "C"
+
 namespace espurna {
 namespace wifi {
 namespace driver {

@@ -294,6 +294,10 @@ struct Area {
 
 Area area();
 
+// how far the head can erase and write: the whole area has to be below it before an Apply touches anything (Beken: the
+// FAL 'root' partition of the build; a 4 MiB board under a 2 MiB head refused the erase half way, 2026-11-16)
+uint32_t flashReach();
+
 // the flash as it is stored (Beken: encrypted, a CRC-16 per 32 bytes); erase in whole sectors
 bool rawRead(uint32_t offset, void* data, size_t size);
 bool rawErase(uint32_t offset, uint32_t size);

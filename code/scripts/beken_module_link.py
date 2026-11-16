@@ -213,10 +213,11 @@ class BekenLinker(module_link.Linker):
         return [tuya, release_path(folder, "beken", "quectel", ext=".uf2")]
 
     def ota_heads(self, ctx):
-        """both heads in the install image, the board takes the one of its bootloader"""
+        """the head in the install image: the RBL package alone (~450 KB), the same for both bootloaders - the board
+        writes it into its 'download' (arch/beken/ota_beken.cpp). Not the .uf2 of the wire around it (2.5 / 4.5 MB:
+        the application image again, the bootloader, the UF2 blocks twice the data, W62)"""
         folder = ctx["build_dir"]
-        return [("tuya", release_path(folder, "beken", "tuya", ext=".uf2")),
-                ("quectel", release_path(folder, "beken", "quectel", ext=".uf2"))]
+        return [("beken", os.path.join(folder, "image_bk7231n_app.ota.rbl"))]
 
 
 BekenLinker(env, globals()["projenv"]).install()

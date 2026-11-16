@@ -555,7 +555,24 @@ int write(const char* ns, const char* name, const char* buf, uint32_t len) {
 
     struct fdb_blob blob;
     const auto full = key(ns, name);
-    return (fdb_kv_set_blob(&db, full.c_str(), fdb_blob_make(&blob, buf, len)) == FDB_NO_ERR) ? BkOk : BkFail;
+    const auto start = millis();
+    const auto out = (fdb_kv_set_blob(&db, full.c_str(), fdb_blob_make(&blob, buf, len)) == FDB_NO_ERR) ? BkOk : BkFail;
+
+    // W50: the Matter task held its lock 8.5 s in the flash driver at the start: how long each write takes
+    const auto took = millis() - start;
+    static uint32_t writes { 0 };
+    static uint32_t total { 0 };
+    ++writes;
+    total += took;
+    if (took >= 100) {
+        char line[96];
+        snprintf(line, sizeof(line), "KVS write %s (%u bytes) took %u ms, %u writes %u ms so far",
+            full.c_str(), static_cast<unsigned>(len), static_cast<unsigned>(took),
+            static_cast<unsigned>(writes), static_cast<unsigned>(total));
+        matter_log(line);
+    }
+
+    return out;
 }
 
 int remove(const char* ns, const char* name) {
@@ -763,7 +780,43 @@ uint32_t start_delay() {
     return 75;
 }
 
+#if TERMINAL_SUPPORT
+// What the 'kvs' partition holds: a write of the Matter task that took 8.5 s (chip-counters/reboot-count at the start,
+// the loop watchdog fired, 2026-11-14) points at a full FlashDB that collects garbage on every write
+PROGMEM_STRING(Kvs, "MATTER.KVS");
+
+void kvs_report(::terminal::CommandContext&& ctx) {
+    if (!kv::init()) {
+        terminalError(ctx, F("No FlashDB on the 'kvs' partition"));
+        return;
+    }
+
+    size_t count { 0 };
+    size_t used { 0 };
+    struct fdb_kv_iterator iterator;
+    fdb_kv_iterator_init(&iterator);
+    while (fdb_kv_iterate(&kv::db, &iterator)) {
+        ++count;
+        used += iterator.curr_kv.len;
+        ctx.output.printf_P(PSTR("%s: value %u, record %u\n"), iterator.curr_kv.name,
+            static_cast<unsigned>(iterator.curr_kv.value_len), static_cast<unsigned>(iterator.curr_kv.len));
+    }
+
+    ctx.output.printf_P(PSTR("%u keys, %u bytes of live records; partition %u bytes, sector %u\n"),
+        static_cast<unsigned>(count), static_cast<unsigned>(used),
+        static_cast<unsigned>(kv::db.parent.max_size), static_cast<unsigned>(kv::db.parent.sec_size));
+    terminalOK(ctx);
+}
+
+constexpr ::terminal::Command Commands[] PROGMEM {
+    {Kvs, kvs_report},
+};
+#endif
+
 void setup() {
+#if TERMINAL_SUPPORT
+    espurna::terminal::add(Commands);
+#endif
 }
 
 // FlashDB of the library, and the Tuya factory identity decrypted here in the loop: the Matter task then only reads

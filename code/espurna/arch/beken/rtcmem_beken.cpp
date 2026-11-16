@@ -13,6 +13,8 @@ RTMEM MODULE FOR BEKEN (LibreTiny)
 #include "mqtt.h"
 #endif
 
+#include <lwip/tcpip.h>
+
 #include <cstddef>
 #include <cstring>
 
@@ -368,6 +370,17 @@ void __wrap_vApplicationMallocFailedHook(void) {
 
     _rtcmem_malloc_failed = true;
 
+    // a failed allocation is a note, a fault or a stall is the crash: the record of one is not written over. A new
+    // (std::nothrow) the caller handles came 37 s after a watchdog reset and took the place of its stall record
+    // (10.0.5.139 2026-11-15, the regress round 49)
+    if (CrashRecordOffset) {
+        uint32_t head[2] {};
+        lt_flash_read(CrashRecordOffset, reinterpret_cast<uint8_t*>(head), sizeof(head));
+        if ((head[0] == CrashRecordMagic) && (head[1] != static_cast<uint32_t>(RtcmemCrash::MallocFailed))) {
+            return;
+        }
+    }
+
     uint32_t regs[CrashRegisters] {};
     regs[0] = xPortGetFreeHeapSize();
     regs[1] = xPortGetMinimumEverFreeHeapSize();
@@ -407,8 +420,27 @@ struct Entry {
     uint8_t base;
     uint8_t number;
     uint32_t top;
+    // what a blocked task waits on: the event list of its TCB (xEventListItem.pvContainer), the mutex behind it
+    // (a mutex has pcHead 0, its holder in pcTail) and the number of the holding task (0: none, or not a mutex)
+    uint32_t waits;
+    uint32_t mutex;
+    uint8_t holder;
+    uint8_t reserved[3];
     uint32_t words[Words];
 };
+
+// FreeRTOS V9.0.0 of the BDK: TCB { pxTopOfStack; ListItem_t xStateListItem; ListItem_t xEventListItem; ... }, a
+// ListItem_t is 5 words (no integrity check), pvContainer the last one; Queue_t { pcHead (0 for a mutex: uxQueueType),
+// pcTail (pxMutexHolder), pcWriteTo, u, List_t xTasksWaitingToSend, List_t xTasksWaitingToReceive, ... }, a List_t
+// is 5 words. A task taking a mutex waits in xTasksWaitingToReceive
+constexpr size_t TcbEventContainer { 4 + 20 + 16 };
+constexpr size_t QueueReceiveList { 16 + 20 };
+
+// the handle of the lwIP core lock (tcpip.c, LWIP_TCPIP_CORE_LOCKING): created once at the start of lwIP, the
+// same every boot, compared against the mutex a task waited for
+uint32_t lwip_core_lock() {
+    return *reinterpret_cast<const uint32_t*>(&lock_tcpip_core);
+}
 
 static_assert((TableOffset + Tasks * sizeof(Entry)) <= FLASH_SECTOR_SIZE, "");
 static_assert(sizeof(CrashRecord) <= TableOffset, "");
@@ -466,6 +498,24 @@ void write() {
         const auto top = *reinterpret_cast<const volatile uint32_t*>(status.xHandle);
         entry.top = top;
 
+        const auto container = *reinterpret_cast<const volatile uint32_t*>(
+            reinterpret_cast<uintptr_t>(status.xHandle) + TcbEventContainer);
+        if (((container & 3) == 0) && (container >= (RamBegin + QueueReceiveList)) && (container < RamEnd)) {
+            entry.waits = container;
+            const auto queue = container - QueueReceiveList;
+            const auto head = *reinterpret_cast<const volatile uint32_t*>(queue);
+            const auto holder = *reinterpret_cast<const volatile uint32_t*>(queue + 4);
+            if (head == 0) {
+                entry.mutex = queue;
+                for (size_t other = 0; other < count; ++other) {
+                    if (reinterpret_cast<uintptr_t>(statuses[other].xHandle) == holder) {
+                        entry.holder = static_cast<uint8_t>(statuses[other].xTaskNumber);
+                        break;
+                    }
+                }
+            }
+        }
+
         const auto offset = TableOffset + index * sizeof(Entry);
         crash_flash_write(offset, &entry, offsetof(Entry, words));
 
@@ -516,6 +566,14 @@ void dump(Print& print) {
 
         print.printf_P(PSTR("%.8s #%u state %u prio %u/%u sp 0x%08x\n"),
             entry.name, entry.number, entry.state, entry.priority, entry.base, entry.top);
+        if (entry.waits && (entry.waits != 0xffffffff)) {
+            if (entry.mutex && (entry.mutex != 0xffffffff)) {
+                print.printf_P(PSTR("  waits for mutex 0x%08x%s, held by #%u\n"), entry.mutex,
+                    (entry.mutex == lwip_core_lock()) ? PSTR(" (lwIP core lock)") : PSTR(""), entry.holder);
+            } else {
+                print.printf_P(PSTR("  waits on list 0x%08x\n"), entry.waits);
+            }
+        }
         for (size_t word = 0; word < Words; word += 8) {
             for (size_t next = word; next < word + 8; ++next) {
                 print.printf_P(PSTR("%08x "), entry.words[next]);

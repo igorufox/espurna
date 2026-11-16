@@ -330,6 +330,11 @@ void deferredReset(espurna::duration::Milliseconds, CustomResetReason);
 void prepareReset(CustomResetReason);
 bool pendingDeferredReset();
 
+// A requested reset waits while one of these says so (Matter: a controller is commissioning, a restart in the middle
+// rolls its fabric back while the controller keeps the device), at most systemResetHoldMax
+using SystemResetHold = bool (*)();
+void systemOnResetHold(SystemResetHold);
+
 bool wakeupModemForcedSleep();
 bool prepareModemForcedSleep();
 

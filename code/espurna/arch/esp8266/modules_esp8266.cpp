@@ -176,6 +176,11 @@ void setup() {
     modulesHeapSetup();
 }
 
+// the flash API takes every offset of the chip
+uint32_t flashReach() {
+    return 0xFFFFFFFF;
+}
+
 // the Flash meter from 0: the head, then the modules up to the directory
 Area area() {
     return Area{0, headEnd(), directoryOffset()};

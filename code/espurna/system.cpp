@@ -1142,8 +1142,46 @@ void reset(CustomResetReason reason) {
 
 // 'simple' reboot call with software controlled time
 // always needs a reason, so it can be displayed in logs and / or trigger some actions on boot
+namespace hold {
+
+constexpr size_t Max { 4 };
+SystemResetHold holds[Max] {};
+
+// the commissioning fail-safe of Matter is 60..120 s, the controller re-arms it once
+constexpr uint32_t LimitMs { 180000 };
+uint32_t since { 0 };
+
+bool held() {
+    for (auto hold : holds) {
+        if (!hold || !hold()) {
+            continue;
+        }
+
+        const auto now = millis();
+        if (!since) {
+            since = now | 1;
+            DEBUG_MSG_P(PSTR("[MAIN] Reset waits: a Matter controller is pairing\n"));
+        }
+
+        return (now - since) < LimitMs;
+    }
+
+    return false;
+}
+
+void add(SystemResetHold hold) {
+    for (auto& slot : holds) {
+        if (!slot || (slot == hold)) {
+            slot = hold;
+            return;
+        }
+    }
+}
+
+} // namespace hold
+
 void pending_reset_loop() {
-    if (internal::reset_reason != CustomResetReason::None) {
+    if ((internal::reset_reason != CustomResetReason::None) && !hold::held()) {
         system::chip::restart();
     }
 }
@@ -1301,6 +1339,10 @@ void prepareReset(CustomResetReason reason) {
 
 bool pendingDeferredReset() {
     return espurna::internal::reset_reason != CustomResetReason::None;
+}
+
+void systemOnResetHold(SystemResetHold hold) {
+    espurna::hold::add(hold);
 }
 
 uint32_t systemResetReason() {

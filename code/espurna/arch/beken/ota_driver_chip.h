@@ -3,7 +3,8 @@
 OTA MODULE, LibreTiny part (ref. ota_driver.h)
 
 LibreTiny Update takes the .uf2 package: espurna-beken-tuya.uf2 (Tuya bootloader) or espurna-beken-quectel.uf2
-(Quectel bootloader). Which of the two the board takes, ref. arch/beken/ota_beken.cpp
+(Quectel bootloader). Which of the two the board takes, ref. arch/beken/ota_beken.cpp. The head of the install image
+(.ota) is the RBL alone, the same for both bootloaders: the board writes it itself (own_image())
 
 */
 
@@ -57,6 +58,14 @@ inline void arduino_ota_progress() {
 }
 
 const char* upload_check(const uint8_t* data, size_t len);
+
+// the RBL head of the install image (.ota, ~450 KB): written into 'download' by ota_beken.cpp, the bootloader installs it.
+// The .uf2 of the wire goes through Update as before
+bool own_image(const uint8_t* data, size_t len);
+const char* own_begin(const uint8_t* data, size_t len);
+const char* own_write(const uint8_t* data, size_t len);
+const char* own_end();
+void own_abort();
 
 } // namespace driver
 } // namespace ota

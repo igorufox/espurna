@@ -1902,7 +1902,7 @@
 #endif
 
 #ifndef KINGART_CURTAIN_TERMINATION
-#define KINGART_CURTAIN_TERMINATION  '\e'        // Termination character after each message
+#define KINGART_CURTAIN_TERMINATION  '\x1b'        // Termination character after each message
 #endif
 
 // =============================================================================

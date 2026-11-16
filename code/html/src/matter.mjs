@@ -133,11 +133,39 @@ export function windowText(seconds) {
     return `Pairing window open, ${minutes}:${rest} left`;
 }
 
-/** @type {{left: number, timer: ReturnType<typeof setInterval> | null}} */
+/**
+ * the button of the pairing window: closed, asked for (the device takes a few seconds to open it), open
+ * @param {number} seconds
+ * @param {boolean} opening
+ * @param {boolean} started
+ * @returns {{text: string, disabled: boolean}}
+ */
+export function windowButton(seconds, opening, started) {
+    if (!started) {
+        return {text: "Matter is not running", disabled: true};
+    }
+
+    if (seconds > 0) {
+        return {text: windowText(seconds), disabled: true};
+    }
+
+    if (opening) {
+        return {text: "Opening the pairing window...", disabled: true};
+    }
+
+    return {text: windowText(0), disabled: false};
+}
+
+/** @type {{left: number, timer: ReturnType<typeof setInterval> | null, opening: ReturnType<typeof setTimeout> | null, started: boolean}} */
 const WINDOW = {
     left: 0,
     timer: null,
+    opening: null,
+    started: false,
 };
+
+// the device answers with the open window within seconds; without it the button comes back after this long
+const OPENING_MS = 30000;
 
 function showWindow() {
     const button = element(".button-matter-window");
@@ -145,8 +173,16 @@ function showWindow() {
         return;
     }
 
-    button.disabled = WINDOW.left > 0;
-    button.textContent = windowText(WINDOW.left);
+    const state = windowButton(WINDOW.left, WINDOW.opening !== null, WINDOW.started);
+    button.disabled = state.disabled;
+    button.textContent = state.text;
+}
+
+function stopOpening() {
+    if (WINDOW.opening !== null) {
+        clearTimeout(WINDOW.opening);
+        WINDOW.opening = null;
+    }
 }
 
 /**
@@ -155,6 +191,9 @@ function showWindow() {
  */
 function updateWindow(seconds) {
     WINDOW.left = Math.max(0, Math.floor(seconds));
+    if (WINDOW.left > 0) {
+        stopOpening();
+    }
     if (WINDOW.timer !== null) {
         clearInterval(WINDOW.timer);
         WINDOW.timer = null;
@@ -187,6 +226,12 @@ function updateStarted(started) {
     if (pairing) {
         pairing.style.display = started ? "" : "none";
     }
+
+    WINDOW.started = started;
+    if (!started) {
+        stopOpening();
+    }
+    showWindow();
 }
 
 export function init() {
@@ -216,10 +261,15 @@ export function init() {
     element(".button-matter-window")
         ?.addEventListener("click", (event) => {
             event.preventDefault();
-            // grey at once, the countdown comes with the open event of the device
-            if (event.currentTarget instanceof HTMLButtonElement) {
-                event.currentTarget.disabled = true;
+            if (!WINDOW.started || (WINDOW.left > 0) || (WINDOW.opening !== null)) {
+                return;
             }
+            // "Opening..." at once, the countdown comes with the open event of the device
+            WINDOW.opening = setTimeout(() => {
+                WINDOW.opening = null;
+                showWindow();
+            }, OPENING_MS);
+            showWindow();
             sendAction("matterWindow");
         });
 
