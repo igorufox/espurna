@@ -3098,6 +3098,21 @@ bool wifiApCaptive() {
     return espurna::wifi::ap::settings::captive();
 }
 
+bool wifiScanStart(WifiScanFound found, WifiScanError error) {
+    namespace wifi = espurna::wifi;
+    return wifi::sta::scan::start(
+        [found](const wifi::driver::ScanResult* info) {
+            found(wifi::convertSsid(*info), info->rssi, info->authmode == wifi::driver::AuthOpen);
+        },
+        [error](wifi::ScanError code) {
+            error(wifi::debug::error(code));
+        });
+}
+
+bool wifiScanning() {
+    return espurna::wifi::sta::scanning();
+}
+
 void wifiSetup() {
     espurna::wifi::setup();
 }

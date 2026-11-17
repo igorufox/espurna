@@ -204,6 +204,11 @@ uint32_t codeView(uint32_t slot) {
     return region.mapped ? (region.irom + (slot - region.lo)) : 0;
 }
 
+// the data view of the area reads any byte (DROM), the data of the modules lies in it under the directory sector
+uint32_t dataView(uint32_t offset) {
+    return (region.mapped && (offset >= region.lo) && (offset < region.hi)) ? (region.drom + (offset - region.lo)) : 0;
+}
+
 const char* imageBegin(Upload&) {
     return region.mapped ? nullptr : PSTR("no module area mapped");
 }

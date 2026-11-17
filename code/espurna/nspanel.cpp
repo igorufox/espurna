@@ -214,10 +214,24 @@ void decimal(char* text) {
 // Entities
 // -----------------------------------------------------------------------------
 
-int entityState(const Entity& entity) {
+EntityLive* entityLive(int index) {
+    if ((index < 0) || (static_cast<size_t>(index) >= running.live.size())) {
+        return nullptr;
+    }
+
+    return &running.live[index];
+}
+
+int entityState(int index) {
+    const auto* live = entityLive(index);
+    if (!live) {
+        return -1;
+    }
+
 #if RELAY_SUPPORT
-    if (entity.relay >= 0) {
-        switch (relayStatus(entity.relay)) {
+    const int relay = running.entities[index].relay;
+    if (relay >= 0) {
+        switch (relayStatus(relay)) {
         case RelayStatus::On:
             return 1;
         case RelayStatus::Off:
@@ -227,15 +241,13 @@ int entityState(const Entity& entity) {
         }
     }
 #endif
-    return entity.state;
+    return live->state;
 }
 
-int entityState(int index) {
-    if ((index < 0) || (static_cast<size_t>(index) >= running.entities.size())) {
-        return -1;
-    }
-
-    return entityState(running.entities[index]);
+const String& entityValue(int index) {
+    static const String Empty;
+    const auto* live = entityLive(index);
+    return live ? live->value : Empty;
 }
 
 // -1 when nothing is known, 1 when anything is on
@@ -245,7 +257,7 @@ int groupState(int group) {
     }
 
     int out = -1;
-    for (const auto entity : running.groups[group]) {
+    for (const auto entity : running.groups[group].members) {
         const auto state = entityState(entity);
         if (state == 1) {
             return 1;
@@ -267,16 +279,17 @@ void entitySend(int index, const String& value) {
 
 #if MQTT_SUPPORT
     const auto& entity = running.entities[index];
-    if (!entity.command.length()) {
+    const auto command = entityCommand(running, entity);
+    if (!command.length()) {
         return;
     }
 
-    if (entity.payload.length() && (entity.payload.indexOf(F("%s")) >= 0)) {
-        String payload(entity.payload);
+    if (strstr(entity.payload.c_str(), "%s")) {
+        String payload(entity.payload.c_str());
         payload.replace(F("%s"), value);
-        mqttSendRaw(entity.command.c_str(), payload.c_str(), false);
+        mqttSendRaw(command.c_str(), payload.c_str(), false);
     } else {
-        mqttSendRaw(entity.command.c_str(), value.c_str(), false);
+        mqttSendRaw(command.c_str(), value.c_str(), false);
     }
 #endif
 }
@@ -300,38 +313,39 @@ void entitySet(int index, Action action) {
 
     // "url": a GET instead of the MQTT command. Toggle goes by the known state, else on. Without a state
     // topic and with two different URLs the panel keeps the state itself, as sent
+    auto& live = running.live[index];
     if (entity.url_on.length() || entity.url_off.length()) {
-        const bool on = (action == Action::On) || ((action == Action::Toggle) && (entity.state != 1));
-        const String& url = on ? entity.url_on : entity.url_off;
+        const bool on = (action == Action::On) || ((action == Action::Toggle) && (live.state != 1));
+        const String url(on ? entity.url_on.c_str() : entity.url_off.c_str());
         if (url.length() && http::get(url) && !entity.topic.length() && (entity.url_on != entity.url_off)) {
             const int state = on ? 1 : 0;
-            if (running.entities[index].state != state) {
-                running.entities[index].state = state;
+            if (live.state != state) {
+                live.state = state;
                 entityChanged(index);
             }
         }
         return;
     }
 
-    const String& on = entity.on.length() ? entity.on : running.on;
-    const String& off = entity.off.length() ? entity.off : running.off;
+    const char* on = entity.on.length() ? entity.on.c_str() : running.on.c_str();
+    const char* off = entity.off.length() ? entity.off.c_str() : running.off.c_str();
     // unknown state: entities with their own "on" value are switched on, plain ones get mqtt.toggle
-    const String* value = entity.on.length() ? &on : &running.toggle;
+    const char* value = entity.on.length() ? on : running.toggle.c_str();
     switch (action) {
     case Action::On:
-        value = &on;
+        value = on;
         break;
     case Action::Off:
-        value = &off;
+        value = off;
         break;
     case Action::Toggle:
-        if (entity.state >= 0) {
-            value = entity.state ? &off : &on;
+        if (live.state >= 0) {
+            value = live.state ? off : on;
         }
         break;
     }
 
-    entitySend(index, *value);
+    entitySend(index, String(value));
 }
 
 void groupSet(int group, Action action) {
@@ -343,7 +357,7 @@ void groupSet(int group, Action action) {
         action = (groupState(group) == 1) ? Action::Off : Action::On;
     }
 
-    for (const auto entity : running.groups[group]) {
+    for (const auto entity : running.groups[group].members) {
         entitySet(entity, action);
     }
 }
@@ -390,7 +404,7 @@ void buildCards(std::vector<Card>& cards, size_t capacity, size_t title_max, boo
                 card.page = page;
                 card.first = 0;
                 card.count = SettingsTiles;
-                card.title = info.title.length() ? info.title : String(lang::texts().settings);
+                card.title = info.title.length() ? String(info.title.c_str()) : String(lang::texts().settings);
                 card.settings = true;
                 card.sub = sub;
                 utf8Truncate(card.title, title_max);
@@ -414,7 +428,7 @@ void buildCards(std::vector<Card>& cards, size_t capacity, size_t title_max, boo
             card.list = list;
             card.sub = sub;
             card.grid = list ? Grid::G4x2 : info.grid;
-            card.title = info.title;
+            card.title = info.title.c_str();
             if (chunks > 1) {
                 card.title += ' ';
                 card.title += String(chunk + 1);
@@ -482,8 +496,8 @@ bool itemUses(const Item& item, int entity) {
         }
     }
 
-    if (item.target.group >= 0) {
-        for (const auto member : running.groups[item.target.group]) {
+    if ((item.target.group >= 0) && (static_cast<size_t>(item.target.group) < running.groups.size())) {
+        for (const auto member : running.groups[item.target.group].members) {
             if (member == entity) {
                 return true;
             }
@@ -520,7 +534,7 @@ int groupOnCount(int group) {
     }
 
     int out = 0;
-    for (const auto entity : running.groups[group]) {
+    for (const auto entity : running.groups[group].members) {
         if (entityState(entity) == 1) {
             ++out;
         }
@@ -646,6 +660,81 @@ void beep() {
 } // namespace buzzer
 
 // -----------------------------------------------------------------------------
+// Actions of other modules on a tile (nspanelAction(), nspanel.h)
+// -----------------------------------------------------------------------------
+
+namespace actions {
+namespace {
+
+struct Entry {
+    const char* name;
+    NspanelAction callback;
+};
+
+constexpr size_t EntriesMax { 4 };
+Entry entries[EntriesMax] {};
+
+// the names tapped without a module that has them, logged once each (FNV-1a hashes)
+constexpr size_t MissingMax { 4 };
+uint32_t missing[MissingMax] {};
+size_t missing_count { 0 };
+
+uint32_t hash(const char* name) {
+    uint32_t out { 2166136261u };
+    for (const char* p = name; *p; ++p) {
+        out = (out ^ static_cast<uint8_t>(*p)) * 16777619u;
+    }
+    return out | 1;
+}
+
+} // namespace
+
+void add(const char* name, NspanelAction callback) {
+    if (!name || !*name || !callback) {
+        return;
+    }
+
+    Entry* free_entry { nullptr };
+    for (auto& entry : entries) {
+        if (entry.name && !strcmp(entry.name, name)) {
+            entry.callback = callback;
+            return;
+        }
+        if (!entry.name && !free_entry) {
+            free_entry = &entry;
+        }
+    }
+
+    if (free_entry) {
+        *free_entry = Entry{name, callback};
+    } else {
+        DEBUG_MSG_P(PSTR("[NSPANEL] No room for the tile action '%s'\n"), name);
+    }
+}
+
+void run(const char* name) {
+    for (const auto& entry : entries) {
+        if (entry.name && !strcmp(entry.name, name)) {
+            entry.callback();
+            return;
+        }
+    }
+
+    const auto value = hash(name);
+    for (size_t index = 0; index < missing_count; ++index) {
+        if (missing[index] == value) {
+            return;
+        }
+    }
+    if (missing_count < MissingMax) {
+        missing[missing_count++] = value;
+    }
+    DEBUG_MSG_P(PSTR("[NSPANEL] Tile action '%s': no installed module has it\n"), name);
+}
+
+} // namespace actions
+
+// -----------------------------------------------------------------------------
 // Tile actions, the same for both drivers. value: -1 toggle (switch), 0 off, 1 on
 // -----------------------------------------------------------------------------
 
@@ -664,7 +753,11 @@ void itemTap(size_t index, int value) {
         break;
 
     case ItemType::Button:
-        entitySet(item.target.entity, Action::On);
+        if (item.action.length()) {
+            actions::run(item.action.c_str());
+        } else {
+            entitySet(item.target.entity, Action::On);
+        }
         break;
 
     case ItemType::Scene:
@@ -683,19 +776,13 @@ void itemTap(size_t index, int value) {
 // -----------------------------------------------------------------------------
 
 float entityNumber(int index) {
-    if ((index < 0) || (static_cast<size_t>(index) >= running.entities.size())) {
-        return NAN;
-    }
-    return running.entities[index].number;
+    const auto* live = entityLive(index);
+    return live ? live->number : NAN;
 }
 
 // heating: "active" is known and not one of the idle words
 bool thermostatActive(const Thermostat& thermostat) {
-    if ((thermostat.active < 0) || (static_cast<size_t>(thermostat.active) >= running.entities.size())) {
-        return false;
-    }
-
-    const auto& value = running.entities[thermostat.active].value;
+    const auto& value = entityValue(thermostat.active);
     if (!value.length()) {
         return false;
     }
@@ -785,8 +872,13 @@ namespace {
 
 String last_load_error;
 String last_load_warnings;
+uint32_t generation { 0 };
 
 } // namespace
+
+uint32_t configGeneration() {
+    return generation;
+}
 
 void setLoadError(const String& error) {
     last_load_error = error;
@@ -800,14 +892,17 @@ void applyConfig(Config&& next, const String& warnings, const char* source) {
     }
 
     // keep known MQTT states across reloads (the old config is dropped right after)
-    for (auto& entity : next.entities) {
-        for (auto& old : running.entities) {
-            if (entity.topic.length() && (entity.topic == old.topic) && (entity.path == old.path)
+    for (size_t index = 0; index < next.entities.size(); ++index) {
+        const auto& entity = next.entities[index];
+        if (!entity.topic.length()) {
+            continue;
+        }
+        for (size_t from = 0; from < running.entities.size(); ++from) {
+            const auto& old = running.entities[from];
+            if ((entity.topic == old.topic) && samePath(entity.path, old.path)
                 && (entity.on == old.on) && (entity.off == old.off))
             {
-                entity.state = old.state;
-                entity.value = std::move(old.value);
-                entity.number = old.number;
+                next.live[index] = std::move(running.live[from]);
                 break;
             }
         }
@@ -821,12 +916,14 @@ void applyConfig(Config&& next, const String& warnings, const char* source) {
 
     unsubscribeAll();
     running = std::move(next);
+    ++generation;
     lang::set(running.language);
-    next.entities.clear(); // whatever the move left there, freed before the drivers rebuild
+    next = Config(); // whatever the move left there (the old heap image), freed before the drivers rebuild
     subscribeAll();
 
-    DEBUG_MSG_P(PSTR("[NSPANEL] Config %s: %u pages, %u items, %u entities, %u groups, heap %u / %u\n"),
+    DEBUG_MSG_P(PSTR("[NSPANEL] Config %s: %u pages, %u items, %u entities, %u groups, image %u bytes %s, heap %u / %u\n"),
         source, running.pages.size(), running.items.size(), running.entities.size(), running.groups.size(),
+        running.image ? running.image->size : 0, running.owned ? "in the heap" : "read in place",
         systemHeapStats().available, systemHeapStats().usable);
 
     if (weather_changed) {
@@ -845,9 +942,9 @@ void applyConfig(Config&& next, const String& warnings, const char* source) {
 }
 
 
-// Boot and nspanel.reload: /nspanel.json, or the built-in config when there is none. A file that
-// cannot be used keeps the running config; only an empty one (boot) falls back to the default.
-// Peak: file text + JSON nodes + the new Config (+ the running one on reload), ref. heapAvailable()
+// Boot and nspanel.reload: the saved image, or the built-in config when there is none. A saved config that cannot be
+// used keeps the running one; only at boot (nothing running) the default is taken instead. The image is read in
+// place; only the first boot after the old JSON format (or an older image layout) compiles it once
 void load() {
     String error;
     String warnings;
@@ -858,13 +955,7 @@ void load() {
         Config next;
         if (storage::exists()) {
             source = build::ConfigPath;
-            std::unique_ptr<char[]> text;
-            size_t size = 0;
-            if (!storage::read(text, size)) {
-                error = String(F("cannot read ")) + build::ConfigPath + F(" (empty, too large or no memory)");
-            } else {
-                ok = (ParseResult::Ok == parseConfig(text.get(), size, next, error, warnings));
-            }
+            ok = storage::open(next, error, warnings);
         } else {
             ok = (ParseResult::Ok == parseDefault(next, error, warnings));
         }
@@ -1245,6 +1336,11 @@ void nspanelSetup() {
 
     link::probe("boot");
     espurnaRegisterLoop(panelLoop);
+}
+
+// for the modules that need nspanel (linked directly, espurna/modules_provided.txt)
+void nspanelAction(const char* name, NspanelAction callback) {
+    espurna::nspanel::actions::add(name, callback);
 }
 
 #endif // NSPANEL_SUPPORT

@@ -234,6 +234,170 @@ function updateStarted(started) {
     showWindow();
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Identity (`matterIdentity`): factory / espurna / custom
+
+/**
+ * PEM ("-----BEGIN ...-----" + base64) to DER bytes; anything else (DER, raw key bytes) as it is
+ * @param {Uint8Array} bytes
+ * @returns {Uint8Array}
+ */
+export function pemToDer(bytes) {
+    const text = new TextDecoder("latin1").decode(bytes);
+    const match = text.match(/-----BEGIN [^-]+-----([\s\S]*?)-----END [^-]+-----/);
+    if (!match) {
+        return bytes;
+    }
+
+    const binary = atob((match[1] ?? "").replace(/\s+/g, ""));
+    const out = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; ++index) {
+        out[index] = binary.charCodeAt(index);
+    }
+
+    return out;
+}
+
+/**
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
+export function toBase64(bytes) {
+    let binary = "";
+    for (const byte of bytes) {
+        binary += String.fromCharCode(byte);
+    }
+
+    return btoa(binary);
+}
+
+/**
+ * the options of the identity choice: which can be picked, and why not
+ * @param {boolean} factory the board has factory data
+ * @param {string} custom VID / PID of the uploaded custom identity, empty when none
+ * @returns {{factory: {disabled: boolean, note: string}, espurna: {disabled: boolean, note: string}, custom: {disabled: boolean, note: string}}}
+ */
+export function identityOptions(factory, custom) {
+    return {
+        factory: {
+            disabled: !factory,
+            note: factory ? "" : "This board has no factory data (no stock Matter firmware tables)",
+        },
+        espurna: {
+            disabled: false,
+            note: "",
+        },
+        custom: {
+            disabled: !custom,
+            note: custom ? `Uploaded: ${custom}` : "Nothing uploaded yet: choose the files below",
+        },
+    };
+}
+
+const IDENTITY_NAMES = {
+    factory: "the factory identity",
+    espurna: "the ESPurna development identity",
+    custom: "the custom identity",
+};
+
+/**
+ * @param {string} use
+ * @returns {string}
+ */
+export function identityConfirmText(use) {
+    const name = IDENTITY_NAMES[/** @type {keyof typeof IDENTITY_NAMES} */ (use)] ?? use;
+    return `Switch Matter to ${name}?\n\n`
+        + "Every controller (app, hub) this device was added to checked the old device certificate: the device is "
+        + "removed from all of them, and the board restarts. Add the device to the controllers again afterwards.";
+}
+
+/** @type {{use: string, factory: boolean, custom: string}} */
+const IDENTITY = {
+    use: "",
+    factory: false,
+    custom: "",
+};
+
+function showIdentity() {
+    const select = element(".matter-identity-use");
+    if (!(select instanceof HTMLSelectElement)) {
+        return;
+    }
+
+    const options = identityOptions(IDENTITY.factory, IDENTITY.custom);
+    for (const option of select.options) {
+        const state = options[/** @type {keyof typeof options} */ (option.value)];
+        if (state) {
+            option.disabled = state.disabled;
+        }
+    }
+
+    if (IDENTITY.use) {
+        select.value = IDENTITY.use;
+    }
+
+    showIdentityNote();
+}
+
+function showIdentityNote() {
+    const select = element(".matter-identity-use");
+    const note = element(".matter-identity-note");
+    if (!(select instanceof HTMLSelectElement) || !note) {
+        return;
+    }
+
+    const options = identityOptions(IDENTITY.factory, IDENTITY.custom);
+    const notes = [];
+    if (IDENTITY.use) {
+        notes.push(`In use: ${IDENTITY.use}.`);
+    }
+    if (options.factory.disabled) {
+        notes.push(`Factory: ${options.factory.note}.`);
+    }
+    notes.push(`Custom: ${options.custom.note}.`);
+    note.textContent = notes.join(" ");
+}
+
+/**
+ * @param {string} selector
+ * @returns {Promise<string>} base64 of the DER bytes, empty without a file
+ */
+async function fileBase64(selector) {
+    const input = element(selector);
+    if (!(input instanceof HTMLInputElement) || !input.files || !input.files.length) {
+        return "";
+    }
+
+    const buffer = await input.files[0].arrayBuffer();
+    return toBase64(pemToDer(new Uint8Array(buffer)));
+}
+
+async function uploadIdentity() {
+    const [dac, key, pai, cd] = await Promise.all([
+        fileBase64(".matter-identity-dac"),
+        fileBase64(".matter-identity-key"),
+        fileBase64(".matter-identity-pai"),
+        fileBase64(".matter-identity-cd"),
+    ]);
+
+    if (!dac || !key || !pai) {
+        window.alert("Choose the DAC, its private key and the PAI first (the declaration is optional).");
+        return;
+    }
+
+    if (!window.confirm(identityConfirmText("custom"))) {
+        return;
+    }
+
+    sendAction("matterIdentityUpload", {dac, key, pai, cd});
+
+    // the key file is not kept in the page
+    const input = element(".matter-identity-key");
+    if (input instanceof HTMLInputElement) {
+        input.value = "";
+    }
+}
+
 export function init() {
     styleInject(STYLE);
 
@@ -250,7 +414,53 @@ export function init() {
         matterWindow: (_, value) => {
             updateWindow(Number(value) || 0);
         },
+        matterIdUse: (_, value) => {
+            IDENTITY.use = String(value ?? "");
+            showIdentity();
+        },
+        matterIdFactory: (_, value) => {
+            IDENTITY.factory = (value === true) || (value === "true") || (value === 1);
+            showIdentity();
+        },
+        matterIdCustom: (_, value) => {
+            IDENTITY.custom = String(value ?? "");
+            showIdentity();
+        },
     });
+
+    element(".matter-identity-use")
+        ?.addEventListener("change", showIdentityNote);
+
+    element(".button-matter-identity")
+        ?.addEventListener("click", (event) => {
+            event.preventDefault();
+            const select = element(".matter-identity-use");
+            if (!(select instanceof HTMLSelectElement)) {
+                return;
+            }
+
+            const use = select.value;
+            if (use === IDENTITY.use) {
+                window.alert(`Matter uses ${use} already.`);
+                return;
+            }
+
+            if (!window.confirm(identityConfirmText(use))) {
+                select.value = IDENTITY.use;
+                return;
+            }
+
+            sendAction("matterIdentity", {use});
+        });
+
+    element(".button-matter-identity-upload")
+        ?.addEventListener("click", (event) => {
+            event.preventDefault();
+            uploadIdentity()
+                .catch((error) => window.alert(`Reading the files failed: ${error?.message ?? error}`));
+        });
+
+    showIdentity();
 
     element(".button-matter-start")
         ?.addEventListener("click", (event) => {

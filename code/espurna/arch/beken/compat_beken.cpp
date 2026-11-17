@@ -154,18 +154,8 @@ unsigned long pulseIn(pin_size_t pin, uint8_t state, unsigned long timeout) {
 } // extern "C"
 
 
-// new (std::nothrow) of libstdc++ calls the throwing operator new, which aborts when the heap has no block of that size
-// (no exceptions here), and abort() of the BK72xx spins forever. The tcpip thread (priority 7) then held the CPU while
-// it accepted a connection with the heap short (the receive ring of libs/tcp_impl.h), the loop could not feed the
-// watchdog, and the board reset 75-120 s after Matter started under load (10.0.5.139 2026-11-14, W1: the stall record
-// had tcp/ip in abort <- operator new <- new[](nothrow) <- the ring's unique_ptr). Here nothrow means nothrow: nullptr
-void* operator new(size_t size, const std::nothrow_t&) noexcept {
-    return malloc(size ? size : 1);
-}
-
-void* operator new[](size_t size, const std::nothrow_t&) noexcept {
-    return malloc(size ? size : 1);
-}
+// new (std::nothrow) is the common one of ESP32 and BK72xx, arch/rtos/system_rtos.cpp (W1: the tcpip thread spun in
+// abort <- operator new <- new[](nothrow) of libstdc++ with the heap short, 10.0.5.139 2026-11-14)
 
 // The lwIP core lock (LOCK_TCPIP_CORE, tcpip.c) without priority inheritance: a binary semaphore instead of the
 // FreeRTOS mutex of the BDK's sys_mutex_new(). With the mutex the Matter task (priority 5) took the core lock for its
@@ -173,16 +163,16 @@ void* operator new[](size_t size, const std::nothrow_t&) noexcept {
 // FreeRTOS V9 of the BDK gives a task its own priority back only when it holds no mutex at all, and the Matter task
 // holds the lock of its stack through a whole event: the server init (~25 s of certificate crypto) then ran at 7, the
 // loop (6) got no CPU and the watchdog reset the board ~10 s after Matter started (10.0.5.139 2026-11-15, the stall
-// record: CHIP 7/5, tcp/ip idle on its mailbox). Every other lwIP mutex stays a mutex
+// record: CHIP 7/5, tcp/ip idle on its mailbox).
+// The same goes for the other lwIP mutex, mem_mutex of mem.c (MEM_LIBC_MALLOC 0, LWIP_ALLOW_MEM_FREE_FROM_OTHER_CONTEXT
+// 0): mem_malloc() and mem_free() take it from every task. The Matter task allocates and frees its PBUF_RAM packet
+// buffers itself (SystemPacketBuffer pbuf_alloc / pbuf_free, outside the core lock), tcp/ip and core_thr (both 7) do the
+// same for every packet; a collision lent the Matter task 7 again and it kept it for the rest of the event (W74,
+// 10.0.5.79 2026-11-16: the stall record had CHIP 7/5 and nobody waiting on a mutex any more, the loan was already
+// over). So every lwIP mutex is a binary semaphore: all of them are held for a few lines of lwIP code only
 extern "C" {
 
-err_t __real_sys_mutex_new(sys_mutex_t* mutex);
-
 err_t __wrap_sys_mutex_new(sys_mutex_t* mutex) {
-    if (mutex != &lock_tcpip_core) {
-        return __real_sys_mutex_new(mutex);
-    }
-
     *mutex = xSemaphoreCreateBinary();
     if (!*mutex) {
         return ERR_MEM;

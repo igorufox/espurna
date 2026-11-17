@@ -246,6 +246,7 @@ STRING_VIEW_INLINE(Password, "mqttPassword");
 STRING_VIEW_INLINE(QoS, "mqttQoS");
 STRING_VIEW_INLINE(Retain, "mqttRetain");
 STRING_VIEW_INLINE(Keepalive, "mqttKeep");
+STRING_VIEW_INLINE(Buffer, "mqttBuffer");
 STRING_VIEW_INLINE(CleanSession, "mqttClean");
 STRING_VIEW_INLINE(ClientId, "mqttClientID");
 STRING_VIEW_INLINE(TopicWill, "mqttWill");
@@ -318,6 +319,12 @@ int qos() {
 
 bool retain() {
     return getSetting(keys::Retain, build::retain());
+}
+
+// the largest message handed over whole: MQTT_BUFFER_MAX_SIZE by default, more where the board needs it (NSPanel
+// thermostats: istabai/out with 9 rooms is ~1.3 KB, 2048). Taken at the next connect
+size_t buffer() {
+    return std::clamp<size_t>(getSetting(keys::Buffer, static_cast<size_t>(MQTT_BUFFER_MAX_SIZE)), 256, 8192);
 }
 
 espurna::mqtt::KeepAlive keepalive() {
@@ -930,6 +937,7 @@ bool _mqttSetupClient() {
     _mqtt.setServer(_mqtt_settings.server.c_str(), _mqtt_settings.port);
     _mqtt.setClientId(_mqtt_settings.client_id.c_str());
     _mqtt.setKeepAlive(_mqtt_settings.keepalive.count());
+    _mqtt.setMessageMax(mqtt::settings::buffer());
     _mqtt.setCleanSession(_mqtt_settings.clean_session);
 
     _mqtt.setWill(
@@ -1512,11 +1520,13 @@ void _mqttOnConnect() {
     systemHeartbeat(_mqttHeartbeat, _mqtt_heartbeat_mode, _mqtt_heartbeat_interval);
 
     // Notify all subscribers about the connection
+    systemHeapStep("mqtt connected");
     for (const auto callback : _mqtt_callbacks) {
         callback(MQTT_CONNECT_EVENT,
             espurna::StringView(),
             espurna::StringView());
     }
+    systemHeapStep("mqtt connect callbacks");
 
     DEBUG_MSG_P(PSTR("[MQTT] Connected!\n"));
     if (_mqtt_skip_time > _mqtt_skip_time.zero()) {
@@ -1620,10 +1630,13 @@ void _mqttMaybeDebugReceived(espurna::StringView topic, espurna::StringView mess
 }
 
 void _mqttProcessMessage(espurna::StringView topic, espurna::StringView message) {
+    // W88: up to here the client received it (lwIP, the ring, the body buffer); after - the modules' callbacks
+    systemHeapStep("mqtt message in");
     _mqttMaybeDebugReceived(topic, message);
     for (auto& callback : _mqtt_callbacks) {
         callback(MQTT_MESSAGE_EVENT, topic, message);
     }
+    systemHeapStep("mqtt message dispatched");
 }
 
 // The client hands a message over whole, the topic and the payload NUL-terminated; one longer than
@@ -1631,7 +1644,7 @@ void _mqttProcessMessage(espurna::StringView topic, espurna::StringView message)
 void _mqttOnMessage(const char* raw_topic, const char* raw_payload, size_t len) {
     if (!raw_topic) {
         DEBUG_MSG_P(PSTR("[MQTT] Ignored a message of %u bytes (more than %u)\n"),
-            len, static_cast<unsigned>(MQTT_BUFFER_MAX_SIZE));
+            len, static_cast<unsigned>(mqtt::settings::buffer()));
         return;
     }
 
@@ -2049,7 +2062,9 @@ void _mqttConnectTimeout() {
 } // namespace
 
 void mqttLoop() {
+    systemHeapStep("mqtt loop");
     _mqtt.loop();
+    systemHeapStep("mqtt client loop done");
     _mqttConnectTimeout();
     _mqttConnect();
 }

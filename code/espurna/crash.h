@@ -26,6 +26,16 @@ void crashClear();
 
 void crashSetup();
 
+// The last crash in short, for the banner of the modules page (modules.cpp): what it was, and the code addresses it
+// went through (the page names the module one of them is in). false - no crash record
+struct CrashCause {
+    char text[88];
+    uint32_t addresses[16];
+    size_t count;
+};
+
+bool crashCause(CrashCause&);
+
 // Chip part, arch/<chip>/system_<chip>.cpp. The common record in the EEPROM is written by the esp8266 Core
 // crash handler (custom_crash_callback()); other chips keep what they know elsewhere
 namespace espurna {
@@ -39,6 +49,10 @@ bool dump(Print&, bool check);
 
 // EEPROM record is empty, what the chip knows about the last reset instead (ESP32 core dump). true when printed
 bool dump_empty(Print&);
+
+// The chip's own record in short (ESP32 core dump, Beken flash record). true when the chip keeps its own record, even
+// if empty (then `text` stays empty); false - the EEPROM one of crash.cpp (ESP8266)
+bool cause(CrashCause&);
 
 // After the EEPROM record was checked at boot
 void setup();

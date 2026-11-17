@@ -150,20 +150,5 @@ using PendingOutput = bool (*)();
 inline void registerPendingOutput(PendingOutput) {
 }
 
-template <typename T, size_t BytesMax>
-struct TaskQueue {
-    bool push(T&&, size_t) {
-        return false;
-    }
-
-    constexpr bool empty() const {
-        return true;
-    }
-
-    std::vector<T> take() {
-        return {};
-    }
-};
-
 } // namespace system
 } // namespace espurna

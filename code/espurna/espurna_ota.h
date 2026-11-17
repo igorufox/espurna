@@ -55,6 +55,17 @@ inline String otaWebJsString(const String& value) {
 #endif
 
 void otaPrintError();
+
+// the espota upload in RtcmemData::ota_trace: running, or stopped by the stall watcher (arch/esp8266/ota_esp8266.cpp).
+// Seen at the next boot, the setting otaTrace tells what it took
+namespace espurna {
+namespace ota {
+
+constexpr uint32_t TraceRunning { 0x4F544131 };
+constexpr uint32_t TraceStalled { 0x4F544132 };
+
+} // namespace ota
+} // namespace espurna
 bool otaFinalize(size_t size, CustomResetReason reason, bool evenIfRemaining);
 bool otaFinalize(size_t size, CustomResetReason reason);
 

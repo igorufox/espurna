@@ -6,6 +6,7 @@ RTMEM MODULE FOR BEKEN (LibreTiny)
 
 #include "espurna.h"
 #include "rtcmem.h"
+#include "crash.h"
 #include "build.h"
 #include "layout_beken.h"
 
@@ -17,6 +18,9 @@ RTMEM MODULE FOR BEKEN (LibreTiny)
 
 #include <cstddef>
 #include <cstring>
+#include <iterator>
+#include <memory>
+#include <new>
 
 // No RAM survives the reset, bootloader clears all of it (0x00400000 and up, checked on BK7231N).
 // Contents only live until the next reboot, relay state is restored from settings instead.
@@ -158,6 +162,8 @@ const char* crash_name(uint32_t kind) {
         return "malloc failed";
     case RtcmemCrash::Stall:
         return "watchdog not fed";
+    case RtcmemCrash::Abort:
+        return "abort";
     case RtcmemCrash::None:
         break;
     }
@@ -177,6 +183,7 @@ uint32_t crash_pc(uint32_t lr, uint32_t spsr, RtcmemCrash kind) {
     case RtcmemCrash::Reserved:
     case RtcmemCrash::MallocFailed:
     case RtcmemCrash::Stall:
+    case RtcmemCrash::Abort:
     case RtcmemCrash::None:
         break;
     }
@@ -395,6 +402,24 @@ void __wrap_vApplicationMallocFailedHook(void) {
 
     // spsr 0 is no mode, the record keeps the sp and lr above
     crash_record_write(regs, RtcmemCrash::MallocFailed);
+}
+
+// The head's own abort() in place of newlib's (whose _exit is libnosys' endless loop): the modules link against this
+// one too. The caller's return address as pc and lr, the stack it had, then the crash path of the trap handlers
+[[noreturn]] void abort(void) {
+    uint32_t regs[CrashRegisters] {};
+    regs[0] = xPortGetFreeHeapSize();
+    regs[1] = xPortGetMinimumEverFreeHeapSize();
+
+    uint32_t sp;
+    asm volatile("mov %0, sp" : "=r"(sp));
+    regs[CrashRegisterSp] = sp;
+
+    const auto ret = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+    regs[CrashRegisterLr] = ret;
+    regs[CrashRegisterPc] = ret;
+
+    _rtcmem_crash(regs, static_cast<uint32_t>(RtcmemCrash::Abort));
 }
 
 } // extern "C"
@@ -699,5 +724,28 @@ void rtcmemCrashDump(Print& print) {
             print.printf_P(PSTR("%08x "), record.stack[next]);
         }
         print.print('\n');
+    }
+}
+
+// what it was and where (pc, lr, then the stack words that point into the flash: the page looks for a module there)
+void rtcmemCrashCause(CrashCause& out) {
+    std::unique_ptr<CrashRecord> record(new (std::nothrow) CrashRecord);
+    if (!record || !crash_record_read(*record)) {
+        return;
+    }
+
+    snprintf_P(out.text, sizeof(out.text), PSTR("%s in task %.16s, pc 0x%08x, %u ms after boot"),
+        crash_name(record->kind), record->task, record->regs[CrashRegisterPc], record->uptime);
+    if (record->kind == static_cast<uint32_t>(RtcmemCrash::Stall)) {
+        return;
+    }
+
+    out.addresses[out.count++] = record->regs[CrashRegisterPc];
+    out.addresses[out.count++] = record->regs[CrashRegisterLr];
+    for (size_t index = 0; (index < CrashStackWords) && (out.count < std::size(out.addresses)); ++index) {
+        const auto word = record->stack[index];
+        if ((word >= 0x10000) && (word < 0x400000)) {
+            out.addresses[out.count++] = word;
+        }
     }
 }

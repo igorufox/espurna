@@ -47,15 +47,21 @@ constexpr uint32_t ProbeForcedLovelaceMs { 5000 };
 constexpr uint32_t ProbePowerCycleMs { 30000 }; // no answer for this long: power-cycle the display once
 constexpr uint32_t PowerOffMs { 800 };
 constexpr uint32_t PowerBootMs { 1500 };
-constexpr uint32_t FlashQuietMs { 180000 };     // no automatic power-cycle this long after a TFT upload
+constexpr uint32_t FlashSettleMs { 5000 };      // after a TFT upload: the display finishes, then it is power-cycled
 
 constexpr char ConfigPath[] = "/nspanel.json";
 constexpr char ConfigTmpPath[] = "/nspanel.json.tmp";
 
-// config parse heap budget, ref. heapAvailable(): the Config built from the text takes about
-// 3 bytes per byte of JSON; this much stays free for WiFi / lwIP / a TLS session meanwhile
-constexpr size_t ConfigHeapPerByte { 3 };
-constexpr size_t ConfigHeapReserve { 16384 };
+// config compile heap budget, ref. heapAvailable(): the JSON nodes (jsonBufferSize(), in 1 KB blocks: +1/32) and the
+// draft (string table, tree, record lists, ~1.25 bytes per byte of JSON plus ConfigDraftFixed: the first blocks of its
+// deques, the half-empty last blocks, the 512 byte flash buffer). The image is not in the heap: it goes to the flash as
+// it is laid out (storage::save()), and no block above build::CompileBlock is taken. NSPANEL1 (9.1 KB): nodes ~7.7 KB +
+// draft ~14.5 KB, peak ~23 KB (11-16 the 10.9 KB image block failed: "out of memory (image)" with Matter running).
+// Short of heap anyway, the compile fails with bad_alloc caught: "low memory", the current config stays
+constexpr size_t ConfigDraftPerKb { 1280 };
+constexpr size_t ConfigDraftFixed { 4096 };
+// no TLS session is started while a config compiles (upload::busy()): what stays for WiFi / lwIP
+constexpr size_t ConfigHeapReserve { 12288 };
 constexpr size_t ConfigBlockReserve { 1024 };
 
 // POST /nspanel.json: loop() waits this long for a running weather fetch (TLS, 40-60 KB)
@@ -65,6 +71,7 @@ constexpr uint32_t UploadAnswerMs { 15000 };
 
 constexpr size_t WeatherHeapMin { 50000 };
 constexpr uint32_t WeatherRetryMs { 60000 };
+constexpr uint32_t WeatherBootMs { 90000 };     // the first weather request not before, ref. weather::loop()
 constexpr size_t WeatherBodyMax { 8192 };      // the 7 day forecast is ~1.5 KB
 
 // MQTT entity subscriptions are sent from loop(), a few at a time (ref. subscribeLoop())
@@ -150,8 +157,14 @@ void load();
 // the last load / upload error, empty when the running config is the file's
 void setLoadError(const String& error);
 
-int entityState(const Entity& entity);
+// what the entity is now (RAM), nullptr for no such entity
+EntityLive* entityLive(int index);
+
+// -1 unknown, 0 off, 1 on (a relay: the relay's state)
 int entityState(int index);
+
+// the last value text, empty when nothing is known
+const String& entityValue(int index);
 
 // -1 when nothing is known, 1 when anything is on
 int groupState(int group);
@@ -361,14 +374,14 @@ bool mounted();
 // the config file is there (mounted or not)
 bool exists();
 
-bool read(String& out);
+// the saved config bound to 'out' (its image read in place). The JSON text of the old format or an image of an older
+// layout is compiled once and saved as an image first. false - none or not usable, 'error' says why
+bool open(Config& out, String& error, String& warnings);
 
-// NUL terminated copy of the file for an in-place parse, exactly size + 1 bytes
-bool read(std::unique_ptr<char[]>& out, size_t& out_size);
-
-void removeTmp();
-bool writeTmp(const char* data, size_t size);
-bool commitTmp();
+// 'text' (NUL terminated, destroyed by the parse) compiled straight into the other half, which becomes the current one:
+// the half is erased once the draft is complete, the image written in small pieces as it is laid out, its header last
+// (a failure or a power cut leaves the current half). ParseResult::WriteFailed - the flash write failed
+ParseResult save(char* text, size_t length, String& error, String& warnings);
 
 void info(Print& out);
 
@@ -380,14 +393,18 @@ const char* defaultConfig();
 // what the parse checks against the rest of the firmware (relays, MQTT buffer)
 Limits parseLimits();
 
-// Free heap a parse needs: the JSON nodes plus the Config being built plus what WiFi / lwIP / TLS must keep
+// Free heap a compile needs: the JSON nodes plus the draft plus what WiFi / lwIP / TLS must keep (the image goes to its
+// sink as it is laid out); the largest block it takes is build::CompileBlock
 bool heapAvailable(size_t json_size, size_t length, String& error);
 
-// heap check + parse, for text the caller does not need afterwards
-ParseResult parseConfig(char* text, size_t length, Config& out, String& error, String& warnings);
+// heap check + compile into 'out', for text the caller does not need afterwards
+ParseResult compileText(char* text, size_t length, ImageSink& out, String& error, String& warnings);
 
-// built-in config, parsed from a heap copy (in place, like the file)
+// built-in config, compiled into a heap image (nothing is written to the flash)
 ParseResult parseDefault(Config& out, String& error, String& warnings);
+
+// a new config bound since the last call: anything that reads the image across loop() calls starts again
+uint32_t configGeneration();
 
 // -----------------------------------------------------------------------------
 // Display drivers (nspanel_lovelace.cpp, nspanel_ohpanel.cpp). Exactly one owns UART2 at a time

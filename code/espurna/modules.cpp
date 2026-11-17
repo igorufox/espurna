@@ -23,6 +23,7 @@ void* espurna_module_api[static_cast<size_t>(espurna::modules::Api::Count)] {};
 #include "espurna_tasks.h"
 #include "modules_core.h"
 #include "rtcmem.h"
+#include "crash.h"
 #include "modules_page.h"
 #include "modules_package.h"
 #include "libs/crc32_ieee.h"
@@ -209,6 +210,45 @@ bool directoryShape(const Directory& dir) {
     return (dir.magic == DirectoryMagic) &&(dir.count <= DirectoryEntries) && directoryNames(dir);
 }
 
+// what readDirectory() found instead of a directory (W66, review 2.3): the modules vanished from /modules without a
+// word after a head update. A directory of an older format ("EDR" and an older digit) is not read; on ESP8266 the
+// head update stages its image in the free flash up to the settings (Updater: FS_start, 0xFB000 on 1 MB), over the
+// modules and both copies of the directory, so nothing of them is left to keep
+enum class Missing {
+    Erased,         // nothing there: no modules installed, or removed
+    Overwritten,    // other bytes: an image written over them
+    Older,          // a directory of an older format
+};
+
+Missing directory_missing { Missing::Erased };
+
+Missing missingKind(uint32_t magic) {
+    constexpr uint32_t Family { DirectoryMagic & 0x00FFFFFFu };
+    if (magic == 0xFFFFFFFFu) {
+        return Missing::Erased;
+    }
+
+    if (((magic & 0x00FFFFFFu) == Family) && (magic < DirectoryMagic)) {
+        return Missing::Older;
+    }
+
+    return Missing::Overwritten;
+}
+
+// the reason the modules are gone, or nullptr
+const char* missingText() {
+    switch (directory_missing) {
+    case Missing::Older:
+        return PSTR("modules removed: the directory is of an older format, Apply again");
+    case Missing::Overwritten:
+        return PSTR("modules removed: their directory was overwritten (on ESP8266 a head update writes its image over the modules), Apply again");
+    case Missing::Erased:
+        break;
+    }
+
+    return nullptr;
+}
+
 // the second copy's sector: under the directory, kept out of the module slots (spaces(), the full images)
 uint32_t directorySecond() {
     const auto area = arch::area();
@@ -263,13 +303,15 @@ bool readDirectory(Directory& out) {
     }
 
     bool found { false };
+    auto missing = Missing::Erased;
     const uint32_t places[] { area.hi, directorySecond() };
     for (const auto at : places) {
-        if (!at || !arch::rawRead(at, &scratch, sizeof(scratch)) || !directoryShape(scratch)) {
+        if (!at || !arch::rawRead(at, &scratch, sizeof(scratch))) {
             continue;
         }
 
-        if (scratch.crc != directoryCrc(scratch)) {
+        if (!directoryShape(scratch) || (scratch.crc != directoryCrc(scratch))) {
+            missing = std::max(missing, missingKind(scratch.magic));
             continue;
         }
 
@@ -281,6 +323,7 @@ bool readDirectory(Directory& out) {
         }
     }
 
+    directory_missing = found ? Missing::Erased : missing;
     return found;
 }
 
@@ -406,7 +449,9 @@ String offReason() {
     }
     auto& dir = *dir_box;
     if (!readDirectory(dir)) {
-        return String();
+        // no directory: why the modules are gone, said plainly (W66)
+        const auto* missing = missingText();
+        return missing ? String(FPSTR(missing)) : String();
     }
 
     dir.off[sizeof(dir.off) - 1] = '\0';
@@ -1482,6 +1527,10 @@ __attribute__((weak)) const char* imageBegin(Upload&) {
 __attribute__((weak)) void imageDone(uint32_t, uint32_t) {
 }
 
+__attribute__((weak)) uint32_t dataView(uint32_t) {
+    return 0;
+}
+
 __attribute__((weak)) bool rewritable() {
     return true;
 }
@@ -2418,6 +2467,38 @@ bool applyInitial(const Directory& dir, bool valid) {
 
 // --- web -----------------------------------------------------------------------------------------------------------
 
+#if DEBUG_SUPPORT
+// after the reason the modules are off: the last crash (crash.h) and the module one of its code addresses is in, by the
+// bases the modules ran at (the NSPanel, 11-16: "crashed at boot again and again" said nothing of why)
+String offCause(const Directory& dir) {
+    std::unique_ptr<CrashCause> cause(new (std::nothrow) CrashCause);
+    if (!cause || !crashCause(*cause)) {
+        return String();
+    }
+
+    String out(F(". Last crash: "));
+    out += cause->text;
+    for (size_t index = 0; index < cause->count; ++index) {
+        const auto address = cause->addresses[index];
+        for (size_t number = 0; number < dir.count; ++number) {
+            const auto& entry = dir.entries[number];
+            const uint32_t code = entry.bases[BaseCode];
+            const uint32_t code_size = entry.code_size ? entry.code_size : entry.size;
+            const uint32_t flash = entry.bases[BaseFlash];
+            if ((code && (address >= code) && (address < (code + code_size)))
+                || (flash && (address >= flash) && (address < (flash + entry.size))))
+            {
+                out += F(", in the module ");
+                out += entry.name;
+                return out;
+            }
+        }
+    }
+
+    return out;
+}
+#endif
+
 void onStatus(WebRequest& request) {
     if (!authenticated(request)) {
         return;
@@ -2433,7 +2514,7 @@ void onStatus(WebRequest& request) {
     // the whole answer at once (~140..175 bytes a module): a String that grows realloc by realloc stopped short on the
     // fragmented ESP8266 heap and sent broken JSON (cut at 2047 of 2440 bytes, 10.0.5.0 with 14 modules, W28)
     String out;
-    if (!out.reserve(560 + ((valid ? dir.count : 0) * 180))) {
+    if (!out.reserve(720 + ((valid ? dir.count : 0) * 180))) {
         request.send(503, "text/plain", "ERROR: no memory"); return;
     }
     out += F("{\"version\":\"");
@@ -2447,7 +2528,15 @@ void onStatus(WebRequest& request) {
     out += F("\",\"list\":");
     jsonString(out, getSetting(F("webFwUrl")).c_str());
     out += F(",\"off\":");
-    jsonString(out, offReason().c_str());
+    {
+        auto off = offReason();
+#if DEBUG_SUPPORT
+        if (off.length() && valid) {
+            off += offCause(dir);
+        }
+#endif
+        jsonString(out, off.c_str());
+    }
     out += F(",\"modules\":[");
     for (size_t index = 0; valid && (index < dir.count); ++index) {
         const auto& entry = dir.entries[index];
@@ -2531,6 +2620,8 @@ void onStatus(WebRequest& request) {
     arch::statusJson(out);
     jsonField(out, F("heap"), systemFreeHeap());
     jsonField(out, F("heap_boot"), systemInitialFreeHeap());
+    // the lowest free heap since boot, readable without a WebSocket or telnet client (whose log output takes heap)
+    jsonField(out, F("heap_min"), systemHeapMinimum());
     jsonField(out, F("oom"), arch::failedAllocations());
     out += '}';
 
@@ -2674,7 +2765,12 @@ void commandOn(::terminal::CommandContext&& ctx) {
 }
 
 void commandList(::terminal::CommandContext&& ctx) {
-    Directory dir;
+    auto dir_box = boxed<Directory>();
+    if (!dir_box) {
+        terminalError(ctx, F("no memory"));
+        return;
+    }
+    auto& dir = *dir_box;
     const bool valid = readDirectory(dir);
 
     const auto area = arch::area();
@@ -2768,7 +2864,9 @@ void modulesRamSetup() {
     // its own copy: readDirectory() reads both copies through `scratch`, the older one would land in it last. Here
     // setup() is shallow, the copy on the stack does not hurt (unlike in the loop, cont_check 2026-11-10)
     Directory dir;
-    const uint32_t need = readDirectory(dir) ? heapNeed(dir) : 0;
+    // the modules off (the off mark): no block, only the probe. Their block on the 1 MB ESP8266 left 4-9 KB, espota's
+    // 4 KB Update buffer took the rest, TCP stopped receiving and ArduinoOTA hung inside loop() (W58)
+    const uint32_t need = (readDirectory(dir) && !dir.off[0]) ? heapNeed(dir) : 0;
     // 8 more: the base aligned to 8 bytes whatever the chip's malloc gives (the ESP32 gives 4)
     auto* block = static_cast<uint8_t*>(std::malloc((need ? need : 16) + 8));
     heap_block_base = block ? roundUp(reinterpret_cast<uint32_t>(block), 8) : 0;
@@ -2786,7 +2884,7 @@ namespace modules {
 namespace {
 
 // Boots cut short, for the light switch of a board in a wall: a pair of words per boot in the last quarter of the
-// directory sector (the Beken guard's marks are at 2048..2560), written without an erase (bits only go 1 -> 0):
+// directory sector (the guard's marks are at 2048..2560), written without an erase (bits only go 1 -> 0):
 // [0] cleared at boot, [1] once the boot ran PowerSeconds or when the next boot was a restart ESPurna asked for.
 // PowerQuick boots in a row that never got to [1] (switched on and off again, or crashing right away): the modules
 // stay off (the off mark), the board comes up with the network. A directory write erases the sector: the count
@@ -2946,6 +3044,8 @@ void modulesSetup() {
     server.on("/modules", WebMethod::Get, onStatus);
     server.on("/ui", WebMethod::Get, onUiList);
     server.on("/ui/part", WebMethod::Get, onUiPart);
+    // the admin password and the Wi-Fi network of the head page (W71)
+    headSetupRoutes();
 
     // the MODULES menu entry of the WebUI module
     wsRegister().onVisible([](JsonObject& root) {
@@ -2954,7 +3054,16 @@ void modulesSetup() {
 
     Directory dir;
     const bool valid = readDirectory(dir);
-    if (applyInitial(dir, valid) || !valid) {
+    if (applyInitial(dir, valid)) {
+        return;
+    }
+
+    // no directory: the reason in the log too (W66)
+    if (!valid) {
+        const auto* missing = missingText();
+        if (missing) {
+            DEBUG_MSG_P(PSTR("[MODULES] %s\n"), missing);
+        }
         return;
     }
 
@@ -3136,17 +3245,39 @@ bool modulesDataRead(const char* name, uint32_t at, void* data, size_t len) {
     return modulesDataInside(name, at, len, offset) && espurna::modules::arch::rawRead(offset + at, data, len);
 }
 
+// the written range is dropped from what the flash cache holds of the mapped views (modulesDataView())
 bool modulesDataWrite(const char* name, uint32_t at, const void* data, size_t len) {
     uint32_t offset;
-    return modulesDataInside(name, at, len, offset) && espurna::modules::arch::rawWrite(offset + at, data, len);
+    if (!modulesDataInside(name, at, len, offset) || !espurna::modules::arch::rawWrite(offset + at, data, len)) {
+        return false;
+    }
+
+    espurna::modules::arch::imageDone(offset + at, len);
+    return true;
 }
 
 bool modulesDataErase(const char* name, uint32_t at, size_t len) {
     using espurna::modules::SectorSize;
     uint32_t offset;
     uint32_t size;
-    return modulesDataPlace(name, offset, size) && !(at % SectorSize) && !(len % SectorSize) && (at <= size)
-        && (len <= (size - at)) && espurna::modules::arch::rawErase(offset + at, len);
+    if (!modulesDataPlace(name, offset, size) || (at % SectorSize) || (len % SectorSize) || (at > size)
+        || (len > (size - at)) || !espurna::modules::arch::rawErase(offset + at, len))
+    {
+        return false;
+    }
+
+    espurna::modules::arch::imageDone(offset + at, len);
+    return true;
+}
+
+const uint8_t* modulesDataView(const char* name) {
+    uint32_t offset;
+    uint32_t size;
+    if (!modulesDataPlace(name, offset, size)) {
+        return nullptr;
+    }
+
+    return reinterpret_cast<const uint8_t*>(espurna::modules::arch::dataView(offset));
 }
 
 bool modulesEnabled(const char* name) {

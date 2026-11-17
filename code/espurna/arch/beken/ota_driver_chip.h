@@ -57,6 +57,9 @@ inline void arduino_ota_started() {
 inline void arduino_ota_progress() {
 }
 
+inline void arduino_ota_stopped() {
+}
+
 const char* upload_check(const uint8_t* data, size_t len);
 
 // the RBL head of the install image (.ota, ~450 KB): written into 'download' by ota_beken.cpp, the bootloader installs it.

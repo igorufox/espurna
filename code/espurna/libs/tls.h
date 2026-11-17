@@ -13,8 +13,9 @@ HTTP client and the MQTT client: a byte stream over the TCP connection of libs/t
 - the server: not checked (a download is checked against its SHA-256 instead), the SHA-1 fingerprint of its
   certificate (MQTT `mqttFP`), or its chain against trust anchors (MQTT `mqttCA`, else the built-in root; the tls
   module does it, the head has only the hook)
-- the records: full ones (a 16 KB input buffer), or the server is asked for smaller ones (max_fragment_length:
-  512 .. 4096); a server that ignores it fails the connection
+- the records: by default every connection asks for small ones by itself (max_fragment_length): 512, then 4096,
+  then full ones (a 16 KB input buffer), what the server took kept per host + port until the reboot (libs/tls_impl.h,
+  AutoSizes); or one size asked for (Options::fragment 512 .. 4096), and a server that ignores it fails the connection
 - what differs per chip is only what the chip forces: the entropy, and on the ESP8266 the second stack for the crypto
   steps (its loop stack is 4 KB, RSA i15 alone takes ~4.5 KB)
 
@@ -55,7 +56,8 @@ struct Options {
     bool ca { false };
     const char* ca_pem { nullptr };
 
-    // 512, 1024, 2048 or 4096: records this small (the input buffer is that big); 0 - full records
+    // 512, 1024, 2048 or 4096: records this small (the input buffer is that big); 0 - auto: the smallest the server
+    // takes (512, 4096 or full, found by the first connection to it)
     size_t fragment { 0 };
 };
 

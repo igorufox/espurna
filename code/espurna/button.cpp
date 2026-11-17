@@ -722,16 +722,6 @@ debounce_event::types::Mode mode(size_t index) {
     return getSetting({keys::Mode, index}, build::mode(index));
 }
 
-debounce_event::types::PinValue defaultValue(size_t index) {
-    if (internal::getDynamicButton(index)) {
-        // a switch can be in any position at boot, take it as the idle one
-        return ((mode(index) == debounce_event::types::Mode::Switch) && !isFollow(index))
-            ? debounce_event::types::PinValue::Initial
-            : debounce_event::types::PinValue::High;
-    }
-    return getSetting({keys::DefaultValue, index}, build::defaultValue(index));
-}
-
 debounce_event::types::PinMode pinMode(size_t index) {
     if (internal::getDynamicButton(index)) {
         return debounce_event::types::PinMode::InputPullup;
@@ -739,9 +729,39 @@ debounce_event::types::PinMode pinMode(size_t index) {
     return getSetting({keys::PinMode, index}, build::pinMode(index));
 }
 
+debounce_event::types::PinValue defaultValue(size_t index) {
+    // Follow: «released» is the open contact, never the position at boot (W68). Otherwise a switch
+    // that was on at boot would be taken as off and the relay would go the opposite way.
+    // Open contact reads as the pull: HIGH with a pull-up (or none), LOW with a pull-down
+    if (isFollow(index)) {
+        const auto value = internal::getDynamicButton(index)
+            ? debounce_event::types::PinValue::Initial
+            : getSetting({keys::DefaultValue, index}, build::defaultValue(index));
+        if (value != debounce_event::types::PinValue::Initial) {
+            return value;
+        }
+
+        return (pinMode(index) == debounce_event::types::PinMode::InputPulldown)
+            ? debounce_event::types::PinValue::Low
+            : debounce_event::types::PinValue::High;
+    }
+
+    if (internal::getDynamicButton(index)) {
+        // a switch can be in any position at boot, take it as the idle one
+        return (mode(index) == debounce_event::types::Mode::Switch)
+            ? debounce_event::types::PinValue::Initial
+            : debounce_event::types::PinValue::High;
+    }
+    return getSetting({keys::DefaultValue, index}, build::defaultValue(index));
+}
+
 ButtonAction release(size_t index) {
     if (internal::getDynamicButton(index)) {
-        return ButtonAction::None;
+        // a switch acts on every change of position, the return included (W67);
+        // a pushbutton only on the press
+        return (mode(index) == debounce_event::types::Mode::Switch)
+            ? ButtonAction::Toggle
+            : ButtonAction::None;
     }
     return getSetting({keys::Release, index}, build::release(index));
 }
@@ -1493,6 +1513,25 @@ void _buttonConfigure() {
 } // namespace
 
 void buttonLoop() {
+    // Follow: on the first loop the relay takes the real position of the contact, open or closed (W68).
+    // The pin is read as it is now, after that only changes count. AC switch is left alone: its level
+    // is known only after a counting window, its first change comes as a regular event
+    static bool boot { true };
+    if (boot) {
+        boot = false;
+        for (size_t id = 0; id < espurna::button::internal::buttons.size(); ++id) {
+            auto& button = espurna::button::internal::buttons[id];
+            if (!button.event_emitter || button.ac_switch || !espurna::button::settings::isFollow(id)) {
+                continue;
+            }
+
+            button.event_emitter->sync();
+            buttonEvent(id, button.event_emitter->isPressed()
+                ? ButtonEvent::Pressed
+                : ButtonEvent::Released);
+        }
+    }
+
     for (size_t id = 0; id < espurna::button::internal::buttons.size(); ++id) {
         auto event = espurna::button::internal::buttons[id].loop();
         if (event != ButtonEvent::None) {

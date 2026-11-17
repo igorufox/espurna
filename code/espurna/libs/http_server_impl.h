@@ -15,6 +15,7 @@ HTTP SERVER - the implementation (libs/http_server.h), part of libs/net_impl.h. 
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <strings.h>
 #include <new>
@@ -545,7 +546,9 @@ private:
                 const size_t size = _head_size ? std::min(_head_size * 2, HeadMax) : 512;
                 std::unique_ptr<char[]> head(new (std::nothrow) char[size]);
                 if (!head) {
-                    break;
+                    // no heap for the head: 503 at once (not 431), the client tries again
+                    _head_nomem = true;
+                    return true;
                 }
                 if (_head_len) {
                     memcpy(head.get(), _head, _head_len);
@@ -948,6 +951,7 @@ private:
     size_t _head_size { 0 };
     size_t _head_len { 0 };
     bool _head_overflow { false };
+    bool _head_nomem { false };
     Method _method { static_cast<Method>(0) };
     char _method_name[8] {};
     char _url[UrlMax] {};
@@ -1010,6 +1014,7 @@ public:
     void end() {
         _listener.end();
         _requests.clear();
+        *static_cast<volatile size_t*>(&_active) = 0;
     }
 
     void on(const char* path, uint8_t methods, Handler handler, BodyHandler body) {
@@ -1067,6 +1072,11 @@ public:
         return _requests.size();
     }
 
+    // read in lwIP's context too: the count the loop stored (one aligned word), not the vector
+    size_t busy() const {
+        return *static_cast<const volatile size_t*>(&_active) + _listener.pending();
+    }
+
     void loop() {
         while (_requests.size() < RequestsMax) {
             auto conn = _listener.accept();
@@ -1074,11 +1084,23 @@ public:
                 break;
             }
 
+            // room for RequestsMax made once: push_back allocates with the throwing new, an abort when the heap is out
+            if (_requests.capacity() < RequestsMax) {
+                void* probe = ::malloc(RequestsMax * sizeof(_requests[0]));
+                if (!probe) {
+                    break;
+                }
+                ::free(probe);
+                _requests.reserve(RequestsMax);
+            }
+
             std::unique_ptr<Request::Impl> request(new (std::nothrow) Request::Impl(std::move(conn)));
             if (request) {
                 request->_defaults = &_defaults;
                 _requests.push_back(std::move(request));
             }
+            // taken from the listener: counted here from now on, nothing in between (no yield)
+            *static_cast<volatile size_t*>(&_active) = _requests.size();
         }
 
         for (auto& request : _requests) {
@@ -1089,6 +1111,7 @@ public:
             [](const std::unique_ptr<Request::Impl>& request) {
                 return request->done();
             }), _requests.end());
+        *static_cast<volatile size_t*>(&_active) = _requests.size();
     }
 
     const Route* route(char* url, Method method) const {
@@ -1129,6 +1152,7 @@ private:
     Handler _upgrade;
     DefaultHeaders _defaults;
     std::vector<std::unique_ptr<Request::Impl>> _requests;
+    size_t _active { 0 };   // _requests.size() as of the last change, for busy()
 };
 
 void Request::Impl::step(Server::Impl& server) {
@@ -1155,6 +1179,10 @@ void Request::Impl::step(Server::Impl& server) {
             return;
         }
         if (!readHead()) {
+            return;
+        }
+        if (_head_nomem) {
+            fail(503);
             return;
         }
         if (_head_overflow) {
@@ -1322,6 +1350,7 @@ void Server::onUpgrade(Handler handler) { if (_impl) { _impl->onUpgrade(std::mov
 void Server::defaultHeader(const char* name, const char* value) { if (_impl) { _impl->defaultHeader(name, value); } }
 void Server::loop() { if (_impl) { _impl->loop(); } }
 size_t Server::active() const { return _impl ? _impl->active() : 0; }
+size_t Server::busy() const { return _impl ? _impl->busy() : 0; }
 
 } // namespace server
 } // namespace http

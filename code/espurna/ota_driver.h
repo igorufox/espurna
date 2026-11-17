@@ -13,6 +13,7 @@ ArduinoOTA receives the whole image inside of a single loop() call
 - arduino_ota_begin(ota)          start without its own mDNS responder (the mdns module handles it)
 - arduino_ota_started()           before the image is written, pending settings must reach the flash
 - arduino_ota_progress()          between the chunks
+- arduino_ota_stopped()           the upload ended (an error, or the end before the restart)
 
 Web OTA (ref. ota_web.cpp)
 - upload_check(data, len)         first chunk of an upload: nullptr - this board takes it, else a PSTR() error

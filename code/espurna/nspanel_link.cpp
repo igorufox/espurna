@@ -187,9 +187,14 @@ const std::deque<String>& panelEvents() {
 // auto: OHpanel at 921600 (FF FF FF sendme + get design_ver, expects 66 / 71) for 600 ms, then
 // Lovelace at 115200 (raw recmod=1, pageType~pageStartup, expects event,startup) for 2 s, repeated
 // until one answers. Forced: only that driver, retried. No answer for 30 s: the display is
-// power-cycled once (GPIO4 HIGH 800 ms, 1.5 s boot), not within 3 min after a TFT upload.
+// power-cycled once (GPIO4 HIGH 800 ms, 1.5 s boot).
 // Detection runs again at boot, after every TFT upload, when "display" changes, on
 // `nspanel.detect`, and when the active driver reports the TFT lost.
+// The end of a TFT upload does what an ESP restart does (W78): the display gets FlashSettleMs to
+// finish writing and restart by itself, then its power is cut and given back (the reset of the ESP
+// leaves GPIO4 floating, the display off, at every boot), the port goes back to the detection rate
+// and the detection starts as at boot. Without this the display stayed silent after the upload
+// (rx 0) until the ESP restarted.
 // -----------------------------------------------------------------------------
 
 namespace link {
@@ -197,6 +202,7 @@ namespace {
 
 enum class Power {
     None,
+    Settle,     // after a TFT upload: the display finishes on its own power
     Off,
     Boot,
 };
@@ -206,7 +212,6 @@ Driver* detected { nullptr };
 bool is_probing { true };
 uint32_t window_start { 0 };
 uint32_t episode_start { 0 };
-uint32_t quiet_until { 0 };     // no automatic power-cycle before this
 bool power_cycled { false };
 Power power { Power::None };
 uint32_t power_at { 0 };
@@ -284,15 +289,35 @@ void probe(const char* why) {
     start(first());
 }
 
+// as at boot: the display power-cycled, the port at the detection rate, then detected
+// (no driver until the display is back: the one before the upload starts over in Power::Boot)
 void afterFlash(bool done) {
-    quiet_until = millis() + build::FlashQuietMs;
-    probe(done ? "TFT uploaded" : "TFT upload failed");
+    reason = done ? "TFT uploaded" : "TFT upload failed";
+    DEBUG_MSG_P(PSTR("[NSPANEL] Detecting the display (%s, display: %s) after a power cycle\n"),
+        reason.c_str(), driverPrefName(config().display));
+    current = nullptr;
+    is_probing = true;
+    episode_start = millis();
+    power_cycled = false;
+    uart::setBaud(build::LovelaceBaud);
+    build::powerWrite(LOW);
+    power = Power::Settle;
+    power_at = millis();
 }
 
 void loop() {
     const auto now = millis();
 
     switch (power) {
+    case Power::Settle:
+        if (now - power_at >= build::FlashSettleMs) {
+            DEBUG_MSG_P(PSTR("[NSPANEL] Power-cycling the display after the TFT upload\n"));
+            build::powerWrite(HIGH);
+            power = Power::Off;
+            power_at = now;
+        }
+        return;
+
     case Power::Off:
         if (now - power_at >= build::PowerOffMs) {
             build::powerWrite(LOW);
@@ -339,9 +364,7 @@ void loop() {
         return;
     }
 
-    if (!power_cycled && (now - episode_start >= build::ProbePowerCycleMs)
-        && (static_cast<int32_t>(now - quiet_until) >= 0))
-    {
+    if (!power_cycled && (now - episode_start >= build::ProbePowerCycleMs)) {
         DEBUG_MSG_P(PSTR("[NSPANEL] No display answer for %u s, power-cycling it\n"),
             static_cast<unsigned>((now - episode_start) / 1000));
         power_cycled = true;

@@ -21,6 +21,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <ArduinoOTA.h>
 
 #include "ota_driver.h"
+#include "rtcmem.h"
 
 namespace espurna {
 namespace ota {
@@ -53,6 +54,9 @@ void start() {
     // Because ArduinoOTA is synchronous and will block until either success or error, force backup right now instead of waiting for the next loop()
     eepromRotate(false);
     eepromBackup(0);
+    Rtcmem->ota_trace = TraceRunning;
+    Rtcmem->ota_bytes = 0;
+    Rtcmem->ota_size = 0;
     driver::arduino_ota_started();
 
     DEBUG_MSG_P(PSTR("[OTA] Started...\n"));
@@ -66,6 +70,8 @@ void start() {
 void end() {
     // ArduinoOTA default behaviour is to reset the board after this callback returns.
     // Page reload will happen automatically, when WebUI will fail to receive the PING response.
+    driver::arduino_ota_stopped();
+    Rtcmem->ota_trace = 0;
     DEBUG_MSG_P(PSTR("[OTA] Done, restarting.\n"));
     customResetReason(CustomResetReason::Ota);
     espurna::time::blockingDelay(
@@ -74,6 +80,8 @@ void end() {
 
 void progress(unsigned int progress, unsigned int total) {
     // ArduinoOTA receives the whole image inside of a single loop() call
+    Rtcmem->ota_bytes = progress;
+    Rtcmem->ota_size = total;
     driver::arduino_ota_progress();
 
     // Removed to avoid websocket ping back during upgrade (see #1574)
@@ -95,6 +103,9 @@ void progress(unsigned int progress, unsigned int total) {
 }
 
 void error(ota_error_t error) {
+    driver::arduino_ota_stopped();
+    Rtcmem->ota_trace = 0;
+
 #if DEBUG_SUPPORT
     StringView reason = STRING_VIEW("Unknown");
 
@@ -124,7 +135,27 @@ void error(ota_error_t error) {
     eepromRotate(true);
 }
 
+// an upload this board restarted in the middle of: what it took, for `get otaTrace` (W58)
+void trace() {
+    if (!rtcmemStatus()) {
+        return;
+    }
+
+    const auto tag = Rtcmem->ota_trace;
+    if ((tag == TraceRunning) || (tag == TraceStalled)) {
+        char out[96];
+        snprintf_P(out, sizeof(out), PSTR("%s at %u of %u bytes"),
+            (tag == TraceStalled) ? "stalled, restarted" : "restarted",
+            Rtcmem->ota_bytes, Rtcmem->ota_size);
+        setSetting(F("otaTrace"), out);
+        DEBUG_MSG_P(PSTR("[OTA] The last espota upload %s\n"), out);
+    }
+
+    Rtcmem->ota_trace = 0;
+}
+
 void setup() {
+    trace();
     espurnaRegisterLoop(loop);
     espurnaRegisterReload(configure);
 

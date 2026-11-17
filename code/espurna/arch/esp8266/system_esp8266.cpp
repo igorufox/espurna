@@ -17,6 +17,7 @@ Chip specific part, common part is in system.cpp
 #include "../../modules.h"
 #endif
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <forward_list>
@@ -388,6 +389,10 @@ bool dump_empty(Print&) {
     return false;
 }
 
+bool cause(CrashCause&) {
+    return false;
+}
+
 void setup() {
 }
 
@@ -671,6 +676,21 @@ HeapStats systemHeapStats() {
 
 size_t systemFreeHeap() {
     return espurna::memory::freeHeap();
+}
+
+#ifdef UMM_STATS_FULL
+extern "C" size_t umm_free_heap_size_lw_min(void);
+#endif
+
+// the core's umm_malloc tracks the lowest free heap only with UMM_STATS_FULL; else the lowest these calls saw
+size_t systemHeapMinimum() {
+#ifdef UMM_STATS_FULL
+    return umm_free_heap_size_lw_min();
+#else
+    static size_t lowest { static_cast<size_t>(-1) };
+    lowest = std::min(lowest, espurna::memory::freeHeap());
+    return lowest;
+#endif
 }
 
 void reset() {

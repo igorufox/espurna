@@ -16,6 +16,27 @@
                         Active driver: <span class="nspanel-status">?</span>
                     </span>
                 </div>
+
+                <div class="pure-control-group">
+                    <label>Screen firmware (.tft)</label>
+                    <select class="nspanel-tft-choice">
+                        <option value="https://raw.githubusercontent.com/bruestel/ohpanel/ba9361982399414d1612aea85504d9707b329e75/boards/nspanel/nextion/display/ohpanel-nspanel-eu-display-bc629e1e.tft">OHpanel v0.9.2, EU (bc629e1e, as on NSPANEL1)</option>
+                        <option value="https://raw.githubusercontent.com/bruestel/ohpanel/944943e5408a192ec816095b23125892bac7c8d1/boards/nspanel/nextion/display/ohpanel-nspanel-eu-display-255a2db5.tft">OHpanel latest, EU (255a2db5)</option>
+                        <option value="https://raw.githubusercontent.com/bruestel/ohpanel/944943e5408a192ec816095b23125892bac7c8d1/boards/nspanel/nextion/display/ohpanel-nspanel-us-display-6169e777.tft">OHpanel latest, US portrait (6169e777)</option>
+                        <option value="https://raw.githubusercontent.com/bruestel/ohpanel/944943e5408a192ec816095b23125892bac7c8d1/boards/nspanel/nextion/display/ohpanel-nspanel-us-landscape-display-7b64b966.tft">OHpanel latest, US landscape (7b64b966)</option>
+                        <option value="https://raw.githubusercontent.com/joBr99/nspanel-lovelace-ui/v4.8.12/HMI/nspanel.tft">Lovelace UI v4.8.12, EU</option>
+                        <option value="https://raw.githubusercontent.com/joBr99/nspanel-lovelace-ui/v4.8.12/HMI/US/portrait/nspanel_US_P.tft">Lovelace UI v4.8.12, US portrait</option>
+                        <option value="https://raw.githubusercontent.com/joBr99/nspanel-lovelace-ui/v4.8.12/HMI/US/landscape/nspanel_US_L.tft">Lovelace UI v4.8.12, US landscape</option>
+                    </select>
+                    <input class="nspanel-tft-url" type="text" autocomplete="off" spellcheck="false"
+                        value="https://raw.githubusercontent.com/bruestel/ohpanel/ba9361982399414d1612aea85504d9707b329e75/boards/nspanel/nextion/display/ohpanel-nspanel-eu-display-bc629e1e.tft">
+                    <button type="button" class="pure-button button-nspanel-flash">Flash the screen</button>
+                    <span class="pure-form-message">
+                        Writes the chosen file into the display (or any other .tft by its URL in the field; OHpanel
+                        ~14-16 MB, about 6 minutes; the stock screen too). The module drives OHpanel and Lovelace UI. What the screen had before can not be read back. Keep the panel powered.
+                        <br>Flash: <span class="nspanel-flash">?</span>
+                    </span>
+                </div>
             </fieldset>
 
             <fieldset>

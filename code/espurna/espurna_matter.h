@@ -48,6 +48,8 @@ bool matter_remove_fabric(uint8_t index) __attribute__((weak));
 void matter_open_window(void);
 // a work item through the Matter task, answered with matter_pong()
 void matter_ping(void);
+// after matter_app_start(): the last controller gone, the basic pairing window opens again (matter_app.cpp)
+void matter_watch_fabrics(void);
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Callbacks of the Matter application (matter.cpp). From the Matter task unless said otherwise: applied in the loop
@@ -112,12 +114,27 @@ void describe(Identity& out);
 // Forget every controller (fabrics, ACL), keep the own identity and its pairing code. Only while Matter is stopped
 bool reset();
 
-size_t heap_min();
-
 } // namespace backend
+
+// Heap checkpoint of the start (W88): "[MATTER] heap <step>: free F, block B, min M" - free heap, its largest free
+// block, the lowest free heap since boot (systemHeapMinimum()). Unlike systemHeapStep() it logs every step. from_loop: straight to the debug log; else (the Matter task) through the
+// log slots of the loop
+void heap_step(const char* step, bool from_loop = false);
+
 } // namespace matter
 } // namespace espurna
 
 void matterSetup();
 
 bool matterStarted();
+
+// For the modules that need the matter module (nspanelqr), linked against it directly (espurna/modules_provided.txt).
+// The pairing window is open
+bool matterWindowOpen();
+
+// Opens the basic pairing window (MATTER.WINDOW); false while Matter is not started
+bool matterWindowStart();
+
+// QR payload ("MT:...") and manual pairing code; false while Matter is not started. They carry the setup passcode:
+// for the owner's screens only (the MATTER panel, the NSPanel QR screen), never logged
+bool matterPairingCodes(char* qr, size_t qr_size, char* manual, size_t manual_size);

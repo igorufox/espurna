@@ -241,6 +241,10 @@ bool modulesDataRead(const char* name, uint32_t at, void* data, size_t len);
 bool modulesDataWrite(const char* name, uint32_t at, const void* data, size_t len);
 bool modulesDataErase(const char* name, uint32_t at, size_t len);
 
+// the same data as plain memory (the mapped flash: read in place, any byte, writes above show at once), nullptr - the
+// chip cannot give that (its data is then only read with modulesDataRead())
+const uint8_t* modulesDataView(const char* name);
+
 // the part of the WebUI a module brings (U31): its panels, status lines, templates, styles and script, one gzip'ed
 // fragment in the module's flash (html/build/ui-<name>.html.gz, espurna/static/ui_<name>.ipp). The module adds it when
 // it starts, the head serves it (GET /ui: the names, GET /ui/part?name=<name>: the fragment) and the page of the
@@ -253,6 +257,9 @@ void modulesRamSetup();
 void modulesBootSetup();
 void modulesSetup();
 bool modulesRunning();
+// the setup form of the head page (head_setup.cpp): the admin password and the Wi-Fi network without the WebUI module.
+// Its routes, registered by modulesSetup() with the other head routes
+void headSetupRoutes();
 
 // the identity of the head (its GNU build id, 32 hex digits): what /modules and `info` call "md5", what a module
 // carries of the head it is linked against

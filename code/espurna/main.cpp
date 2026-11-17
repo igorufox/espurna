@@ -179,6 +179,8 @@ void loop() {
         for (const auto& callback : internal::loop_callbacks) {
             internal::current = reinterpret_cast<uintptr_t>(callback);
             callback();
+            // which loop callback the heap went down in (its address: the head's ELF or the module's base)
+            systemHeapStepAt(internal::current);
         }
 
         internal::current = 1;

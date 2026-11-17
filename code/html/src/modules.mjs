@@ -6,7 +6,8 @@
 // The head has its own small page with the same switches (/modules.html), it works without this WebUI.
 
 import { fetchBytes, fetchJson, post as netPost, wait } from './net.mjs';
-import { installImage, modulesFileOf, modulesHeadId, names, parseContainer, runningNames, waitModules } from './install.mjs';
+import { installImage, installRunning, modulesFileOf, modulesHeadId, names, parseContainer, readModules, runningNames,
+    waitModules } from './install.mjs';
 import { listenAppConnected } from './connection.mjs';
 import { FIRMWARE_URL, installFileOf } from './fwinstall.mjs';
 import { pageReloadIn, styleInject } from './core.mjs';
@@ -129,6 +130,7 @@ const DESCRIPTIONS = new Map([
     ["llmnr", "Answers <hostname> from Windows on the network (LLMNR)."],
     ["netbios", "Answers the NetBIOS name of the board on the network."],
     ["http", "The HTTP client of the modules (http:// and https://): ThingSpeak, InfluxDB, NSPanel."],
+    ["nspanelqr", "The Matter pairing QR code on the NSPanel display (OHpanel) while the pairing window is open, it needs the nspanel and matter modules."],
 ]);
 
 // the panel shows the modules by group, in this order; a module not listed goes to the last one
@@ -145,7 +147,7 @@ export const GROUPS = [
         "sm300d2", "mics2710", "mics5525", "ezoph", "sonar", "a02yyu", "vl53l1x", "max6675", "dummy"]],
     ["Automation", ["scheduler", "rpnrules"]],
     ["Integrations", ["mqtt", "api", "ntp", "homeassistant", "alexa", "domoticz", "thingspeak", "influxdb", "mdns",
-        "ssdp", "llmnr", "netbios", "prometheus", "http", "matter"]],
+        "ssdp", "llmnr", "netbios", "prometheus", "http", "matter", "nspanelqr"]],
 ];
 
 /**
@@ -561,7 +563,8 @@ function url(path) {
  * @returns {Promise<string>}
  */
 function post(path, body) {
-    return netPost(url(path), body);
+    // these only switch, remove or restart: a board that does not answer in 30 s is an error, not an endless wait
+    return netPost(url(path), body, 30000);
 }
 
 // with all modules on the board has 5-10 KB of heap: an answer may come empty or cut, ask again a few times
@@ -710,7 +713,8 @@ function cardElement(status, row) {
     toggle.classList.add("checkbox-toggle");
     // ticked here, written by *Apply*: the whole module area anew from the modules file
     toggle.checked = selection(status).has(row.name);
-    toggle.disabled = state.busy || !row.package;
+    // on needs the modules file; a running module goes off without it (and back on: no change then)
+    toggle.disabled = !canToggle(row, runningSet(status), state.busy || applying);
     toggle.addEventListener("change", () => {
         state.selected = selectionAfter(selection(status), row.name, toggle.checked, status, state.packages);
         draw();
@@ -876,23 +880,28 @@ function draw() {
     }
 
     const pending = changes(status);
+    const apply = element(".button-mod-restart");
+    if (apply instanceof HTMLButtonElement) {
+        apply.disabled = state.busy || applying;
+    }
     const restart = element(".mod-restart");
     if (restart) {
         restart.classList.toggle("mod-show", pending.length > 0);
         const text = element(".mod-restart-text");
         if (text) {
-            const adds = pending.some((x) => x.startsWith("+"));
-            const keeps = selection(status).size > 0;
             const headId = state.file ? modulesHeadId(state.file) : "";
             const newHead = !!(status.md5 && headId && (headId !== status.md5));
-            text.textContent = (state.file || !keeps)
-                ? `${pending.join(", ")}: Apply writes the ticked modules anew, packed, and restarts the board`
+            const route = applyRoute([...selection(status)], runningSet(status), state.file ? state.packages : null);
+            const texts = {
+                image: `${pending.join(", ")}: Apply writes the ticked modules anew, packed, and restarts the board`
                     + " (twice: without modules, then with them). This frees the flash of the modules switched off."
-                    + (newHead ? " The file is for another head build: Apply puts its head on first (one more restart)." : "")
-                : adds
-                    ? `${pending.join(", ")}: adding a module needs the install image (.ota): pick it below.`
-                    : `${pending.join(", ")}: Apply switches them off and restarts the board, no file needed.`
-                        + " Their flash becomes a gap: an Apply with the install image (.ota) packs the area.";
+                    + (newHead ? " The file is for another head build: Apply puts its head on first (one more restart)." : ""),
+                file: `${pending.join(", ")}: adding a module needs the install image (.ota): pick it below.`,
+                off: `${pending.join(", ")}: Apply switches them off and restarts the board, no file needed.`
+                    + " Their flash becomes a gap: an Apply with the install image (.ota) packs the area.",
+                none: `${pending.join(", ")}: Apply restarts the board without modules.`,
+            };
+            text.textContent = texts[route];
         }
     }
 }
@@ -916,6 +925,54 @@ function selection(status) {
  */
 export function runningSet(status) {
     return new Set(runningNames(status));
+}
+
+/**
+ * Whether the switch of a module can be clicked: never while a change is sent; on needs its package in the modules
+ * file, a module the board runs can always go off (no file needed for that)
+ * @param {Row} row
+ * @param {Set<string>} running
+ * @param {boolean} busy
+ * @returns {boolean}
+ */
+export function canToggle(row, running, busy) {
+    return !busy && (!!row.package || running.has(row.name));
+}
+
+/**
+ * How *Apply* goes: "off" - only modules switched off and no file that holds all the ones kept (out of the
+ * directory, one restart, no file), "none" - nothing kept (/modules/off), "image" - the install image, "file" - an
+ * install image is needed first
+ * @param {string[]} chosen the ticked modules
+ * @param {Set<string>} running
+ * @param {Map<string, Package> | null} packages the modules file picked, null - none
+ * @returns {"off" | "none" | "image" | "file"}
+ */
+export function applyRoute(chosen, running, packages) {
+    const added = chosen.filter((name) => !running.has(name));
+    const removed = [...running].filter((name) => !chosen.includes(name));
+    if (!chosen.length) {
+        return "none";
+    }
+    if (!added.length && removed.length && (!packages || chosen.some((name) => !packages.has(name)))) {
+        return "off";
+    }
+
+    return packages ? "image" : "file";
+}
+
+/**
+ * The chosen modules the board does not run after an Apply, with their state
+ * @param {string[]} chosen
+ * @param {{modules?: Installed[]} | null} status /modules after it
+ * @returns {string[]}
+ */
+export function notRunning(chosen, status) {
+    const modules = status?.modules ?? [];
+    return chosen
+        .map((name) => [name, modules.find((x) => x.name === name)?.state ?? "missing"])
+        .filter(([, state]) => state !== "running")
+        .map(([name, state]) => `${name} (${state})`);
 }
 
 /**
@@ -1022,15 +1079,22 @@ async function applySteps() {
     }
 
     const names = [...selection(status)];
-
-    // only switched off, no file: out of the directory, one restart. The others stay where they are, the flash of the
-    // ones switched off is freed by the next Apply with the install image (it writes the area anew)
     const running = runningSet(status);
-    const removed = [...running].filter((name) => !selection(status).has(name));
-    const added = names.filter((name) => !running.has(name));
-    if (!state.image && names.length && !added.length && removed.length) {
-        state.busy = true;
-        draw();
+    const removed = [...running].filter((name) => !names.includes(name));
+    const root = url("./");
+    const route = applyRoute(names, running, state.image ? state.packages : null);
+
+    if (route === "file") {
+        throw new Error("pick the install image (.ota) first, or take it From GitHub");
+    }
+
+    state.busy = true;
+    draw();
+
+    // only switched off, and no file that holds the ones kept: out of the directory, one restart. The others stay where
+    // they are, the flash of the ones switched off is freed by the next Apply with the install image (it writes the
+    // area anew)
+    if (route === "off") {
         for (const name of removed) {
             // the board removes only a module that is switched off (400 "switch it off first")
             const off = new FormData();
@@ -1044,34 +1108,51 @@ async function applySteps() {
         }
         message("Restarting...");
         await post("modules/restart", new FormData());
-        await waitModules(url("./"));
+        const after = await waitModules(root);
+        const still = removed.filter((name) => (after?.modules ?? []).some(
+            (/** @type {Installed} */x) => (x.name === name) && (x.state === "running")));
+        if (still.length) {
+            throw new Error(`still running after the restart: ${still.join(", ")}`);
+        }
         state.selected = null;
         message(`Switched off: ${removed.join(", ")}. Their flash is a gap until an Apply with the install image (.ota)`);
         return;
     }
 
-    if (names.length && !state.image) {
-        throw new Error("pick the install image (.ota) first, or take it From GitHub");
-    }
-
-    state.busy = true;
-    draw();
-
-    const root = url("./");
-    if (state.image) {
-        await installImage(root, state.image, status, names, (text, fraction) => {
-            message(text);
-            dialogStep(text, fraction ?? null);
-        });
-    } else {
-        // nothing ticked, no image: the board restarts without modules
+    if (route === "none") {
+        // nothing ticked: the board restarts without modules
         message("Restarting without modules...");
         await post("modules/off", new FormData());
         await waitModules(root);
+        state.selected = null;
+        message("Applied: no modules");
+        return;
+    }
+
+    // the image: the plan is checked before the first restart (installImage), refused - nothing changed on the board
+    let after = await installImage(root, /** @type {ArrayBuffer} */(state.image), status, names, (text, fraction) => {
+        message(text);
+        dialogStep(text, fraction ?? null);
+    });
+
+    // "Applied" only when the board runs them: a module that failed to start is named with its state
+    let missing = notRunning(names, after);
+    for (let attempt = 0; missing.length && (attempt < 3); ++attempt) {
+        message("Waiting for the modules to start...");
+        await wait(3000);
+        try {
+            after = await readModules(root);
+        } catch {
+            // low on heap right after the boot, ask again
+        }
+        missing = notRunning(names, after);
     }
 
     state.selected = null;
-    message(`Applied: ${names.join(", ") || "no modules"}`);
+    if (missing.length) {
+        throw new Error(`written, but not running: ${missing.join(", ")}`);
+    }
+    message(`Applied: ${names.join(", ")}, all running`);
 }
 
 /**
@@ -1163,6 +1244,13 @@ export function init() {
 
     element(".button-mod-restart")
         ?.addEventListener("click", () => {
+            // one Apply at a time (and none while the firmware panel installs): a second one would restart the
+            // board under the first
+            if (applying || state.busy || installRunning()) {
+                message("An Apply runs already, wait for it", true);
+                return;
+            }
+
             const status = state.status;
             if (!status || !changes(status).length) {
                 restartNow();

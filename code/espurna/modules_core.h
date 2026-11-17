@@ -30,7 +30,9 @@ namespace espurna {
 namespace modules {
 
 // 16 modules at most. A change of it is a new directory format: new magic
-constexpr size_t DirectoryEntries { 16 };
+// 24 (owner 11-16: 16 is too few, an NSPanel already runs 16): the directory 1744 bytes, still in the first half of
+// its sector (the marks stay where they are) and small enough for the stack of setup()
+constexpr size_t DirectoryEntries { 24 };
 constexpr uint32_t SectorSize { 4096 };
 
 // a big temporary (Directory ~1.1 KB, Spaces ~0.8 KB) on the heap: the ESP8266 web callbacks run on the 4 KB system
@@ -71,7 +73,7 @@ constexpr uint32_t EntryDisabled { 1 };
 constexpr uint32_t RamInFixedPool { 0x80000000 };
 
 // the directory format, one for every chip
-constexpr uint32_t DirectoryMagic { 0x37524445 }; // "EDR7": Entry::data_offset, data_size
+constexpr uint32_t DirectoryMagic { 0x38524445 }; // "EDR8": 24 entries (EDR7: 16, Entry::data_offset, data_size)
 
 struct Directory {
     uint32_t magic;         // DirectoryMagic
@@ -315,6 +317,10 @@ uint32_t imageFlash(uint32_t image);
 // of the flash (ESP32: the instruction view, kind 3), 0 - none (the code is in the data view or in the fixed pool)
 uint32_t flashView(uint32_t slot);
 uint32_t codeView(uint32_t slot);
+
+// the address a module's data (modulesData()) at this flash offset is read at as plain memory, any byte at any
+// address, 0 - none (Beken: the view decrypts, the data is stored plain; ESP8266: 32-bit reads only). Default: none
+uint32_t dataView(uint32_t offset);
 
 // a whole chunk of the image, relocated, `offset` from the image start, into the slot: Beken moves the branches of
 // up.branches and writes its format, the others erase and write. Adds the bytes as they will run to up.image_crc.

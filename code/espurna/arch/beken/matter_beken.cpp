@@ -863,12 +863,17 @@ void commissioning(bool active) {
 
 void describe(Identity& out) {
     const auto source = factory::source();
-    if (!source.length()) {
+    // no factory data, or `matterIdentity` chose the own or the custom identity (matter_identity.cpp)
+    if (!source.length() || (identity::choice() != identity::Choice::Factory)) {
         out.vendor = F("ESPurna");
         out.vendor_id = 0xfff1;
         out.product = F("ESPurna plug");
         out.product_id = 0x8000;
-        out.source = F("own identity (development DAC made on the board), no factory data");
+        identity::ids(out.vendor_id, out.product_id);
+        out.source = identity::status();
+        if (!source.length()) {
+            out.source += F(", no factory data");
+        }
         return;
     }
 
@@ -899,10 +904,6 @@ void describe(Identity& out) {
 // everything but the own identity of the board (namespace "espurna-id", matter_identity.cpp), so the pairing code stays
 bool reset() {
     return kv::clear_all() == BkOk;
-}
-
-size_t heap_min() {
-    return lt_heap_get_min_free();
 }
 
 } // namespace backend

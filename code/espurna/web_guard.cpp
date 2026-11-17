@@ -10,15 +10,26 @@ queued TCP data). Parallel requests ran the heap out:
   (10.0.5.139, 2026-11-09)
 - ESP8266 1 MB head with modules (4-9 KB free): two WebUI tabs, failed allocations and an OOM abort in the server's
   response (10.0.5.0, 2026-11-09). Clients that time out and ask again pile up requests until the heap is gone.
+- ESP8266 1 MB head with 10 modules: 3 connections at a time (one of them the WebSocket) still took ~12 KB, oom counts
+  in the hundreds per round of 12 parallel requests; the resets made the WebUI's part fetches fail, so a second tab
+  never showed its relay panel (10.0.5.0, 2026-11-16, W64 / W70)
 
 A gate sits between lwIP and the server: the accept callback of the listening pcb (lpcb->accept) of the web server
-and of telnet. A new connection is reset (the browser tries again) instead of taken when
+and of telnet. A new connection is not taken when
 - its port already has webGuardConns connections (the new one and web sockets included),
+- the web server already has webGuardReqs HTTP requests in progress (web sockets not counted, Server::busy()),
 - the free heap is below webGuardHeap,
 - the largest free block is below webGuardBlock,
 - lwIP's own heap (where lwIP has one, MEM_LIBC_MALLOC 0: the BK7231N) has less than webGuardLwip free.
 0 turns a check off; defaults per chip: espurna::chip::web_guard() (espurna_chip.h). Connections already open are never
 closed (the WebUI stays connected): the guard recovers by itself, the heap comes back as they finish.
+
+Not taken means waiting, not failing: once a new connection would not be taken, the listener's backlog goes to 0
+(lwIP with TCP_LISTEN_BACKLOG drops the SYNs of new connections, nothing is allocated for them) and the client sends its
+SYN again after 1, 2, 4 ... s - the browser's request waits instead of failing. The loop opens the backlog again as soon
+as one more would be taken; with webGuardReqs it lets in only as many handshakes as there are free request slots. A
+connection that got through the handshake anyway (it was under way when the backlog closed) is reset at once, before
+the server allocates anything for it.
 
 No server or library code changes: the loop puts the gate on the listeners every few seconds (a server started later
 or again gets it as well). lwIP's pcb lists are walked in lwIP's context: through the tcpip thread with an OS, directly
@@ -78,8 +89,15 @@ uint32_t conns() {
     return espurna::chip::web_guard().conns;
 }
 
+uint32_t requests() {
+    return espurna::chip::web_guard().requests;
+}
+
 // how often the loop looks for listeners without the gate
 constexpr uint32_t ScanInterval { 5000 };
+
+// how often the loop looks whether a held listener takes connections again
+constexpr uint32_t HoldInterval { 50 };
 
 } // namespace build
 
@@ -90,6 +108,7 @@ STRING_VIEW_INLINE(Heap, "webGuardHeap");
 STRING_VIEW_INLINE(Block, "webGuardBlock");
 STRING_VIEW_INLINE(Lwip, "webGuardLwip");
 STRING_VIEW_INLINE(Conns, "webGuardConns");
+STRING_VIEW_INLINE(Requests, "webGuardReqs");
 
 } // namespace keys
 
@@ -109,6 +128,10 @@ uint32_t conns() {
     return getSetting(keys::Conns, build::conns());
 }
 
+uint32_t requests() {
+    return getSetting(keys::Requests, build::requests());
+}
+
 } // namespace settings
 
 // the original accept callback of a listener, by its port (set once, the listeners are made once at boot)
@@ -116,6 +139,9 @@ struct Listener {
     void* arg;
     tcp_accept_fn accept;
     uint16_t port;
+    uint8_t backlog;    // the listener's own, what an open listener gets back
+    bool web;           // the web server's: webGuardReqs counts its requests
+    bool held;          // backlog 0, SYNs of new connections dropped
 };
 
 // allocated at setup: no static RAM on the ESP8266
@@ -125,9 +151,13 @@ struct State {
     uint32_t block;
     uint32_t lwip;
     uint32_t conns;
+    uint32_t requests;
     uint32_t refused;
     uint32_t reported;
+    uint32_t holds;
+    uint32_t holds_reported;
     uint32_t scanned;
+    uint32_t checked;
 };
 
 State* state { nullptr };
@@ -157,8 +187,18 @@ uint32_t lwipFree() {
 #endif
 }
 
-bool admit(const State& guard, uint16_t port) {
-    if (guard.conns && (connections(port) > guard.conns)) {
+// HTTP requests of the web server in progress, taken or waiting for the loop
+uint32_t requests(const Listener& listener) {
+    return listener.web ? static_cast<uint32_t>(webServer().busy()) : 0;
+}
+
+// `incoming`: the new connection is in lwIP's list already (the gate), else: would one more be taken now
+bool admit(const State& guard, const Listener& listener, bool incoming) {
+    if (guard.conns && ((connections(listener.port) + (incoming ? 0 : 1)) > guard.conns)) {
+        return false;
+    }
+
+    if (guard.requests && listener.web && ((requests(listener) + 1) > guard.requests)) {
         return false;
     }
 
@@ -177,25 +217,73 @@ bool admit(const State& guard, uint16_t port) {
     return true;
 }
 
+// handshakes the listener may have under way: its own backlog, or the free request slots of the web server
+uint8_t slots(const State& guard, const Listener& listener) {
+    uint32_t out = listener.backlog ? listener.backlog : 1;
+    if (guard.requests && listener.web) {
+        const auto busy = requests(listener);
+        const uint32_t free = (guard.requests > busy) ? (guard.requests - busy) : 1;
+        out = std::min(out, free);
+    }
+
+    return static_cast<uint8_t>(out ? out : 1);
+}
+
+err_t gate(void* arg, struct tcp_pcb* pcb, err_t err);
+
+// the backlog of the listening pcb: 0 drops the SYNs of new connections (the client sends them again), nothing is
+// allocated for them. Without TCP_LISTEN_BACKLOG the gate resets what it does not take
+void setBacklog(State& guard, Listener& listener, bool open) {
+#if TCP_LISTEN_BACKLOG
+    for (auto* lpcb = tcp_listen_pcbs.listen_pcbs; lpcb; lpcb = lpcb->next) {
+        if ((lpcb->local_port == listener.port) && (lpcb->accept == gate)) {
+            lpcb->backlog = open ? slots(guard, listener) : 0;
+        }
+    }
+
+    if (!open && !listener.held) {
+        ++guard.holds;
+    }
+    listener.held = !open;
+#else
+    (void)guard;
+    (void)listener;
+    (void)open;
+#endif
+}
+
 err_t gate(void* arg, struct tcp_pcb* pcb, err_t err) {
     auto& guard = *state;
 
     // lwIP passes no pcb when it could not make one (ERR_MEM)
-    const Listener* listener = nullptr;
-    for (const auto& entry : guard.listeners) {
+    Listener* listener = nullptr;
+    for (auto& entry : guard.listeners) {
         if (entry.accept && (pcb ? (entry.port == pcb->local_port) : (entry.arg == arg))) {
             listener = &entry;
             break;
         }
     }
 
-    if (pcb && (ERR_OK == err) && (!listener || !admit(guard, pcb->local_port))) {
+    // reset before the server allocates anything; the next ones wait in TCP until the loop opens the listener again
+    if (pcb && (ERR_OK == err) && (!listener || !admit(guard, *listener, true))) {
         ++guard.refused;
         tcp_abort(pcb);
+        if (listener) {
+            setBacklog(guard, *listener, false);
+        }
         return ERR_ABRT;
     }
 
-    return listener ? listener->accept(arg, pcb, err) : ERR_VAL;
+    if (!listener) {
+        return ERR_VAL;
+    }
+
+    const auto result = listener->accept(arg, pcb, err);
+
+    // taken (the listener's accept() allocated its part already): would one more be taken now?
+    setBacklog(guard, *listener, admit(guard, *listener, false));
+
+    return result;
 }
 
 void install() {
@@ -209,9 +297,25 @@ void install() {
             if (listener.port && (listener.port == lpcb->local_port)) {
                 listener.arg = lpcb->callback_arg;
                 listener.accept = lpcb->accept;
+#if TCP_LISTEN_BACKLOG
+                listener.backlog = lpcb->backlog;
+#else
+                listener.backlog = 1;
+#endif
+                listener.held = false;
                 lpcb->accept = gate;
                 break;
             }
+        }
+    }
+}
+
+// a held listener takes connections again once one more would be taken
+void reopen() {
+    auto& guard = *state;
+    for (auto& listener : guard.listeners) {
+        if (listener.accept && listener.held && admit(guard, listener, false)) {
+            setBacklog(guard, listener, true);
         }
     }
 }
@@ -223,6 +327,12 @@ void installInLwip() {
     });
 }
 
+void reopenInLwip() {
+    ::espurna::lwip::lwipCall([]() {
+        reopen();
+    });
+}
+
 // --- loop ----------------------------------------------------------------------------------------------------------
 
 void configure() {
@@ -231,12 +341,28 @@ void configure() {
     guard.block = settings::block();
     guard.lwip = settings::lwip();
     guard.conns = settings::conns();
+    guard.requests = settings::requests();
+}
+
+bool held() {
+    for (const auto& listener : state->listeners) {
+        if (listener.held) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void loop() {
     auto& guard = *state;
 
     const auto now = millis();
+    if (held() && (now - guard.checked >= build::HoldInterval)) {
+        guard.checked = now;
+        reopenInLwip();
+    }
+
     if (now - guard.scanned < build::ScanInterval) {
         return;
     }
@@ -245,11 +371,14 @@ void loop() {
     installInLwip();
 
     const auto refused = guard.refused;
-    if (refused != guard.reported) {
-        DEBUG_MSG_P(PSTR("[WEBSERVER] Low heap guard: %u new connection(s) reset, free heap %u\n"),
+    const auto holds = guard.holds;
+    if ((refused != guard.reported) || (holds != guard.holds_reported)) {
+        DEBUG_MSG_P(PSTR("[WEBSERVER] Low heap guard: %u new connection(s) reset, held %u time(s), free heap %u\n"),
             static_cast<unsigned>(refused - guard.reported),
+            static_cast<unsigned>(holds - guard.holds_reported),
             static_cast<unsigned>(systemFreeHeap()));
         guard.reported = refused;
+        guard.holds_reported = holds;
     }
 }
 
@@ -257,6 +386,7 @@ void setup() {
     state = new State{};
 
     state->listeners[0].port = webPort();
+    state->listeners[0].web = true;
 #if TELNET_SUPPORT
     state->listeners[1].port = telnetPort();
 #endif

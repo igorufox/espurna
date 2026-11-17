@@ -95,10 +95,24 @@ export async function fetchBytes(url, {name, size, sha256}, step = () => {}) {
  * A form POST, the answer text; an error with that text when the board refuses
  * @param {string | URL} url
  * @param {FormData | URLSearchParams} body
+ * @param {number} [timeout] ms, 0 - none: a board that does not answer is an error then
  * @returns {Promise<string>}
  */
-export async function post(url, body) {
-    const response = await fetch(url, {method: 'POST', body, credentials: 'same-origin'});
+export async function post(url, body, timeout = 0) {
+    /** @type {RequestInit} */
+    const options = {method: 'POST', body, credentials: 'same-origin'};
+    if (timeout) {
+        options.signal = AbortSignal.timeout(timeout);
+    }
+    let response;
+    try {
+        response = await fetch(url, options);
+    } catch (error) {
+        if (error instanceof Error && (error.name === 'TimeoutError')) {
+            throw new Error(`${new URL(url, 'http://x/').pathname}: no answer in ${Math.round(timeout / 1000)} s`);
+        }
+        throw error;
+    }
     const text = await response.text();
     if (!response.ok) {
         throw new Error(text || `${response.status}`);

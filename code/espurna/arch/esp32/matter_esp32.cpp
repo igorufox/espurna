@@ -66,6 +66,9 @@ void describe(Identity& out) {
             info->GetVendorId(vendor);
             info->GetProductId(product);
         }
+    } else {
+        // before the start: the ones of the chosen identity (`matterIdentity`, matter_identity.cpp)
+        espurna::matter::identity::ids(vendor, product);
     }
 
     out.vendor = F("ESPurna");
@@ -85,10 +88,6 @@ bool reset() {
     const auto kvs = KeyValueStoreMgrImpl().EraseAll();
 
     return (config == CHIP_NO_ERROR) && (kvs == CHIP_NO_ERROR);
-}
-
-size_t heap_min() {
-    return esp_get_minimum_free_heap_size();
 }
 
 } // namespace backend

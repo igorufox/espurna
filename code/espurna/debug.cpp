@@ -14,6 +14,8 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include "telnet.h"
 #include "ntp.h"
 
+#include <algorithm>
+#include <cstring>
 #include <limits>
 #include <type_traits>
 #include <vector>
@@ -606,30 +608,103 @@ void send_now(const char* message, size_t len, Timestamp timestamp);
 // and other tasks, and writing into the same buffers from two tasks corrupts the heap.
 // Queue those messages instead and let loop() send them out, like everything else.
 // (esp8266: every message comes from the loop, the queue is always empty)
+// The queue is a fixed ring of bytes, nothing of it allocates: a vector of Strings grew from lwIP's task (the mdns
+// module's UDP callback), operator new threw with the heap out and the board aborted (W72, NSPanel 11-16). A message
+// that does not fit is dropped and counted, the count goes into the log once with the next flush
 namespace deferred {
 
-struct Message {
-    String text;
-    Timestamp timestamp;
+// a record: its length, its timestamp flag, its text
+constexpr size_t BytesMax { espurna::system::ParallelTasks ? 2048 : 4 };
+constexpr size_t TextMax { 255 };
+constexpr size_t RecordHead { 2 };
+
+struct Ring {
+    uint8_t bytes[BytesMax];
+    size_t head { 0 };      // written, all time
+    size_t tail { 0 };      // read, all time
+    size_t dropped { 0 };
 };
 
-constexpr size_t BytesMax { 4096 };
+Ring ring;
 
-espurna::system::TaskQueue<Message, BytesMax> messages;
+// made by debugSetup() from the loop (a FreeRTOS mutex is made on its first use, never in the foreign task with the
+// heap out)
+espurna::system::Mutex mutex;
 
-void push(const char* message, size_t len, Timestamp timestamp) {
-    String text;
-    text.concat(message, len);
-    messages.push(Message{std::move(text), timestamp}, len);
+void ringWrite(const uint8_t* data, size_t size) {
+    const size_t at = ring.head % BytesMax;
+    const size_t first = std::min(size, BytesMax - at);
+    std::memcpy(&ring.bytes[at], data, first);
+    std::memcpy(&ring.bytes[0], data + first, size - first);
+    ring.head += size;
 }
 
-void flush() {
-    if (messages.empty()) {
+void ringRead(uint8_t* data, size_t size) {
+    const size_t at = ring.tail % BytesMax;
+    const size_t first = std::min(size, BytesMax - at);
+    std::memcpy(data, &ring.bytes[at], first);
+    std::memcpy(data + first, &ring.bytes[0], size - first);
+    ring.tail += size;
+}
+
+void push(const char* message, size_t len, Timestamp timestamp) {
+    len = std::min(len, TextMax);
+
+    espurna::system::MutexLock lock(mutex);
+    if ((BytesMax - (ring.head - ring.tail)) < (RecordHead + len)) {
+        ++ring.dropped;
         return;
     }
 
-    for (const auto& message : messages.take()) {
-        send_now(message.text.c_str(), message.text.length(), message.timestamp);
+    const uint8_t head[RecordHead] {
+        static_cast<uint8_t>(len), static_cast<uint8_t>(timestamp ? 1 : 0) };
+    ringWrite(head, sizeof(head));
+    ringWrite(reinterpret_cast<const uint8_t*>(message), len);
+}
+
+void prepare() {
+    mutex.lock();
+    mutex.unlock();
+}
+
+// one record at a time out of the lock: the foreign task never waits for the outputs
+void flush() {
+    char text[TextMax + 1];
+    for (;;) {
+        size_t len { 0 };
+        bool timestamp { false };
+        size_t dropped { 0 };
+        {
+            espurna::system::MutexLock lock(mutex);
+            if (ring.head == ring.tail) {
+                dropped = ring.dropped;
+                ring.dropped = 0;
+            } else {
+                uint8_t head[RecordHead];
+                ringRead(head, sizeof(head));
+                len = head[0];
+                timestamp = head[1] != 0;
+                ringRead(reinterpret_cast<uint8_t*>(text), len);
+            }
+        }
+
+        if (!len) {
+            if (dropped) {
+                const int out = snprintf_P(text, sizeof(text),
+                    PSTR("[DEBUG] %u message(s) of other tasks dropped, the queue was full\n"),
+                    static_cast<unsigned>(dropped));
+                if (out > 0) {
+                    send_now(text, std::min(static_cast<size_t>(out), TextMax), build::AddTimestamp);
+                }
+            }
+            return;
+        }
+
+        // a cut message still ends its line
+        if ((len == TextMax) && (text[len - 1] != '\n')) {
+            text[len - 1] = '\n';
+        }
+        send_now(text, len, Timestamp(timestamp));
     }
 }
 
@@ -867,6 +942,7 @@ void debugSetup() {
 #if DEBUG_SUPPORT
     // messages queued by other tasks, when loop itself has nothing to print
     if (espurna::system::ParallelTasks) {
+        espurna::debug::deferred::prepare();
         espurnaRegisterLoop(espurna::debug::deferred::flush);
     }
 #if DEBUG_UDP_SUPPORT

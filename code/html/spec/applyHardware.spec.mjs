@@ -7,7 +7,7 @@ vi.mock('../src/connection.mjs', async (importOriginal) => ({
 }));
 
 const { send, sendAction } = await import('../src/connection.mjs');
-const { applyHardware, hardwareMessage } = await import('../src/applyHardware.mjs');
+const { DEL_CHUNK, applyHardware, hardwareFrames, hardwareMessage } = await import('../src/applyHardware.mjs');
 
 describe('hardwareMessage', () => {
     test('old relay, button and LED keys go away, the new ones stay', () => {
@@ -29,9 +29,31 @@ describe('hardwareMessage', () => {
         expect(del).not.toContain('dhtPin0');
     });
 
-    test('long values are left out, 64 characters still go', () => {
-        const {set} = hardwareMessage({sysDevice: 'x'.repeat(65), sysManufacturer: 'y'.repeat(64)});
+    test('long values are left out and named, 64 characters still go', () => {
+        const {set, long} = hardwareMessage({sysDevice: 'x'.repeat(65), sysManufacturer: 'y'.repeat(64)});
         expect(set).toEqual({sysManufacturer: 'y'.repeat(64)});
+        expect(long).toEqual(['sysDevice']);
+    });
+
+    test('keys without an index go away too: relayDummy, btnAcFreq, the global btnRepDel', () => {
+        const {del} = hardwareMessage({relayGpio0: '12'});
+        expect(del).toContain('relayDummy');
+        expect(del).toContain('btnAcFreq');
+        expect(del).toContain('btnRepDel');
+        expect(hardwareMessage({relayDummy: '1'}).del).not.toContain('relayDummy');
+    });
+});
+
+describe('hardwareFrames', () => {
+    test('the deletions in small frames first, the values last, nothing lost', () => {
+        const message = hardwareMessage({relayGpio0: '12'});
+        expect(message.del.length).toBeGreaterThan(500);
+        const frames = hardwareFrames(message);
+        expect(frames.length).toBe(Math.ceil(message.del.length / DEL_CHUNK) + 1);
+        expect(frames.every((frame) => frame.length < 1500)).toBe(true);
+        const parsed = frames.map((frame) => JSON.parse(frame).settings);
+        expect(parsed.slice(0, -1).flatMap((x) => x.del)).toEqual(message.del);
+        expect(parsed.at(-1)).toEqual({set: {relayGpio0: '12'}, del: []});
     });
 });
 
@@ -49,7 +71,17 @@ describe('applyHardware', () => {
         expect(send).not.toHaveBeenCalled();
     });
 
-    test('one settings message, then the reboot question', () => {
+    test('the question names the values that are too long', () => {
+        const questions = [];
+        vi.stubGlobal('confirm', (/** @type {string} */text) => {
+            questions.push(text);
+            return false;
+        });
+        applyHardware({sysDevice: 'x'.repeat(70)}, 'Apply?');
+        expect(questions[0]).toContain('longer than 64 characters: sysDevice');
+    });
+
+    test('the settings frames, then the reboot question', () => {
         vi.useFakeTimers();
         const questions = [];
         vi.stubGlobal('confirm', (/** @type {string} */text) => {
@@ -58,9 +90,8 @@ describe('applyHardware', () => {
         });
 
         expect(applyHardware({relayGpio0: '12'}, 'Apply "Sonoff Basic"?')).toBe(true);
-        expect(send).toHaveBeenCalledTimes(1);
-        const message = JSON.parse(vi.mocked(send).mock.calls[0][0]);
-        expect(message.settings).toEqual(hardwareMessage({relayGpio0: '12'}));
+        const frames = hardwareFrames(hardwareMessage({relayGpio0: '12'}));
+        expect(vi.mocked(send).mock.calls.map((call) => call[0])).toEqual(frames);
 
         vi.advanceTimersByTime(500);
         expect(questions.length).toBe(2);

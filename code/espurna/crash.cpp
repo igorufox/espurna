@@ -253,6 +253,46 @@ void forceDump(Print& print) {
     dump(print, false);
 }
 
+// the EEPROM record in short (crashCause()): the reason, epc1 of an exception and the code addresses of the stack
+bool cause(CrashCause& out) {
+    auto& instance = eepromInstance();
+
+    uint32_t crash_time;
+    storage_get(instance, EepromCrashBegin + SAVE_CRASH_CRASH_TIME, crash_time);
+    if ((crash_time == 0) || (crash_time == EmptyTimestamp)) {
+        return false;
+    }
+
+    const uint8_t reason = instance.read(EepromCrashBegin + SAVE_CRASH_RESTART_REASON);
+    if (reason == REASON_EXCEPTION_RST) {
+        uint32_t epc1;
+        storage_get(instance, EepromCrashBegin + SAVE_CRASH_EPC1, epc1);
+        snprintf_P(out.text, sizeof(out.text), PSTR("exception %u at 0x%08x, %u ms after boot"),
+            instance.read(EepromCrashBegin + SAVE_CRASH_EXCEPTION_CAUSE), epc1, crash_time);
+        out.addresses[out.count++] = epc1;
+    } else {
+        const char* name = (reason == REASON_WDT_RST) ? PSTR("hardware watchdog")
+            : (reason == REASON_SOFT_WDT_RST) ? PSTR("software watchdog")
+            : PSTR("restart");
+        snprintf_P(out.text, sizeof(out.text), PSTR("%s (reason %u), %u ms after boot"), name, reason, crash_time);
+    }
+
+    // the words of the stack that point into the code: the page looks for a module among them
+    constexpr auto step = sizeof(uint32_t);
+    for (int address = EepromCrashBegin + SAVE_CRASH_STACK_TRACE;
+        ((address + static_cast<int>(step)) <= EepromCrashEnd) && (out.count < std::size(out.addresses));
+        address += step)
+    {
+        uint32_t word;
+        storage_get(instance, address, word);
+        if ((word >= 0x40100000) && (word < 0x40400000)) {
+            out.addresses[out.count++] = word;
+        }
+    }
+
+    return true;
+}
+
 void dump(Print& print) {
     dump(print, true);
 }
@@ -369,6 +409,15 @@ void crashForceDump(Print& print) {
 
 void crashDump(Print& print) {
     espurna::debug::crash::dump(print);
+}
+
+bool crashCause(CrashCause& out) {
+    out = CrashCause{};
+    if (espurna::debug::crash::chip::cause(out)) {
+        return out.text[0] != '\0';
+    }
+
+    return espurna::debug::crash::cause(out);
 }
 
 void crashResetReason(Print& print) {

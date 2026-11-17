@@ -289,6 +289,30 @@ public:
         JsonObject& _root;
     };
 
+    // back to before the last send(): one callback of a sequence, all of them for All
+    struct Rewind {
+        void operator()(const Callback&) const {
+        }
+
+        void operator()(Storage::Pointer& ptr) const {
+            rewind(ptr.offset);
+        }
+
+        void operator()(Storage::Instance& obj) const {
+            rewind(obj.offset);
+        }
+
+        void rewind(size_t& offset) const {
+            if (mode == Mode::All) {
+                offset = 0;
+            } else if (offset) {
+                --offset;
+            }
+        }
+
+        Mode mode;
+    };
+
     PostponedCallback() = delete;
 
     PostponedCallback(uint32_t client_id, Storage storage, Mode mode) noexcept :
@@ -331,6 +355,17 @@ public:
             break;
 
         }
+    }
+
+    // the message of the last send() did not go out (no heap for it): the same callback(s) run again next time.
+    // A single callback is never done before it went out, ref. _wsHandlePostponedCallbacks()
+    void rewind() {
+        _storage.visit(Rewind{_mode});
+    }
+
+    // still going: the queue timeout counts from now
+    void touch() {
+        _start = TimeSource::now();
     }
 
     uint32_t id() const {

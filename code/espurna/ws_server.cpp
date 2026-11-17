@@ -668,12 +668,7 @@ void _wsOnVisible(JsonObject& root) {
 }
 
 void _wsConnected(uint32_t client_id) {
-    static const auto defaultPassword = String(systemDefaultPassword());
-    const bool changePassword = (USE_PASSWORD && WEB_FORCE_PASS_CHANGE)
-        ? equalsConstantTime(systemPassword(), defaultPassword)
-        : false;
-
-    if (changePassword) {
+    if (systemPasswordMustChange()) {
         wsPost(client_id, [](JsonObject& root) {
             root["webMode"] = WEB_MODE_PASSWORD;
         }, JSON_OBJECT_SIZE(1));
@@ -722,12 +717,29 @@ void _wsEvent(espurna::websocket::Event event, uint32_t id, uint32_t ip, const u
 constexpr size_t WsSendHeadroom { 1536 };
 constexpr size_t WsMessageHeadroom { 512 };
 
+// a message to one client printed and queued; false: no heap for it now (nothing queued, the caller may try again)
+bool _wsSendTo(uint32_t client_id, JsonObject& root);
+
+// after a message of the queue did not go out: the next try not before this (not every loop pass)
+constexpr espurna::duration::Milliseconds WsRetryInterval { 100 };
+espurna::time::CoreClock::time_point _ws_queue_failed;
+bool _ws_queue_waiting { false };
+
+// the next one counts its timeout from the moment it is first in line, not from when it was queued: the initial
+// messages of a second WebUI tab wait behind the first one's and were dropped unsent (10 s from the connect, W70)
+void _wsQueuePop() {
+    _ws_queue.pop();
+    if (!_ws_queue.empty()) {
+        _ws_queue.front().touch();
+    }
+}
+
 void _wsHandlePostponedCallbacks(bool connected) {
     // TODO: make this generic loop method to queue important ws messages?
     //       or, if something uses ticker / async ctx to send messages,
     //       it needs a retry mechanism built into the callback object
     if (!connected && !_ws_queue.empty()) {
-        _ws_queue.pop();
+        _wsQueuePop();
         return;
     }
 
@@ -737,13 +749,14 @@ void _wsHandlePostponedCallbacks(bool connected) {
 
     auto& callbacks = _ws_queue.front();
 
-    // avoid stalling forever when can't send anything
+    // avoid stalling forever when can't send anything: 10 s without a message going out
     using TimeSource = espurna::time::CpuClock;
     using CpuSeconds = std::chrono::duration<TimeSource::rep>;
 
     constexpr CpuSeconds WsQueueTimeoutClockCycles { 10 };
     if (TimeSource::now() - callbacks.start() > WsQueueTimeoutClockCycles) {
-        _ws_queue.pop();
+        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u queued message timed out\n"), callbacks.id());
+        _wsQueuePop();
         return;
     }
 
@@ -751,7 +764,7 @@ void _wsHandlePostponedCallbacks(bool connected) {
     if (callbacks.id()) {
         // ...but, we need to check if client is still connected
         if (!_ws.hasClient(callbacks.id())) {
-            _ws_queue.pop();
+            _wsQueuePop();
             return;
         }
 
@@ -761,6 +774,12 @@ void _wsHandlePostponedCallbacks(bool connected) {
             return;
         }
     }
+
+    const auto now = espurna::time::CoreClock::now();
+    if (_ws_queue_waiting && (now - _ws_queue_failed < WsRetryInterval)) {
+        return;
+    }
+    _ws_queue_waiting = false;
 
     // the JSON buffer and then the message need that much contiguous heap: wait for it instead of aborting
     if (systemHeapStats().usable < (callbacks.buffer_hint() + WsSendHeadroom)) {
@@ -784,7 +803,15 @@ void _wsHandlePostponedCallbacks(bool connected) {
     case Mode::All:
     case Mode::Sequence:
         if (callbacks.id()) {
-            wsSend(callbacks.id(), root);
+            // the initial messages of a WebUI page (its panels, the relays): one lost leaves the page without that
+            // part for good (W70). Not out now - the same callback again, once the heap is back
+            if (!root.success() || !_wsSendTo(callbacks.id(), root)) {
+                callbacks.rewind();
+                _ws_queue_failed = now;
+                _ws_queue_waiting = true;
+                return;
+            }
+            callbacks.touch();
         } else {
             wsSend(root);
         }
@@ -793,7 +820,7 @@ void _wsHandlePostponedCallbacks(bool connected) {
     }
 
     if (callbacks.done()) {
-        _ws_queue.pop();
+        _wsQueuePop();
     }
 }
 
@@ -818,6 +845,23 @@ std::unique_ptr<char[]> _wsPrint(JsonObject& root, size_t len) {
         root.printTo(out.get(), len + 1);
     }
     return out;
+}
+
+// a client that is gone needs no second try: true
+bool _wsSendTo(uint32_t client_id, JsonObject& root) {
+    if (!_ws.hasClient(client_id)) {
+        return true;
+    }
+
+    // tried again every WsRetryInterval while the heap is short: no log line each time (the debug log goes to the
+    // WebSocket as well and takes heap of its own)
+    const auto len = root.measureLength();
+    if (systemHeapStats().usable < (len + WsMessageHeadroom)) {
+        return false;
+    }
+
+    auto buffer = _wsPrint(root, len);
+    return buffer && _ws.text(client_id, buffer.get(), len);
 }
 
 } // namespace

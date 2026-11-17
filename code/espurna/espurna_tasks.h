@@ -16,7 +16,6 @@ synchronization through the same few names, and on esp8266 every one of them is 
 - runInLoop()            any callable for loop(), in order, at most RunInLoopMax of them and RunInLoopBytesMax of their
                          copied data (drops and counts the rest)
 - registerPendingOutput  restart() waits for the output some module did not send out yet
-- TaskQueue<T, Max>      items from other tasks for loop(), at most Max bytes of them
 
 The model is the SDK's, not a choice: the esp8266 NONOS SDK runs network callbacks in SYS, between loop() calls,
 the FreeRTOS SDKs (ESP32, LibreTiny) run them in tasks of their own. Below, one part per model. What the chip itself

@@ -89,6 +89,7 @@ WebGuard web_guard() {
         .block = 0,
         .lwip = 4096,
         .conns = 4,
+        .requests = 0,
     };
 }
 

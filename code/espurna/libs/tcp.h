@@ -77,6 +77,9 @@ public:
     // the next accepted connection, nullptr when none
     std::unique_ptr<Connection> accept();
 
+    // accepted connections waiting for accept() (also from lwIP's context: the low heap guard, web_guard.cpp)
+    size_t pending() const;
+
     class Impl;
 
 private:

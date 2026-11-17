@@ -33,6 +33,63 @@
                 </div>
             </fieldset>
 
+            <fieldset>
+                <legend>Identity</legend>
+
+                <div class="pure-control-group">
+                    <span class="pure-form-message">
+                        The device certificate (DAC) controllers check when they add the device. Changing it removes the
+                        device from every controller (they checked the old one) and restarts the board: add it again
+                        afterwards. The pairing code stays.
+                    </span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Use</label>
+                    <select class="matter-identity-use" data-action="none">
+                        <option value="factory">Factory: the certificates the board came with</option>
+                        <option value="espurna">ESPurna: development certificate made on the board</option>
+                        <option value="custom">Custom: own certificates, uploaded below</option>
+                    </select>
+                    <span class="pure-form-message matter-identity-note"></span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label></label>
+                    <button type="button" class="pure-button button-matter-identity">Use this identity</button>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Custom: DAC</label>
+                    <input type="file" class="matter-identity-dac" data-action="none" accept=".der,.pem,.crt,.cer">
+                    <span class="pure-form-message">Device attestation certificate, DER or PEM. VID and PID are taken from its subject.</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Custom: DAC key</label>
+                    <input type="file" class="matter-identity-key" data-action="none" accept=".der,.pem,.key,.bin">
+                    <span class="pure-form-message">Its P-256 private key: DER or PEM (SEC1 or PKCS#8), or the 32 raw bytes. It stays on the board and is never shown again.</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Custom: PAI</label>
+                    <input type="file" class="matter-identity-pai" data-action="none" accept=".der,.pem,.crt,.cer">
+                    <span class="pure-form-message">Product attestation intermediate certificate that signed the DAC, DER or PEM.</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Custom: declaration</label>
+                    <input type="file" class="matter-identity-cd" data-action="none" accept=".der,.bin">
+                    <span class="pure-form-message">Optional certification declaration (DER). Without it the one of the SDK examples is sent, it covers VID 0xFFF1, PID 0x8000..0x8063 only.</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label></label>
+                    <button type="button" class="pure-button button-matter-identity-upload">Check, store and use</button>
+                    <span class="pure-form-message">The board checks that the key belongs to the DAC and that the PAI signed the DAC.</span>
+                </div>
+            </fieldset>
+
             <fieldset class="matter-commissioning">
                 <legend>Controllers</legend>
 

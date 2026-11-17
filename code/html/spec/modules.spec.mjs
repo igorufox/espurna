@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+    APPLY_MAX,
     HEAD_ROUTES,
     OTA_MODULES,
+    applyProblems,
     headFor,
     headName,
     installImage,
@@ -14,6 +16,9 @@ import {
     runningNames,
 } from '../src/install.mjs';
 import {
+    applyRoute,
+    canToggle,
+    notRunning,
     dependentsOf,
     groupCounts,
     groupOf,
@@ -418,5 +423,98 @@ describe('one install for every chip', () => {
 
     test('the board runs the head of the image: the Apply alone', async () => {
         expect(await run('esp32', 'esp32', 'aa' + '00'.repeat(15))).toEqual(APPLY);
+    });
+
+    test('a plan the board would refuse goes nowhere: no restart, no request at all', async () => {
+        /** @type {string[]} */
+        const log = [];
+        board(log);
+        const md5 = 'aa' + '00'.repeat(15);
+        await expect(installImage(new URL('http://board/'), image('esp8266'), {image: 'esp8266', md5},
+            ['webui', 'relay'], () => {})).rejects.toThrow('nothing changed on the board: not in the modules file: relay');
+        // the same with a new head: refused before the head's restart (/modules/off on the ESP8266)
+        await expect(installImage(new URL('http://board/'), image('esp8266'), {image: 'esp8266', md5: 'ff'},
+            ['relay'], () => {})).rejects.toThrow('not in the modules file: relay');
+        // too big for the flash of this head
+        await expect(installImage(new URL('http://board/'), image('esp8266'),
+            {image: 'esp8266', md5, area: 0x100000, free: 4096, modules: []}, ['webui'], () => {}))
+            .rejects.toThrow('not enough flash');
+        expect(log).toEqual([]);
+    });
+});
+
+describe('Apply checks before /modules/off (W65)', () => {
+    /** @param {{name: string, image?: number, ram?: number, iram?: number, flags?: number}[]} list */
+    function file(list) {
+        const buffer = container(list.map((x) => ({image: 4096, ram: 0, iram: 0, data: new Array(48).fill(0), ...x})));
+        const view = new DataView(buffer);
+        list.forEach((x, index) => view.setUint32(8 + (72 * index) + 68, x.flags ?? 0, true));
+        return buffer;
+    }
+
+    test('names in the file, at most APPLY_MAX of them', () => {
+        const f = file([{name: 'relay'}, {name: 'button'}]);
+        expect(applyProblems(status(), f, ['relay', 'button'])).toEqual([]);
+        expect(applyProblems(status(), f, ['relay', 'mqtt']).join()).toContain('not in the modules file: mqtt');
+        const many = Array.from({length: APPLY_MAX + 1}, (_, index) => `m${index}`);
+        const big = file(many.map((name) => ({name})));
+        expect(applyProblems(status({free: 1 << 30}), big, many).join()).toContain(`the board takes 1..${APPLY_MAX}`);
+        expect(applyProblems(status({free: 1 << 30}), big, many.slice(0, APPLY_MAX))).toEqual([]);
+    });
+
+    test('the file is for this head', () => {
+        const data = new Array(48).fill(0);
+        data[24] = 0xbb;
+        const f = container([{name: 'relay', image: 4096, ram: 0, iram: 0, data}]);
+        const md5 = 'bb' + '00'.repeat(15);
+        expect(applyProblems(status({md5}), f, ['relay'])).toEqual([]);
+        expect(applyProblems(status({md5: 'cc' + '00'.repeat(15)}), f, ['relay']).join()).toContain('another head build');
+        // a new head goes on first: its own /modules is checked then
+        expect(applyProblems(status({md5: 'cc' + '00'.repeat(15)}), f, ['relay'], false)).toEqual([]);
+    });
+
+    test('the flash: free plus what the installed modules take, the data sectors count', () => {
+        // webui 50000 installed (52 KB in sectors) + 300000 free
+        const fits = Math.floor((300000 + sectors(50000)) / 4096) * 4096;
+        expect(applyProblems(status(), file([{name: 'a', image: fits}]), ['a'])).toEqual([]);
+        expect(applyProblems(status(), file([{name: 'a', image: fits + 1}]), ['a']).join()).toContain('not enough flash');
+        expect(applyProblems(status(), file([{name: 'a', image: fits, flags: 1 << 8}]), ['a']).join())
+            .toContain('not enough flash');
+    });
+
+    test('the RAM: the IRAM code in the fixed pool, the statics in the pool and the heap block', () => {
+        // iram_data 17484 + ram_pool 5120
+        expect(applyProblems(status(), file([{name: 'a', ram: 22000}]), ['a'])).toEqual([]);
+        expect(applyProblems(status(), file([{name: 'a', ram: 23000}]), ['a']).join()).toContain('not enough RAM');
+        expect(applyProblems(status({iram_data: 0}), file([{name: 'a', iram: 100}]), ['a']).join())
+            .toContain('not enough IRAM');
+    });
+
+    test('a running module goes off without the file, on needs it; nothing while busy', () => {
+        const running = new Set(['relay']);
+        const row = (/** @type {string} */name, pkg = false) => /** @type {any} */({name, package: pkg ? {} : null});
+        expect(canToggle(row('relay'), running, false)).toBe(true);
+        expect(canToggle(row('mqtt'), running, false)).toBe(false);
+        expect(canToggle(row('mqtt', true), running, false)).toBe(true);
+        expect(canToggle(row('relay', true), running, true)).toBe(false);
+    });
+
+    test('the route of an Apply: off without a file when nothing is added', () => {
+        const running = new Set(['relay', 'button', 'webui']);
+        const packages = new Map([['relay', {}], ['button', {}]]);
+        // webui is not in the file: switching button off goes without it
+        expect(applyRoute(['relay', 'webui'], running, /** @type {any} */(packages))).toBe('off');
+        expect(applyRoute(['relay', 'webui'], running, null)).toBe('off');
+        expect(applyRoute(['relay'], new Set(['relay', 'button']), /** @type {any} */(packages))).toBe('image');
+        expect(applyRoute(['relay', 'mqtt'], running, null)).toBe('file');
+        expect(applyRoute([], running, null)).toBe('none');
+    });
+
+    test('"Applied" only when every chosen module runs', () => {
+        const after = {modules: [
+            {name: 'relay', state: 'running'}, {name: 'button', state: 'not started'}]};
+        expect(notRunning(['relay'], /** @type {any} */(after))).toEqual([]);
+        expect(notRunning(['relay', 'button', 'mqtt'], /** @type {any} */(after)))
+            .toEqual(['button (not started)', 'mqtt (missing)']);
     });
 });

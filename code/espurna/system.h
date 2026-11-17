@@ -309,6 +309,19 @@ HeapStats systemHeapStats();
 size_t systemFreeHeap();
 size_t systemInitialFreeHeap();
 
+// The lowest free heap since boot, as the chip's allocator tracks it (ESP32 / Beken); on esp8266 the umm_malloc
+// counter of UMM_STATS_FULL, else the lowest seen by the calls of this function and systemHeapStep()
+size_t systemHeapMinimum();
+
+// Heap checkpoint (W88), for any module, from loop(): one line "[HEAP] <step>: min M (-D since '<previous step>'),
+// free F, block B" only when the lowest free heap since boot fell more than HeapStepDrop since the last line.
+// A peak between two checkpoints is reported at the second one: '<previous step>' names the checkpoint passed before
+// it (logged or not), so the peak is in the code between the two. `step` is a string literal, it is kept
+constexpr size_t HeapStepDrop { 4096 };
+void systemHeapStep(const char* step);
+// the same after a loop callback, named by its address (main.cpp)
+void systemHeapStepAt(uintptr_t address);
+
 [[noreturn]] void forceEraseSDKConfig();
 
 bool eraseSDKConfig();
@@ -334,6 +347,10 @@ bool pendingDeferredReset();
 // rolls its fabric back while the controller keeps the device), at most systemResetHoldMax
 using SystemResetHold = bool (*)();
 void systemOnResetHold(SystemResetHold);
+
+// one of those holds says so right now (a Matter controller is commissioning): what needs a lot of heap waits too, a
+// TLS session (40-65 KB) is not opened meanwhile (libs/http_client_impl.h, W81: the heap went down to 256 bytes)
+bool systemHoldActive();
 
 bool wakeupModemForcedSleep();
 bool prepareModemForcedSleep();
@@ -373,6 +390,7 @@ espurna::StringView systemDefaultPassword();
 
 String systemPassword();
 bool systemPasswordEquals(espurna::StringView);
+bool systemPasswordMustChange();
 
 String systemHostname();
 String systemDescription();

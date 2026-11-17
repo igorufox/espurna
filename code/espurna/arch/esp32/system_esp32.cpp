@@ -22,6 +22,11 @@ Chip part, the FreeRTOS chips part is in arch/rtos/system_rtos.cpp, common part 
 #include <esp_sleep.h>
 #include <esp_phy_init.h>
 #include <driver/gpio.h>
+#include <esp_core_dump.h>
+
+#include <iterator>
+#include <memory>
+#include <new>
 
 #include "espurna.h"
 #include "rtcmem.h"
@@ -40,6 +45,10 @@ void coredumpSetup();
 
 size_t systemFreeHeap() {
     return esp_get_free_heap_size();
+}
+
+size_t systemHeapMinimum() {
+    return esp_get_minimum_free_heap_size();
 }
 
 HeapStats systemHeapStats() {
@@ -300,6 +309,28 @@ bool dump(Print&, bool) {
 bool dump_empty(Print& print) {
     print.printf_P(PSTR("Reason of restart: %s\nCrash details (if any) are in the core dump, see COREDUMP\n"),
         ESP.getResetReason().c_str());
+    return true;
+}
+
+// the core dump in short: the task, its pc and the backtrace (the page looks for a module there)
+bool cause(CrashCause& out) {
+    size_t address { 0 };
+    size_t size { 0 };
+    if (esp_core_dump_image_get(&address, &size) != ESP_OK) {
+        return true;
+    }
+
+    std::unique_ptr<esp_core_dump_summary_t> summary(new (std::nothrow) esp_core_dump_summary_t);
+    if (!summary || (esp_core_dump_get_summary(summary.get()) != ESP_OK)) {
+        return true;
+    }
+
+    snprintf_P(out.text, sizeof(out.text), PSTR("core dump: task %.16s, pc 0x%08X, exccause %u"),
+        summary->exc_task, summary->exc_pc, summary->ex_info.exc_cause);
+    for (uint32_t index = 0; (index < summary->exc_bt_info.depth) && (out.count < std::size(out.addresses)); ++index) {
+        out.addresses[out.count++] = summary->exc_bt_info.bt[index];
+    }
+
     return true;
 }
 

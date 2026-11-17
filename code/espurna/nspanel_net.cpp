@@ -264,6 +264,13 @@ void loop() {
         return;
     }
 
+    // not while the boot settles: the TLS session (40-60 KB) of the first request met the start of Matter and the heap
+    // went down to 700 bytes (NSPANEL3 11-16)
+    if (now < build::WeatherBootMs) {
+        next_ms = build::WeatherBootMs;
+        return;
+    }
+
     // a config upload being received / parsed goes first, ref. upload::process()
     if (upload::busy()) {
         next_ms = now + 2000;
@@ -333,19 +340,14 @@ void queue(espurna::StringView topic, espurna::StringView payload) {
     entry.topic = topic.toString();
     entry.payload = payload.toString();
     pending.push_back(std::move(entry));
+    systemHeapStep("nspanel json queued");
 }
 
-// the value at the entity's path: text and number
-bool extract(JsonVariant root, const String& path, String& text, float& number) {
+// the value at the entity's path (its keys, an array index as its number): text and number
+bool extract(JsonVariant root, const Span<Str>& path, String& text, float& number) {
     JsonVariant value = root;
-    int start = 0;
-    while (start <= static_cast<int>(path.length())) {
-        int end = path.indexOf(PathSep, start);
-        if (end < 0) {
-            end = path.length();
-        }
-        const String key = path.substring(start, end);
-        start = end + 1;
+    for (const auto& part : path) {
+        const char* key = part.c_str();
 
         if (value.is<JsonObject>()) {
             JsonObject& obj = value.as<JsonObject>();
@@ -355,7 +357,7 @@ bool extract(JsonVariant root, const String& path, String& text, float& number) 
             value = obj.get<JsonVariant>(key);
         } else if (value.is<JsonArray>()) {
             JsonArray& array = value.as<JsonArray>();
-            const long n = key.toInt();
+            const long n = strtol(key, nullptr, 10);
             if ((n < 0) || (static_cast<size_t>(n) >= array.size())) {
                 return false;
             }
@@ -398,6 +400,7 @@ void process(Pending& entry) {
     DynamicJsonBuffer buffer(512);
     // parses in place: the strings stay in entry.payload, nothing is copied
     JsonVariant root = buffer.parse(entry.payload.begin());
+    systemHeapStep("nspanel json parsed");
     if (!root.is<JsonObject>() && !root.is<JsonArray>()) {
         ++failed;
         return;
@@ -406,8 +409,8 @@ void process(Pending& entry) {
 
     auto& cfg = config();
     for (size_t index = 0; index < cfg.entities.size(); ++index) {
-        auto& entity = cfg.entities[index];
-        if (!entity.path.length() || (entity.topic != entry.topic)) {
+        const auto& entity = cfg.entities[index];
+        if (entity.path.empty() || (entity.topic != entry.topic)) {
             continue;
         }
 
@@ -417,15 +420,16 @@ void process(Pending& entry) {
             continue; // not in this message (z2m sends partial updates too)
         }
 
-        const String& on = entity.on.length() ? entity.on : cfg.on;
-        const String& off = entity.off.length() ? entity.off : cfg.off;
+        const char* on = entity.on.length() ? entity.on.c_str() : cfg.on.c_str();
+        const char* off = entity.off.length() ? entity.off.c_str() : cfg.off.c_str();
         const int state = (text == on) ? 1 : (text == off) ? 0 : -1;
 
-        const bool same_number = (std::isnan(number) && std::isnan(entity.number)) || (number == entity.number);
-        if ((state != entity.state) || (text != entity.value) || !same_number) {
-            entity.state = state;
-            entity.value = std::move(text);
-            entity.number = number;
+        auto& live = cfg.live[index];
+        const bool same_number = (std::isnan(number) && std::isnan(live.number)) || (number == live.number);
+        if ((state != live.state) || (text != live.value) || !same_number) {
+            live.state = state;
+            live.value = std::move(text);
+            live.number = number;
             entityChanged(index);
         }
     }
@@ -436,9 +440,11 @@ void loop() {
         return;
     }
 
+    systemHeapStep("nspanel json next");
     Pending entry = std::move(pending.front());
     pending.erase(pending.begin());
     process(entry);
+    systemHeapStep("nspanel json entities");
 }
 
 } // namespace
@@ -478,6 +484,7 @@ void message(StringView name, StringView body) {
     if (topic.length() && name.equals(StringView(topic)) && (body.length() < PayloadMax)) {
         payload = body.toString();
         is_fresh = true;
+        systemHeapStep("nspanel history kept");
     }
 }
 
@@ -535,9 +542,11 @@ bool take(Series& out) {
     }
     is_fresh = false;
 
+    systemHeapStep("nspanel history take");
     ESPURNA_TRY {
         DynamicJsonBuffer buffer(4096);
         JsonObject& root = buffer.parseObject(payload.c_str());
+        systemHeapStep("nspanel history parsed");
         if (!root.success()) {
             return false;
         }
@@ -547,6 +556,7 @@ bool take(Series& out) {
         read(root["s"], out.setpoint);
         read(root["h"], out.humidity);
         read(root["p"], out.on);
+        systemHeapStep("nspanel history series");
     } ESPURNA_CATCH_BAD_ALLOC {
         return false;
     }
@@ -562,7 +572,9 @@ bool take(Series& out) {
 
 namespace {
 
-std::vector<String> subscribed;
+// the distinct state topics of the image (Config::topics) are subscribed in their order: the first 'subscribed' of
+// them are. unsubscribeAll() goes through the same list of the config that is still running
+size_t subscribed { 0 };
 
 // On ESP32 the MQTT connect event usually runs in the async_tcp task. Every subscribe() there
 // is a blocking tcpip_api_call(), while each SUBACK / retained message / ACK the broker sends back
@@ -593,31 +605,28 @@ void subscribeLoop() {
     }
     subscribe_last = now;
 
+    // the retained messages of the topics subscribed so far are parsed first: up to PendingMax payloads of up to
+    // mqttBuffer bytes each waited in the queue at once, ~16 KB of the heap right after the connect (NSPANEL3 11-16:
+    // the lowest free heap since boot 1.5 KB with MQTT, 18 KB without)
+    if (subscribe_pending && json::stats().pending) {
+        return;
+    }
+
     const auto& cfg = config();
     size_t budget = build::SubscribeBurst;
     while (subscribe_pending && budget) {
-        if (subscribe_next >= cfg.entities.size()) {
+        if (subscribe_next >= cfg.topics.size()) {
             subscribe_pending = false;
             break;
         }
 
-        const auto& entity = cfg.entities[subscribe_next];
-        bool known = false; // several JSON entities share a topic: subscribe once
-        for (const auto& topic : subscribed) {
-            if (topic == entity.topic) {
-                known = true;
-                break;
-            }
-        }
-        if (entity.topic.length() && !known) {
-            // 0: no room in the TCP send buffer right now, retry on the next step
-            if (!mqttSubscribeRaw(entity.topic.c_str())) {
-                return;
-            }
-            subscribed.push_back(entity.topic);
-            --budget;
+        // 0: no room in the TCP send buffer right now, retry on the next step
+        if (!mqttSubscribeRaw(cfg.topics[subscribe_next].name.c_str())) {
+            return;
         }
         ++subscribe_next;
+        subscribed = subscribe_next;
+        --budget;
     }
 
     if (!subscribe_pending && announce_pending) {
@@ -641,7 +650,7 @@ void mqttCallback(unsigned int type, StringView topic, StringView payload) {
         break;
 
     case MQTT_DISCONNECT_EVENT:
-        subscribed.clear();
+        subscribed = 0;
         subscribe_pending = false;
         announce_pending = false;
         history::subscribed = false;
@@ -653,19 +662,19 @@ void mqttCallback(unsigned int type, StringView topic, StringView payload) {
         auto& cfg = config();
         bool parse = false;
         for (size_t index = 0; index < cfg.entities.size(); ++index) {
-            auto& entity = cfg.entities[index];
-            if (!entity.topic.length() || !topic.equals(StringView(entity.topic))) {
+            const auto& entity = cfg.entities[index];
+            if (!entity.topic.length() || !topic.equals(StringView(entity.topic.c_str()))) {
                 continue;
             }
 
             // JSON payloads are parsed in loop(), nothing heavy here
-            if (entity.path.length()) {
+            if (!entity.path.empty()) {
                 parse = true;
                 continue;
             }
 
-            const String& on = entity.on.length() ? entity.on : cfg.on;
-            const String& off = entity.off.length() ? entity.off : cfg.off;
+            const char* on = entity.on.length() ? entity.on.c_str() : cfg.on.c_str();
+            const char* off = entity.off.length() ? entity.off.c_str() : cfg.off.c_str();
             const int state = payload.equals(StringView(on)) ? 1
                 : payload.equals(StringView(off)) ? 0
                 : -1;
@@ -673,13 +682,14 @@ void mqttCallback(unsigned int type, StringView topic, StringView payload) {
             String value = payload.toString();
             utf8Truncate(value, 32);
 
+            auto& live = cfg.live[index];
             char* end = nullptr;
             const float number = strtof(value.c_str(), &end);
-            entity.number = (value.length() && end && !*end) ? number : NAN;
+            live.number = (value.length() && end && !*end) ? number : NAN;
 
-            if ((state != entity.state) || (value != entity.value)) {
-                entity.state = state;
-                entity.value = std::move(value);
+            if ((state != live.state) || (value != live.value)) {
+                live.state = state;
+                live.value = std::move(value);
                 entityChanged(index);
             }
         }
@@ -698,22 +708,23 @@ void mqttCallback(unsigned int type, StringView topic, StringView payload) {
 void unsubscribeAll() {
 #if MQTT_SUPPORT
     if (mqttConnected()) {
-        for (const auto& topic : subscribed) {
-            mqttUnsubscribeRaw(topic.c_str());
+        const auto& topics = config().topics;
+        for (size_t index = 0; (index < subscribed) && (index < topics.size()); ++index) {
+            mqttUnsubscribeRaw(topics[index].name.c_str());
         }
     }
 #endif
-    subscribed.clear();
+    subscribed = 0;
 }
 
 void subscribeAll() {
-    subscribed.clear();
+    subscribed = 0;
     subscribe_next = 0;
     subscribe_pending = true;
 }
 
 size_t subscribedCount() {
-    return subscribed.size();
+    return subscribed;
 }
 
 void setupNet() {
@@ -724,7 +735,9 @@ void setupNet() {
 
 // before the display: subscriptions, the open chart's series, one JSON state payload
 void netLoop() {
+    systemHeapStep("nspanel loop");
     subscribeLoop();
+    systemHeapStep("nspanel subscribed");
     history::loop();
     json::loop();
 }

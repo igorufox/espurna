@@ -83,13 +83,17 @@ err_t gethostbyname(const char* name, IPAddress& out, dns_found_callback callbac
 // replaced by it). The 1 MB head with modules runs at 4-9 KB free and one request takes several KB: without the gate
 // 12 parallel requests ran it out, hundreds of failed allocations a round and an OOM abort (10.0.5.0 2026-11-14, W47).
 // The connections limit is what holds it; the heap floor only below what the board has idle: 5120 locked 10.0.5.0
-// out of the web and telnet (4 KB idle with 9 modules and MQTT, 2026-11-14)
+// out of the web and telnet (4 KB idle with 9 modules and MQTT, 2026-11-14).
+// One HTTP request at a time (WebSockets not counted): a request costs ~6 KB (2 KB receive ring, ~2 KB request, the
+// head, the queued answer); with 10 modules the 3 connections of `conns` (one of them the WebUI's WebSocket) still
+// ran the heap out, oom counts in the hundreds a round (W64, 11-16). The others wait in TCP (web_guard.cpp)
 WebGuard web_guard() {
     return WebGuard{
         .heap = 2048,
         .block = 0,
         .lwip = 0,
         .conns = 3,
+        .requests = 1,
     };
 }
 

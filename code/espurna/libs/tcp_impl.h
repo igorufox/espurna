@@ -531,6 +531,11 @@ public:
         return out;
     }
 
+    // one aligned word, written under the lock: read without it (lwIP's context asks while the loop may hold it)
+    size_t pending() const {
+        return *static_cast<const volatile size_t*>(&_count);
+    }
+
 private:
     static constexpr size_t QueueMax { 8 };
 
@@ -598,6 +603,10 @@ void Listener::end() {
 
 std::unique_ptr<Connection> Listener::accept() {
     return _impl ? _impl->accept() : nullptr;
+}
+
+size_t Listener::pending() const {
+    return _impl ? _impl->pending() : 0;
 }
 
 } // namespace tcp

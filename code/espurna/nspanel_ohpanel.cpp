@@ -26,6 +26,7 @@ written for ESPurna. A copy of the Apache License 2.0 is at https://www.apache.o
 #if NSPANEL_SUPPORT
 
 #include "nspanel_core.h"
+#include "nspanel.h"
 
 #if MQTT_SUPPORT
 #include "mqtt.h"
@@ -502,6 +503,7 @@ enum class Screen {
     Blank,
     Settings,    // built-in settings tiles (buttons page), when no "type": "settings" page exists
     Thermostat,  // thermostat page of one item
+    Other,       // the screen of another module on the blank page (nspanelScreenShow(): the Matter QR, nspanelqr)
 };
 
 const char* screenName(Screen value) {
@@ -520,6 +522,8 @@ const char* screenName(Screen value) {
         return "settings";
     case Screen::Thermostat:
         return "thermostat";
+    case Screen::Other:
+        return "other module's";
     }
     return "";
 }
@@ -1300,7 +1304,7 @@ ItemView itemView(size_t index) {
 
     case ItemType::Text:
         if (item.target.entity >= 0) {
-            out.value = config().entities[item.target.entity].value;
+            out.value = entityValue(item.target.entity);
         }
         break;
 
@@ -1349,21 +1353,21 @@ void homeRelays() {
 }
 
 // "–" while unknown; the format (one float conversion, checked by the parser) for numbers
-String infoValue(int entity, const String& format) {
-    if ((entity < 0) || (static_cast<size_t>(entity) >= config().entities.size())) {
+String infoValue(int entity, const Str& format) {
+    const auto* item = entityLive(entity);
+    if (!item) {
         return String();
     }
 
-    const auto& item = config().entities[entity];
-    if (!item.value.length()) {
+    if (!item->value.length()) {
         return F("--");
     }
-    if (format.length() && !std::isnan(item.number)) {
+    if (format.length() && !std::isnan(item->number)) {
         char buf[40];
-        snprintf(buf, sizeof(buf), format.c_str(), static_cast<double>(item.number));
+        snprintf(buf, sizeof(buf), format.c_str(), static_cast<double>(item->number));
         return buf;
     }
-    return item.value;
+    return item->value;
 }
 
 // info1 / info2: icon in the tag field, "<text>  <value>" in the main field, the extra value right
@@ -2615,7 +2619,7 @@ void draw(const history::Series& series) {
 } // namespace chart
 
 // a thermostat's history topic, or the one of a switch tile
-const String& historyOf(const Item& item) {
+const Str& historyOf(const Item& item) {
     const auto* thermostat = thermostatOf(item);
     return thermostat ? thermostat->history : item.history;
 }
@@ -2922,7 +2926,9 @@ void showHome() {
     state.history.clear();
     state.screen = Screen::Home;
     state.dirty = false;
+    systemHeapStep("ohpanel home page");
     renderHome(true);
+    systemHeapStep("ohpanel home page built");
 }
 
 // a card of the swipe row ends the sub-page history
@@ -2937,7 +2943,9 @@ void showCard(size_t index) {
     state.screen = Screen::Buttons;
     state.card = index;
     state.dirty = false;
+    systemHeapStep("ohpanel card page");
     renderButtons(true);
+    systemHeapStep("ohpanel card page built");
 }
 
 void showWeather(size_t day) {
@@ -2951,6 +2959,32 @@ void showBlank() {
     state.screen = Screen::Blank;
     state.dirty = false;
     loadPage(page::Blank);
+}
+
+// The screen of another module (nspanelScreenShow()): its draw() on the blank page, the screen it replaced comes back
+namespace other {
+
+// the EU design, landscape: the right ~30 px of the 480 are under the frame (ref. the stock tiles' span above), the
+// screen of another module gets the visible part only: the Matter QR sat ~15 px to the right (owner 11-16)
+constexpr int Width { 450 };
+constexpr int Height { 320 };
+
+NspanelScreenDraw draw { nullptr };
+NspanelScreenClosed closed { nullptr };
+Screen back { Screen::Home };
+bool drawing { false };         // nspanelScreenFill() / nspanelScreenText() only from draw()
+
+} // namespace other
+
+void showOther() {
+    state.screen = Screen::Other;
+    state.dirty = false;
+    loadPage(page::Blank);
+    if (other::draw) {
+        other::drawing = true;
+        other::draw(other::Width, other::Height);
+        other::drawing = false;
+    }
 }
 
 // settings / thermostat remember the card or home they were opened from
@@ -2979,7 +3013,9 @@ void showThermostat(size_t index) {
     state.screen = Screen::Thermostat;
     state.thermo_item = index;
     state.dirty = false;
+    systemHeapStep("ohpanel thermostat page");
     renderThermostat(true);
+    systemHeapStep("ohpanel thermostat page built");
 }
 
 // a switch tile with "history": its chart on the thermostat page, closing it goes back to where it was opened from
@@ -3056,10 +3092,34 @@ void showCurrent() {
             showHome();
         }
         break;
+    case Screen::Other:
+        showOther();
+        break;
     case Screen::None:
     case Screen::Home:
         showHome();
         break;
+    }
+}
+
+// the other module's screen ends: the screen before it comes back (on the display when show), closed() tells the
+// module when it did not end it itself
+void leaveOther(bool show, bool tell) {
+    if (state.screen != Screen::Other) {
+        return;
+    }
+
+    const auto closed = other::closed;
+    other::draw = nullptr;
+    other::closed = nullptr;
+    state.screen = ((other::back == Screen::Other) || (other::back == Screen::Blank) || (other::back == Screen::None))
+        ? Screen::Home : other::back;
+    state.last_touch = millis();
+    if (show) {
+        showCurrent();
+    }
+    if (tell && closed) {
+        closed();
     }
 }
 
@@ -3373,6 +3433,7 @@ void swipe(const String& direction) {
         break;
 
     case Screen::Blank:
+    case Screen::Other:
     case Screen::None:
         break;
     }
@@ -3528,6 +3589,12 @@ void onEvent(const char* page_name, const char* component, const char* value) {
     }
 
     if (state.link != Link::Ready) {
+        return;
+    }
+
+    // any touch ends the other module's screen, the page before comes back
+    if (state.screen == Screen::Other) {
+        leaveOther(true, true);
         return;
     }
 
@@ -3781,7 +3848,8 @@ void rxLoop() {
 // -----------------------------------------------------------------------------
 
 void idleTick(uint32_t now) {
-    if (state.asleep || !config().timeout) {
+    // the other module's screen stays lit until it ends (a QR code to scan)
+    if (state.asleep || !config().timeout || (state.screen == Screen::Other)) {
         return;
     }
 
@@ -3811,8 +3879,11 @@ void uiLoop(uint32_t now) {
         markDirty();
     }
 
+    systemHeapStep("ohpanel ui");
     thermoLoop(now);
+    systemHeapStep("ohpanel thermostat");
     chartLoop(now);
+    systemHeapStep("ohpanel chart");
     idleTick(now);
 
     if (now - state.last_tick >= 1000) {
@@ -3825,6 +3896,7 @@ void uiLoop(uint32_t now) {
 
     if (state.dirty && (now - state.dirty_since >= RenderDelayMs) && state.queue.empty()) {
         state.dirty = false;
+        systemHeapStep("ohpanel render");
         switch (state.screen) {
         case Screen::Home:
             renderHome(false);
@@ -3842,9 +3914,11 @@ void uiLoop(uint32_t now) {
             renderThermostat(false);
             break;
         case Screen::Blank:
+        case Screen::Other:
         case Screen::None:
             break;
         }
+        systemHeapStep("ohpanel rendered");
     }
 }
 
@@ -3883,9 +3957,12 @@ void mirrorLoop();
 #endif
 
 void loop() {
+    systemHeapStep("ohpanel loop");
     rxLoop();
+    systemHeapStep("ohpanel rx");
 #if WEB_SUPPORT
     mirrorLoop();
+    systemHeapStep("ohpanel mirror");
 #endif
 
     const auto now = millis();
@@ -3922,6 +3999,7 @@ void loop() {
     }
 
     txLoop();
+    systemHeapStep("ohpanel tx");
     if (state.link != Link::Ready) {
         return;
     }
@@ -4092,6 +4170,7 @@ void relayChanged(size_t id) {
 
 void showPage(int target) {
     if (connected()) {
+        leaveOther(false, true);
         state.last_touch = millis();
         state.dimmed = false;
         state.asleep = false;
@@ -4271,5 +4350,67 @@ Driver& driver() {
 } // namespace ohpanel
 } // namespace nspanel
 } // namespace espurna
+
+// -----------------------------------------------------------------------------
+// The screen of another module (nspanel.h), for the modules that need nspanel
+// -----------------------------------------------------------------------------
+
+int nspanelScreenShow(NspanelScreenDraw draw, NspanelScreenClosed closed) {
+    using namespace espurna::nspanel;
+    using namespace espurna::nspanel::ohpanel;
+
+    auto* active = link::active();
+    if (active && (active != &ohpanel::driver()) && active->connected()) {
+        return 2;
+    }
+    if (!active || !active->connected() || flash::busy()) {
+        return 1;
+    }
+
+    if (state.screen != Screen::Other) {
+        other::back = state.screen;
+    }
+    other::draw = draw;
+    other::closed = closed;
+
+    // shown lit, also on a display that went to sleep
+    state.last_touch = millis();
+    state.dimmed = false;
+    state.asleep = false;
+    showOther();
+    setLevel(config().brightness);
+
+    return 0;
+}
+
+void nspanelScreenHide() {
+    using namespace espurna::nspanel;
+    using namespace espurna::nspanel::ohpanel;
+
+    leaveOther(link::active() == &ohpanel::driver() && ohpanel::connected(), false);
+}
+
+bool nspanelScreenShown() {
+    using namespace espurna::nspanel;
+    using namespace espurna::nspanel::ohpanel;
+
+    return (link::active() == &ohpanel::driver()) && ohpanel::connected() && (state.screen == Screen::Other);
+}
+
+void nspanelScreenFill(int x, int y, int w, int h, uint16_t colour) {
+    using namespace espurna::nspanel::ohpanel;
+
+    if (other::drawing) {
+        fill(x, y, w, h, colour);
+    }
+}
+
+void nspanelScreenText(int x, int y, int w, int h, int font, uint16_t colour, uint16_t back, const char* text) {
+    using namespace espurna::nspanel::ohpanel;
+
+    if (other::drawing) {
+        xstr(x, y, w, h, font, colour, back, 1, String(text));
+    }
+}
 
 #endif // NSPANEL_SUPPORT

@@ -4,6 +4,7 @@
 # module would pull the Matter library's own mbedtls into the Beken head). scripts/module_link.py appends what a
 # module link finds missing, tagged with the chip it was found on.
 I2C0 esp32
+abort beken
 I2C1 esp32
 _Z10alexaPauseb esp32 beken
 _Z10delSettingRKN7espurna8settings3KeyE esp32
@@ -822,3 +823,14 @@ _Z13telnetReversePKct
 _ZN6StringC1Emh esp8266
 _Z17systemOnResetHoldPFbvE beken
 _Z17systemOnResetHoldPFbvE esp32
+_Z16systemHoldActivev beken
+_Z16systemHoldActivev esp32
+_Z16systemHoldActivev esp8266
+# new (std::nothrow) of the head on every chip (W83): a module never pulls libstdc++'s, which aborts with the heap out
+_ZnwjRKSt9nothrow_t
+_ZnajRKSt9nothrow_t
+# the flash data of a module as plain memory (nspanel reads its compiled config in place, W84)
+_Z15modulesDataViewPKc
+# the heap checkpoints of the modules (W88): the lowest free heap since boot, the step line
+_Z17systemHeapMinimumv
+_Z14systemHeapStepPKc

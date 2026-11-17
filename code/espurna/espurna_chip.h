@@ -51,12 +51,13 @@ void wdt_pause();
 void wdt_resume();
 
 // Defaults of the low heap guard of the web server and telnet (web_guard.cpp, settings webGuardHeap, webGuardBlock,
-// webGuardLwip, webGuardConns), 0 = not checked
+// webGuardLwip, webGuardConns, webGuardReqs), 0 = not checked
 struct WebGuard {
     uint32_t heap;
     uint32_t block;
     uint32_t lwip;
     uint32_t conns;
+    uint32_t requests;
 };
 
 WebGuard web_guard();

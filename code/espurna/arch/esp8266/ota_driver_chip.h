@@ -58,12 +58,15 @@ inline void arduino_ota_begin(T& ota) {
     ota.begin(false);
 }
 
-// settings are backed up to the flash sectors right away (ref. eepromBackup())
-inline void arduino_ota_started() {
-}
+// settings are backed up to the flash sectors right away (ref. eepromBackup()). ArduinoOTA takes the whole image
+// inside one loop() call and its receive loop never ends while the connection looks open: a stalled upload hung the
+// board until a power cycle (W58). A timer restarts it once the upload takes nothing for a while (ota_esp8266.cpp)
+void arduino_ota_started();
 
 inline void arduino_ota_progress() {
 }
+
+void arduino_ota_stopped();
 
 } // namespace driver
 } // namespace ota

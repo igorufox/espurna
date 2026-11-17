@@ -140,6 +140,89 @@ size_t inputSize(size_t fragment) {
     return BR_SSL_BUFSIZE_INPUT;
 }
 
+// --- the record size per server (Options::fragment 0: auto) ----------------------------------------------------------
+//
+// Every TLS connection asks for small records (max_fragment_length) by itself (owner 2026-11-17: «его надо постоянно
+// пытаться включать при tls»; the NSPanel's weather session took the heap down to ~120 B with a 16.7 KB input buffer).
+// The first connection to a host is the probe: 512, then 4096 if the server refused it, then full records; what
+// worked is kept per host + port until the reboot, so the next connections go straight to it. A refusal: the server
+// sent a bigger record (BR_ERR_TOO_LARGE), echoed another size (BR_ERR_BAD_FRAGLEN), answered with an alert or closed
+// during the handshake. A server that sends a bigger record later on is marked «full» and the caller's retry gets it
+
+constexpr size_t AutoSizes[] { 512, 4096, 0 };
+constexpr size_t AutoSteps { sizeof(AutoSizes) / sizeof(AutoSizes[0]) };
+
+struct AutoEntry {
+    uint32_t hash;
+    uint16_t port;
+    uint8_t step;       // the index into AutoSizes
+    bool used;
+};
+
+// a fixed table, the oldest entry replaced: no heap
+constexpr size_t AutoEntries { 8 };
+AutoEntry autoTable[AutoEntries] {};
+size_t autoNext { 0 };
+
+uint32_t autoHash(const char* host) {
+    uint32_t hash { 2166136261u };
+    for (; host && *host; ++host) {
+        const char c = ((*host >= 'A') && (*host <= 'Z')) ? (*host - 'A' + 'a') : *host;
+        hash = (hash ^ static_cast<uint8_t>(c)) * 16777619u;
+    }
+
+    return hash;
+}
+
+AutoEntry* autoFind(const char* host, uint16_t port) {
+    const auto hash = autoHash(host);
+    for (auto& entry : autoTable) {
+        if (entry.used && (entry.hash == hash) && (entry.port == port)) {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
+// the first step to try for this server: the known one, else 512
+uint8_t autoStep(const char* host, uint16_t port) {
+    const auto* entry = autoFind(host, port);
+    return entry ? entry->step : 0;
+}
+
+// the server took (or needs) this step; one log line when the table learns something new
+void autoStore(const char* host, uint16_t port, uint8_t step) {
+    auto* entry = autoFind(host, port);
+    if (entry && (entry->step == step)) {
+        return;
+    }
+
+    if (!entry) {
+        entry = &autoTable[autoNext];
+        autoNext = (autoNext + 1) % AutoEntries;
+    }
+
+    entry->hash = autoHash(host);
+    entry->port = port;
+    entry->step = step;
+    entry->used = true;
+
+    if (AutoSizes[step]) {
+        NET_LOG("%s: TLS records of %u bytes", host, static_cast<unsigned>(AutoSizes[step]));
+    } else {
+        NET_LOG("%s: TLS records of full size", host);
+    }
+}
+
+// the handshake failed the way a server that does not take this record size fails it
+bool autoRefused(int error) {
+    return (error == BR_ERR_OK)             // closed during the handshake
+        || (error == BR_ERR_TOO_LARGE)
+        || (error == BR_ERR_BAD_FRAGLEN)
+        || ((error >= BR_ERR_RECV_FATAL_ALERT) && (error < BR_ERR_SEND_FATAL_ALERT));
+}
+
 int hexDigit(char c) {
     return ((c >= '0') && (c <= '9')) ? (c - '0') :
         ((c >= 'a') && (c <= 'f')) ? (c - 'a' + 10) :
@@ -198,21 +281,13 @@ public:
         _tls_error = 0;
         strncpy(_host, host ? host : "", sizeof(_host) - 1);
         _host[sizeof(_host) - 1] = '\0';
+        _port = port;
 
-        _conn.reset(new (std::nothrow) tcp::Connection());
-        if (!_conn) {
-            fail(Failure::Memory);
-            return false;
-        }
+        // no record size asked for: the one this server takes (autoStep(), 512 for a new one)
+        _auto = _options.secure && (_options.fragment == 0);
+        _step = _auto ? autoStep(_host, _port) : 0;
 
-        _state = State::Connecting;
-        _last = tcp::now();
-        if (!_conn->connect(_host, port)) {
-            fail(Failure::Resolve);
-            return false;
-        }
-
-        return true;
+        return open();
     }
 
     bool ready() {
@@ -381,7 +456,7 @@ private:
     }
 
     bool setup() {
-        _input_size = inputSize(_options.fragment);
+        _input_size = inputSize(_auto ? AutoSizes[_step] : _options.fragment);
         _engine.reset(new (std::nothrow) Engine());
         _buffers.reset(new (std::nothrow) unsigned char[_input_size + OutputSize]);
         if (!_engine || !_buffers) {
@@ -410,6 +485,10 @@ private:
     void handshake() {
         if (!pump()) {
             const int error = _engine ? br_ssl_engine_last_error(&_engine->sc.eng) : 0;
+            if (refused(error)) {
+                return;
+            }
+
             const bool x509 = (error >= BR_ERR_X509_OK) && (error < BR_ERR_RECV_FATAL_ALERT);
             fail(!x509 ? Failure::Tls
                 : _options.ca ? Failure::Untrusted
@@ -420,12 +499,49 @@ private:
 
         if (br_ssl_engine_current_state(&_engine->sc.eng) & BR_SSL_SENDAPP) {
             _state = State::Ready;
+            if (_auto) {
+                autoStore(_host, _port, _step);
+            }
             return;
         }
 
         if (_conn->closed() && !_conn->available()) {
+            if (refused(br_ssl_engine_last_error(&_engine->sc.eng))) {
+                return;
+            }
             fail(Failure::Tls);
         }
+    }
+
+    // the TCP connection, then (step()) the handshake
+    bool open() {
+        _conn.reset(new (std::nothrow) tcp::Connection());
+        if (!_conn) {
+            fail(Failure::Memory);
+            return false;
+        }
+
+        _state = State::Connecting;
+        _last = tcp::now();
+        if (!_conn->connect(_host, _port)) {
+            fail(Failure::Resolve);
+            return false;
+        }
+
+        return true;
+    }
+
+    // auto record size: the server did not take this one, a new connection asks for the next (512, 4096, full).
+    // false - not that kind of failure, or nothing bigger is left
+    bool refused(int error) {
+        if (!_auto || ((static_cast<size_t>(_step) + 1) >= AutoSteps) || !autoRefused(error)) {
+            return false;
+        }
+
+        release();
+        ++_step;
+        open();
+        return true;
     }
 
     // records out and in, as far as it goes without waiting. false - the engine closed (error or not)
@@ -434,6 +550,14 @@ private:
         for (;;) {
             const auto state = br_ssl_engine_current_state(eng);
             if (state & BR_SSL_CLOSED) {
+                // the handshake went with small records, the data then came in a bigger one: the server takes none,
+                // the next connection (the caller's retry) gets full records
+                if (_auto && (_state == State::Ready) && AutoSizes[_step]
+                    && (br_ssl_engine_last_error(eng) == BR_ERR_TOO_LARGE))
+                {
+                    _step = AutoSteps - 1;
+                    autoStore(_host, _port, _step);
+                }
                 return false;
             }
 
@@ -471,6 +595,9 @@ private:
     int _tls_error { 0 };
     Options _options;
     char _host[64] {};
+    uint16_t _port { 0 };
+    bool _auto { false };   // Options::fragment 0: the record size of the table (AutoSizes[_step])
+    uint8_t _step { 0 };
     uint32_t _last { 0 };
 
     std::unique_ptr<tcp::Connection> _conn;

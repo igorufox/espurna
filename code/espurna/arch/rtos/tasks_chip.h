@@ -259,41 +259,5 @@ private:
     Shared<size_t> _dropped { 0 };
 };
 
-template <typename T, size_t BytesMax>
-class TaskQueue {
-public:
-    // dropped when there are already too many
-    bool push(T&& value, size_t size) {
-        MutexLock lock(_mutex);
-        if ((_bytes + size) > BytesMax) {
-            return false;
-        }
-
-        _items.push_back(std::move(value));
-        _bytes += size;
-        return true;
-    }
-
-    bool empty() const {
-        MutexLock lock(_mutex);
-        return _items.empty();
-    }
-
-    std::vector<T> take() {
-        std::vector<T> out;
-
-        MutexLock lock(_mutex);
-        out.swap(_items);
-        _bytes = 0;
-
-        return out;
-    }
-
-private:
-    mutable Mutex _mutex;
-    std::vector<T> _items;
-    size_t _bytes { 0 };
-};
-
 } // namespace system
 } // namespace espurna

@@ -111,6 +111,10 @@ public:
         _output_max(output_max)
     {}
 
+    void setMessageMax(size_t size) {
+        _message_next = size;
+    }
+
     ~Impl() {
         close();
         for (auto* text : {_host, _client_id, _user, _password, _will_topic, _will_payload}) {
@@ -173,6 +177,13 @@ public:
         if (!_host) {
             lost(DisconnectReason::Resolve, 0);
             return false;
+        }
+
+        // a new size from setMessageMax() only here, never under a message being received
+        if (_message_next && (_message_next != _message_max)) {
+            _message_max = _message_next;
+            free(_body);
+            _body = nullptr;
         }
 
         if (!_body) {
@@ -724,7 +735,8 @@ private:
         resetParser();
     }
 
-    const size_t _message_max;
+    size_t _message_max;
+    size_t _message_next { 0 };
     const size_t _output_max;
 
     char* _host { nullptr };
@@ -781,6 +793,12 @@ void Client::setClientId(const char* id) {
 void Client::setCredentials(const char* user, const char* password) {
     if (_impl) {
         _impl->setCredentials(user, password);
+    }
+}
+
+void Client::setMessageMax(size_t size) {
+    if (_impl) {
+        _impl->setMessageMax(size);
     }
 }
 

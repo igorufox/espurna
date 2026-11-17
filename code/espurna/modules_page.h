@@ -5,7 +5,8 @@ MODULES: the head's own page, every chip (modules.cpp arch::page, `/` while ther
 installImage, the same steps): tick, Apply: the head of the install image .ota first when the board runs another head
 build (ESP32: /safeboot/switch, the head to the safeboot's /upload; the others: /modules/off, the head to /upgrade),
 then /modules/off and /modules/apply with the ticked names and the modules file. The full WebUI is the webui data
-module; this page installs it
+module; this page installs it. On top, the setup form (head_setup.cpp, W71): the admin password (required while the
+default one is on) and the Wi-Fi network, with a scan, saved with a restart
 
 */
 
@@ -29,6 +30,12 @@ button{font-size:14px;padding:6px 12px;margin:4px 4px 4px 0}input[type=checkbox]
 #ap{background:#c00000;color:#fff;border:0;border-radius:4px}#ap:disabled{background:#ccc}
 #msg{white-space:pre-wrap;background:#f4f4f4;padding:8px;min-height:1em;font-size:13px}</style>
 <h2>Modules</h2><div class=sub id=ver></div>
+<form id=su style="display:none;border:1px solid #ccc;padding:8px;margin-bottom:12px"><b>Setup</b>
+<div id=pr class=bad>The default password is still on: set a new one first</div>
+<p>Admin password <input type=password id=p1 autocomplete=new-password maxlength=63> repeat <input type=password id=p2
+autocomplete=new-password maxlength=63></p><p>Wi-Fi <input id=ss maxlength=32 placeholder=SSID> <select id=nets
+style="display:none"></select> <button type=button id=sc>Scan</button> password <input type=password id=wp maxlength=64></p>
+<button>Save and restart</button> <span id=sm class=st></span></form>
 <div id=off style="display:none;background:#fde2e1;border:1px solid #d9534f;padding:8px;margin-bottom:12px">
 <b>Modules are off</b>: <span id=why></span><br><button id=on>Start the modules again</button></div><div id=bars></div>
 <table><thead><tr><th></th><th>Module</th><th class=r>Flash</th><th class=r>RAM</th><th>State</th></tr></thead>
@@ -121,6 +128,22 @@ $('ap').onclick=apply;
 $('on').onclick=function(){post('modules/on',new FormData()).then(function(t){msg(t);return back()}).then(function(){location.reload()})};
 $('rs').onclick=function(){post('modules/restart',new FormData()).then(function(){msg('restarting...');return back()})
 .then(function(){location.reload()})};
+function sm(t){$('sm').textContent=t}
+function gj(u){return fetch(u,{cache:'no-store'}).then(function(r){return r.json()})}
+function scan(s){gj('setup/scan'+(s?'?start=1':'')).then(function(j){var e=$('nets');if(j.run)return setTimeout(scan,1500);
+e.innerHTML='<option value="">'+j.list.length+' networks</option>';j.list.sort(function(a,b){return b[1]-a[1]}).forEach(function(n){
+var o=document.createElement('option');o.value=n[0];o.textContent=n[0]+' '+n[1]+' dBm'+(n[2]?' open':'');e.appendChild(o)});
+e.style.display=j.list.length?'':'none';sm(j.error)}).catch(function(x){sm(''+x)})}
+$('nets').onchange=function(){if(this.value)$('ss').value=this.value};
+$('sc').onclick=function(){sm('scanning...');scan(1)};
+$('su').onsubmit=function(e){e.preventDefault();var p=$('p1').value,d=new FormData();if(p||$('p2').value){
+if(p!=$('p2').value)return sm('the passwords differ');
+if(!/^(?=.*[A-Z\d])(?=.*[a-z])[\w~!@#$%^&*()<>,.?;:{}[\]\\|]{8,63}/.test(p))
+return sm('the password: 8..63 characters, a lowercase letter and an uppercase letter or a digit');d.append('pass',p)}
+d.append('ssid',$('ss').value);d.append('wpass',$('wp').value);sm('saving...');post('setup',d).then(function(){
+sm('saved, the board restarts'+($('ss').value?' and joins '+$('ss').value:''))}).catch(function(x){sm(''+x)})};
+gj('setup').then(function(j){$('su').style.display='block';$('pr').style.display=j.pass?'':'none';$('ss').value=j.ssid})
+.catch(function(){});
 load().catch(function(x){msg(''+x)});
 </script>
 )~";

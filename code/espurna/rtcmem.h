@@ -36,6 +36,10 @@ struct RtcmemData {
     RtcmemEnergy energy[4];
     // one bit per GPIO, 64 bits: the ESP32 has pins above 31 (relays on GPIO32/33)
     uint64_t gpio_ignore;
+    // the last espota upload (ota_arduinoota.cpp): its tag while it runs, the bytes taken of its size
+    uint32_t ota_trace;
+    uint32_t ota_bytes;
+    uint32_t ota_size;
 };
 
 extern volatile RtcmemData* Rtcmem;

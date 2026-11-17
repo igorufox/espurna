@@ -767,13 +767,15 @@
 #define WEB_PORT                    80          // HTTP port
 #endif
 
-// Low heap guard of the web server and telnet (web_guard.cpp): a new TCP connection is reset (the client tries again)
-// while one of these is not met. Settings webGuardHeap, webGuardBlock, webGuardLwip, webGuardConns; 0 = not checked.
+// Low heap guard of the web server and telnet (web_guard.cpp): a new TCP connection waits (its SYN is not answered, the
+// client sends it again) or is reset while one of these is not met. Settings webGuardHeap, webGuardBlock, webGuardLwip,
+// webGuardConns, webGuardReqs; 0 = not checked.
 // - HEAP: free heap, bytes
 // - BLOCK: largest free block, bytes (the BK7231N SDK does not track it)
 // - LWIP: free bytes of lwIP's own heap, where lwIP has one (MEM_LIBC_MALLOC 0: the BK7231N, 16 KB for queued TCP data
 //   and received frames)
 // - CONNS: connections to the server's port, the new one and web sockets included
+// - REQS: HTTP requests in progress on the web server's port, web sockets not included
 // Defaults are the chip's, espurna::chip::web_guard() (arch/<chip>/chip_<chip>.cpp)
 
 // Defining a WEB_REMOTE_DOMAIN will enable Cross-Origin Resource Sharing (CORS)
@@ -897,7 +899,7 @@
 // - https://tools.ietf.org/html/rfc6066#section-4
 #ifndef SECURE_CLIENT_MFLN
 #define SECURE_CLIENT_MFLN                     0                      // The only possible values are: 512, 1024, 2048 and 4096
-                                                                      // Set to 0 to disable (default)
+                                                                      // 0 (default): auto, 512 / 4096 / full per server (libs/tls.h)
 #endif
 
 // -----------------------------------------------------------------------------

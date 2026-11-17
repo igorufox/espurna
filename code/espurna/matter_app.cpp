@@ -111,6 +111,40 @@ void refresh_fabrics() {
     PlatformMgr().UnlockChipStack();
 }
 
+// W80: no controller left (MATTER.REMOVE of the last one, or the last controller's own RemoveFabric) - the basic pairing
+// window, the same as the server opens on a board that was never added (its init with an empty fabric table). The
+// server of connectedhomeip does not open it again by itself when the table becomes empty. In the Matter task
+void open_when_no_fabrics(intptr_t) {
+    auto& server = chip::Server::GetInstance();
+    if (server.GetFabricTable().FabricCount() != 0) {
+        return;
+    }
+
+    auto& manager = server.GetCommissioningWindowManager();
+    if (manager.IsCommissioningWindowOpen()) {
+        return;
+    }
+
+    const auto err = manager.OpenBasicCommissioningWindow();
+    if (err != CHIP_NO_ERROR) {
+        ChipLogError(AppServer, "No controller left, pairing window not opened: %" CHIP_ERROR_FORMAT, err.Format());
+        return;
+    }
+
+    ChipLogProgress(AppServer, "No controller left, pairing window open");
+}
+
+// Every removal goes through FabricTable::Delete, which calls its delegates. The window opens in a work item of its own:
+// after Delete is over (the count is final) and after the reply to a controller's RemoveFabric
+struct FabricWatch : public chip::FabricTable::Delegate {
+    void OnFabricRemoved(const chip::FabricTable&, chip::FabricIndex) override {
+        PlatformMgr().ScheduleWork(open_when_no_fabrics, 0);
+    }
+};
+
+FabricWatch fabric_watch;
+bool fabric_watched { false };
+
 } // namespace
 } // namespace app
 } // namespace matter
@@ -174,8 +208,29 @@ bool matter_fabric_info(int n, uint8_t* index, uint16_t* vendor, uint64_t* node,
     return true;
 }
 
+// After matter_app_start(): the fabric watch of open_when_no_fabrics(). The work item runs after the server init the start
+// scheduled before it (the Matter task takes them in order)
+void matter_watch_fabrics(void) {
+    chip::DeviceLayer::PlatformMgr().ScheduleWork(
+        [](intptr_t) {
+            using namespace espurna::matter::app;
+            // the whole InitServer() of the library is over: the last heap checkpoint of the start
+            espurna::matter::heap_step("ready");
+            if (fabric_watched) {
+                return;
+            }
+
+            const auto err = chip::Server::GetInstance().GetFabricTable().AddFabricDelegate(&fabric_watch);
+            fabric_watched = (err == CHIP_NO_ERROR);
+            if (!fabric_watched) {
+                ChipLogError(AppServer, "Fabric watch not added: %" CHIP_ERROR_FORMAT, err.Format());
+            }
+        },
+        0);
+}
+
 // The device leaves a controller, like on its RemoveFabric command (the server drops the sessions, access entries and
-// group keys of the fabric, and opens the pairing window when it was the last one). In the Matter task
+// group keys of the fabric; the last one gone, the fabric watch opens the pairing window). In the Matter task
 bool matter_remove_fabric(uint8_t index) {
     if (!matterStarted()) {
         return false;

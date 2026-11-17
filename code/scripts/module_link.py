@@ -800,9 +800,10 @@ class Linker:
             names.append(symbol)
         return self.symbols_arg(build_dir, elf, names, os.path.join(build_dir, f"mod-{name}", f"provided-{provider}-{tag}"))
 
-    def provider_links(self, ctx, name, objects, archives, providers, extra_a, image_a):
+    def provider_links(self, ctx, name, objects, archives, providers, extra_a, image_a, keep=()):
         """{offset: kind} of the words (and Beken's branches) that hold an address of a provider: linked once more
-        per provider with that one at its B bases"""
+        per provider with that one at its B bases, keeping what its dependents want of it (`keep`, as the A and B links:
+        else --gc-sections drops those and the image changes size; matter, a provider of nspanelqr, 11-16)"""
         build_dir = ctx["build_dir"]
         deltas = {(b - a) & 0xFFFFFFFF: kind for kind, (_, a, b, _) in enumerate(self.bases, 1)}
         out = {}
@@ -810,7 +811,7 @@ class Linker:
             extra = list(extra_a)
             extra[position] = self.provider_symbols(ctx, name, provider, "b")
             elf_p, map_p, image_p = self.link(build_dir, name, ctx["head_elf"], objects, archives, f"p{index}",
-                                              [(base[0], base[1]) for base in self.bases], extra)
+                                              [(base[0], base[1]) for base in self.bases], extra, keep)
             if len(image_p) != len(image_a):
                 raise RuntimeError(f"module {name}: image changes size with {provider}")
             branches = self.provider_branches(name, elf_p, image_a, image_p)
@@ -853,7 +854,7 @@ class Linker:
         branches = self.branches(name, elf_a, image_a, image_b)
         linked = len(branches)
         kinds, counts = self.relocations(name, image_a, image_b, branches)
-        provided = self.provider_links(ctx, name, objects, archives, providers, extra_a, image_a) if providers else {}
+        provided = self.provider_links(ctx, name, objects, archives, providers, extra_a, image_a, keep) if providers else {}
         # a branch into a provider is one into the head too for the links A and B (the provider stays where it is in
         # both): the provider's link moves it by both deltas, the head's entry goes
         for offset in provided:

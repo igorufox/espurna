@@ -276,4 +276,48 @@ void guardTimerStop() {
 } // namespace modules
 } // namespace espurna
 
+// Update writes the new image into the free flash after the head: where the modules are, while their code runs from
+// there (W58: espota stalled after the first block, the next call into a module ran erased flash). The head links
+// UpdaterClass::begin and printError with --wrap (custom_head_wraps): with the modules running nothing is written, the
+// uploader gets the reason, the modules stay off from the next boot and the board restarts - the same upload then
+// goes through (ArduinoOTA calls begin before its start callback, so the refusal has to be here)
+namespace {
+
+bool update_refused { false };
+
+constexpr char UpdateRefused[] PROGMEM =
+    "the modules run where the image goes: restarting without them, upload again";
+
+// what espota gets: its stock espota.py reads 32 bytes of the answer, "ERR: " + this fits (a longer one raised on
+// Windows and showed as "No Answer to our Authentication")
+constexpr char UpdateRefusedShort[] PROGMEM = "modules stopped, retry";
+
+} // namespace
+
+extern "C" bool __real__ZN12UpdaterClass5beginEjiih(UpdaterClass*, size_t, int, int, uint8_t);
+extern "C" void __real__ZN12UpdaterClass10printErrorER5Print(UpdaterClass*, Print&);
+
+extern "C" bool __wrap__ZN12UpdaterClass5beginEjiih(UpdaterClass* self, size_t size, int command, int led, uint8_t on) {
+    update_refused = false;
+    if ((command == U_FLASH) && modulesRunning()) {
+        update_refused = true;
+        DEBUG_MSG_P(PSTR("[OTA] Refused: %s\n"), UpdateRefused);
+        if (modulesOffMark("an update over the network")) {
+            prepareReset(CustomResetReason::Modules);
+        }
+        return false;
+    }
+
+    return __real__ZN12UpdaterClass5beginEjiih(self, size, command, led, on);
+}
+
+extern "C" void __wrap__ZN12UpdaterClass10printErrorER5Print(UpdaterClass* self, Print& out) {
+    if (update_refused) {
+        out.print(FPSTR(UpdateRefusedShort));
+        return;
+    }
+
+    __real__ZN12UpdaterClass10printErrorER5Print(self, out);
+}
+
 #endif // MODULES_SUPPORT && ESP8266

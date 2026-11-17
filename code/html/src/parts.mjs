@@ -108,6 +108,44 @@ async function insert(text, base) {
     }
 }
 
+// a busy board (another tab loading, low heap) resets the connection or answers 5xx / 429: tried again a few times
+// before the part is given up (W70: the second WebUI tab of an ESP8266 lost its relay part to one reset)
+const FetchTries = 5;
+const FetchPauseMs = 1000;
+
+/**
+ * @param {URL} url
+ * @param {RequestInit} options
+ * @param {string} what
+ * @returns {Promise<{text: string | null, status: number}>} the body, null with the status of a final answer (4xx)
+ */
+async function fetchText(url, options, what) {
+    /** @type {Error | null} */
+    let last = null;
+    for (let attempt = 0; attempt < FetchTries; ++attempt) {
+        if (attempt) {
+            await new Promise((resolve) => setTimeout(resolve, FetchPauseMs * attempt));
+        }
+
+        try {
+            const response = await fetch(url, options);
+            if (response.ok) {
+                return {text: await response.text(), status: response.status};
+            }
+
+            if ((response.status !== 429) && (response.status < 500)) {
+                return {text: null, status: response.status};
+            }
+
+            last = new Error(`${what}: HTTP ${response.status}`);
+        } catch (e) {
+            last = /** @type {Error} */(e);
+        }
+    }
+
+    throw last ?? new Error(what);
+}
+
 /**
  * Every part of the board, one after another (an ESP8266 serves one request at a time well). An error leaves the page
  * without that part, the rest works
@@ -121,11 +159,12 @@ export async function loadParts(base) {
     /** @type {string[]} */
     let names;
     try {
-        const response = await fetch(new URL("ui", base), {cache: "no-store", credentials: "same-origin"});
-        if (!response.ok) {
+        const list = await fetchText(new URL("ui", base),
+            {cache: "no-store", credentials: "same-origin"}, "the list of the WebUI parts");
+        if (list.text === null) {
             return done;
         }
-        names = await response.json();
+        names = JSON.parse(list.text);
     } catch (e) {
         notify.notifyError(/** @type {Error} */(e));
         return done;
@@ -133,12 +172,12 @@ export async function loadParts(base) {
 
     for (const name of names) {
         try {
-            const response = await fetch(new URL(`ui/part?name=${encodeURIComponent(name)}`, base),
-                {credentials: "same-origin"});
-            if (!response.ok) {
-                throw new Error(`the WebUI part of ${name}: HTTP ${response.status}`);
+            const part = await fetchText(new URL(`ui/part?name=${encodeURIComponent(name)}`, base),
+                {credentials: "same-origin"}, `the WebUI part of ${name}`);
+            if (part.text === null) {
+                throw new Error(`the WebUI part of ${name}: HTTP ${part.status}`);
             }
-            await insert(await response.text(), base);
+            await insert(part.text, base);
             done.push(name);
         } catch (e) {
             notify.notifyError(/** @type {Error} */(e));

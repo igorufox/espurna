@@ -79,6 +79,9 @@ inline void arduino_ota_progress() {
     ::espurna::system::chip::sdk::loop();
 }
 
+inline void arduino_ota_stopped() {
+}
+
 } // namespace driver
 } // namespace ota
 } // namespace espurna

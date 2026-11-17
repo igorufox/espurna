@@ -18,7 +18,8 @@ namespace url {
 
 constexpr size_t SchemeMax { 16 };
 constexpr size_t HostMax { 128 };
-constexpr size_t PathMax { 256 };
+// as http_client.h UrlMax: the NSPanel's Open-Meteo path is ~260 bytes, 256 refused it ("invalid URL", 11-16)
+constexpr size_t PathMax { 384 };
 
 struct Parts {
     char scheme[SchemeMax] {};

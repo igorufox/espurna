@@ -14,6 +14,7 @@ through the Matter application C API (`matter_app_*`), the same on the ESP32 and
 #if MATTER_SUPPORT
 
 #include "espurna_matter.h"
+#include "matter_identity.h"
 #include "espurna_ota.h"
 #include "espurna_tasks.h"
 #include "relay.h"
@@ -423,13 +424,22 @@ void plug_name(size_t index, PlugName& out) {
     snprintf(out.unique, sizeof(out.unique), "%s-%u", systemChipId().toString().c_str(), static_cast<unsigned>(index));
 }
 
+// Heap checkpoints (W88): here in the loop "start", "prepare" (the chip's storage, Beken factory data) and "chip stack"
+// (matter_app_start(): InitChipStack, MemoryInit, the Matter task and its event queue; the server init is only
+// scheduled). The rest come from the Matter task, in the order of the library's InitServer(): "identity" and
+// "identity done" (matter_identity_install()), "server init" (matter_plug_count(): Server::Init - fabric table, sessions,
+// access control, the data model, mDNS, the pairing window - and the network commissioning cluster), "ota"
+// (matter_node_label(): plugs enabled, OTA requestor), "ready" (the fabric watch work item: node label, station mode)
 bool start_stack() {
     MATTER_STEP("start");
+    heap_step("start", true);
 
     if (!backend::prepare()) {
         DEBUG_MSG_P(PSTR("[MATTER] Storage or identity of the chip failed\n"));
         return false;
     }
+
+    heap_step("prepare", true);
 
     device_type = backend::device_type();
     if (device_type) {
@@ -451,6 +461,10 @@ bool start_stack() {
     MATTER_STEP("ready, matter_app_start");
     const auto out = matter_app_start() == 0;
     MATTER_STEP(out ? "matter_app_start OK" : "matter_app_start FAILED");
+    heap_step("chip stack", true);
+    if (out) {
+        matter_watch_fabrics();
+    }
 
     return out;
 }
@@ -592,7 +606,7 @@ PROGMEM_STRING(Status, "MATTER");
 
 void command_status(::terminal::CommandContext&& ctx) {
     ctx.output.printf_P(PSTR("started: %s, fabrics: %d, heap: %u, lowest since boot: %u\n"),
-        started ? "yes" : "no", fabrics(), systemFreeHeap(), backend::heap_min());
+        started ? "yes" : "no", fabrics(), systemFreeHeap(), systemHeapMinimum());
 
     Controller list[MaxControllers];
     const auto count = controllers(list, MaxControllers);
@@ -793,12 +807,98 @@ void onData(JsonObject& root) {
     }
 }
 
+// The identity choice (`matterIdentity`): in use, what the board has. No secrets: the custom VID / PID only
+void onIdentity(JsonObject& root) {
+    root["matterIdUse"] = identity::name(identity::choice());
+    root["matterIdFactory"] = identity::available(identity::Choice::Factory);
+
+    uint16_t vendor { 0 };
+    uint16_t product { 0 };
+    if (identity::custom_ids(vendor, product)) {
+        char text[24];
+        snprintf_P(text, sizeof(text), PSTR("VID 0x%04X PID 0x%04X"), vendor, product);
+        root["matterIdCustom"] = text;
+    } else {
+        root["matterIdCustom"] = "";
+    }
+}
+
 void onConnected(JsonObject& root) {
     root["matterAuto"] = getSetting("matterAuto", true);
+    onIdentity(root);
     onData(root);
 }
 
-void onAction(uint32_t, const char* action, JsonObject& data) {
+void message(uint32_t client_id, String text) {
+    wsPost(client_id, [text](JsonObject& root) {
+        root["message"] = text;
+    });
+}
+
+// Another identity: the controllers verified the old DAC. The panel asked for the confirmation; the restart, and the
+// module setup forgets the controllers before Matter starts (identity::setup(), backend::reset() as MATTER.RESET)
+void use_identity(uint32_t client_id, identity::Choice choice) {
+    setSetting(identity::Setting, String(identity::name(choice)));
+    message(client_id, F("Matter identity changed, restarting. Add the device to the controllers again."));
+    prepareReset(CustomResetReason::Web);
+}
+
+// matterIdentity {use}: factory / espurna / custom
+void action_identity(uint32_t client_id, JsonObject& data) {
+    identity::Choice choice;
+    if (!identity::parse(data["use"].as<const char*>(), choice) || !identity::available(choice)) {
+        message(client_id, F("This Matter identity is not available on this board"));
+        return;
+    }
+
+    if (choice == identity::choice()) {
+        setSetting(identity::Setting, String(identity::name(choice)));
+        message(client_id, F("This Matter identity is in use already"));
+        return;
+    }
+
+    use_identity(client_id, choice);
+}
+
+// matterIdentityUpload {dac, key, pai, cd}: base64 of DER, checked and stored, then in use (restart). The key text of
+// the message is wiped after the check, it is never logged or sent back
+void action_identity_upload(uint32_t client_id, JsonObject& data) {
+    auto* key = const_cast<char*>(data["key"].as<const char*>());
+
+    String error;
+    if (commissioning_active) {
+        error = F("A controller is adding the device now, try again after it");
+    } else {
+        // two signature checks and a signature: seconds on the BK7231N, the loop watchdog gets the commissioning time
+        backend::commissioning(true);
+        identity::custom_store(data["dac"].as<const char*>(), key, data["pai"].as<const char*>(),
+            data["cd"].as<const char*>(), error);
+        backend::commissioning(commissioning_active);
+    }
+
+    if (key) {
+        std::memset(key, 0, std::strlen(key));
+    }
+
+    if (error.length()) {
+        message(client_id, error);
+        return;
+    }
+
+    use_identity(client_id, identity::Choice::Custom);
+}
+
+void onAction(uint32_t client_id, const char* action, JsonObject& data) {
+    if (std::strcmp(action, "matterIdentity") == 0) {
+        action_identity(client_id, data);
+        return;
+    }
+
+    if (std::strcmp(action, "matterIdentityUpload") == 0) {
+        action_identity_upload(client_id, data);
+        return;
+    }
+
     if (std::strcmp(action, "matterRemove") == 0) {
         const auto index = data["index"].as<int>();
         if ((index > 0) && (index < 255)) {
@@ -876,6 +976,8 @@ void setup() {
     delSetting("matterSkip");
 
     backend::setup();
+    // `matterIdentity`, before any start: another identity than at the last start forgets the controllers
+    identity::setup();
 #if TERMINAL_SUPPORT
     terminal::add(Commands);
 #endif
@@ -891,6 +993,23 @@ void setup() {
 }
 
 } // namespace
+
+void heap_step(const char* step, bool from_loop) {
+    const auto stats = systemHeapStats();
+    if (from_loop) {
+        DEBUG_MSG_P(PSTR("[MATTER] heap %s: free %u, block %u, min %u\n"), step,
+            static_cast<unsigned>(systemFreeHeap()), static_cast<unsigned>(stats.usable),
+            static_cast<unsigned>(systemHeapMinimum()));
+        return;
+    }
+
+    char line[log::Length];
+    snprintf(line, sizeof(line), "heap %s: free %u, block %u, min %u", step,
+        static_cast<unsigned>(systemFreeHeap()), static_cast<unsigned>(stats.usable),
+        static_cast<unsigned>(systemHeapMinimum()));
+    log::push(line);
+}
+
 } // namespace matter
 } // namespace espurna
 
@@ -964,7 +1083,9 @@ void matter_log(const char* line) {
 #endif
 }
 
+// the library asks once, in its InitServer() after the plugs and the OTA requestor: a heap checkpoint of the start
 const char* matter_node_label(void) {
+    espurna::matter::heap_step("ota");
     return espurna::matter::node_label;
 }
 
@@ -976,7 +1097,9 @@ const char* matter_product_label(void) {
     return espurna::matter::product_label;
 }
 
+// the library asks once, in its InitServer() right after the server init (AppServer::Init): a heap checkpoint
 uint8_t matter_plug_count(void) {
+    espurna::matter::heap_step("server init");
     return espurna::matter::plug_count;
 }
 
@@ -1005,6 +1128,29 @@ void matterSetup() {
 
 bool matterStarted() {
     return espurna::matter::started;
+}
+
+// For the modules that need this one (nspanelqr: the pairing QR on the NSPanel display), linked directly
+// (espurna/modules_provided.txt). The pairing window is open: the basic one, or one a controller opened
+bool matterWindowOpen() {
+    return espurna::matter::started && (espurna::matter::window_left() > 0);
+}
+
+// Opens the basic pairing window, as MATTER.WINDOW and the button of the MATTER panel do (nspanelqr: the "matter-pair"
+// tile of the NSPanel). It opens in the Matter task, matterWindowOpen() follows. false: Matter is not started
+bool matterWindowStart() {
+    if (!espurna::matter::started) {
+        return false;
+    }
+
+    espurna::matter::open_window();
+    return true;
+}
+
+// The QR payload ("MT:...") and the manual pairing code, as on the MATTER panel of the WebUI. They carry the setup
+// passcode: for the device owner's screens only, never logged
+bool matterPairingCodes(char* qr, size_t qr_size, char* manual, size_t manual_size) {
+    return espurna::matter::codes(manual, manual_size, qr, qr_size);
 }
 
 #endif

@@ -155,6 +155,10 @@ public:
     // requests in progress
     size_t active() const;
 
+    // requests in progress and accepted connections the loop did not take yet; WebSocket connections taken over
+    // (takeConnection()) are not counted. Also from lwIP's context: the low heap guard (web_guard.cpp)
+    size_t busy() const;
+
     class Impl;
 
 private:

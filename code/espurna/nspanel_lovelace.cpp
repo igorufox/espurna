@@ -484,7 +484,7 @@ void renderItem(String& out, uint16_t index) {
     const auto& item = config().items[index];
 
     const char* type = "switch";
-    String icon = item.icon;
+    String icon(item.icon.c_str());
     uint16_t color = config().color_unknown;
     String value;
 
@@ -510,10 +510,10 @@ void renderItem(String& out, uint16_t index) {
         type = "text";
         color = icons::colors::White;
         if ((item.target.entity >= 0) && !icon.length()) {
-            icon = utf8Prefix(sanitize(config().entities[item.target.entity].value.c_str(), 32), 4);
+            icon = utf8Prefix(sanitize(entityValue(item.target.entity).c_str(), 32), 4);
         }
         if (item.target.entity >= 0) {
-            value = sanitize(config().entities[item.target.entity].value.c_str(), 32);
+            value = sanitize(entityValue(item.target.entity).c_str(), 32);
         }
         break;
     }
@@ -553,7 +553,7 @@ void renderItem(String& out, uint16_t index) {
     out += '~';
     out += color;
     out += '~';
-    out += item.name;
+    out += item.name.c_str();
     out += '~';
     out += value;
 }

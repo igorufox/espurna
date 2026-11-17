@@ -1981,6 +1981,7 @@ async function updateStatus() {
         const status = await response.json();
         __status = status;
         elem.textContent = formatStatus(status);
+        showFlash(status);
         if (Array.isArray(status?.icons)) {
             __icons = status.icons.map(String);
         }
@@ -1992,6 +1993,66 @@ async function updateStatus() {
         }
     } catch (e) {
         elem.textContent = `unavailable (${(e instanceof Error) ? e.message : String(e)})`;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Flash the screen: the TFT by its URL (nspanel_flash.cpp), the progress from the status
+// -----------------------------------------------------------------------------
+
+/** @type {ReturnType<typeof setTimeout> | null} */
+let __flash_timer = null;
+
+/**
+ * @param {any} status
+ */
+function showFlash(status) {
+    const elem = document.querySelector("#panel-nspanel .nspanel-flash");
+    if (elem instanceof HTMLElement) {
+        elem.textContent = String(status?.flash ?? "?");
+    }
+
+    if (__flash_timer) {
+        clearTimeout(__flash_timer);
+        __flash_timer = null;
+    }
+
+    // every 3 s while it runs
+    if (status?.flashing) {
+        __flash_timer = setTimeout(() => {
+            __flash_timer = null;
+            updateStatus();
+        }, 3000);
+    }
+}
+
+function onFlash() {
+    const input = document.querySelector("#panel-nspanel .nspanel-tft-url");
+    const url = (input instanceof HTMLInputElement) ? input.value.trim() : "";
+    if (!url) {
+        return;
+    }
+
+    if (!window.confirm(`Write ${url} into the display? What the screen has now is gone, it can not be read back.`)) {
+        return;
+    }
+
+    sendAction("nspanelFlash", {url});
+}
+
+/**
+ * the board's answer to "nspanelFlash": "started", or why not
+ * @param {string} _
+ * @param {any} value
+ */
+function onFlashAnswer(_, value) {
+    const elem = document.querySelector("#panel-nspanel .nspanel-flash");
+    if (elem instanceof HTMLElement) {
+        elem.textContent = String(value);
+    }
+
+    if (value === "started") {
+        setTimeout(updateStatus, 1000);
     }
 }
 
@@ -2112,11 +2173,22 @@ export function init() {
         ?.addEventListener("click", onValidate);
     document.querySelector(".button-nspanel-save")
         ?.addEventListener("click", onSave);
+    document.querySelector(".button-nspanel-flash")
+        ?.addEventListener("click", onFlash);
+    // a choice of the list goes into the URL field, which also takes any other .tft
+    document.querySelector(".nspanel-tft-choice")
+        ?.addEventListener("change", (event) => {
+            const input = document.querySelector("#panel-nspanel .nspanel-tft-url");
+            if ((event.target instanceof HTMLSelectElement) && (input instanceof HTMLInputElement)) {
+                input.value = event.target.value;
+            }
+        });
 
     buildPalette();
 
     variableListeners({
         nspanelTft: onScreenCommands,
+        nspanelFlash: onFlashAnswer,
     });
 
     editor()?.addEventListener("keydown", onEditorKey);

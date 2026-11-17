@@ -109,7 +109,10 @@ export function names(list) {
     return list.split(",").map((x) => x.trim()).filter((x) => x.length > 0);
 }
 
-/** @typedef {{image: number, ram: number, iram: number, requires: string[], data: Uint8Array}} Package */
+/**
+ * flags: bit 0 byte-access RAM, bits 8..15 the sectors of its data, bits 16..31 its links (modules.cpp ModuleDataShift)
+ * @typedef {{image: number, ram: number, iram: number, requires: string[], flags: number, data: Uint8Array}} Package
+ */
 
 /**
  * The modules file (EMC2): magic, count, 72-byte entries (name16, offset, size, image, ram, iram, requires32,
@@ -143,6 +146,7 @@ export function parseContainer(buffer) {
             ram: view.getUint32(at + 28, true),
             iram: view.getUint32(at + 32, true),
             requires: names(cString(view, at + 36, 32)),
+            flags: view.getUint32(at + 68, true),
             data: new Uint8Array(buffer, offset, size),
         });
     }
@@ -226,12 +230,15 @@ export const HEAD_ROUTES = {
  * @param {URL} url
  * @param {FormData | Blob} body
  * @param {(fraction: number) => void} progress
+ * @param {number} timeout ms: the board writes the flash while it takes the upload, a stalled one is an error
  * @returns {Promise<string>}
  */
-export function postWithProgress(url, body, progress) {
+export function postWithProgress(url, body, progress, timeout = UPLOAD_TIMEOUT) {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", url.href);
+        xhr.timeout = timeout;
+        xhr.addEventListener("timeout", () => reject(new Error(`the upload took longer than ${Math.round(timeout / 1000)} s`)));
         xhr.upload.addEventListener("progress", (event) => {
             if (event.lengthComputable) {
                 progress(event.loaded / event.total);
@@ -292,7 +299,7 @@ export async function installHead(root, head, step) {
     }
 
     step(`Restarting for the new head (${head.name})...`);
-    await post(new URL(route.restart, root), new FormData());
+    await post(new URL(route.restart, root), new FormData(), POST_TIMEOUT);
     await waitModules(root, route.away, 120000);
 
     const blob = new Blob([head.data]);
@@ -321,11 +328,18 @@ export async function installHead(root, head, step) {
  * @param {ArrayBuffer} file the modules file (EMC2)
  * @param {string[]} names
  * @param {InstallStep} step
+ * @param {ApplyStatus | null} status /modules of the board now: the plan is checked against it first
  * @returns {Promise<any>} /modules after it
  */
-export async function applyModules(root, file, names, step) {
+export async function applyModules(root, file, names, step, status = null) {
+    // the board refuses a plan that does not hold only after /modules/off: by then it runs without its modules
+    const problems = status ? applyProblems(status, file, names) : [];
+    if (problems.length) {
+        throw new Error(`nothing changed on the board: ${problems.join("; ")}`);
+    }
+
     step("Restarting without modules...");
-    await post(new URL("modules/off", root), new FormData());
+    await post(new URL("modules/off", root), new FormData(), POST_TIMEOUT);
     await waitModules(root);
 
     const list = names.join(", ") || "no modules";
@@ -353,6 +367,102 @@ export function needsHead(status, file) {
     return !id || !status.md5 || (id !== status.md5);
 }
 
+// the board's limits (modules_core.h DirectoryEntries: a name past it is dropped from the Apply; modules.cpp
+// ModulesFileMax: a bigger table is "not a modules file")
+export const APPLY_MAX = 24;
+export const FILE_MAX = 128;
+
+// a POST that only restarts the board answers at once; the uploads write the flash as they go
+const POST_TIMEOUT = 30000;
+const UPLOAD_TIMEOUT = 600000;
+
+/**
+ * /modules, the fields the plan is checked against (an older head may lack some: that check is left to the board)
+ * @typedef {{
+ *   md5?: string, image?: string, area?: number, free?: number, ram_pool?: number, iram_data?: number,
+ *   modules?: {name: string, size: number, slot?: number}[],
+ * }} ApplyStatus
+ */
+
+/**
+ * @param {number} value
+ * @param {number} step
+ * @returns {number}
+ */
+function roundUp(value, step) {
+    return Math.ceil(value / step) * step;
+}
+
+/**
+ * What the board would refuse in its plan (modules.cpp applyPlan, applyEnd), checked before anything restarts: the
+ * names are in the file, 1..APPLY_MAX of them, the file is for this head, the flash and the RAM hold them together.
+ * The flash: the area is written anew, so the room is what is free plus what the installed modules take; a slot is
+ * the package's image in whole sectors (the chip's own format may take a little more: the board checks that)
+ * @param {ApplyStatus} status /modules
+ * @param {ArrayBuffer} file the modules file (EMC2)
+ * @param {string[]} chosen
+ * @param {boolean} sameHead the modules will run with the head of `status`: check the head and the room
+ * @returns {string[]} empty - goes
+ */
+export function applyProblems(status, file, chosen, sameHead = true) {
+    /** @type {string[]} */
+    const out = [];
+
+    /** @type {Map<string, Package>} */
+    let packages;
+    try {
+        packages = parseContainer(file);
+    } catch (error) {
+        return [`${error instanceof Error ? error.message : error}`];
+    }
+    if (!packages.size || (packages.size > FILE_MAX)) {
+        out.push(`the modules file has ${packages.size} packages, the board takes 1..${FILE_MAX}`);
+    }
+
+    // none: the firmware panel on a board without modules (the empty Apply clears the off mark); the MODULES panel
+    // sends none as /modules/off alone
+    if (chosen.length > APPLY_MAX) {
+        out.push(`${chosen.length} modules chosen, the board takes 1..${APPLY_MAX} at once`);
+    }
+
+    const missing = chosen.filter((name) => !packages.has(name));
+    if (missing.length) {
+        out.push(`not in the modules file: ${missing.join(", ")}`);
+    }
+
+    if (!sameHead) {
+        return out;
+    }
+
+    const id = modulesHeadId(file);
+    if (id && status.md5 && (id !== status.md5)) {
+        out.push("the modules file is for another head build");
+    }
+
+    const picked = chosen.map((name) => packages.get(name)).filter((x) => x !== undefined);
+    if ((typeof status.area === "number") && (typeof status.free === "number")) {
+        const installed = (status.modules ?? []).reduce((sum, x) => sum + (x.slot ?? roundUp(x.size, 4096)), 0);
+        const room = status.free + installed;
+        const need = picked.reduce((sum, x) => sum + roundUp(x.image, 4096) + (((x.flags >>> 8) & 0xff) * 4096), 0);
+        if (need > room) {
+            out.push(`not enough flash: the modules take ${kb(need)}, the area has ${kb(room)}`);
+        }
+    }
+
+    if (typeof status.ram_pool === "number") {
+        const fixed = status.iram_data ?? 0;
+        const code = picked.reduce((sum, x) => sum + roundUp(x.iram, 4), 0);
+        const ram = picked.reduce((sum, x) => sum + roundUp(x.ram, 8), 0);
+        if (code > fixed) {
+            out.push(`not enough IRAM for the module code: ${kb(code)}, the pool has ${kb(fixed)}`);
+        } else if ((code + ram) > (fixed + status.ram_pool)) {
+            out.push(`not enough RAM: the statics take ${kb(ram)}, the board has ${kb(fixed - code + status.ram_pool)}`);
+        }
+    }
+
+    return out;
+}
+
 /**
  * The install image onto the board, every chip and both panels: its head when the board runs another head build,
  * then the named modules out of it
@@ -372,12 +482,20 @@ export async function installImage(root, buffer, status, names, step) {
             + "take the install image (.ota) of the release");
     }
 
+    // before the first restart (ESP8266 and Beken: the head goes on after /modules/off too). With a new head the head
+    // and the room are checked against the /modules of that head, before its /modules/off (applyModules)
+    const problems = applyProblems(status, file, names, !head);
+    if (problems.length) {
+        throw new Error(`nothing changed on the board: ${problems.join("; ")}`);
+    }
+
     ++running;
     try {
+        let now = status;
         if (head) {
-            await installHead(root, head, step);
+            now = await installHead(root, head, step);
         }
-        return await applyModules(root, file, names, step);
+        return await applyModules(root, file, names, step, now);
     } finally {
         --running;
     }

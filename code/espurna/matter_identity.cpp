@@ -11,6 +11,15 @@ MATTER: THE IDENTITY OF THE BOARD (one code on ESP32 and Beken)
   "Matter Dev PAI 0xFFF1 no PID" (connectedhomeip credentials/development). Controllers that accept the SDK example
   devices accept it; it is not a certified identity. An OTA update, the safeboot, a Matter factory reset leave it, so
   the QR code / pairing code stays.
+- Custom: the owner's DAC, its private key, PAI and (optionally) certification declaration, uploaded in the MATTER panel
+  of the WebUI and checked there (the key belongs to the DAC, the PAI signed the DAC), kept in the same namespace. VID /
+  PID from the DAC subject; setup passcode and discriminator are the own ones above. The key is never sent back or
+  logged. Without an uploaded declaration the one of the SDK examples is used (it covers VID 0xFFF1, PID 0x8000..0x8063)
+
+`matterIdentity` (owner 11-16): "factory" / "espurna" (the own one) / "custom"; none = factory when the board has
+factory data, else espurna, as before the setting. A choice the board cannot use falls back to espurna. setup() (the
+loop, the module setup) reads it; when the identity differs from the one of the last start (the setting, another custom
+DAC), the controllers are forgotten first (backend::reset(), as MATTER.RESET): they verified the old DAC.
 
 The chip's part (arch/<chip>/matter_*.cpp): store_read() / store_write() of the key-value store, factory_read().
 When: install() where the providers are set - the library's server init calls matter_identity_install() (below) on both
@@ -27,6 +36,7 @@ chips, in the Matter task; it loads the identity first (makes it on the first st
 
 #include <credentials/DeviceAttestationCredsProvider.h>
 #include <crypto/CHIPCryptoPAL.h>
+#include <lib/support/Base64.h>
 #include <lib/support/CodeUtils.h>
 #include <lib/support/Span.h>
 #include <platform/CHIPDeviceLayer.h>
@@ -35,6 +45,8 @@ chips, in the Matter task; it loads the identity first (makes it on the first st
 #include <setup_payload/SetupPayload.h>
 
 #include <cstring>
+#include <memory>
+#include <new>
 
 namespace espurna {
 namespace matter {
@@ -256,13 +268,59 @@ struct Stored {
 
 Stored stored;
 
-enum class Source {
+// The custom identity: the uploaded DAC, PAI and declaration are kept as they came ("c-dac", "c-pai", "c-cd"), this
+// header ("custom") says how long they are and holds the key pair (the DAC's public key + the private key)
+constexpr char KeyCustom[] = "custom";
+constexpr char KeyCustomDac[] = "c-dac";
+constexpr char KeyCustomPai[] = "c-pai";
+constexpr char KeyCustomDeclaration[] = "c-cd";
+
+constexpr uint32_t CustomMagic { 0x45494d43 }; // "EIMC"
+constexpr size_t CertificateMax { Crypto::kMax_x509_Certificate_Length };
+constexpr size_t DeclarationMax { 800 };
+constexpr size_t PrivateKeyMax { 200 };
+constexpr size_t Sha1Length { 20 };
+
+struct Custom {
+    uint32_t magic;
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint16_t dac_length;
+    uint16_t pai_length;
+    uint16_t declaration_length;
+    uint16_t reserved;
+    uint8_t dac_sha1[Sha1Length];
+    uint8_t keypair[KeypairLength];
+};
+
+Custom custom;
+
+// Which identity the last start used ("used"): another one now = the controllers are forgotten (setup())
+constexpr char KeyUsed[] = "used";
+constexpr uint32_t UsedMagic { 0x45494d55 }; // "EIMU"
+
+struct Used {
+    uint32_t magic;
+    uint8_t source;
+    uint8_t reserved[3];
+    uint8_t dac_sha1[Sha1Length];
+};
+
+enum class Source : uint8_t {
     None,
     Factory,
     Own,
+    Custom,
 };
 
+// in use, set in the Matter task by load()
 Source source { Source::None };
+// what setup() chose from `matterIdentity` and what the board has, in the loop before the start
+Source chosen { Source::None };
+// `matterIdentity` asked for one the board cannot use (no factory data, nothing uploaded)
+bool fallback { false };
+bool factory_present { false };
+bool custom_present { false };
 bool installed { false };
 
 // -----------------------------------------------------------------------------
@@ -339,8 +397,13 @@ public:
     }
 };
 
-// VID / PID / names: the factory data (the certification declaration is issued for them) or the own development ones;
-// the rest from the provider of the platform
+// The own and the custom identity: not the factory data
+bool board_made() {
+    return (source == Source::Own) || (source == Source::Custom);
+}
+
+// VID / PID / names: the factory data (the certification declaration is issued for them), the own development ones or
+// the custom DAC's; the rest from the provider of the platform
 class InstanceInfo final : public DeviceInstanceInfoProvider {
 public:
     void base(DeviceInstanceInfoProvider* base) {
@@ -348,30 +411,30 @@ public:
     }
 
     CHIP_ERROR GetVendorName(char* buf, size_t size) override {
-        if (source == Source::Own) {
+        if (board_made()) {
             return copy("ESPurna", buf, size);
         }
         return (text("vendor-name", buf, size) == CHIP_NO_ERROR) ? CHIP_NO_ERROR : _base->GetVendorName(buf, size);
     }
 
     CHIP_ERROR GetVendorId(uint16_t& out) override {
-        if (source == Source::Own) {
-            out = VendorId;
+        if (board_made()) {
+            out = (source == Source::Custom) ? custom.vendor_id : VendorId;
             return CHIP_NO_ERROR;
         }
         return number("vendor-id", out) ? CHIP_NO_ERROR : _base->GetVendorId(out);
     }
 
     CHIP_ERROR GetProductName(char* buf, size_t size) override {
-        if (source == Source::Own) {
+        if (board_made()) {
             return copy("ESPurna plug", buf, size);
         }
         return (text("product-name", buf, size) == CHIP_NO_ERROR) ? CHIP_NO_ERROR : _base->GetProductName(buf, size);
     }
 
     CHIP_ERROR GetProductId(uint16_t& out) override {
-        if (source == Source::Own) {
-            out = ProductId;
+        if (board_made()) {
+            out = (source == Source::Custom) ? custom.product_id : ProductId;
             return CHIP_NO_ERROR;
         }
         return number("product-id", out) ? CHIP_NO_ERROR : _base->GetProductId(out);
@@ -389,10 +452,11 @@ public:
         return _base->GetProductLabel(buf, size);
     }
 
-    // the board's (matter.cpp, its chip id) with the own identity; the factory one may have its own in the factory data
+    // the board's (matter.cpp, its chip id) with the own and the custom identity; the factory one may have its own in
+    // the factory data
     CHIP_ERROR GetSerialNumber(char* buf, size_t size) override {
         const char* serial = matter_serial_number();
-        if ((source == Source::Own) && serial && *serial) {
+        if (board_made() && serial && *serial) {
             return copy(serial, buf, size);
         }
         return _base->GetSerialNumber(buf, size);
@@ -602,6 +666,34 @@ public:
     }
 };
 
+// A certificate (or the declaration) of the key-value store
+CHIP_ERROR read_store(const char* name, MutableByteSpan& out) {
+    size_t length { 0 };
+    if (!store_read(name, out.data(), out.size(), length)) {
+        return CHIP_ERROR_PERSISTED_STORAGE_FAILED;
+    }
+
+    VerifyOrReturnError(length <= out.size(), CHIP_ERROR_BUFFER_TOO_SMALL);
+    out.reduce_size(length);
+    return CHIP_NO_ERROR;
+}
+
+// The DAC's public key + its private key, as P256Keypair::Serialize() gives them
+CHIP_ERROR sign_with(const uint8_t (&keypair)[KeypairLength], const ByteSpan& message, MutableByteSpan& out) {
+    Crypto::P256SerializedKeypair serialized;
+    std::memcpy(serialized.Bytes(), keypair, KeypairLength);
+    serialized.SetLength(KeypairLength);
+
+    Crypto::P256Keypair key;
+    const auto err = key.Deserialize(serialized);
+    std::memset(serialized.Bytes(), 0, serialized.Capacity());
+    ReturnErrorOnFailure(err);
+
+    Crypto::P256ECDSASignature signature;
+    ReturnErrorOnFailure(key.ECDSA_sign_msg(message.data(), message.size(), signature));
+    return CopySpanToMutableSpan(ByteSpan(signature.ConstBytes(), signature.Length()), out);
+}
+
 // Own DAC and key; the development PAI and the certification declaration of the SDK examples
 class OwnAttestation final : public Credentials::DeviceAttestationCredentialsProvider {
 public:
@@ -619,29 +711,39 @@ public:
     }
 
     CHIP_ERROR GetDeviceAttestationCert(MutableByteSpan& out) override {
-        size_t length { 0 };
-        if (!store_read(KeyCertificate, out.data(), out.size(), length)) {
-            return CHIP_ERROR_PERSISTED_STORAGE_FAILED;
-        }
-
-        VerifyOrReturnError(length <= out.size(), CHIP_ERROR_BUFFER_TOO_SMALL);
-        out.reduce_size(length);
-        return CHIP_NO_ERROR;
+        return read_store(KeyCertificate, out);
     }
 
     CHIP_ERROR SignWithDeviceAttestationKey(const ByteSpan& message, MutableByteSpan& out) override {
-        Crypto::P256SerializedKeypair serialized;
-        std::memcpy(serialized.Bytes(), stored.keypair, sizeof(stored.keypair));
-        serialized.SetLength(sizeof(stored.keypair));
+        return sign_with(stored.keypair, message, out);
+    }
+};
 
-        Crypto::P256Keypair key;
-        const auto err = key.Deserialize(serialized);
-        std::memset(serialized.Bytes(), 0, serialized.Capacity());
-        ReturnErrorOnFailure(err);
+// The uploaded DAC, PAI and key; the uploaded declaration, else the one of the SDK examples
+class CustomAttestation final : public Credentials::DeviceAttestationCredentialsProvider {
+public:
+    CHIP_ERROR GetCertificationDeclaration(MutableByteSpan& out) override {
+        if (!custom.declaration_length) {
+            return CopySpanToMutableSpan(ByteSpan(CertificationDeclaration), out);
+        }
+        return read_store(KeyCustomDeclaration, out);
+    }
 
-        Crypto::P256ECDSASignature signature;
-        ReturnErrorOnFailure(key.ECDSA_sign_msg(message.data(), message.size(), signature));
-        return CopySpanToMutableSpan(ByteSpan(signature.ConstBytes(), signature.Length()), out);
+    CHIP_ERROR GetFirmwareInformation(MutableByteSpan& out) override {
+        out.reduce_size(0);
+        return CHIP_NO_ERROR;
+    }
+
+    CHIP_ERROR GetProductAttestationIntermediateCert(MutableByteSpan& out) override {
+        return read_store(KeyCustomPai, out);
+    }
+
+    CHIP_ERROR GetDeviceAttestationCert(MutableByteSpan& out) override {
+        return read_store(KeyCustomDac, out);
+    }
+
+    CHIP_ERROR SignWithDeviceAttestationKey(const ByteSpan& message, MutableByteSpan& out) override {
+        return sign_with(custom.keypair, message, out);
     }
 };
 
@@ -649,21 +751,513 @@ FactoryAttestation factory_attestation;
 InstanceInfo instance_info;
 OwnCommissionableData own_commissionable;
 OwnAttestation own_attestation;
+CustomAttestation custom_attestation;
+
+// -----------------------------------------------------------------------------
+// Custom identity: reading, checking and storing it
+
+void wipe_custom() {
+    std::memset(&custom, 0, sizeof(custom));
+}
+
+bool read_custom() {
+    size_t length { 0 };
+    const auto out = store_read(KeyCustom, reinterpret_cast<uint8_t*>(&custom), sizeof(custom), length)
+        && (length == sizeof(custom)) && (custom.magic == CustomMagic)
+        && custom.dac_length && (custom.dac_length <= CertificateMax)
+        && custom.pai_length && (custom.pai_length <= CertificateMax)
+        && (custom.declaration_length <= DeclarationMax);
+    if (!out) {
+        wipe_custom();
+    }
+
+    return out;
+}
+
+// One DER element at the start of `in`: its tag, content and full length (header + content)
+struct Der {
+    uint8_t tag { 0 };
+    const uint8_t* content { nullptr };
+    size_t length { 0 };
+    size_t total { 0 };
+};
+
+bool der(const uint8_t* in, size_t size, Der& out) {
+    if (!in || (size < 2)) {
+        return false;
+    }
+
+    size_t header { 2 };
+    size_t length { in[1] };
+    if (length & 0x80) {
+        const size_t bytes = length & 0x7f;
+        if (!bytes || (bytes > 2) || (size < (2 + bytes))) {
+            return false;
+        }
+
+        length = 0;
+        for (size_t index = 0; index < bytes; ++index) {
+            length = (length << 8) | in[2 + index];
+        }
+        header += bytes;
+    }
+
+    if (length > (size - header)) {
+        return false;
+    }
+
+    out.tag = in[0];
+    out.content = in + header;
+    out.length = length;
+    out.total = header + length;
+    return true;
+}
+
+// The private key as the factory tables keep it ("dac-key": the 32 bytes of the scalar), or DER: SEC1 ECPrivateKey
+// (openssl ec), PKCS#8 PrivateKeyInfo around it (openssl genpkey, chip-cert). PEM is made DER by the WebUI
+bool private_key(const uint8_t* in, size_t size, uint8_t (&out)[Crypto::kP256_PrivateKey_Length], int depth = 0) {
+    if (size == Crypto::kP256_PrivateKey_Length) {
+        std::memcpy(out, in, size);
+        return true;
+    }
+
+    Der sequence;
+    if ((depth > 1) || !der(in, size, sequence) || (sequence.tag != 0x30)) {
+        return false;
+    }
+
+    const uint8_t* next = sequence.content;
+    size_t left = sequence.length;
+
+    Der version;
+    if (!der(next, left, version) || (version.tag != 0x02) || (version.length != 1)) {
+        return false;
+    }
+    next += version.total;
+    left -= version.total;
+
+    // SEC1: version 1, OCTET STRING of the scalar
+    if (version.content[0] == 1) {
+        Der key;
+        if (!der(next, left, key) || (key.tag != 0x04) || !key.length || (key.length > sizeof(out))) {
+            return false;
+        }
+
+        std::memset(out, 0, sizeof(out));
+        std::memcpy(&out[sizeof(out) - key.length], key.content, key.length);
+        return true;
+    }
+
+    // PKCS#8: version 0, the algorithm, OCTET STRING of the SEC1 key
+    if (version.content[0] == 0) {
+        Der algorithm;
+        if (!der(next, left, algorithm) || (algorithm.tag != 0x30)) {
+            return false;
+        }
+        next += algorithm.total;
+        left -= algorithm.total;
+
+        Der octets;
+        if (!der(next, left, octets) || (octets.tag != 0x04)) {
+            return false;
+        }
+
+        return private_key(octets.content, octets.length, out, depth + 1);
+    }
+
+    return false;
+}
+
+// The PAI's key signed the DAC: SEQUENCE { tbs, ecdsa-with-SHA256, BIT STRING { 0, signature } }
+CHIP_ERROR verify_issued(const ByteSpan& dac, const ByteSpan& pai) {
+    Crypto::P256PublicKey issuer;
+    ReturnErrorOnFailure(Crypto::ExtractPubkeyFromX509Cert(pai, issuer));
+
+    Der certificate;
+    VerifyOrReturnError(der(dac.data(), dac.size(), certificate) && (certificate.tag == 0x30),
+        CHIP_ERROR_INVALID_ARGUMENT);
+
+    const uint8_t* next = certificate.content;
+    size_t left = certificate.length;
+
+    Der tbs;
+    VerifyOrReturnError(der(next, left, tbs) && (tbs.tag == 0x30), CHIP_ERROR_INVALID_ARGUMENT);
+    const uint8_t* tbs_data = next;
+    const size_t tbs_length = tbs.total;
+    next += tbs.total;
+    left -= tbs.total;
+
+    Der algorithm;
+    VerifyOrReturnError(der(next, left, algorithm) && (algorithm.total == sizeof(SignatureAlgorithm))
+        && (std::memcmp(next, SignatureAlgorithm, sizeof(SignatureAlgorithm)) == 0), CHIP_ERROR_INVALID_ARGUMENT);
+    next += algorithm.total;
+    left -= algorithm.total;
+
+    Der bits;
+    VerifyOrReturnError(der(next, left, bits) && (bits.tag == 0x03) && (bits.length > 1) && (bits.content[0] == 0),
+        CHIP_ERROR_INVALID_ARGUMENT);
+
+    Crypto::P256ECDSASignature signature;
+    MutableByteSpan raw(signature.Bytes(), signature.Capacity());
+    ReturnErrorOnFailure(Crypto::EcdsaAsn1SignatureToRaw(Crypto::kP256_FE_Length,
+        ByteSpan(bits.content + 1, bits.length - 1), raw));
+    ReturnErrorOnFailure(signature.SetLength(raw.size()));
+
+    return issuer.ECDSA_validate_msg_signature(tbs_data, tbs_length, signature);
+}
+
+// Base64 of the WebUI; empty = none. false: not base64 or longer than `max`
+bool decode(const char* in, size_t max, std::unique_ptr<uint8_t[]>& out, size_t& length) {
+    length = 0;
+    const size_t size = in ? std::strlen(in) : 0;
+    if (!size) {
+        return true;
+    }
+
+    if (size > (((max + 2) / 3) * 4)) {
+        return false;
+    }
+
+    out.reset(new (std::nothrow) uint8_t[((size + 3) / 4) * 3]);
+    if (!out) {
+        return false;
+    }
+
+    const auto decoded = Base64Decode32(in, static_cast<uint32_t>(size), out.get());
+    if ((decoded == UINT32_MAX) || (decoded > max)) {
+        return false;
+    }
+
+    length = decoded;
+    return true;
+}
+
+Choice choice_of(Source value) {
+    switch (value) {
+    case Source::Factory:
+        return Choice::Factory;
+    case Source::Custom:
+        return Choice::Custom;
+    case Source::None:
+    case Source::Own:
+        break;
+    }
+
+    return Choice::Espurna;
+}
 
 } // namespace
 
+const char* name(Choice value) {
+    switch (value) {
+    case Choice::Factory:
+        return "factory";
+    case Choice::Espurna:
+        return "espurna";
+    case Choice::Custom:
+        return "custom";
+    }
+
+    return "espurna";
+}
+
+bool parse(const char* value, Choice& out) {
+    if (!value) {
+        return false;
+    }
+
+    for (const auto choice : {Choice::Factory, Choice::Espurna, Choice::Custom}) {
+        if (std::strcmp(value, name(choice)) == 0) {
+            out = choice;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void setup() {
+    factory_present = has_factory();
+    custom_present = read_custom();
+
+    Source out = factory_present ? Source::Factory : Source::Own;
+
+    Choice choice;
+    const auto setting = getSetting(Setting);
+    if (parse(setting.c_str(), choice)) {
+        switch (choice) {
+        case Choice::Factory:
+            out = factory_present ? Source::Factory : Source::Own;
+            break;
+        case Choice::Espurna:
+            out = Source::Own;
+            break;
+        case Choice::Custom:
+            out = custom_present ? Source::Custom : Source::Own;
+            break;
+        }
+
+        fallback = (choice_of(out) != choice);
+        if (fallback) {
+            DEBUG_MSG_P(PSTR("[MATTER] %s identity not available on this board, own identity used\n"), name(choice));
+        }
+    }
+
+    chosen = out;
+    if (out != Source::Custom) {
+        // the VID / PID stay for the panel, the key is not needed
+        std::memset(custom.keypair, 0, sizeof(custom.keypair));
+    }
+
+    Used used {};
+    used.magic = UsedMagic;
+    used.source = static_cast<uint8_t>(out);
+    if (out == Source::Custom) {
+        std::memcpy(used.dac_sha1, custom.dac_sha1, sizeof(used.dac_sha1));
+    }
+
+    Used last {};
+    size_t length { 0 };
+    const auto known = store_read(KeyUsed, reinterpret_cast<uint8_t*>(&last), sizeof(last), length)
+        && (length == sizeof(last)) && (last.magic == UsedMagic);
+    if (known && (std::memcmp(&last, &used, sizeof(used)) == 0)) {
+        return;
+    }
+
+    // the first start with this record keeps the controllers: the identity is the one of the automatic choice before
+    if (known) {
+        DEBUG_MSG_P(PSTR("[MATTER] Identity changed (%s), forgetting the controllers: they verified the old DAC\n"),
+            name(choice_of(out)));
+        if (!backend::reset()) {
+            DEBUG_MSG_P(PSTR("[MATTER] Matter storage failed, the controllers are kept\n"));
+            return;
+        }
+    }
+
+    store_write(KeyUsed, reinterpret_cast<const uint8_t*>(&used), sizeof(used));
+}
+
+Choice choice() {
+    return choice_of((source != Source::None) ? source : chosen);
+}
+
+bool available(Choice value) {
+    switch (value) {
+    case Choice::Factory:
+        return factory_present;
+    case Choice::Espurna:
+        return true;
+    case Choice::Custom:
+        return custom_present;
+    }
+
+    return false;
+}
+
+bool custom_ids(uint16_t& vendor, uint16_t& product) {
+    if (!custom_present) {
+        return false;
+    }
+
+    vendor = custom.vendor_id;
+    product = custom.product_id;
+    return true;
+}
+
+bool ids(uint16_t& vendor, uint16_t& product) {
+    switch (choice()) {
+    case Choice::Factory:
+        return false;
+    case Choice::Espurna:
+        vendor = VendorId;
+        product = ProductId;
+        return true;
+    case Choice::Custom:
+        return custom_ids(vendor, product);
+    }
+
+    return false;
+}
+
+bool custom_store(const char* dac_text, const char* key_text, const char* pai_text, const char* declaration_text,
+    String& error)
+{
+    std::unique_ptr<uint8_t[]> dac;
+    std::unique_ptr<uint8_t[]> key;
+    std::unique_ptr<uint8_t[]> pai;
+    std::unique_ptr<uint8_t[]> declaration;
+    size_t dac_length { 0 };
+    size_t key_length { 0 };
+    size_t pai_length { 0 };
+    size_t declaration_length { 0 };
+
+    if (!decode(dac_text, CertificateMax, dac, dac_length) || !dac_length) {
+        error = F("DAC: missing, not base64 or longer than 600 bytes");
+        return false;
+    }
+
+    if (!decode(pai_text, CertificateMax, pai, pai_length) || !pai_length) {
+        error = F("PAI: missing, not base64 or longer than 600 bytes");
+        return false;
+    }
+
+    if (!decode(declaration_text, DeclarationMax, declaration, declaration_length)) {
+        error = F("Certification declaration: not base64 or longer than 800 bytes");
+        return false;
+    }
+
+    // the key buffer (all of it, decode() allocates by the base64 length) is wiped on every way out
+    struct Wipe {
+        std::unique_ptr<uint8_t[]>& data;
+        size_t capacity;
+        ~Wipe() {
+            if (data) {
+                std::memset(data.get(), 0, capacity);
+            }
+        }
+    };
+
+    const bool key_decoded = decode(key_text, PrivateKeyMax, key, key_length);
+    Wipe wipe_key { key, key_text ? ((std::strlen(key_text) + 3) / 4) * 3 : 0 };
+    if (!key_decoded || !key_length) {
+        error = F("Private key: missing, not base64 or too long");
+        return false;
+    }
+
+    const ByteSpan dac_span(dac.get(), dac_length);
+    const ByteSpan pai_span(pai.get(), pai_length);
+
+    if (Crypto::VerifyAttestationCertificateFormat(dac_span, Crypto::AttestationCertType::kDAC) != CHIP_NO_ERROR) {
+        error = F("DAC: not a Matter device attestation certificate (X.509 DER, P-256, VID and PID in the subject)");
+        return false;
+    }
+
+    if (Crypto::VerifyAttestationCertificateFormat(pai_span, Crypto::AttestationCertType::kPAI) != CHIP_NO_ERROR) {
+        error = F("PAI: not a Matter product attestation intermediate certificate (X.509 DER, P-256)");
+        return false;
+    }
+
+    Crypto::AttestationCertVidPid vidpid;
+    if ((Crypto::ExtractVIDPIDFromX509Cert(dac_span, vidpid) != CHIP_NO_ERROR)
+        || !vidpid.mVendorId.HasValue() || !vidpid.mProductId.HasValue())
+    {
+        error = F("DAC: no VID and PID in the subject");
+        return false;
+    }
+
+    if (verify_issued(dac_span, pai_span) != CHIP_NO_ERROR) {
+        error = F("The DAC is not signed by this PAI");
+        return false;
+    }
+
+    if (declaration_length) {
+        Der message;
+        if (!der(declaration.get(), declaration_length, message) || (message.tag != 0x30)
+            || (message.total != declaration_length))
+        {
+            error = F("Certification declaration: not a CMS message (DER)");
+            return false;
+        }
+    }
+
+    static Custom made;
+    made = Custom{};
+    struct WipeMade {
+        ~WipeMade() {
+            std::memset(&made, 0, sizeof(made));
+        }
+    } wipe_made;
+
+    uint8_t secret[Crypto::kP256_PrivateKey_Length];
+    const bool parsed = private_key(key.get(), key_length, secret);
+    if (parsed) {
+        std::memcpy(&made.keypair[Crypto::kP256_PublicKey_Length], secret, sizeof(secret));
+    }
+    std::memset(secret, 0, sizeof(secret));
+
+    if (!parsed) {
+        error = F("Private key: not a P-256 key (DER SEC1 or PKCS#8, PEM, or the 32 raw bytes)");
+        return false;
+    }
+
+    // the key belongs to the DAC: a signature with it checks out with the DAC's public key
+    Crypto::P256PublicKey dac_public;
+    if (Crypto::ExtractPubkeyFromX509Cert(dac_span, dac_public) != CHIP_NO_ERROR) {
+        error = F("DAC: no P-256 public key");
+        return false;
+    }
+    std::memcpy(made.keypair, dac_public.ConstBytes(), Crypto::kP256_PublicKey_Length);
+
+    {
+        static constexpr uint8_t Probe[] = "ESPurna custom Matter identity";
+
+        Crypto::P256SerializedKeypair serialized;
+        std::memcpy(serialized.Bytes(), made.keypair, sizeof(made.keypair));
+        serialized.SetLength(sizeof(made.keypair));
+
+        Crypto::P256Keypair keypair;
+        auto err = keypair.Deserialize(serialized);
+        std::memset(serialized.Bytes(), 0, serialized.Capacity());
+
+        Crypto::P256ECDSASignature signature;
+        if (err == CHIP_NO_ERROR) {
+            err = keypair.ECDSA_sign_msg(Probe, sizeof(Probe), signature);
+        }
+        if (err == CHIP_NO_ERROR) {
+            err = dac_public.ECDSA_validate_msg_signature(Probe, sizeof(Probe), signature);
+        }
+
+        if (err != CHIP_NO_ERROR) {
+            error = F("The private key does not belong to the DAC");
+            return false;
+        }
+    }
+
+    made.magic = CustomMagic;
+    made.vendor_id = static_cast<uint16_t>(vidpid.mVendorId.Value());
+    made.product_id = vidpid.mProductId.Value();
+    made.dac_length = static_cast<uint16_t>(dac_length);
+    made.pai_length = static_cast<uint16_t>(pai_length);
+    made.declaration_length = static_cast<uint16_t>(declaration_length);
+    Sha1(dac.get(), dac_length, made.dac_sha1);
+
+    // the header goes invalid first: a write that stops half way leaves no custom identity (the own one is used), never
+    // a header with the certificates of another one
+    Custom invalid {};
+    if (!store_write(KeyCustom, reinterpret_cast<const uint8_t*>(&invalid), sizeof(invalid))
+        || !store_write(KeyCustomDac, dac.get(), dac_length)
+        || !store_write(KeyCustomPai, pai.get(), pai_length)
+        || (declaration_length && !store_write(KeyCustomDeclaration, declaration.get(), declaration_length))
+        || !store_write(KeyCustom, reinterpret_cast<const uint8_t*>(&made), sizeof(made)))
+    {
+        custom_present = false;
+        error = F("The key-value store of the chip failed");
+        return false;
+    }
+
+    custom_present = true;
+    return true;
+}
+
 bool load(uint32_t& passcode, uint16_t& discriminator) {
     if (source == Source::None) {
-        if (has_factory()) {
+        // setup() did not run (it always does from the module setup): the automatic choice
+        auto wanted = chosen;
+        if (wanted == Source::None) {
+            wanted = has_factory() ? Source::Factory : Source::Own;
+        }
+
+        if (wanted == Source::Factory) {
             source = Source::Factory;
         } else if (read_own() || (make() == CHIP_NO_ERROR)) {
-            source = Source::Own;
+            // the custom identity has the own setup passcode and discriminator
+            source = wanted;
         } else {
             return false;
         }
     }
 
-    if (source != Source::Own) {
+    if (source == Source::Factory) {
         return false;
     }
 
@@ -697,6 +1291,13 @@ bool install() {
         SetCommissionableDataProvider(&own_commissionable);
         Credentials::SetDeviceAttestationCredentialsProvider(&own_attestation);
         break;
+
+    case Source::Custom:
+        instance_info.base(GetDeviceInstanceInfoProvider());
+        SetDeviceInstanceInfoProvider(&instance_info);
+        SetCommissionableDataProvider(&own_commissionable);
+        Credentials::SetDeviceAttestationCredentialsProvider(&custom_attestation);
+        break;
     }
 
     installed = true;
@@ -708,28 +1309,47 @@ bool factory() {
 }
 
 String status() {
-    switch (source) {
+    String out;
+
+    switch ((source != Source::None) ? source : chosen) {
     case Source::None:
-        break;
+        return F("SDK test codes and DAC");
 
     case Source::Factory:
-        return F("factory identity");
+        out = F("factory identity");
+        break;
 
     case Source::Own: {
-        String out(F("own identity (development DAC made on the board), serial "));
-        static constexpr char Hex[] = "0123456789abcdef";
-        for (const auto byte : stored.serial) {
-            out += Hex[byte >> 4];
-            out += Hex[byte & 0xf];
+        out = F("own identity (development DAC made on the board)");
+        if (stored.magic == Magic) {
+            out += F(", serial ");
+            static constexpr char Hex[] = "0123456789abcdef";
+            for (const auto byte : stored.serial) {
+                out += Hex[byte >> 4];
+                out += Hex[byte & 0xf];
+            }
         }
-        if (!installed) {
-            out += F(", not installed");
-        }
-        return out;
+        break;
+    }
+
+    case Source::Custom: {
+        char text[96];
+        snprintf_P(text, sizeof(text), PSTR("custom identity (uploaded DAC), VID 0x%04X PID 0x%04X, %s declaration"),
+            custom.vendor_id, custom.product_id, custom.declaration_length ? "uploaded" : "SDK example");
+        out = text;
+        break;
     }
     }
 
-    return F("SDK test codes and DAC");
+    if (fallback) {
+        out += F(", the chosen one is not available");
+    }
+
+    if ((source != Source::None) && (source != Source::Factory) && !installed) {
+        out += F(", not installed");
+    }
+
+    return out;
 }
 
 } // namespace identity
@@ -741,7 +1361,9 @@ String status() {
 // the Beken backend only: the ESP32 got the library's empty one and ran on the SDK test providers, its PAI request
 // failed every commissioning (10.0.5.66 2026-11-14: 'SendPAICertificateRequest' IM 0x01 FAILURE)
 extern "C" void matter_identity_install(void) {
+    espurna::matter::heap_step("identity");
     espurna::matter::identity::install();
+    espurna::matter::heap_step("identity done");
 }
 
 #endif // MATTER_SUPPORT

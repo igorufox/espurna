@@ -72,6 +72,8 @@ public:
     void setClientId(const char* id);
     void setCredentials(const char* user, const char* password);
     void setKeepAlive(uint16_t seconds);
+    // the largest message handed over whole (mqttBuffer), taken at the next connect
+    void setMessageMax(size_t size);
     void setCleanSession(bool clean);
     void setWill(const char* topic, uint8_t qos, bool retain, const char* payload);
     void setTls(const tls::Options& options);

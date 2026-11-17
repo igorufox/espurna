@@ -38,6 +38,10 @@ size_t systemFreeHeap() {
     return lt_heap_get_free();
 }
 
+size_t systemHeapMinimum() {
+    return lt_heap_get_min_free();
+}
+
 // .tcm output section of bk7231n_bsp.ld, which starts at the beginning of the 'tcm' region (0x003F0000,
 // 60 KiB - 512 in the LibreTiny template). Weak: other chips of the family have no such section
 extern "C" uint8_t _tcmbss_end[] __attribute__((weak));
@@ -607,6 +611,11 @@ bool dump(Print& print, bool check) {
 
 bool dump_empty(Print&) {
     return false;
+}
+
+bool cause(CrashCause& out) {
+    rtcmemCrashCause(out);
+    return true;
 }
 
 void setup() {

@@ -92,7 +92,8 @@ inline void hex(const uint8_t* data, size_t len, char* out) {
     *out = '\0';
 }
 
-constexpr size_t UrlMax { 256 };
+// the NSPanel's Open-Meteo request is ~290 bytes (nspanel_net.cpp, url[384]): 256 refused it as "invalid URL" (11-16)
+constexpr size_t UrlMax { 384 };
 constexpr size_t MessageMax { 96 };
 
 // --- the response and its body -----------------------------------------------------------------------------------

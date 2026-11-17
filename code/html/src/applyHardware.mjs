@@ -2,7 +2,7 @@ import { send, sendAction } from './connection.mjs';
 
 // One way to put a board description on the device: the device templates (templates.mjs) and the Tasmota import
 // (tasmota.mjs). The relay, button and LED keys of the old board go away (an old relay #3 must not stay on a
-// board with two), values longer than MaxValue are left out
+// board with two), values longer than MAX_VALUE are left out and named in the question
 
 export const PIN_KEYS = new Set([
     'relayGpio', 'relayResetGpio', 'btnGpio', 'ledGpio', 'ltDimmerGPIO', 'ltEnableGPIO',
@@ -50,22 +50,32 @@ const MAX_INDEX = 16;
 
 const RESET_PREFIXES = ['relay', 'btn', 'led'];
 
+// deletions per WebSocket frame: ~530 names in one frame were 7-8 KB, more than a small heap takes at once; 64 names
+// are ~1 KB
+export const DEL_CHUNK = 64;
+
 /**
  * @typedef {{[key: string]: string}} Settings
  */
 
 /**
- * The settings message: set what the description says, delete the relay / button / LED keys it does not
+ * The settings message: set what the description says, delete the relay / button / LED keys it does not: every
+ * indexed one (`relayGpio0..15`) and the one without an index (`relayDummy`, `btnAcFreq`, the global `btnRepDel`
+ * of indexedThenGlobal). `long`: the keys whose values are longer than MAX_VALUE, not sent
  * @param {Settings} settings
- * @returns {{set: Settings, del: string[]}}
+ * @returns {{set: Settings, del: string[], long: string[]}}
  */
 export function hardwareMessage(settings) {
     /** @type {Settings} */
     const set = {};
+    /** @type {string[]} */
+    const long = [];
     for (const [key, value] of Object.entries(settings ?? {})) {
         const text = String(value);
         if (text.length <= MAX_VALUE) {
             set[key] = text;
+        } else {
+            long.push(key);
         }
     }
 
@@ -75,15 +85,30 @@ export function hardwareMessage(settings) {
         if (!RESET_PREFIXES.some((prefix) => key.startsWith(prefix))) {
             continue;
         }
-        for (let index = 0; index < MAX_INDEX; ++index) {
-            const name = `${key}${index}`;
-            if (!(name in set)) {
+        for (const name of [key, ...Array.from({length: MAX_INDEX}, (_, index) => `${key}${index}`)]) {
+            if (!(name in set) && !long.includes(name)) {
                 del.push(name);
             }
         }
     }
 
-    return {set, del};
+    return {set, del, long};
+}
+
+/**
+ * The WebSocket frames of a settings message: the deletions in chunks of DEL_CHUNK first, the values last (the board
+ * deletes before it sets within a frame, the order of the frames keeps that)
+ * @param {{set: Settings, del: string[]}} message
+ * @returns {string[]}
+ */
+export function hardwareFrames({set, del}) {
+    /** @type {string[]} */
+    const out = [];
+    for (let at = 0; at < del.length; at += DEL_CHUNK) {
+        out.push(JSON.stringify({settings: {del: del.slice(at, at + DEL_CHUNK)}}));
+    }
+    out.push(JSON.stringify({settings: {set, del: []}}));
+    return out;
 }
 
 /**
@@ -92,11 +117,17 @@ export function hardwareMessage(settings) {
  * @param {string} question
  */
 export function applyHardware(settings, question) {
-    if (!window.confirm(`${question}\n\nNote: existing relay/button/LED settings will be replaced.`)) {
+    const message = hardwareMessage(settings);
+    const long = message.long.length
+        ? `\n\nNot sent, longer than ${MAX_VALUE} characters: ${message.long.join(', ')}.`
+        : '';
+    if (!window.confirm(`${question}\n\nNote: existing relay/button/LED settings will be replaced.${long}`)) {
         return false;
     }
 
-    send(JSON.stringify({settings: hardwareMessage(settings)}));
+    for (const frame of hardwareFrames(message)) {
+        send(frame);
+    }
 
     setTimeout(() => {
         if (window.confirm('Settings have been sent to the device!\n\nReboot now to apply?')) {

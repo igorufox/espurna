@@ -1273,6 +1273,29 @@ size_t systemInitialFreeHeap() {
     return value;
 }
 
+void systemHeapStep(const char* step) {
+    static size_t logged { 0 };           // the minimum of the last line, 0 - none yet (the initial free heap)
+    static const char* previous { "boot" };
+
+    const auto lowest = systemHeapMinimum();
+    const auto reference = logged ? logged : systemInitialFreeHeap();
+    if ((lowest + HeapStepDrop) < reference) {
+        const auto stats = systemHeapStats();
+        DEBUG_MSG_P(PSTR("[HEAP] %s: min %u (-%u since '%s'), free %u, block %u\n"),
+            step, static_cast<unsigned>(lowest), static_cast<unsigned>(reference - lowest), previous,
+            static_cast<unsigned>(stats.available), static_cast<unsigned>(stats.usable));
+        logged = lowest;
+    }
+
+    previous = step;
+}
+
+void systemHeapStepAt(uintptr_t address) {
+    static char name[24];
+    snprintf_P(name, sizeof(name), PSTR("loop @0x%08x"), static_cast<unsigned>(address));
+    systemHeapStep(name);
+}
+
 espurna::StringView systemChipId() {
     static const String out = ([]() {
         uint8_t mac[6];
@@ -1343,6 +1366,16 @@ bool pendingDeferredReset() {
 
 void systemOnResetHold(SystemResetHold hold) {
     espurna::hold::add(hold);
+}
+
+bool systemHoldActive() {
+    for (auto hold : espurna::hold::holds) {
+        if (hold && hold()) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 uint32_t systemResetReason() {
@@ -1436,6 +1469,13 @@ String systemPassword() {
 
 bool systemPasswordEquals(espurna::StringView other) {
     return espurna::system::password_equals(other);
+}
+
+// the default password is still on: the WebUI (ws_server.cpp) and the head page (head_setup.cpp) ask for a new one first
+bool systemPasswordMustChange() {
+    return (USE_PASSWORD && WEB_FORCE_PASS_CHANGE)
+        ? equalsConstantTime(systemPassword(), String(systemDefaultPassword()))
+        : false;
 }
 
 String systemHostname() {

@@ -17,6 +17,8 @@ Chip facts are in arch/<chip>/system_<chip>.cpp, common part of every chip is in
 #endif
 
 #include <algorithm>
+#include <cstdlib>
+#include <new>
 #include <vector>
 
 // -----------------------------------------------------------------------------
@@ -581,4 +583,24 @@ StringSumHelper convert(const String& v) {
 } // namespace internal
 } // namespace settings
 } // namespace espurna
+
+// -----------------------------------------------------------------------------
+// NOTHROW OPERATOR NEW
+// -----------------------------------------------------------------------------
+
+// new (std::nothrow) of libstdc++ (GCC 9 and later) calls the throwing operator new inside a try. With the heap out
+// the throw finds no memory for the exception either (__cxa_allocate_exception, no emergency pool), so the board ends
+// in std::terminate -> abort instead of getting a nullptr: NSPanel 10.0.4.212 2026-11-16 (W83, the core dump: the mdns
+// module's new[](nothrow) <- loop()); the BK72xx libstdc++_nano new calls abort(), which spins until the watchdog
+// (10.0.5.139 2026-11-14, W1). Here nothrow means nothrow: malloc, nullptr when it fails. The head defines them and
+// exports them (modules_exports.txt), the modules link against the head's (scripts/module_link.py), never a copy of
+// libstdc++. ESP8266: its core (abi.cpp, no exceptions) has the same malloc ones already, a second definition would
+// clash with them. The aligned variants (std::align_val_t) are not used by the head or any module
+void* operator new(size_t size, const std::nothrow_t&) noexcept {
+    return malloc(size ? size : 1);
+}
+
+void* operator new[](size_t size, const std::nothrow_t&) noexcept {
+    return malloc(size ? size : 1);
+}
 

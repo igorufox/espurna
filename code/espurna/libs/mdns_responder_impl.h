@@ -584,6 +584,10 @@ void answer(const State& self, const std::vector<String>& name, uint16_t type,
 
 // --- sending (lwIP's context) ----------------------------------------------------------------------------------------
 
+// a failed reply is logged once until one goes out again: with the heap out every question of the LAN failed and
+// logged from lwIP's task, into the debug queue of the loop (W72)
+bool send_failing { false };
+
 void sendTo(const uint8_t* data, size_t size, const ip_addr_t* address, uint16_t port, netif* interface) {
     if (!state().pcb || !interface || !size) {
         return;
@@ -591,14 +595,22 @@ void sendTo(const uint8_t* data, size_t size, const ip_addr_t* address, uint16_t
 
     auto* buffer = pbuf_alloc(PBUF_TRANSPORT, size, PBUF_RAM);
     if (!buffer) {
-        MDNS_LOG("[MDNS] No memory for a reply of %u bytes\n", static_cast<unsigned>(size));
+        if (!send_failing) {
+            MDNS_LOG("[MDNS] No memory for a reply of %u bytes\n", static_cast<unsigned>(size));
+        }
+        send_failing = true;
         return;
     }
 
     std::memcpy(buffer->payload, data, size);
     const auto sent = udp_sendto_if(state().pcb, buffer, address, port, interface);
     if (sent != ERR_OK) {
-        MDNS_LOG("[MDNS] Send to %s failed: %d\n", address_text(address).text, static_cast<int>(sent));
+        if (!send_failing) {
+            MDNS_LOG("[MDNS] Send to %s failed: %d\n", address_text(address).text, static_cast<int>(sent));
+        }
+        send_failing = true;
+    } else {
+        send_failing = false;
     }
     pbuf_free(buffer);
 }

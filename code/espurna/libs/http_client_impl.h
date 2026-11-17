@@ -21,6 +21,9 @@ never what the client does (libs/net_impl.h lists them). The connection is libs/
 #include <strings.h>
 #include <new>
 
+// system.h: a Matter controller commissioning holds back what needs a lot of heap (W81)
+bool systemHoldActive();
+
 #if defined(ESP8266)
 #include <pgmspace.h>
 #endif
@@ -209,6 +212,13 @@ private:
         Target target;
         if (!parse(_url, target)) {
             finish(false, PSTR("invalid URL"));
+            return false;
+        }
+
+        // no TLS session (40-65 KB) while a Matter controller commissions (systemHoldActive(), W81): the caller tries
+        // again later (the weather, the url tiles), the TFT upload says why
+        if (target.https && systemHoldActive()) {
+            finish(false, PSTR("busy: Matter pairing, TLS waits"));
             return false;
         }
 
