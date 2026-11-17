@@ -1,9 +1,11 @@
 /*
 
-NSPANEL QR MODULE (nspanelqr): the Matter pairing QR code on the NSPanel display
+NSPANEL QR (part of the nspanel module, the owner 2026-11-17: not a module of its own): the Matter pairing QR code on
+the NSPanel display
 
-Needs the nspanel and the matter module and is linked against both directly (config/head.h, the needs column;
-espurna/modules_provided.txt): nspanel stays without matter and matter without nspanel, this module is the link.
+The matter module is called through the head (modules_api.cpp, the provides column of matter in config/head.h): the
+nspanel module does not need it; without it there is no window and no codes, the QR never shows and "matter-pair"
+logs that Matter is not started.
 
 The matter module gives the codes (matterPairingCodes()) and whether the pairing window is open (matterWindowOpen()),
 the OHpanel driver of the nspanel module the screen (nspanelScreenShow(), nspanel.h). The QR matrix (ricmoo/QRCode,
@@ -26,7 +28,7 @@ MATTER panel of the WebUI does
 
 #include "espurna.h"
 
-#if NSPANEL_SUPPORT && MATTER_SUPPORT
+#if NSPANEL_SUPPORT
 
 #include "espurna_matter.h"
 #include "nspanel.h"
@@ -351,4 +353,4 @@ void nspanelQrSetup() {
     espurnaRegisterLoop(espurna::nspanel::qr::loop);
 }
 
-#endif // NSPANEL_SUPPORT && MATTER_SUPPORT
+#endif // NSPANEL_SUPPORT

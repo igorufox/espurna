@@ -20,6 +20,8 @@ WEBSOCKET - the implementation (libs/websocket.h), part of libs/net_impl.h. No A
 // core's prebuilt libbearssl.a is taken out of the link, scripts/pio_main.py)
 #include <bearssl.h>
 
+size_t systemFreeHeap();
+
 namespace espurna {
 namespace websocket {
 namespace {
@@ -235,6 +237,14 @@ public:
     bool text(uint32_t id, const char* data, size_t len) {
         auto* client = find(id);
         if (!client || client->closing || (client->queued() + len + 10 > QueueMax)) {
+            return false;
+        }
+
+        // behind what is still queued, only while the heap keeps QueueHeapFree: a client that connects while the
+        // board is busy (the log of the boot sent to a fresh WebSocket while Matter starts) filled up to QueueMax per
+        // client and took the free heap down to 2.5 KB (NSPanel 2026-11-17). The first message of an empty queue
+        // always goes: nothing stalls
+        if (client->queued() && (systemFreeHeap() < (len + 10 + QueueHeapFree))) {
             return false;
         }
 

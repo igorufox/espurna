@@ -834,3 +834,12 @@ _Z15modulesDataViewPKc
 # the heap checkpoints of the modules (W88): the lowest free heap since boot, the step line
 _Z17systemHeapMinimumv
 _Z14systemHeapStepPKc
+fal_partition_erase beken
+fal_partition_read beken
+fal_partition_write beken
+_Z16matterWindowOpenv esp32
+_Z17matterWindowStartv esp32
+_Z18matterPairingCodesPcjS_j esp32
+_Z16matterWindowOpenv beken
+_Z17matterWindowStartv beken
+_Z18matterPairingCodesPcjS_j beken

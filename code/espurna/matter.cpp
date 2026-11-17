@@ -605,8 +605,9 @@ void wifi_event(espurna::wifi::Event event) {
 PROGMEM_STRING(Status, "MATTER");
 
 void command_status(::terminal::CommandContext&& ctx) {
-    ctx.output.printf_P(PSTR("started: %s, fabrics: %d, heap: %u, lowest since boot: %u\n"),
-        started ? "yes" : "no", fabrics(), systemFreeHeap(), systemHeapMinimum());
+    ctx.output.printf_P(PSTR("started: %s, fabrics: %d, window: %s, pairing: %s, heap: %u, lowest since boot: %u\n"),
+        started ? "yes" : "no", fabrics(), window_open ? "open" : "closed", commissioning_active ? "yes" : "no",
+        systemFreeHeap(), systemHeapMinimum());
 
     Controller list[MaxControllers];
     const auto count = controllers(list, MaxControllers);
@@ -779,6 +780,9 @@ void onData(JsonObject& root) {
     root["matterFabrics"] = matter::fabrics();
     root["matterProduct"] = product();
     root["matterWindow"] = started ? window_left() : 0;
+    // the pairing needs ~15 KB of heap: the panel warns below it (W93)
+    root["matterHeap"] = systemFreeHeap();
+    root["matterHeapMin"] = systemHeapMinimum();
 
     // [[#, vendor id, "node id (hex)", "label"], ...]
     JsonArray& list = root.createNestedArray("matterControllers");
@@ -1130,13 +1134,13 @@ bool matterStarted() {
     return espurna::matter::started;
 }
 
-// For the modules that need this one (nspanelqr: the pairing QR on the NSPanel display), linked directly
-// (espurna/modules_provided.txt). The pairing window is open: the basic one, or one a controller opened
+// For the other modules through the head (modules_api.cpp; the nspanel module: the pairing QR on its display). The
+// pairing window is open: the basic one, or one a controller opened
 bool matterWindowOpen() {
     return espurna::matter::started && (espurna::matter::window_left() > 0);
 }
 
-// Opens the basic pairing window, as MATTER.WINDOW and the button of the MATTER panel do (nspanelqr: the "matter-pair"
+// Opens the basic pairing window, as MATTER.WINDOW and the button of the MATTER panel do (the nspanel module: the "matter-pair"
 // tile of the NSPanel). It opens in the Matter task, matterWindowOpen() follows. false: Matter is not started
 bool matterWindowStart() {
     if (!espurna::matter::started) {

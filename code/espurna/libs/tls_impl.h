@@ -550,6 +550,8 @@ private:
         for (;;) {
             const auto state = br_ssl_engine_current_state(eng);
             if (state & BR_SSL_CLOSED) {
+                // why it closed, for the caller (the HTTP client asks once more after BR_ERR_TOO_LARGE)
+                _tls_error = br_ssl_engine_last_error(eng);
                 // the handshake went with small records, the data then came in a bigger one: the server takes none,
                 // the next connection (the caller's retry) gets full records
                 if (_auto && (_state == State::Ready) && AutoSizes[_step]

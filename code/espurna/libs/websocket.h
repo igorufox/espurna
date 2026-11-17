@@ -26,6 +26,8 @@ namespace websocket {
 
 constexpr size_t MessageMax { 4096 };
 constexpr size_t QueueMax { 16 * 1024 };
+// the free heap a message behind others in a client's queue must leave (libs/websocket_impl.h text())
+constexpr size_t QueueHeapFree { 8 * 1024 };
 
 enum class Event {
     Connect,

@@ -145,6 +145,7 @@ public:
         _sink = &sink;
         _done = std::move(done);
         _redirects = 0;
+        _again = false;
         _result = Result{};
 
         if (!request.url || (strlen(request.url) >= sizeof(_url))) {
@@ -400,6 +401,17 @@ private:
             uint8_t c;
             if (!appRead(&c, 1)) {
                 if (drained()) {
+                    // the server took small records in the handshake and answered with a bigger one: the TLS layer
+                    // knows it now (full records for this host), the same request once more (raw.githubusercontent.com,
+                    // every first request after a boot failed with "no HTTP response", 2026-11-17)
+                    if (_target.https && !_again && !_head.status && !_head_len
+                        && (_stream.tlsError() == BR_ERR_TOO_LARGE))
+                    {
+                        _again = true;
+                        NET_LOG("%s: its records are bigger than asked, connecting again", _target.host);
+                        connect();
+                        return;
+                    }
                     finish(false, PSTR("no HTTP response"));
                 }
                 return;
@@ -660,6 +672,7 @@ private:
         _request.reset();
     }
 
+    bool _again { false };  // asked once more after the server's records came bigger than asked
     State _state { State::Idle };
     char _url[UrlMax] {};
     char _sha256[65] {};

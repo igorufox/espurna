@@ -109,7 +109,7 @@ export async function post(url, body, timeout = 0) {
         response = await fetch(url, options);
     } catch (error) {
         if (error instanceof Error && (error.name === 'TimeoutError')) {
-            throw new Error(`${new URL(url, 'http://x/').pathname}: no answer in ${Math.round(timeout / 1000)} s`);
+            throw new Error(`${new URL(url, 'http://x/').pathname}: no answer in ${Math.round(timeout / 1000)} s`, { cause: error });
         }
         throw error;
     }

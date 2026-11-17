@@ -1,5 +1,5 @@
-import { expect, test } from 'vitest';
-import { identityConfirmText, identityOptions, pemToDer, toBase64, vendorName, windowText } from '../src/matter.mjs';
+import { describe, expect, test } from 'vitest';
+import { heapLine, PAIRING_HEAP, identityConfirmText, identityOptions, pemToDer, toBase64, vendorName, windowText } from '../src/matter.mjs';
 
 test('identity: PEM becomes DER, DER and raw key bytes stay', () => {
     const der = new Uint8Array([0x30, 0x03, 0x02, 0x01, 0x01]);
@@ -48,4 +48,19 @@ test('test vendor ids name the usual self-made controllers', () => {
 
 test('other vendors as a number', () => {
     expect(vendorName(0x10)).toBe("Vendor 0x0010");
+});
+
+
+describe('heapLine (W93)', () => {
+    test('enough memory: no warning', () => {
+        const {text, low} = heapLine(40 * 1024, 20 * 1024);
+        expect(low).toBe(false);
+        expect(text).toContain('Free memory 40 KB');
+        expect(text).toContain('lowest since boot 20 KB');
+    });
+    test('below what a pairing needs: the warning', () => {
+        const {text, low} = heapLine(PAIRING_HEAP - 1, 2048);
+        expect(low).toBe(true);
+        expect(text).toContain('may fail');
+    });
 });

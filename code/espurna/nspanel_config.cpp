@@ -874,7 +874,7 @@ bool parseItem(JsonObject& item_obj, Draft& out, DraftItem& item, std::vector<Pe
     const bool open = item_obj.containsKey("open") || item_obj.containsKey("page");
 
     // "action" other than toggle / on / off: the action of another module (nspanelAction(), nspanel.h, e.g.
-    // "matter-pair" of nspanelqr), a button of its own. Registered or not is known only at the tap: the module may be
+    // "matter-pair" of nspanelqr.cpp), a button of its own. Registered or not is known only at the tap: the module may be
     // installed later
     const char* action_name = item_obj["action"].as<const char*>();
     Action plain_action;

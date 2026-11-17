@@ -1143,7 +1143,19 @@ void terminalInfo(espurna::terminal::CommandContext&& ctx) {
 // nspanel.flash <http(s)://.../file.tft> [baud]
 void terminalFlash(espurna::terminal::CommandContext&& ctx) {
     if ((ctx.argv.size() < 2) || (ctx.argv.size() > 3)) {
-        terminalError(ctx, F("nspanel.flash <http(s)://.../nspanel.tft> [baud, default 921600]"));
+        terminalError(ctx, F("nspanel.flash <http(s)://.../nspanel.tft> [baud, default 921600 | check]"));
+        return;
+    }
+
+    // nspanel.flash <url> check: the download alone, its CRC-32 in the log, the display left alone
+    if ((ctx.argv.size() == 3) && (ctx.argv[2] == F("check"))) {
+        String error;
+        if (!flash::check(ctx.argv[1], error)) {
+            terminalError(ctx, error);
+            return;
+        }
+        ctx.output.print(F("TFT download check started, the CRC-32 follows in the log and in nspanel.info\n"));
+        terminalOK(ctx);
         return;
     }
 

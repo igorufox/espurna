@@ -101,9 +101,8 @@ light | light.cpp.o module_light.cpp.o | | lightBlue lightBrightness lightBright
 light_pwm | module_light_pwm.cpp.o | pwm.cpp.o | | light
 light_my92xx | module_light_my92xx.cpp.o | | | light
 rf | rfbridge.cpp.o module_rf.cpp.o | | rfbSend rfbOnCode
-matter | matter.cpp.o matter_app.cpp.o matter_identity.cpp.o module_matter.cpp.o | | | mdns
-nspanel | nspanel.cpp.o nspanel_config.cpp.o nspanel_storage.cpp.o nspanel_net.cpp.o nspanel_link.cpp.o nspanel_flash.cpp.o nspanel_web.cpp.o nspanel_lovelace.cpp.o nspanel_ohpanel.cpp.o module_nspanel.cpp.o | | | uart tls http | 32768
-nspanelqr | nspanelqr.cpp.o module_nspanelqr.cpp.o | | | nspanel matter
+matter | matter.cpp.o matter_app.cpp.o matter_identity.cpp.o module_matter.cpp.o | | matterWindowOpen matterWindowStart matterPairingCodes | mdns
+nspanel | nspanel.cpp.o nspanel_config.cpp.o nspanel_storage.cpp.o nspanel_net.cpp.o nspanel_link.cpp.o nspanel_flash.cpp.o nspanel_web.cpp.o nspanel_lovelace.cpp.o nspanel_ohpanel.cpp.o nspanelqr.cpp.o module_nspanel.cpp.o | | | uart tls http | 32768
 uart | uart.cpp.o module_uart.cpp.o | | uartPort uartClaim uartClaimed uartOnClaim uartOpen uartBaud
 tls | module_tls.cpp.o | |
 http | http.cpp.o module_http.cpp.o | |

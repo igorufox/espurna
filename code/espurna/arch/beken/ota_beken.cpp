@@ -178,8 +178,8 @@ const char* own_begin(const uint8_t* data, size_t len) {
         return PSTR("ERROR: The image does not fit the download partition");
     }
 
-    // nothing is erased when the flash API of this head does not reach 'download' (the FAL 'root' partition)
-    if (!fal_root_part || ((layout.download_offset + length) > static_cast<uint32_t>(fal_root_part->len))) {
+    // nothing is erased when the flash chip does not reach the end of 'download' (system_beken.cpp, __wrap_lt_flash_*)
+    if ((layout.download_offset + length) > lt_flash_get_size()) {
         return PSTR("ERROR: The download partition is past the flash this head can write");
     }
 

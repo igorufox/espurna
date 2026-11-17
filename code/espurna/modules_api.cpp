@@ -306,6 +306,25 @@ void rfbOnCode(RfbCodeHandler handler) {
     }
 }
 
+// --- matter module, called by the nspanel module (the pairing QR code on the display); nothing without it
+
+#include "espurna_matter.h"
+
+bool matterWindowOpen() {
+    const auto func = api<decltype(matterWindowOpen)>(Api::MatterWindowOpen);
+    return func ? func() : false;
+}
+
+bool matterWindowStart() {
+    const auto func = api<decltype(matterWindowStart)>(Api::MatterWindowStart);
+    return func ? func() : false;
+}
+
+bool matterPairingCodes(char* qr, size_t qr_size, char* manual, size_t manual_size) {
+    const auto func = api<decltype(matterPairingCodes)>(Api::MatterPairingCodes);
+    return func ? func(qr, qr_size, manual, manual_size) : false;
+}
+
 // --- Domoticz and Thingspeak modules, called by the sensors module
 
 void domoticzSendMagnitude(unsigned char index, const espurna::sensor::Value& value) {

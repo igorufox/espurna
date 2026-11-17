@@ -23,6 +23,10 @@ ESPURNA_MODULE(matter, "matter", 60) {
     modulesUi("matter", ui_matter_data, sizeof(ui_matter_data));
 #endif
 
+    modulesProvide(espurna::modules::Api::MatterWindowOpen, &matterWindowOpen);
+    modulesProvide(espurna::modules::Api::MatterWindowStart, &matterWindowStart);
+    modulesProvide(espurna::modules::Api::MatterPairingCodes, &matterPairingCodes);
+
     matterSetup();
 }
 

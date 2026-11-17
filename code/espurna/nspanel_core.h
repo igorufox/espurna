@@ -570,6 +570,8 @@ namespace flash {
 
 bool busy();
 bool start(const String& link, uint32_t rate, String& out);
+// the file the way an upload takes it, into a CRC-32: nothing goes to the display
+bool check(const String& link, String& out);
 void loop();
 void info(Print& out);
 

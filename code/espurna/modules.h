@@ -141,6 +141,9 @@ enum class Api : size_t {
     DisplayOn,
     RfbSend,
     RfbOnCode,
+    MatterWindowOpen,
+    MatterWindowStart,
+    MatterPairingCodes,
     Count,
 };
 

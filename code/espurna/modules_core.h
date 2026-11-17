@@ -332,9 +332,6 @@ const char* imageWrite(Upload& up, uint32_t offset, uint8_t* data, size_t size, 
 const char* imageBegin(Upload& up);
 void imageDone(uint32_t slot, uint32_t size);
 
-// the image can be rewritten in its slot at boot when its bases moved. Beken: no (its 34 byte blocks cross the
-// sectors, a rewrite needs the whole image in RAM): the module stays off, Apply again. Default: yes
-bool rewritable();
 
 // the statics (.data + .bss) and IRAM code of the modules, placed at each Apply, no reserve kept: first the chip's pool
 // at a fixed address (Beken: the free data TCM; ESP8266: the IRAM after the head's code, module code first, 32-bit

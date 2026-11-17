@@ -1423,15 +1423,19 @@ const char* packageFinish(Upload& up, Entry& out) {
 }
 
 // --- relocation at boot: the bases of a module moved since the Apply (ESP32: the maps of the flash came out
-// elsewhere, every chip: the heap block). The image rewritten in its slot from its relocation maps, chunk by chunk
+// elsewhere, every chip: the heap block). The image rewritten in its slot from its relocation maps, chunk by chunk.
+// One chunk read ahead: the write of a chunk erases the sector its end lies in, and on the Beken (34 bytes per 32
+// across the sectors) the rest of that sector is the start of the next chunk (W92 2026-11-17: the heap block of the
+// next boot came out elsewhere, the Beken refused to relocate, 14 modules "not relocated for this boot")
+
+struct ChunkAhead {
+    alignas(4) uint8_t data[ChunkSize];
+};
 
 const char* relocateEntry(Entry& entry, const uint32_t (&now)[3], const uint32_t (&provider)[LinkProviders][4]) {
-    if (!arch::rewritable()) {
-        return PSTR("moved since the Apply: Apply again");
-    }
-
     auto up = boxed<Upload>();
-    if (!up) {
+    auto ahead = boxed<ChunkAhead>();
+    if (!up || !ahead) {
         return PSTR("no memory to relocate");
     }
 
@@ -1444,15 +1448,52 @@ const char* relocateEntry(Entry& entry, const uint32_t (&now)[3], const uint32_t
     if (!arch::rawRead(links_at, &links, 4) || (links == 0xffffffff)) {
         links = 0;
     }
+    // every link checked before the first write: a refusal half way left an image half rewritten ("crc", 214
+    // 2026-11-17). A branch into a module it needs (Beken BL into its code) moves only by the flash deltas, which the
+    // boot does not change on the Beken: nothing to do then; the words of the links move by the provider's bases
+    for (uint32_t index = 0; index < links; ++index) {
+        uint32_t record;
+        if (!arch::rawRead(links_at + 4 + (index * 4), &record, 4)) {
+            return PSTR("relocate: read");
+        }
+        const uint32_t kind = record >> 24;
+        if ((kind & ~0xfu) == LinkWord) {
+            continue;
+        }
+        if (((kind & ~0xfu) != LinkBranch) || (delta[1] != provider[(kind >> 2) & 3][1])) {
+            return PSTR("moved since the Apply: Apply again");
+        }
+    }
+
     up->slot = entry.offset;
     up->slot_size = entry.slot;
     up->header.image_size = entry.size;
     up->image_crc = 0;
+    // where the image is written (the Beken writes at bases[BaseFlash] + offset: left at zero, the relocation of
+    // 2026-11-17 wrote over the bootloader of 214) and what its branches move by (none: a slot stays where it is)
+    std::memcpy(up->bases, now, sizeof(up->bases));
+    std::memcpy(up->delta, delta, sizeof(up->delta));
+    {
+        const auto* error = arch::imageBegin(*up);
+        if (error) {
+            return error;
+        }
+    }
+
+    if (!arch::imageRead(at, ahead->data, std::min<uint32_t>(ChunkSize, entry.size))) {
+        return PSTR("relocate: read");
+    }
+
     for (uint32_t done = 0; done < entry.size; done += ChunkSize) {
         const uint32_t size = std::min<uint32_t>(ChunkSize, entry.size - done);
-        if (!arch::imageRead(at + done, up->chunk, size)
-            || !arch::rawRead(maps + ((done / ChunkSize) * MapSize), up->map, MapSize))
-        {
+        std::memcpy(up->chunk, ahead->data, size);
+        const uint32_t next = done + ChunkSize;
+        if (next < entry.size) {
+            if (!arch::imageRead(at + next, ahead->data, std::min<uint32_t>(ChunkSize, entry.size - next))) {
+                return PSTR("relocate: read");
+            }
+        }
+        if (!arch::rawRead(maps + ((done / ChunkSize) * MapSize), up->map, MapSize)) {
             return PSTR("relocate: read");
         }
 
@@ -1470,7 +1511,7 @@ const char* relocateEntry(Entry& entry, const uint32_t (&now)[3], const uint32_t
                 continue;
             }
             if ((kind & ~0xfu) != LinkWord) {
-                return PSTR("moved since the Apply: Apply again");
+                continue;   // a branch that does not move (checked above)
             }
             if (!linkWord(up->chunk, size, offset - done, provider[(kind >> 2) & 3][kind & 3])) {
                 return PSTR("relocate: bad link");
@@ -1529,10 +1570,6 @@ __attribute__((weak)) void imageDone(uint32_t, uint32_t) {
 
 __attribute__((weak)) uint32_t dataView(uint32_t) {
     return 0;
-}
-
-__attribute__((weak)) bool rewritable() {
-    return true;
 }
 
 __attribute__((weak)) void crashNow() {
@@ -2326,18 +2363,29 @@ void onApplyData(WebRequest& request, const char*, size_t index, const uint8_t* 
         // the server checks), or the query
         const String names = webParam(request, "names");
         int from = 0;
-        while ((from < static_cast<int>(names.length())) && (applying->names_count < DirectoryEntries)) {
+        // more names than the directory holds: refused, not cut to the first ones (W91 2026-11-17: 90 names, the
+        // first 24 applied and "200 OK")
+        bool too_many { false };
+        while (from < static_cast<int>(names.length())) {
             int to = names.indexOf(',', from);
             if (to < 0) {
                 to = names.length();
             }
             const String name = names.substring(from, to);
             if (name.length()) {
+                if (applying->names_count >= DirectoryEntries) {
+                    too_many = true;
+                    break;
+                }
                 std::strncpy(applying->names[applying->names_count], name.c_str(),
                     sizeof(applying->names[0]) - 1);
                 ++applying->names_count;
             }
             from = to + 1;
+        }
+
+        if (too_many && !applying->error) {
+            applying->error = PSTR("more modules than one Apply holds (24)");
         }
 
         // module code runs from the area: it is rewritten only at a boot that started none
@@ -2569,7 +2617,15 @@ void onStatus(WebRequest& request) {
         jsonField(out, F("iram"), entry.code_size);
         out += F(",\"state\":\"");
         out += stateName(statusOf(entry));
-        out += F("\"}");
+        out += '"';
+        // why a module did not start (broken, stale): the status had it, the page did not (2026-11-17 214: 18 of 24
+        // broken without a word)
+        if (const auto* reason = statusOf(entry).reason) {
+            out += F(",\"reason\":\"");
+            out += FPSTR(reason);
+            out += '"';
+        }
+        out += '}';
     }
     out += ']';
 
@@ -2708,6 +2764,7 @@ PROGMEM_STRING(Remove, "MODULES.REMOVE");
 PROGMEM_STRING(On, "MODULES.ON");
 PROGMEM_STRING(TestLowHeap, "MODULES.TEST.LOWHEAP");
 PROGMEM_STRING(TestCrash, "MODULES.TEST.CRASH");
+PROGMEM_STRING(TestAbort, "MODULES.TEST.ABORT");
 PROGMEM_STRING(TestStall, "MODULES.TEST.STALL");
 PROGMEM_STRING(Enable, "MODULES.ENABLE");
 PROGMEM_STRING(Disable, "MODULES.DISABLE");
@@ -2746,6 +2803,13 @@ void commandTestCrash(::terminal::CommandContext&& ctx) {
     terminalOK(ctx);
     ctx.output.flush();
     arch::crashNow();
+}
+
+// abort(): what a throwing new on an empty heap ends in (W83: ESP32 core dump, Beken a crash record of kind Abort)
+void commandTestAbort(::terminal::CommandContext&& ctx) {
+    terminalOK(ctx);
+    ctx.output.flush();
+    abort();
 }
 
 // the loop stops for 15 s without feeding the watchdog: what a hung loop leaves behind (the reset reason, Beken:
@@ -2837,6 +2901,7 @@ static constexpr ::terminal::Command Commands[] PROGMEM {
     {On, commandOn},
     {TestLowHeap, commandTestLowHeap},
     {TestCrash, commandTestCrash},
+    {TestAbort, commandTestAbort},
     {TestStall, commandTestStall},
     {Enable, commandEnable},
     {Disable, commandDisable},

@@ -128,8 +128,8 @@ void matterSetup();
 
 bool matterStarted();
 
-// For the modules that need the matter module (nspanelqr), linked against it directly (espurna/modules_provided.txt).
-// The pairing window is open
+// For the other modules (the nspanel module: the pairing QR), through the head (modules_api.cpp): false / nothing
+// without the matter module. The pairing window is open
 bool matterWindowOpen();
 
 // Opens the basic pairing window (MATTER.WINDOW); false while Matter is not started

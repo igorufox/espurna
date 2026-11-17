@@ -503,7 +503,7 @@ enum class Screen {
     Blank,
     Settings,    // built-in settings tiles (buttons page), when no "type": "settings" page exists
     Thermostat,  // thermostat page of one item
-    Other,       // the screen of another module on the blank page (nspanelScreenShow(): the Matter QR, nspanelqr)
+    Other,       // the screen of another module on the blank page (nspanelScreenShow(): the Matter QR, nspanelqr.cpp)
 };
 
 const char* screenName(Screen value) {

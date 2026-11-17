@@ -524,25 +524,8 @@ void sdk::enable_loop_wdt() {
 
 namespace chip {
 
-// One head for both bootloaders, built with the 2 MiB Tuya layout: FLASH_LENGTH, and with it the FAL 'root' partition
-// every lt_flash_*() goes through, ends at 2 MiB. On a 4 MiB board (the Quectel layout) FAL refused all past it: the
-// 'download' partition at 0x286000 (the head's RBL, the module area in it) and Matter's factory data at 0x3E0000 -
-// "flash erase" of every Apply on 10.0.4.214 (2026-11-16). FAL checks the partition length only, then the driver
-void flash_root() {
-    static fal_partition root;
-    const uint32_t size = lt_flash_get_size();
-    if (fal_root_part && (size > static_cast<uint32_t>(fal_root_part->len))) {
-        root = *fal_root_part;
-        root.len = size;
-        fal_root_part = &root;
-    }
-}
-
 void pre_setup() {
     loopTaskHandle = xTaskGetCurrentTaskHandle();
-
-    // before anything reads or writes the flash past 2 MiB
-    flash_root();
 
     // The TCP servers (libs/tcp.h: web, telnet) are started before WiFi is, make sure the TCP/IP stack is up.
     // LibreTiny only initializes the SDK (lwip tcpip thread included) on the first WiFi.mode()
@@ -627,3 +610,60 @@ void setup() {
 } // namespace debug
 } // namespace espurna
 
+
+// One head for both bootloaders, built with the 2 MiB Tuya layout: FLASH_LENGTH, and with it the FAL 'root' partition
+// every lt_flash_*() goes through, ends at 2 MiB. On a 4 MiB board (the Quectel layout) FAL refuses all past it: the
+// 'download' partition at 0x286000, the module area and Matter's factory data at 0x3E0000. A longer copy of the 'root'
+// partition does not help: FAL finds the flash device by the index of the partition in its own table, and a copy
+// outside of it gave a garbage device (asserts are off) - every Apply on 10.0.4.214 ended with "flash erase 0x21F000"
+// (2026-11-16, the 2026-11-17 rehearsal). The head's lt_flash_*() go to the flash device itself (-Wl,--wrap in
+// platformio_beken.ini), up to the size the flash chip reports; FAL and FlashDB keep their own partitions
+extern "C" {
+
+extern const struct fal_flash_dev flash0;
+
+namespace {
+
+uint32_t flash_size() {
+    static uint32_t size { 0 };
+    if (!size) {
+        size = lt_flash_get_size();
+    }
+
+    return size;
+}
+
+bool flash_inside(uint32_t offset, size_t length) {
+    const uint32_t size = flash_size();
+    return (offset <= size) && (length <= (size - offset));
+}
+
+} // namespace
+
+bool __wrap_lt_flash_erase(uint32_t offset, size_t length) {
+    return length && flash_inside(offset, length) && (flash0.ops.erase(offset, length) >= 0);
+}
+
+bool __wrap_lt_flash_erase_block(uint32_t offset) {
+    return __wrap_lt_flash_erase(offset, 1);
+}
+
+uint32_t __wrap_lt_flash_read(uint32_t offset, uint8_t* data, size_t length) {
+    if (!flash_inside(offset, length)) {
+        return 0;
+    }
+
+    const int read = flash0.ops.read(offset, data, length);
+    return (read > 0) ? static_cast<uint32_t>(read) : 0;
+}
+
+uint32_t __wrap_lt_flash_write(uint32_t offset, const uint8_t* data, size_t length) {
+    if (!flash_inside(offset, length)) {
+        return 0;
+    }
+
+    const int written = flash0.ops.write(offset, data, length);
+    return (written > 0) ? static_cast<uint32_t>(written) : 0;
+}
+
+} // extern "C"

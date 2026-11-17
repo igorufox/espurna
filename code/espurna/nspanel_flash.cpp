@@ -54,7 +54,11 @@ namespace {
 
 constexpr size_t Block { 4096 };
 constexpr size_t HeapMin { 30000 };
-constexpr size_t HeapMinTls { 65000 };
+// a TLS session with the record size cut by MFLN (libs/tls_impl.h asks for 512, then 4096: GitHub takes either) is
+// ~15-20 KB; 65000 was the full 16 KB record and its engine, and refused the screen on the NSPanel at 57 KB free (W78,
+// the owner 2026-11-17: lower it)
+constexpr size_t HeapMinTls { 40000 };
+constexpr uint32_t RunBudgetMs { 30 };
 constexpr uint32_t ConnectMs { 1000 };
 constexpr uint32_t SettleMs { 250 };
 constexpr uint32_t ReadyMs { 30000 };
@@ -173,6 +177,22 @@ size_t fill { 0 };          // what HTTP gave of it
 size_t written { 0 };       // what went into the UART
 int retries { 0 };
 bool first { true };
+
+// `nspanel.flash <url> check`: the file the same way as an upload, into a CRC-32 instead of the display (nothing is sent
+// to it, it is not power-cycled): is what the panel takes the file? (the screen stayed black after uploads that said
+// "ok", NSPanel 2026-11-17)
+bool check_only { false };
+uint32_t check_crc { 0 };
+
+uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
+    for (size_t n = 0; n < len; ++n) {
+        crc ^= data[n];
+        for (int bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return crc;
+}
 uint32_t upload_start { 0 };
 uint32_t next_report { 0 };
 uint8_t offset_raw[4];
@@ -390,7 +410,10 @@ bool open(uint32_t at) {
 void finish(bool ok) {
     client.abort();
     block.reset();
-    setBaud(build::LovelaceBaud);
+    // the check never changed the speed of the port
+    if (!check_only) {
+        setBaud(build::LovelaceBaud);
+    }
     phase = PhaseNone;
     state = ok ? Done : Failed;
 }
@@ -431,6 +454,12 @@ void attemptEnd(Result result) {
     }
 
     client.abort();
+    // the check never talks to the display
+    if (check_only) {
+        finish(false);
+        return;
+    }
+
     const bool started = (phase >= PhaseStart);
     const bool last = (result == Result::Fatal) || (++variant_index >= variants_count);
 
@@ -527,6 +556,25 @@ void stepProbe() {
     if ((total < Block) || (total > (64ul << 20))) {
         fail("implausible TFT size %u bytes", total);
         attemptEnd(Result::Fatal);
+        return;
+    }
+
+    if (check_only) {
+        message("check: %u bytes, no display", total);
+        phase = PhaseUpload;
+        upload_start = millis();
+        next_report = 0;
+        pos = 0;
+        sent = 0;
+        retries = 0;
+        first = false;
+        check_crc = 0xFFFFFFFFu;
+        if (!open(0)) {
+            fail("HTTP request not started");
+            attemptEnd(Result::Fatal);
+            return;
+        }
+        blockNext();
         return;
     }
 
@@ -632,6 +680,26 @@ void stepCollect() {
 }
 
 void stepSend() {
+    if (check_only) {
+        check_crc = crc32Update(check_crc, block.get(), want);
+        pos += want;
+        sent = pos;
+        const uint32_t percent = (static_cast<uint64_t>(pos) * 100) / total;
+        if (percent >= next_report) {
+            message("check %u%% (%u / %u bytes, %u s)", percent, pos, total,
+                static_cast<unsigned>((millis() - upload_start) / 1000));
+            next_report = percent - (percent % 5) + 5;
+        }
+        if (pos >= total) {
+            snprintf(variant, sizeof(variant), "check, CRC32 %08X", static_cast<unsigned>(~check_crc));
+            message("check done: %u bytes, CRC32 %08X", total, static_cast<unsigned>(~check_crc));
+            finish(true);
+            return;
+        }
+        blockNext();
+        return;
+    }
+
     auto& serial = port();
     while (written < want) {
         const int room = serial.availableForWrite();
@@ -861,6 +929,14 @@ bool busy() {
     return state != Idle;
 }
 
+bool check(const String& link, String& out) {
+    if (!start(link, 921600, out)) {
+        return false;
+    }
+    check_only = true;
+    return true;
+}
+
 bool start(const String& link, uint32_t rate, String& out) {
     if (busy()) {
         out = F("an upload is already running");
@@ -912,6 +988,8 @@ bool start(const String& link, uint32_t rate, String& out) {
 
     variants_count = 0;
     variant_index = 0;
+    // v1.2 `whmi-wris` first. v1.1 `whmi-wri` first (tried 2026-11-17) took all 15.8 MB with every block
+    // acknowledged and left the screen dead each time; every working upload of this display went through whmi-wris
     variants[variants_count++] = Variant{"whmi-wris", requested, "res0", true};
     if (requested != FallbackBaud) {
         variants[variants_count++] = Variant{"whmi-wris", FallbackBaud, "res0", true};
@@ -942,7 +1020,26 @@ bool start(const String& link, uint32_t rate, String& out) {
 
 void loop() {
     if (state == Running) {
-        run();
+        // a block takes several steps (collect, send / CRC, the next request); one step per loop pass and the loop's
+        // 10 ms pause made the download ~77 KB/s, slower than the display takes at 921600 baud. Steps run back to back
+        // while they move on, up to RunBudgetMs; a step that waits (no data yet, no acknowledge) ends the pass
+        const auto start = millis();
+        for (;;) {
+            const auto before_step = step;
+            const auto before_pos = pos;
+            const auto before_fill = fill;
+            const auto before_written = written;
+            run();
+            if (state != Running) {
+                break;
+            }
+            if ((step == before_step) && (pos == before_pos) && (fill == before_fill) && (written == before_written)) {
+                break;
+            }
+            if ((millis() - start) >= RunBudgetMs) {
+                break;
+            }
+        }
         if (state == Running) {
             return;
         }
@@ -952,13 +1049,21 @@ void loop() {
     const bool ok = (state == Done);
     if (ok) {
         snprintf(last_result, sizeof(last_result), "ok, %u bytes in %u s (%s)", total, seconds, variant);
-        DEBUG_MSG_P(PSTR("[NSPANEL] Flash: done (%s), detecting the display again\n"), last_result);
+        DEBUG_MSG_P(PSTR("[NSPANEL] Flash: done (%s)%s\n"), last_result,
+            check_only ? "" : ", detecting the display again");
     } else {
         snprintf(last_result, sizeof(last_result), "FAILED after %u s: %s", seconds, error);
         DEBUG_MSG_P(PSTR("[NSPANEL] Flash: %s\n"), last_result);
     }
 
     state = Idle;
+    if (check_only) {
+        // the display was never touched: the drivers go on as they were
+        check_only = false;
+        while (uart::port().read() >= 0) {
+        }
+        return;
+    }
     resume(ok);
 }
 

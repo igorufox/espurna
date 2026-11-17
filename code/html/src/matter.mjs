@@ -398,6 +398,37 @@ async function uploadIdentity() {
     }
 }
 
+// the pairing needs about this much free heap (PASE and CASE sessions, certificates): below it a warning (W93)
+export const PAIRING_HEAP = 15 * 1024;
+
+const HEAP = {now: 0, min: 0};
+
+/**
+ * The free heap line under the pairing button
+ * @param {number} now
+ * @param {number} min the lowest since boot
+ * @returns {{text: string, low: boolean}}
+ */
+export function heapLine(now, min) {
+    const kb = (/** @type {number} */ value) => `${Math.round(value / 1024)} KB`;
+    const low = (now > 0) && (now < PAIRING_HEAP);
+    let text = `Free memory ${kb(now)}, the lowest since boot ${kb(min)}.`;
+    if (low) {
+        text += ` Pairing needs about ${kb(PAIRING_HEAP)} and may fail: switch heavy modules off on the MODULES panel.`;
+    }
+    return {text, low};
+}
+
+function showHeap() {
+    const out = document.querySelector(".matter-heap");
+    if (!(out instanceof HTMLElement) || !HEAP.now) {
+        return;
+    }
+    const {text, low} = heapLine(HEAP.now, HEAP.min);
+    out.textContent = text;
+    out.style.color = low ? "#c0392b" : "";
+}
+
 export function init() {
     styleInject(STYLE);
 
@@ -413,6 +444,14 @@ export function init() {
         },
         matterWindow: (_, value) => {
             updateWindow(Number(value) || 0);
+        },
+        matterHeap: (_, value) => {
+            HEAP.now = Number(value) || 0;
+            showHeap();
+        },
+        matterHeapMin: (_, value) => {
+            HEAP.min = Number(value) || 0;
+            showHeap();
         },
         matterIdUse: (_, value) => {
             IDENTITY.use = String(value ?? "");

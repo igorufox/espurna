@@ -409,8 +409,11 @@ bool eraseTo(uint32_t end) {
 }
 
 bool writePlain(uint32_t address, const uint8_t* data, size_t size) {
-    const uint32_t end = physical(address) + (size / BlockData * BlockSize);
-    if ((end > writing.end) || !eraseTo(roundUp(end, SectorSize))) {
+    const uint32_t start = physical(address);
+    const uint32_t end = start + (size / BlockData * BlockSize);
+    // only inside the slot of the image being written: nothing below it (2026-11-17: a relocation with its bases
+    // at zero wrote over the bootloader), nothing past it
+    if ((start < writing.slot) || (end > writing.end) || !eraseTo(roundUp(end, SectorSize))) {
         return false;
     }
 
@@ -679,9 +682,9 @@ void crashNow() {
     __asm__ volatile(".inst.n 0xde00");
 }
 
-// every lt_flash_*() goes through the FAL 'root' partition: its length (system_beken.cpp flash_root())
+// the head's lt_flash_*() reach the whole flash chip (system_beken.cpp, __wrap_lt_flash_*)
 uint32_t flashReach() {
-    return fal_root_part ? static_cast<uint32_t>(fal_root_part->len) : 0;
+    return lt_flash_get_size();
 }
 
 // Flash = the OTA partition, its first sector shown as the "head"
@@ -795,11 +798,6 @@ const char* imageWrite(Upload& up, uint32_t offset, uint8_t* data, size_t size, 
 // the mapping keeps what it read: emptied before the image is read back
 void imageDone(uint32_t, uint32_t) {
     evictCache();
-}
-
-// 34 byte blocks across the sectors: no rewrite in place
-bool rewritable() {
-    return false;
 }
 
 // the free data TCM is the fixed pool, the rest in the heap block

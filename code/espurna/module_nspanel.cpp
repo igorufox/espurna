@@ -25,6 +25,8 @@ ESPURNA_MODULE(nspanel, "nspanel", 60) {
 
     nspanelBootSetup();
     nspanelSetup();
+    // the Matter pairing QR code (nspanelqr.cpp): the matter module through the head, nothing without it
+    nspanelQrSetup();
 }
 
 #endif

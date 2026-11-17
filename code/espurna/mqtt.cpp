@@ -2022,8 +2022,10 @@ void _mqttConnect() {
     }
 #endif
 
-    // Attempt to reconfigure when configuration was previously unsuccessful
-    if (_mqtt_error) {
+    // Attempt to reconfigure when configuration was previously unsuccessful, and when the connection settings are
+    // empty: a disconnect while the configuration had an error wipes them (_mqttOnDisconnected), a later attempt with
+    // no error left went to ":0" until a reload (NSPanel 2026-11-17, "cannot resolve the broker")
+    if (_mqtt_error || !_mqtt_settings.server.length()) {
         _mqttConfigureImpl(false);
     }
 

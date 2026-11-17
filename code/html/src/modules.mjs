@@ -130,7 +130,6 @@ const DESCRIPTIONS = new Map([
     ["llmnr", "Answers <hostname> from Windows on the network (LLMNR)."],
     ["netbios", "Answers the NetBIOS name of the board on the network."],
     ["http", "The HTTP client of the modules (http:// and https://): ThingSpeak, InfluxDB, NSPanel."],
-    ["nspanelqr", "The Matter pairing QR code on the NSPanel display (OHpanel) while the pairing window is open, it needs the nspanel and matter modules."],
 ]);
 
 // the panel shows the modules by group, in this order; a module not listed goes to the last one
@@ -147,7 +146,7 @@ export const GROUPS = [
         "sm300d2", "mics2710", "mics5525", "ezoph", "sonar", "a02yyu", "vl53l1x", "max6675", "dummy"]],
     ["Automation", ["scheduler", "rpnrules"]],
     ["Integrations", ["mqtt", "api", "ntp", "homeassistant", "alexa", "domoticz", "thingspeak", "influxdb", "mdns",
-        "ssdp", "llmnr", "netbios", "prometheus", "http", "matter", "nspanelqr"]],
+        "ssdp", "llmnr", "netbios", "prometheus", "http", "matter"]],
 ];
 
 /**
@@ -193,7 +192,7 @@ const SECTOR = 4096;
  *   iram_pool: number, iram_used: number, iram_max: number,
  *   iram_data: number, iram_data_used: number, iram_data_max: number,
  *   ram_dynamic?: number, pool?: string, iram_code?: number,
- *   heap: number, heap_boot: number, chip?: number, oom?: number,
+ *   heap: number, heap_boot: number, heap_min?: number, chip?: number, oom?: number,
  * }} Status
  */
 
@@ -809,6 +808,9 @@ function cardElement(status, row) {
     return card;
 }
 
+// below this free heap the panel warns (W93): about what a Matter pairing or a TLS connection needs
+const LOW_HEAP = 15 * 1024;
+
 function drawMeters() {
     const status = state.status;
     const container = element(".mod-meters");
@@ -819,6 +821,17 @@ function drawMeters() {
     const rows = moduleRows(status, state.packages, state.ramIn);
     const preview = rows.find((x) => x.name === state.preview) ?? null;
     container.replaceChildren(...meters(status, preview).map(meterElement));
+
+    // little heap left: the WebUI, TLS and a Matter pairing fail (W93)
+    if (status.heap && (status.heap < LOW_HEAP)) {
+        const note = document.createElement("p");
+        note.classList.add("mod-low-heap");
+        note.style.color = "#c0392b";
+        note.textContent = `Little memory left: ${sizeText(status.heap)} free now`
+            + (status.heap_min ? `, ${sizeText(status.heap_min)} at the lowest since boot` : "")
+            + ". Pages, TLS connections and a Matter pairing may fail: switch heavy modules off.";
+        container.append(note);
+    }
 }
 
 function draw() {
@@ -1096,15 +1109,12 @@ async function applySteps() {
     // area anew)
     if (route === "off") {
         for (const name of removed) {
-            // the board removes only a module that is switched off (400 "switch it off first")
-            const off = new FormData();
-            off.append("name", name);
-            off.append("on", "0");
+            // the board removes only a module that is switched off (400 "switch it off first"). The fields as a
+            // urlencoded body: the head reads the parameters of a small POST from it, a multipart FormData came
+            // as no name at all (400, 214 2026-11-17)
             message(`${name}: switching off...`);
-            await post("modules/enable", off);
-            const form = new FormData();
-            form.append("name", name);
-            await post("modules/remove", form);
+            await post("modules/enable", new URLSearchParams({name, on: "0"}));
+            await post("modules/remove", new URLSearchParams({name}));
         }
         message("Restarting...");
         await post("modules/restart", new FormData());
@@ -1169,10 +1179,8 @@ async function removeModule(row) {
     state.busy = true;
     draw();
 
-    const form = new FormData();
-    form.append("name", row.name);
     message(`${row.name}: removing...`);
-    const text = await post("modules/remove", form);
+    const text = await post("modules/remove", new URLSearchParams({name: row.name}));
     if (row.installed?.state === "running") {
         state.removed.add(row.name);
     }
