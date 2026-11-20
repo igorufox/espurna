@@ -48,7 +48,7 @@ struct Runner {
     Runner(Policy policy, unsigned long period) :
         _policy(policy),
         _period(period),
-        _last(millis())
+        _last(espurna::time::ms())
     {}
 
     Policy policy() const {
@@ -131,15 +131,15 @@ unsigned long delay() {
     return getSetting(keys::Delay, build::delay());
 }
 
-String rule(size_t index) {
+espurna::string rule(size_t index) {
     return getSetting(espurna::settings::Key{keys::Rule, index});
 }
 
-String topic(size_t index) {
+espurna::string topic(size_t index) {
     return getSetting(espurna::settings::Key{keys::Topic, index});
 }
 
-String name(size_t index) {
+espurna::string name(size_t index) {
     return getSetting(espurna::settings::Key{keys::Name, index});
 }
 
@@ -166,7 +166,7 @@ bool scheduled() {
 }
 
 void reset(bool next) {
-    internal::run_last = millis();
+    internal::run_last = espurna::time::ms();
     internal::run = next;
 }
 
@@ -176,7 +176,7 @@ void reset() {
 
 bool due() {
     if (scheduled()) {
-        auto timestamp = millis();
+        auto timestamp = espurna::time::ms();
         if (timestamp - internal::run_last > internal::run_delay) {
             reset();
             return true;
@@ -200,7 +200,7 @@ struct RunnersHandler {
     explicit RunnersHandler(internal::Runners& runners) :
         _runners(runners)
     {
-        auto ts = millis();
+        auto ts = espurna::time::ms();
         for (auto& runner : runners) {
             if (runner.expired(ts)) {
                 schedule();
@@ -227,20 +227,20 @@ private:
 #if TERMINAL_SUPPORT
 namespace terminal {
 
-String valueToString(const rpn_value& value) {
-    String out;
+espurna::string valueToString(const rpn_value& value) {
+    espurna::string out;
     if (value.isString()) {
         out = value.toString();
     } else if (value.isFloat()) {
-        out = String(value.toFloat(), 10);
+        out = espurna::string(value.toFloat(), 10);
     } else if (value.isInt()) {
-        out = String(value.toInt(), 10);
+        out = espurna::string(value.toInt(), 10);
     } else if (value.isUint()) {
-        out = String(value.toUint(), 10);
+        out = espurna::string(value.toUint(), 10);
     } else if (value.isBoolean()) {
-        out = String(value.toBoolean() ? "true" : "false");
+        out = espurna::string(value.toBoolean() ? "true" : "false");
     } else if (value.isNull()) {
-        out = F("(null)");
+        out = "(null)";
     }
     return out;
 }
@@ -259,8 +259,8 @@ char stackTypeTag(rpn_stack_value::Type type) {
     }
 }
 
-void showStack(Print& output) {
-    output.print(F("Stack:\n"));
+void showStack(::espurna::Output& output) {
+    output.print("Stack:\n");
 
     auto index = rpn_stack_size(internal::context);
     if (index) {
@@ -272,14 +272,14 @@ void showStack(Print& output) {
         return;
     }
 
-    output.print(F("      (empty)\n"));
+    output.print("      (empty)\n");
 }
 
 PROGMEM_STRING(Runners, "RPN.RUNNERS");
 
 void runners(::terminal::CommandContext&& ctx) {
     if (internal::runners.empty()) {
-        terminalError(ctx, F("No active runners"));
+        terminalError(ctx, "No active runners");
         return;
     }
 
@@ -302,7 +302,7 @@ PROGMEM_STRING(Variables, "RPN.VARS");
 
 void variables(::terminal::CommandContext&& ctx) {
     rpn_variables_foreach(internal::context,
-        [&ctx](const String& name, const rpn_value& value) {
+        [&ctx](const ::String& name, const rpn_value& value) {
             char buffer[256] = {0};
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("      %s: %s\n"),
@@ -316,7 +316,7 @@ PROGMEM_STRING(Operators, "RPN.OPS");
 
 void operators(::terminal::CommandContext&& ctx) {
     rpn_operators_foreach(internal::context,
-        [&ctx](const String& name, size_t argc, rpn_operator::callback_type) {
+        [&ctx](const ::String& name, size_t argc, rpn_operator::callback_type) {
             char buffer[128] = {0};
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("      %s (%d)\n"),
@@ -330,7 +330,7 @@ PROGMEM_STRING(Test, "RPN.TEST");
 
 void test(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() != 2) {
-        terminalError(ctx, F("Wrong arguments"));
+        terminalError(ctx, "Wrong arguments");
         return;
     }
 
@@ -345,7 +345,7 @@ void test(::terminal::CommandContext&& ctx) {
             internal::context.error.position,
             static_cast<int>(internal::context.error.category),
             internal::context.error.code);
-        terminalError(ctx, StringView(buffer));
+        terminalError(ctx, espurna::StringView(buffer));
         return;
     }
 
@@ -393,30 +393,30 @@ size_t countMqttNames() {
 }
 #endif
 
-bool onKeyCheck(espurna::StringView key, const JsonVariant& value) {
+bool onKeyCheck(espurna::StringView key, espurna::json::Value value) {
     return key.startsWith(settings::Prefix);
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, settings::Prefix);
 }
 
-void onConnected(JsonObject& root) {
-    root[FPSTR(settings::keys::Sticky)] = rpnrules::settings::sticky();
-    root[FPSTR(settings::keys::Delay)] = rpnrules::settings::delay();
-
-    JsonArray& rules = root.createNestedArray(F("rpnRules"));
+void onConnected(espurna::json::Writer& root) {
+    root.field(settings::keys::Sticky, rpnrules::settings::sticky());
+    root.field(settings::keys::Delay, rpnrules::settings::delay());
+    root.array(STRING_VIEW("rpnRules"));
 
     size_t index { 0 };
-    String rule;
+    espurna::string rule;
     for (;;) {
         rule = rpnrules::settings::rule(index++);
         if (!rule.length()) {
             break;
         }
 
-        rules.add(rule);
+        root.value(rule);
     }
+    root.end();
 
 #if MQTT_SUPPORT
     espurna::web::ws::EnumerableConfig config{ root, STRING_VIEW("rpnTopics") };
@@ -431,7 +431,7 @@ void onConnected(JsonObject& root) {
 namespace mqtt {
 
 struct Variable {
-    String name;
+    espurna::string name;
     rpn_value value;
 };
 
@@ -439,7 +439,7 @@ std::forward_list<Variable> variables;
 
 void subscribe() {
     size_t index { 0 };
-    String topic;
+    espurna::string topic;
 
     for(;;) {
         topic = rpnrules::settings::topic(index++);
@@ -483,7 +483,7 @@ void callback(unsigned int type, StringView topic, StringView payload) {
         }
 
         size_t count { 0 };
-        String rpnTopic;
+        espurna::string rpnTopic;
 
         for (;;) {
             const auto index = count++;
@@ -862,14 +862,14 @@ namespace rfbridge {
 
 struct Code {
     unsigned char protocol;
-    String raw;
+    espurna::string raw;
     size_t count;
-    decltype(millis()) last;
+    decltype(espurna::time::ms()) last;
 };
 
 struct Match {
     unsigned char protocol;
-    String raw;
+    espurna::string raw;
 };
 
 namespace build {
@@ -932,8 +932,8 @@ rpn_error sequence(rpn_context& ctxt) {
 
     // find 2 codes in the same order and save pointers
     Match match[2] {
-        {static_cast<unsigned char>(proto_first.toUint()), raw_first.toString()},
-        {static_cast<unsigned char>(proto_second.toUint()), raw_second.toString()}
+        {static_cast<unsigned char>(proto_first.toUint()), espurna::string(raw_first.toString().c_str())},
+        {static_cast<unsigned char>(proto_second.toUint()), espurna::string(raw_second.toString().c_str())}
     };
     Code* refs[2] {nullptr, nullptr};
 
@@ -955,7 +955,7 @@ rpn_error sequence(rpn_context& ctxt) {
     }
 
     // purge codes to avoid matching again on the next rules run
-    if ((millis() - refs[0]->last) > (millis() - refs[1]->last)) {
+    if ((espurna::time::ms() - refs[0]->last) > (espurna::time::ms() - refs[1]->last)) {
         internal::codes.remove_if([&refs](Code& code) {
             return (refs[0] == &code) || (refs[1] == &code);
         });
@@ -1040,7 +1040,7 @@ rpn_error match(rpn_context& ctxt) {
     }
 
     // only process recent codes, ignore when rule is processing outside of this small window
-    if (millis() - (*result).last >= internal::match_window) {
+    if (espurna::time::ms() - (*result).last >= internal::match_window) {
         return rpn_operator_error::CannotContinue;
     }
 
@@ -1055,7 +1055,7 @@ rpn_error match(rpn_context& ctxt) {
 
 void codeHandler(unsigned char protocol, StringView raw_code) {
     // remove really old codes that we have not seen in a while to avoid memory exhaustion
-    auto ts = millis();
+    auto ts = espurna::time::ms();
     auto old = std::remove_if(internal::codes.begin(), internal::codes.end(), [ts](Code& code) {
         return (ts - code.last) >= internal::stale_delay;
     });
@@ -1067,13 +1067,13 @@ void codeHandler(unsigned char protocol, StringView raw_code) {
     auto result = internal::find(internal::codes, protocol, raw_code);
     if (result != internal::codes.end()) {
         // we also need to reset the counter at a certain point to allow next batch of repeats to go through
-        if (millis() - (*result).last >= internal::repeat_window) {
+        if (espurna::time::ms() - (*result).last >= internal::repeat_window) {
             (*result).count = 0;
         }
-        (*result).last = millis();
+        (*result).last = espurna::time::ms();
         (*result).count += 1u;
     } else {
-        internal::codes.push_back({protocol, raw_code.toString(), 1u, millis()});
+        internal::codes.push_back({protocol, raw_code.toString(), 1u, espurna::time::ms()});
     }
 
     schedule();
@@ -1136,7 +1136,7 @@ void updateVariables(const espurna::sensor::Value& value) {
     topic.replace("/", "");
 
     rpn_variable_set(internal::context,
-            topic, rpn_value(static_cast<rpn_float>(value.value)));
+            ::String(topic.c_str()), rpn_value(static_cast<rpn_float>(value.value)));
 }
 
 void init(rpn_context&) {
@@ -1182,12 +1182,12 @@ rpn_error with_sleep_duration(rpn_context& ctxt, SystemSleepAction action) {
 void init(rpn_context& context) {
     rpn_operator_set(context, "delay", 1, [](rpn_context& ctxt) -> rpn_error {
         auto ms = rpn_stack_pop(ctxt);
-        delay(ms.toUint());
+        espurna::time::sleep(ms.toUint());
         return 0;
     });
 
     rpn_operator_set(context, "yield", 0, [](rpn_context& ctxt) -> rpn_error {
-        yield();
+        espurna::time::yield();
         return 0;
     });
 
@@ -1203,7 +1203,7 @@ void init(rpn_context& context) {
     });
 
     rpn_operator_set(internal::context, "millis", 0, [](rpn_context & ctxt) -> rpn_error {
-        rpn_stack_push(ctxt, rpn_value(static_cast<uint32_t>(millis())));
+        rpn_stack_push(ctxt, rpn_value(static_cast<uint32_t>(espurna::time::ms())));
         return 0;
     });
 
@@ -1262,13 +1262,13 @@ void init(rpn_context& context) {
 
     rpn_operator_set(context, "disconnect", 0, [](rpn_context& ctxt) -> rpn_error {
         wifiDisconnect();
-        yield();
+        espurna::time::yield();
         return 0;
     });
 
     rpn_operator_set(context, "rssi", 0, [](rpn_context& ctxt) -> rpn_error {
         const rpn_int rssi = wifiConnected()
-            ? WiFi.RSSI()
+            ? wifiStaRssi()
             : -127;
         rpn_stack_push(ctxt, rpn_value { rssi });
         return 0;
@@ -1325,7 +1325,7 @@ void run() {
     }
 
     for (auto& variable : mqtt::variables) {
-        rpn_variable_set(internal::context, variable.name, variable.value);
+        rpn_variable_set(internal::context, ::String(variable.name.c_str()), variable.value);
     }
     mqtt::variables.clear();
 #endif
@@ -1335,7 +1335,7 @@ void run() {
     }
 
     size_t index { 0 };
-    String rule;
+    espurna::string rule;
     for (;;) {
         rule = settings::rule(index++);
         if (!rule.length()) {

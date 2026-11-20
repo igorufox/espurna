@@ -13,7 +13,7 @@ A module of its own (sensors/driver.h): needs the sensors module and the uart mo
 using namespace espurna::sensor::module;
 
 ESPURNA_SENSOR_DRIVER(senseair, "senseairPort|uart|UART port|0") {
-    if (auto port = uart_port(F("senseairPort"))) {
+    if (auto port = uart_port("senseairPort")) {
         auto* sensor = new SenseAirSensor();
         sensor->setPort(port->stream);
         sensorAdd(sensor);

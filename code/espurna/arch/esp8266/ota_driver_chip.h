@@ -1,105 +1,70 @@
 /*
 
-OTA MODULE, esp8266 part (ref. ota_driver.h)
+OTA MODULE, ESP8266 on ESP8266_RTOS_SDK (ref. ota_driver.h)
 
-Updater takes .bin and .bin.gz images, written right after the running one, every upload it
-takes is fine (the default upload_check() of ota_driver.h).
+A new head comes as an RBL package (own_image(), ota_esp8266.cpp): there is one app partition ('factory'), the SDK's
+bootloader installs the package on the next boot (bootloader/espurna_rbl.c). A plain app image (0xE9) goes to Update,
+which has no slot for it here ("No OTA partition").
 
 */
 
 #pragma once
 
-#include <Arduino.h>
-#include <Updater.h>
+
 
 #include <cstddef>
 #include <cstdint>
 
+// espurna::system::stall::pass()
+#include "system_chip.h"
+
+// eepromForceCommit()
+#include "../../storage_eeprom.h"
+
 namespace espurna {
 namespace ota {
 namespace driver {
 
+// The app image of the SDK (esptool elf2image): the first byte is the image magic. Not gzip, and the NONOS image
+// (also 0xE9, but a single image of the Arduino core) is told apart by Update at the end, not here
 inline bool verify_header(const uint8_t* data, size_t len) {
-    if (len < 4) {
-        return false;
-    }
-
-    // ref: https://github.com/esp8266/Arduino/pull/6820
-    // accept gzip, let unpacker figure things out later
-    if (data[0] == 0x1F && data[1] == 0x8B) {
-        return true;
-    }
-
-    // Check for magic byte with a normal .bin
-    if (data[0] != 0xE9) {
-        return false;
-    }
-
-    // Make sure that flash config can be recognized and fit the flash
-    const auto flash_config = ESP.magicFlashChipSize((data[3] & 0xf0) >> 4);
-    if (flash_config && (flash_config > ESP.getFlashChipRealSize())) {
-        return false;
-    }
-
-    return true;
+    return (len >= 8) && (data[0] == 0xE9);
 }
 
 inline size_t update_size() {
-    return (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+    return (::espurna::core::chip::sketch_space() - 0x1000) & 0xFFFFF000;
 }
 
-// written from the network callbacks, Update must not yield()
 inline void update_prepare() {
-    Update.runAsync(true);
 }
 
-template <typename T>
-inline void arduino_ota_begin(T& ota) {
-    ota.begin(false);
+// make sure pending settings reach the flash before the restart
+inline void espota_started() {
+    eepromForceCommit();
 }
 
-// settings are backed up to the flash sectors right away (ref. eepromBackup()). ArduinoOTA takes the whole image
-// inside one loop() call and its receive loop never ends while the connection looks open: a stalled upload hung the
-// board until a power cycle (W58). A timer restarts it once the upload takes nothing for a while (ota_esp8266.cpp)
-void arduino_ota_started();
-
-inline void arduino_ota_progress() {
+// espota (libs/espota.h) receives the whole image inside of a single loop() call: the loop stall watcher (arch/rtos/system_rtos.cpp,
+// SYSTEM_LOOP_STALL s without a loop() pass) is fed between the chunks, a slow upload is not aborted (the hardware
+// watchdog is fed by the SDK's idle task)
+inline void espota_progress() {
+    ::espurna::system::stall::pass();
 }
 
-void arduino_ota_stopped();
+inline void espota_stopped() {
+}
 
-} // namespace driver
-} // namespace ota
-} // namespace espurna
-
-// Update writes every upload it takes: every one of them is fine for the board (Beken checks its own)
-namespace espurna {
-namespace ota {
-namespace driver {
-
+// Update writes every upload it takes
 constexpr const char* upload_check(const uint8_t*, size_t) {
     return nullptr;
 }
 
-// the chip writes this upload itself, not Update (Beken: the RBL head of the install image, ref. ota_beken.cpp)
-constexpr bool own_image(const uint8_t*, size_t) {
-    return false;
-}
-
-constexpr const char* own_begin(const uint8_t*, size_t) {
-    return nullptr;
-}
-
-constexpr const char* own_write(const uint8_t*, size_t) {
-    return nullptr;
-}
-
-constexpr const char* own_end() {
-    return nullptr;
-}
-
-inline void own_abort() {
-}
+// The chip writes this upload itself, not Update: the RBL of a new head (espurna-esp8266.ota), under the modules'
+// directory for the SDK's bootloader to install (ota_esp8266.cpp, rbl_esp8266.h; the Tuya bootloader's scheme)
+bool own_image(const uint8_t* data, size_t len);
+const char* own_begin(const uint8_t* data, size_t len);
+const char* own_write(const uint8_t* data, size_t len);
+const char* own_end();
+void own_abort();
 
 } // namespace driver
 } // namespace ota

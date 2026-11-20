@@ -85,21 +85,21 @@ unsigned char count() const override {
 
 // Initialization method, must be idempotent
 void begin() override {
-        pinMode(_pin.pin(), _mode);
+        espurna::pins::mode(_pin.pin(), _mode);
         _pin.attach(this, handleInterrupt, _interrupt_mode);
         _ready = true;
 }
 
 // Descriptive name of the sensor
-String description() const override {
+espurna::string description() const override {
         char buffer[20];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("Geiger @ GPIO%hhu"), _pin.pin());
-        return String(buffer);
+        return espurna::string(buffer);
 }
 
 // Descriptive name of the slot # index
-String description(unsigned char index) const override {
+espurna::string description(unsigned char index) const override {
     if (index < std::size(Magnitudes)) {
         char buffer[48];
 
@@ -118,15 +118,15 @@ String description(unsigned char index) const override {
 #endif
         }
 
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
     return description();
 }
 
 // Address of the sensor (it could be the GPIO or I2C address)
-String address(unsigned char index) const override {
-    return String(_pin.pin(), 10);
+espurna::string address(unsigned char index) const override {
+    return espurna::string(_pin.pin(), 10);
 }
 
 // Type for slot # index
@@ -149,7 +149,7 @@ void pre() override {
 
 #if SENSOR_DEBUG
     DEBUG_MSG_P(PSTR("[GEIGER] Ticks: %u | Interval: %u (ms) | CPM: %s\n"),
-        _ticks, (_lastreport_cpm - previous).count(), String(_cpm, 4).c_str());
+        _ticks, (_lastreport_cpm - previous).count(), formatDecimalString(_cpm, 4).c_str());
 #endif
 
     _events = 0;
@@ -162,7 +162,7 @@ void pre() override {
 
 #if SENSOR_DEBUG
     DEBUG_MSG_P(PSTR("[GEIGER] Ticks: %u | Interval: %u | SV: %s\n"),
-        _ticks, (_lastreport_sv - previous).count(), String(_sievert, 4).c_str());
+        _ticks, (_lastreport_sv - previous).count(), formatDecimalString(_sievert, 4).c_str());
 #endif
 
     _ticks = 0;

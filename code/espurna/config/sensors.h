@@ -245,7 +245,7 @@
 #endif
 
 #ifndef ANALOG_PIN
-#define ANALOG_PIN                      A0      // ADC pin (ESP32: any ADC1 GPIO)
+#define ANALOG_PIN                      espurna::pins::Adc0      // ADC pin (ESP32: any ADC1 GPIO)
 #endif
 
 #ifndef ANALOG_SAMPLES
@@ -447,11 +447,11 @@
 #endif
 
 #ifndef DIGITAL1_PIN_MODE
-#define DIGITAL1_PIN_MODE                INPUT_PULLUP
+#define DIGITAL1_PIN_MODE                espurna::pins::InputPullup
 #endif
 
 #ifndef DIGITAL1_DEFAULT_STATE
-#define DIGITAL1_DEFAULT_STATE           HIGH
+#define DIGITAL1_DEFAULT_STATE           true
 #endif
 
 #ifndef DIGITAL2_PIN
@@ -459,11 +459,11 @@
 #endif
 
 #ifndef DIGITAL2_PIN_MODE
-#define DIGITAL2_PIN_MODE                INPUT_PULLUP
+#define DIGITAL2_PIN_MODE                espurna::pins::InputPullup
 #endif
 
 #ifndef DIGITAL2_DEFAULT_STATE
-#define DIGITAL2_DEFAULT_STATE           HIGH
+#define DIGITAL2_DEFAULT_STATE           true
 #endif
 
 #ifndef DIGITAL3_PIN
@@ -471,11 +471,11 @@
 #endif
 
 #ifndef DIGITAL3_PIN_MODE
-#define DIGITAL3_PIN_MODE                INPUT_PULLUP
+#define DIGITAL3_PIN_MODE                espurna::pins::InputPullup
 #endif
 
 #ifndef DIGITAL3_DEFAULT_STATE
-#define DIGITAL3_DEFAULT_STATE           HIGH
+#define DIGITAL3_DEFAULT_STATE           true
 #endif
 
 #ifndef DIGITAL4_PIN
@@ -483,11 +483,11 @@
 #endif
 
 #ifndef DIGITAL4_PIN_MODE
-#define DIGITAL4_PIN_MODE                INPUT_PULLUP
+#define DIGITAL4_PIN_MODE                espurna::pins::InputPullup
 #endif
 
 #ifndef DIGITAL4_DEFAULT_STATE
-#define DIGITAL4_DEFAULT_STATE           HIGH
+#define DIGITAL4_DEFAULT_STATE           true
 #endif
 
 #ifndef DIGITAL5_PIN
@@ -495,11 +495,11 @@
 #endif
 
 #ifndef DIGITAL5_PIN_MODE
-#define DIGITAL5_PIN_MODE                INPUT_PULLUP
+#define DIGITAL5_PIN_MODE                espurna::pins::InputPullup
 #endif
 
 #ifndef DIGITAL5_DEFAULT_STATE
-#define DIGITAL5_DEFAULT_STATE           HIGH
+#define DIGITAL5_DEFAULT_STATE           true
 #endif
 
 #ifndef DIGITAL6_PIN
@@ -507,11 +507,11 @@
 #endif
 
 #ifndef DIGITAL6_PIN_MODE
-#define DIGITAL6_PIN_MODE                INPUT_PULLUP
+#define DIGITAL6_PIN_MODE                espurna::pins::InputPullup
 #endif
 
 #ifndef DIGITAL6_DEFAULT_STATE
-#define DIGITAL6_DEFAULT_STATE           HIGH
+#define DIGITAL6_DEFAULT_STATE           true
 #endif
 
 #ifndef DIGITAL7_PIN
@@ -519,11 +519,11 @@
 #endif
 
 #ifndef DIGITAL7_PIN_MODE
-#define DIGITAL7_PIN_MODE                INPUT_PULLUP
+#define DIGITAL7_PIN_MODE                espurna::pins::InputPullup
 #endif
 
 #ifndef DIGITAL7_DEFAULT_STATE
-#define DIGITAL7_DEFAULT_STATE           HIGH
+#define DIGITAL7_DEFAULT_STATE           true
 #endif
 
 #ifndef DIGITAL8_PIN
@@ -531,11 +531,11 @@
 #endif
 
 #ifndef DIGITAL8_PIN_MODE
-#define DIGITAL8_PIN_MODE                INPUT_PULLUP
+#define DIGITAL8_PIN_MODE                espurna::pins::InputPullup
 #endif
 
 #ifndef DIGITAL8_DEFAULT_STATE
-#define DIGITAL8_DEFAULT_STATE           HIGH
+#define DIGITAL8_DEFAULT_STATE           true
 #endif
 
 //------------------------------------------------------------------------------
@@ -680,11 +680,11 @@
 #endif
 
 #ifndef EVENTS1_PIN_MODE
-#define EVENTS1_PIN_MODE                 INPUT   // INPUT, INPUT_PULLUP
+#define EVENTS1_PIN_MODE                 espurna::pins::Input   // espurna::pins::Input, espurna::pins::InputPullup
 #endif
 
 #ifndef EVENTS1_INTERRUPT_MODE
-#define EVENTS1_INTERRUPT_MODE           RISING  // RISING, FALLING, CHANGE
+#define EVENTS1_INTERRUPT_MODE           espurna::pins::Rising  // espurna::pins::Rising, espurna::pins::Falling, espurna::pins::Change
 #endif
 
 #ifndef EVENTS1_DEBOUNCE
@@ -696,11 +696,11 @@
 #endif
 
 #ifndef EVENTS2_PIN_MODE
-#define EVENTS2_PIN_MODE                 INPUT   // INPUT, INPUT_PULLUP
+#define EVENTS2_PIN_MODE                 espurna::pins::Input   // espurna::pins::Input, espurna::pins::InputPullup
 #endif
 
 #ifndef EVENTS2_INTERRUPT_MODE
-#define EVENTS2_INTERRUPT_MODE           RISING  // RISING, FALLING, CHANGE
+#define EVENTS2_INTERRUPT_MODE           espurna::pins::Rising  // espurna::pins::Rising, espurna::pins::Falling, espurna::pins::Change
 #endif
 
 #ifndef EVENTS2_DEBOUNCE
@@ -712,11 +712,11 @@
 #endif
 
 #ifndef EVENTS3_PIN_MODE
-#define EVENTS3_PIN_MODE                 INPUT   // INPUT, INPUT_PULLUP
+#define EVENTS3_PIN_MODE                 espurna::pins::Input   // espurna::pins::Input, espurna::pins::InputPullup
 #endif
 
 #ifndef EVENTS3_INTERRUPT_MODE
-#define EVENTS3_INTERRUPT_MODE           RISING  // RISING, FALLING, CHANGE
+#define EVENTS3_INTERRUPT_MODE           espurna::pins::Rising  // espurna::pins::Rising, espurna::pins::Falling, espurna::pins::Change
 #endif
 
 #ifndef EVENTS3_DEBOUNCE
@@ -728,11 +728,11 @@
 #endif
 
 #ifndef EVENTS4_PIN_MODE
-#define EVENTS4_PIN_MODE                 INPUT   // INPUT, INPUT_PULLUP
+#define EVENTS4_PIN_MODE                 espurna::pins::Input   // espurna::pins::Input, espurna::pins::InputPullup
 #endif
 
 #ifndef EVENTS4_INTERRUPT_MODE
-#define EVENTS4_INTERRUPT_MODE           RISING  // RISING, FALLING, CHANGE
+#define EVENTS4_INTERRUPT_MODE           espurna::pins::Rising  // espurna::pins::Rising, espurna::pins::Falling, espurna::pins::Change
 #endif
 
 #ifndef EVENTS4_DEBOUNCE
@@ -744,11 +744,11 @@
 #endif
 
 #ifndef EVENTS5_PIN_MODE
-#define EVENTS5_PIN_MODE                 INPUT   // INPUT, INPUT_PULLUP
+#define EVENTS5_PIN_MODE                 espurna::pins::Input   // espurna::pins::Input, espurna::pins::InputPullup
 #endif
 
 #ifndef EVENTS5_INTERRUPT_MODE
-#define EVENTS5_INTERRUPT_MODE           RISING  // RISING, FALLING, CHANGE
+#define EVENTS5_INTERRUPT_MODE           espurna::pins::Rising  // espurna::pins::Rising, espurna::pins::Falling, espurna::pins::Change
 #endif
 
 #ifndef EVENTS5_DEBOUNCE
@@ -760,11 +760,11 @@
 #endif
 
 #ifndef EVENTS6_PIN_MODE
-#define EVENTS6_PIN_MODE                 INPUT   // INPUT, INPUT_PULLUP
+#define EVENTS6_PIN_MODE                 espurna::pins::Input   // espurna::pins::Input, espurna::pins::InputPullup
 #endif
 
 #ifndef EVENTS6_INTERRUPT_MODE
-#define EVENTS6_INTERRUPT_MODE           RISING  // RISING, FALLING, CHANGE
+#define EVENTS6_INTERRUPT_MODE           espurna::pins::Rising  // espurna::pins::Rising, espurna::pins::Falling, espurna::pins::Change
 #endif
 
 #ifndef EVENTS6_DEBOUNCE
@@ -776,11 +776,11 @@
 #endif
 
 #ifndef EVENTS7_PIN_MODE
-#define EVENTS7_PIN_MODE                 INPUT   // INPUT, INPUT_PULLUP
+#define EVENTS7_PIN_MODE                 espurna::pins::Input   // espurna::pins::Input, espurna::pins::InputPullup
 #endif
 
 #ifndef EVENTS7_INTERRUPT_MODE
-#define EVENTS7_INTERRUPT_MODE           RISING  // RISING, FALLING, CHANGE
+#define EVENTS7_INTERRUPT_MODE           espurna::pins::Rising  // espurna::pins::Rising, espurna::pins::Falling, espurna::pins::Change
 #endif
 
 #ifndef EVENTS7_DEBOUNCE
@@ -792,11 +792,11 @@
 #endif
 
 #ifndef EVENTS8_PIN_MODE
-#define EVENTS8_PIN_MODE                 INPUT   // INPUT, INPUT_PULLUP
+#define EVENTS8_PIN_MODE                 espurna::pins::Input   // espurna::pins::Input, espurna::pins::InputPullup
 #endif
 
 #ifndef EVENTS8_INTERRUPT_MODE
-#define EVENTS8_INTERRUPT_MODE           RISING  // RISING, FALLING, CHANGE
+#define EVENTS8_INTERRUPT_MODE           espurna::pins::Rising  // espurna::pins::Rising, espurna::pins::Falling, espurna::pins::Change
 #endif
 
 #ifndef EVENTS8_DEBOUNCE
@@ -817,11 +817,11 @@
 #endif
 
 #ifndef GEIGER_PIN_MODE
-#define GEIGER_PIN_MODE                 INPUT   // INPUT, INPUT_PULLUP
+#define GEIGER_PIN_MODE                 espurna::pins::Input   // espurna::pins::Input, espurna::pins::InputPullup
 #endif
 
 #ifndef GEIGER_INTERRUPT_MODE
-#define GEIGER_INTERRUPT_MODE           RISING  // RISING, FALLING, CHANGE
+#define GEIGER_INTERRUPT_MODE           espurna::pins::Rising  // espurna::pins::Rising, espurna::pins::Falling, espurna::pins::Change
 #endif
 
 #ifndef GEIGER_DEBOUNCE
@@ -877,7 +877,7 @@
 #endif
 
 #ifndef HLW8012_SEL_CURRENT
-#define HLW8012_SEL_CURRENT             HIGH    // SEL pin to HIGH to measure current
+#define HLW8012_SEL_CURRENT             true    // SEL pin to true to measure current
 #endif
 
 #ifndef HLW8012_CURRENT_R
@@ -914,9 +914,9 @@
 #endif
 
 #ifndef HLW8012_INTERRUPT_ON
-#define HLW8012_INTERRUPT_ON            CHANGE  // When to trigger the interrupt
-                                                // Use CHANGE for HLW8012
-                                                // Use FALLING for BL0937 / HJL0
+#define HLW8012_INTERRUPT_ON            espurna::pins::Change  // When to trigger the interrupt
+                                                // Use espurna::pins::Change for HLW8012
+                                                // Use espurna::pins::Falling for BL0937 / HJL0
 #endif
 
 //------------------------------------------------------------------------------
@@ -929,7 +929,7 @@
 #endif
 
 #ifndef LDR_PIN
-#define LDR_PIN                         A0      // ADC pin
+#define LDR_PIN                         espurna::pins::Adc0      // ADC pin
 #endif
 
 #ifndef LDR_SAMPLES
@@ -1031,7 +1031,7 @@
 #endif
 
 #ifndef NTC_PIN
-#define NTC_PIN                         A0      // ADC pin (ESP32: any ADC1 GPIO)
+#define NTC_PIN                         espurna::pins::Adc0      // ADC pin (ESP32: any ADC1 GPIO)
 #endif
 
 #ifndef NTC_SAMPLES
@@ -1126,7 +1126,7 @@
 #endif
 
 #ifndef PULSEMETER_INTERRUPT_ON
-#define PULSEMETER_INTERRUPT_ON         FALLING
+#define PULSEMETER_INTERRUPT_ON         espurna::pins::Falling
 #endif
 
 #ifndef PULSEMETER_DEBOUNCE

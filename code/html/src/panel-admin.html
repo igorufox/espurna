@@ -97,8 +97,8 @@
                         The newest builds of <a href="https://github.com/igorufox/espurna/releases">igorufox/espurna</a>,
                         files of this image only. <em>Install</em> takes the install image of the release
                         (<code>espurna-&lt;chip&gt;.ota</code>, every chip the same way): this browser downloads it, the board
-                        restarts without modules and takes the head of the image (ESP32: through its safeboot, which may ask
-                        for the login: admin and the admin password), then the modules it runs now out of the same file,
+                        restarts without modules and takes the head of the image (not the ESP32: its head is not replaced
+                        over the network), then the modules it runs now out of the same file,
                         the same Apply as in MODULES. <em>Upgrade</em> above takes a <code>.ota</code> from the disk the same
                         way. Keep the board powered until it is back; when an install stops half-way, <em>Install</em> can
                         simply be started again.

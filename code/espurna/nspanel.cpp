@@ -19,8 +19,7 @@ Shared core (the parts: nspanel_core.h):
 - nspanel_flash.cpp: Nextion TFT upload (flash::)
 - nspanel_web.cpp: /nspanel and /nspanel.json web endpoints, WebUI screen mirror
 
-Flash layout, `safeboot`, crash-loop guard and updates from the release list: arch/esp32/safeboot_esp32.cpp, as on
-every ESP32 image
+Flash layout: esp32_4mb.csv, as on every ESP32 image
 
 */
 
@@ -62,7 +61,7 @@ namespace {
 // the NSPanel's pins by default; on any other board from the settings nspPower, nspBuzzer, read at boot
 // (nspanelBootSetup). -1: not connected. A pin another part of ESPurna holds already (a relay) is dropped. The display's
 // UART is a port of the uart module (nspPort, nspanel_link.cpp): without it the display part stays off
-int DisplayPowerPin { 4 };      // LOW = display ON
+int DisplayPowerPin { 4 };      // false = display ON
 int BuzzerPin { 21 };
 
 Config running;
@@ -73,7 +72,7 @@ namespace build {
 
 void powerWrite(int level) {
     if (DisplayPowerPin >= 0) {
-        digitalWrite(DisplayPowerPin, level);
+        espurna::pins::write(DisplayPowerPin, level);
     }
 }
 
@@ -143,7 +142,7 @@ const char* weekdayShort(int wday) {
 }
 
 // "Saturday, October 24, 2026" / "Суббота, 24 октября 2026", shorter when longer than DateMax
-String date(const tm& t) {
+espurna::string date(const tm& t) {
     const char* const full = weekdayFull(t.tm_wday);
     const char* const month = texts().month[((t.tm_mon % 12) + 12) % 12];
     const int year = t.tm_year + 1900;
@@ -177,7 +176,7 @@ String date(const tm& t) {
 }
 
 // "Oct 25" / "25 окт"
-String dayMonth(int mday, int mon) {
+espurna::string dayMonth(int mday, int mon) {
     const char* const month = texts().month_short[((mon % 12) + 12) % 12];
     char buf[24];
     if (current == Language::Russian) {
@@ -189,9 +188,9 @@ String dayMonth(int mday, int mon) {
 }
 
 // "Sun, Oct 25" / "Вс, 25 окт" (OHpanel home: 165 px / 26 bytes)
-String dateShort(const tm& t) {
-    String out(weekdayShort(t.tm_wday));
-    out += F(", ");
+espurna::string dateShort(const tm& t) {
+    espurna::string out(weekdayShort(t.tm_wday));
+    out += ", ";
     out += dayMonth(t.tm_mday, t.tm_mon);
     return out;
 }
@@ -244,8 +243,8 @@ int entityState(int index) {
     return live->state;
 }
 
-const String& entityValue(int index) {
-    static const String Empty;
+const espurna::string& entityValue(int index) {
+    static const espurna::string Empty;
     const auto* live = entityLive(index);
     return live ? live->value : Empty;
 }
@@ -272,7 +271,7 @@ int groupState(int group) {
 
 
 // publishes a value to the entity's command topic, through its "payload" template ("%s" = value)
-void entitySend(int index, const String& value) {
+void entitySend(int index, const espurna::string& value) {
     if ((index < 0) || (static_cast<size_t>(index) >= running.entities.size())) {
         return;
     }
@@ -285,8 +284,8 @@ void entitySend(int index, const String& value) {
     }
 
     if (strstr(entity.payload.c_str(), "%s")) {
-        String payload(entity.payload.c_str());
-        payload.replace(F("%s"), value);
+        espurna::string payload(entity.payload.c_str());
+        payload.replace("%s", value);
         mqttSendRaw(command.c_str(), payload.c_str(), false);
     } else {
         mqttSendRaw(command.c_str(), value.c_str(), false);
@@ -316,7 +315,7 @@ void entitySet(int index, Action action) {
     auto& live = running.live[index];
     if (entity.url_on.length() || entity.url_off.length()) {
         const bool on = (action == Action::On) || ((action == Action::Toggle) && (live.state != 1));
-        const String url(on ? entity.url_on.c_str() : entity.url_off.c_str());
+        const espurna::string url(on ? entity.url_on.c_str() : entity.url_off.c_str());
         if (url.length() && http::get(url) && !entity.topic.length() && (entity.url_on != entity.url_off)) {
             const int state = on ? 1 : 0;
             if (live.state != state) {
@@ -345,7 +344,7 @@ void entitySet(int index, Action action) {
         break;
     }
 
-    entitySend(index, String(value));
+    entitySend(index, espurna::string(value));
 }
 
 void groupSet(int group, Action action) {
@@ -404,7 +403,7 @@ void buildCards(std::vector<Card>& cards, size_t capacity, size_t title_max, boo
                 card.page = page;
                 card.first = 0;
                 card.count = SettingsTiles;
-                card.title = info.title.length() ? String(info.title.c_str()) : String(lang::texts().settings);
+                card.title = info.title.length() ? espurna::string(info.title.c_str()) : espurna::string(lang::texts().settings);
                 card.settings = true;
                 card.sub = sub;
                 utf8Truncate(card.title, title_max);
@@ -431,9 +430,9 @@ void buildCards(std::vector<Card>& cards, size_t capacity, size_t title_max, boo
             card.title = info.title.c_str();
             if (chunks > 1) {
                 card.title += ' ';
-                card.title += String(chunk + 1);
+                card.title += espurna::string(chunk + 1);
                 card.title += '/';
-                card.title += String(chunks);
+                card.title += espurna::string(chunks);
             }
             utf8Truncate(card.title, title_max);
             cards.push_back(std::move(card));
@@ -600,9 +599,9 @@ float value() {
     return reading_value;
 }
 
-String text() {
+espurna::string text() {
     if (!running.temperature || std::isnan(reading_value)) {
-        return String();
+        return espurna::string();
     }
 
     char buf[16];
@@ -639,7 +638,7 @@ void setup() {
 }
 
 void loop() {
-    if (active && (static_cast<int32_t>(millis() - until) >= 0)) {
+    if (active && (static_cast<int32_t>(espurna::time::ms() - until) >= 0)) {
         duty(0);
         active = false;
     }
@@ -654,7 +653,7 @@ void beep() {
 
     duty(128);
     active = true;
-    until = millis() + 40;
+    until = espurna::time::ms() + 40;
 }
 
 } // namespace buzzer
@@ -787,9 +786,9 @@ bool thermostatActive(const Thermostat& thermostat) {
         return false;
     }
 
-    String lower(value);
+    espurna::string lower(value);
     lower.toLowerCase();
-    return (lower != F("off")) && (lower != F("false")) && (lower != F("0")) && (lower != F("idle"));
+    return (lower != "off") && (lower != "false") && (lower != "0") && (lower != "idle");
 }
 
 float thermostatMin(const Thermostat& thermostat) {
@@ -812,7 +811,7 @@ float thermostatClamp(const Thermostat& thermostat, float value) {
 }
 
 // "21.5" / "21,5" (1 decimal unless the value is whole and the step too)
-String temperatureShort(float value) {
+espurna::string temperatureShort(float value) {
     char buf[16];
     snprintf(buf, sizeof(buf), "%.1f", value);
     lang::decimal(buf);
@@ -825,21 +824,21 @@ String temperatureShort(float value) {
 // -----------------------------------------------------------------------------
 
 void applyUiSettings(Config& out) {
-    const auto icons = getSetting(F("nspIcons"));
-    if (icons == F("center")) {
+    const auto icons = getSetting("nspIcons");
+    if (icons == "center") {
         out.layout = Layout::Center;
-    } else if (icons == F("corner")) {
+    } else if (icons == "corner") {
         out.layout = Layout::Corner;
     }
 
-    const auto theme = getSetting(F("nspTheme"));
-    if (theme == F("light")) {
+    const auto theme = getSetting("nspTheme");
+    if (theme == "light") {
         out.theme = Theme::Light;
-    } else if (theme == F("dark")) {
+    } else if (theme == "dark") {
         out.theme = Theme::Dark;
     }
 
-    const auto background = getSetting(F("nspBg"));
+    const auto background = getSetting("nspBg");
     for (size_t index = 0; index < (sizeof(BackgroundNames) / sizeof(BackgroundNames[0])); ++index) {
         if (background == BackgroundNames[index]) {
             out.background = index;
@@ -850,17 +849,17 @@ void applyUiSettings(Config& out) {
 
 void saveLayout(Layout layout) {
     running.layout = layout;
-    setSetting(F("nspIcons"), String((layout == Layout::Corner) ? F("corner") : F("center")));
+    setSetting("nspIcons", espurna::string((layout == Layout::Corner) ? "corner" : "center"));
 }
 
 void saveTheme(Theme theme) {
     running.theme = theme;
-    setSetting(F("nspTheme"), String((theme == Theme::Light) ? F("light") : F("dark")));
+    setSetting("nspTheme", espurna::string((theme == Theme::Light) ? "light" : "dark"));
 }
 
 void saveBackground(uint8_t background) {
     running.background = background;
-    setSetting(F("nspBg"), String(BackgroundNames[background])); // a bare const char* picks the bool overload
+    setSetting("nspBg", espurna::string(BackgroundNames[background])); // a bare const char* picks the bool overload
 }
 
 
@@ -870,8 +869,8 @@ void saveBackground(uint8_t background) {
 
 namespace {
 
-String last_load_error;
-String last_load_warnings;
+espurna::string last_load_error;
+espurna::string last_load_warnings;
 uint32_t generation { 0 };
 
 } // namespace
@@ -880,12 +879,12 @@ uint32_t configGeneration() {
     return generation;
 }
 
-void setLoadError(const String& error) {
+void setLoadError(const espurna::string& error) {
     last_load_error = error;
 }
 
 // a parsed config replaces the running one
-void applyConfig(Config&& next, const String& warnings, const char* source) {
+void applyConfig(Config&& next, const espurna::string& warnings, const char* source) {
     last_load_warnings = warnings;
     if (warnings.length()) {
         DEBUG_MSG_P(PSTR("[NSPANEL] Config warnings: %s\n"), warnings.c_str());
@@ -946,8 +945,8 @@ void applyConfig(Config&& next, const String& warnings, const char* source) {
 // used keeps the running one; only at boot (nothing running) the default is taken instead. The image is read in
 // place; only the first boot after the old JSON format (or an older image layout) compiles it once
 void load() {
-    String error;
-    String warnings;
+    espurna::string error;
+    espurna::string warnings;
     const char* source = "(default)";
     bool ok = false;
 
@@ -961,7 +960,7 @@ void load() {
         }
 
         if (ok) {
-            last_load_error = String();
+            last_load_error = espurna::string();
         } else {
             last_load_error = error;
             DEBUG_MSG_P(PSTR("[NSPANEL] Config error: %s\n"), error.c_str());
@@ -970,8 +969,8 @@ void load() {
             }
 
             next = Config();
-            warnings = String();
-            String ignored;
+            warnings = espurna::string();
+            espurna::string ignored;
             if (ParseResult::Ok != parseDefault(next, ignored, warnings)) {
                 DEBUG_MSG_P(PSTR("[NSPANEL] Default config failed: %s\n"), ignored.c_str());
                 return;
@@ -981,7 +980,7 @@ void load() {
 
         applyConfig(std::move(next), warnings, source);
     } ESPURNA_CATCH_BAD_ALLOC {
-        last_load_error = F("out of memory while applying the config");
+        last_load_error = "out of memory while applying the config";
         DEBUG_MSG_P(PSTR("[NSPANEL] Config: %s\n"), last_load_error.c_str());
     }
 }
@@ -1046,16 +1045,16 @@ void terminalReload(espurna::terminal::CommandContext&& ctx) {
 
 void terminalSend(espurna::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() < 2) {
-        terminalError(ctx, F("nspanel.send <payload> (OHpanel: a Nextion command, FF FF FF is added; Lovelace: a '~' command)"));
+        terminalError(ctx, "nspanel.send <payload> (OHpanel: a Nextion command, FF FF FF is added; Lovelace: a '~' command)");
         return;
     }
 
     if (flash::busy()) {
-        terminalError(ctx, F("TFT upload running"));
+        terminalError(ctx, "TFT upload running");
         return;
     }
 
-    String payload;
+    espurna::string payload;
     for (size_t n = 1; n < ctx.argv.size(); ++n) {
         if (n > 1) {
             payload += ' ';
@@ -1064,7 +1063,7 @@ void terminalSend(espurna::terminal::CommandContext&& ctx) {
     }
 
     if (!link::connected()) {
-        terminalError(ctx, F("no display driver connected"));
+        terminalError(ctx, "no display driver connected");
         return;
     }
 
@@ -1074,7 +1073,7 @@ void terminalSend(espurna::terminal::CommandContext&& ctx) {
 
 void terminalDetect(espurna::terminal::CommandContext&& ctx) {
     if (flash::busy()) {
-        terminalError(ctx, F("TFT upload running"));
+        terminalError(ctx, "TFT upload running");
         return;
     }
 
@@ -1084,25 +1083,25 @@ void terminalDetect(espurna::terminal::CommandContext&& ctx) {
 
 void terminalPage(espurna::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() != 2) {
-        terminalError(ctx, F("nspanel.page <page index | home | weather | settings>"));
+        terminalError(ctx, "nspanel.page <page index | home | weather | settings>");
         return;
     }
 
     if (flash::busy() || !link::connected()) {
-        terminalError(ctx, F("display not ready"));
+        terminalError(ctx, "display not ready");
         return;
     }
 
     const auto& arg = ctx.argv[1];
     int target = PageHome;
-    if (arg == F("weather")) {
+    if (arg == "weather") {
         target = PageWeather;
-    } else if (arg == F("settings")) {
+    } else if (arg == "settings") {
         target = PageSettings;
-    } else if (arg != F("home")) {
+    } else if (arg != "home") {
         target = arg.toInt();
         if ((target < 0) || (static_cast<size_t>(target) >= running.pages.size())) {
-            terminalError(ctx, F("no such page"));
+            terminalError(ctx, "no such page");
             return;
         }
     }
@@ -1132,7 +1131,7 @@ void terminalInfo(espurna::terminal::CommandContext&& ctx) {
 
     flash::info(ctx.output);
 
-    ctx.output.print(F("Last events:\n"));
+    ctx.output.print("Last events:\n");
     for (const auto& event : panelEvents()) {
         ctx.output.printf_P(PSTR("  %s\n"), event.c_str());
     }
@@ -1143,18 +1142,18 @@ void terminalInfo(espurna::terminal::CommandContext&& ctx) {
 // nspanel.flash <http(s)://.../file.tft> [baud]
 void terminalFlash(espurna::terminal::CommandContext&& ctx) {
     if ((ctx.argv.size() < 2) || (ctx.argv.size() > 3)) {
-        terminalError(ctx, F("nspanel.flash <http(s)://.../nspanel.tft> [baud, default 921600 | check]"));
+        terminalError(ctx, "nspanel.flash <http(s)://.../nspanel.tft> [baud, default 921600 | check]");
         return;
     }
 
     // nspanel.flash <url> check: the download alone, its CRC-32 in the log, the display left alone
-    if ((ctx.argv.size() == 3) && (ctx.argv[2] == F("check"))) {
-        String error;
+    if ((ctx.argv.size() == 3) && (ctx.argv[2] == "check")) {
+        espurna::string error;
         if (!flash::check(ctx.argv[1], error)) {
             terminalError(ctx, error);
             return;
         }
-        ctx.output.print(F("TFT download check started, the CRC-32 follows in the log and in nspanel.info\n"));
+        ctx.output.print("TFT download check started, the CRC-32 follows in the log and in nspanel.info\n");
         terminalOK(ctx);
         return;
     }
@@ -1168,38 +1167,38 @@ void terminalFlash(espurna::terminal::CommandContext&& ctx) {
             known = known || (value == rate);
         }
         if (!known) {
-            terminalError(ctx, F("baud: 115200, 230400, 250000, 256000, 512000 or 921600"));
+            terminalError(ctx, "baud: 115200, 230400, 250000, 256000, 512000 or 921600");
             return;
         }
     }
 
-    String error;
+    espurna::string error;
     if (!flash::start(ctx.argv[1], rate, error)) {
         terminalError(ctx, error);
         return;
     }
 
-    ctx.output.print(F("TFT upload started, progress in the log and in nspanel.info. Do not power off the panel.\n"));
+    ctx.output.print("TFT upload started, progress in the log and in nspanel.info. Do not power off the panel.\n");
     terminalOK(ctx);
 }
 
 // nspanel.capture start | print | stop: records the commands sent to the OHpanel TFT (start also sends the
 // theme again, so a capture replays on its own in the Nextion Editor simulator)
 void terminalCapture(espurna::terminal::CommandContext&& ctx) {
-    const String arg = (ctx.argv.size() == 2) ? ctx.argv[1] : String();
+    const espurna::string arg = (ctx.argv.size() == 2) ? ctx.argv[1] : espurna::string();
     auto* active = link::active();
     if (!active || !active->capture(Driver::Capture::Probe, ctx.output)) {
-        terminalError(ctx, F("OHpanel driver only"));
+        terminalError(ctx, "OHpanel driver only");
         return;
     }
-    if (arg == F("start")) {
+    if (arg == "start") {
         active->capture(Driver::Capture::Start, ctx.output);
-    } else if (arg == F("stop")) {
+    } else if (arg == "stop") {
         active->capture(Driver::Capture::Stop, ctx.output);
-    } else if (arg == F("print")) {
+    } else if (arg == "print") {
         active->capture(Driver::Capture::Dump, ctx.output);
     } else {
-        terminalError(ctx, F("nspanel.capture start | print | stop"));
+        terminalError(ctx, "nspanel.capture start | print | stop");
         return;
     }
     terminalOK(ctx);
@@ -1211,7 +1210,7 @@ void terminalEvent(espurna::terminal::CommandContext&& ctx) {
     if ((ctx.argv.size() != 4) || !active
         || !active->event(ctx.argv[1].c_str(), ctx.argv[2].c_str(), ctx.argv[3].c_str()))
     {
-        terminalError(ctx, F("nspanel.event <page> <component> <value> (OHpanel driver only)"));
+        terminalError(ctx, "nspanel.event <page> <component> <value> (OHpanel driver only)");
         return;
     }
     terminalOK(ctx);
@@ -1220,13 +1219,13 @@ void terminalEvent(espurna::terminal::CommandContext&& ctx) {
 // nspanel.url <http(s)://...>: the GET a "url" tile sends, to try an address from the panel
 void terminalUrl(espurna::terminal::CommandContext&& ctx) {
     if ((ctx.argv.size() != 2)
-        || !(ctx.argv[1].startsWith(F("http://")) || ctx.argv[1].startsWith(F("https://"))))
+        || !(ctx.argv[1].startsWith("http://") || ctx.argv[1].startsWith("https://")))
     {
-        terminalError(ctx, F("nspanel.url <http(s)://...>, the result follows in the log"));
+        terminalError(ctx, "nspanel.url <http(s)://...>, the result follows in the log");
         return;
     }
     if (!http::get(ctx.argv[1])) {
-        terminalError(ctx, F("not started (no WiFi, busy or low heap)"));
+        terminalError(ctx, "not started (no WiFi, busy or low heap)");
         return;
     }
     terminalOK(ctx);
@@ -1303,13 +1302,13 @@ void nspanelBootSetup() {
     BuzzerPin = pin("nspBuzzer", BuzzerPin);
 
     if (DisplayPowerPin >= 0) {
-        pinMode(DisplayPowerPin, OUTPUT);
-        build::powerWrite(LOW);
+        espurna::pins::mode(DisplayPowerPin, espurna::pins::Output);
+        build::powerWrite(false);
     }
 
     if (BuzzerPin >= 0) {
-        pinMode(BuzzerPin, OUTPUT);
-        digitalWrite(BuzzerPin, LOW);
+        espurna::pins::mode(BuzzerPin, espurna::pins::Output);
+        espurna::pins::write(BuzzerPin, false);
     }
 }
 

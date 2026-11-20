@@ -5,7 +5,6 @@
 
 #pragma once
 
-#include <Arduino.h>
 #include "../config/types.h"
 #include "../sensor.h"
 #include "../gpio.h"
@@ -74,8 +73,8 @@ public:
             return _pin == other;
         }
 
-        explicit operator String() const {
-            return String(_pin);
+        explicit operator espurna::string() const {
+            return espurna::string(_pin);
         }
 
         void detach() {
@@ -86,7 +85,7 @@ public:
             }
 
             ::gpioUnlock(_current);
-            ::detachInterrupt(_current);
+            espurna::pins::detach(_current);
             _current = GPIO_NONE;
         }
 
@@ -199,10 +198,10 @@ public:
     virtual unsigned char count() const = 0;
 
     // Descriptive name of the sensor
-    virtual String description() const = 0;
+    virtual espurna::string description() const = 0;
 
     // Descriptive name of the slot # index
-    virtual String description(unsigned char) const {
+    virtual espurna::string description(unsigned char) const {
         return description();
     }
 
@@ -211,9 +210,9 @@ public:
         return 0u;
     }
 
-    // String representation of the sensor address
-    virtual String address(unsigned char) const {
-        return String();
+    // espurna::string representation of the sensor address
+    virtual espurna::string address(unsigned char) const {
+        return espurna::string();
     }
 
     // Unit of the slot # index

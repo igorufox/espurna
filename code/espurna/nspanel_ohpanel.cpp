@@ -40,7 +40,7 @@ written for ESPurna. A copy of the Apache License 2.0 is at https://www.apache.o
 #include "ws.h"
 #endif
 
-#include <ArduinoJson.h>
+#include "json.h"
 
 #include <algorithm>
 #include <cmath>
@@ -391,7 +391,7 @@ uint8_t advance(uint32_t cp) {
     return 60;
 }
 
-uint32_t nextCodepoint(const String& text, size_t& pos) {
+uint32_t nextCodepoint(const espurna::string& text, size_t& pos) {
     const auto lead = static_cast<uint8_t>(text[pos++]);
     size_t extra = 0;
     uint32_t cp = lead;
@@ -414,7 +414,7 @@ uint32_t nextCodepoint(const String& text, size_t& pos) {
 }
 
 // cut at UTF-8 boundaries to the field's byte limit and pixel width, with "..." when shortened (no U+2026 in the TFT fonts)
-String fit(const String& text, const Field& field) {
+espurna::string fit(const espurna::string& text, const Field& field) {
     const uint32_t limit = (static_cast<uint32_t>(field.width) * Scale) / field.digit;
 
     uint32_t units = 0;
@@ -438,7 +438,7 @@ String fit(const String& text, const Field& field) {
         keep = pos;
     }
 
-    String out = text.substring(0, keep);
+    espurna::string out = text.substring(0, keep);
     while (out.endsWith(" ")) {
         out.remove(out.length() - 1);
     }
@@ -446,26 +446,26 @@ String fit(const String& text, const Field& field) {
     return out;
 }
 
-bool fits(const String& text, const Field& field) {
+bool fits(const espurna::string& text, const Field& field) {
     return fit(text, field) == text;
 }
 
-String temperatureText(float value) {
+espurna::string temperatureText(float value) {
     char buf[16];
     snprintf(buf, sizeof(buf), "%ld\xC2\xB0", lroundf(value));
     return buf;
 }
 
 // "23.4°" / "23,4°"
-String indoorText() {
+espurna::string indoorText() {
     if (!config().temperature || !config().temperature_show || std::isnan(ntc::value())) {
-        return String();
+        return espurna::string();
     }
 
     char buf[16];
     snprintf(buf, sizeof(buf), "%.1f", ntc::value());
     lang::decimal(buf);
-    String out(buf);
+    espurna::string out(buf);
     out += "\xC2\xB0";
     return out;
 }
@@ -538,12 +538,12 @@ struct State {
     // identification
     bool design_known { false };
     bool design_missing { false };  // 1A: no design_ver variable, not an OHpanel TFT
-    String design;
-    String model;
-    String comok;
+    espurna::string design;
+    espurna::string model;
+    espurna::string comok;
     uint32_t identify_sent { 0 };
     int tft_page { -1 };            // last page id from a 66 answer
-    String tft_page_name;           // last currentpage event
+    espurna::string tft_page_name;           // last currentpage event
     bool grids { false };           // the cards were split for full grids (a known design: own pages or drawn)
     bool pages { false };           // the design has the grid pages (DesignInfo::grids)
 
@@ -555,7 +555,7 @@ struct State {
     uint32_t reboot_last { 0 };
 
     // TX: commands without the terminator; an empty string is a flow-control sync
-    std::deque<String> queue;
+    std::deque<espurna::string> queue;
     bool waiting { false };
     uint32_t wait_since { 0 };
     size_t since_sync { 0 };
@@ -564,7 +564,7 @@ struct State {
     uint8_t ping_misses { 0 };
 
     // attribute cache of the current page load ("obj.attr" -> value)
-    std::map<String, String> cache;
+    std::map<espurna::string, espurna::string> cache;
 
     // UI
     Screen screen { Screen::None };
@@ -585,7 +585,7 @@ struct State {
     // touch handling
     uint32_t last_swipe { 0 };
     bool release_pending { false };
-    String release_component;
+    espurna::string release_component;
     uint32_t release_at { 0 };
     std::vector<uint32_t> pulse_until; // per item, `button` tiles
     uint32_t pulse_check { 0 };
@@ -603,7 +603,7 @@ struct State {
     std::vector<int> history;
     size_t thermo_item { 0 };       // item shown on the thermostat page
     int knob { -1 };                // ring bead under the knob, -1 none drawn
-    String thermo_state;            // state line drawn last
+    espurna::string thermo_state;            // state line drawn last
     bool thermo_chart { false };    // the thermostat page shows the history chart instead of the dial
     bool chart_drawn { false };     // the chart (or "no history") is on the screen
     uint32_t chart_since { 0 };     // when the chart was opened (the retained message is waited for)
@@ -661,16 +661,16 @@ bool designGrids() {
 
 // "custom ESPurna grids: layouts 4x2 3x3 3x2 2x2 1x2 (own pages), background aurora only"
 // "stock OHpanel v0.9.2: layouts 4x2 (stock tiles), 3x3 3x2 2x2 1x2 drawn, all backgrounds"
-String designText() {
+espurna::string designText() {
     const auto* info = design();
     if (!info) {
-        return state.design_known ? String(F("unknown design: stock pages assumed, layouts on the 4x2 slots")) : String();
+        return state.design_known ? espurna::string("unknown design: stock pages assumed, layouts on the 4x2 slots") : espurna::string();
     }
 
-    String out(info->name);
-    out += F(": layouts 4x2");
+    espurna::string out(info->name);
+    out += ": layouts 4x2";
     if (!info->grids) {
-        out += F(" (stock tiles),");
+        out += " (stock tiles),";
     }
     for (size_t index = 0; index < (sizeof(GridNames) / sizeof(GridNames[0])); ++index) {
         if (static_cast<Grid>(index) != Grid::G4x2) {
@@ -678,8 +678,8 @@ String designText() {
             out += GridNames[index];
         }
     }
-    out += info->grids ? F(" (own pages)") : F(" drawn");
-    out += info->backgrounds ? F(", all backgrounds") : F(", background aurora only");
+    out += info->grids ? " (own pages)" : " drawn";
+    out += info->backgrounds ? ", all backgrounds" : ", background aurora only";
     return out;
 }
 
@@ -737,7 +737,7 @@ namespace capture {
 constexpr size_t Max { 800 };
 
 bool on { false };
-std::vector<String> lines;
+std::vector<espurna::string> lines;
 
 } // namespace capture
 
@@ -755,19 +755,19 @@ bool posted { false };
 bool overflow { false };
 bool redraw { false };
 uint32_t since { 0 };
-String out;
+espurna::string out;
 
-void add(const String& command) {
+void add(const espurna::string& command) {
     if (overflow) {
         return;
     }
     if ((out.length() + command.length() + 1) > BufferMax) {
         overflow = true;
-        out = String();
+        out = espurna::string();
         return;
     }
     if (!out.length()) {
-        since = millis();
+        since = espurna::time::ms();
     }
     out += command;
     out += '\n';
@@ -775,7 +775,7 @@ void add(const String& command) {
 
 } // namespace mirror
 
-void write(const String& command) {
+void write(const espurna::string& command) {
     auto& port = uart::port();
     port.write(reinterpret_cast<const uint8_t*>(command.c_str()), command.length());
     const uint8_t end[3] {0xFF, 0xFF, 0xFF};
@@ -783,7 +783,7 @@ void write(const String& command) {
     if (capture::on && (capture::lines.size() < capture::Max)) {
         capture::lines.push_back(command);
     }
-    if (mirror::active && (command != F("sendme"))) {
+    if (mirror::active && (command != "sendme")) {
         mirror::add(command);
     }
     ++state.tx_commands;
@@ -794,14 +794,14 @@ void write(const String& command) {
 }
 
 void sendSync() {
-    write(F("sendme"));
+    write("sendme");
     state.waiting = true;
-    state.wait_since = millis();
+    state.wait_since = espurna::time::ms();
     state.since_sync = 0;
     ++state.syncs;
 }
 
-void cmd(String command) {
+void cmd(espurna::string command) {
     if (command.length() > CommandMax) {
         DEBUG_MSG_P(PSTR("[NSPANEL] Command too long (%u bytes), dropped\n"), command.length());
         return;
@@ -822,13 +822,13 @@ void sync() {
     if (!state.queue.empty() && !state.queue.back().length()) {
         return;
     }
-    cmd(String());
+    cmd(espurna::string());
 }
 
 void lostLink(const char* reason);
 
 void txLoop() {
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (state.waiting) {
         if (now - state.wait_since < SyncTimeoutMs) {
             return;
@@ -868,8 +868,8 @@ void txLoop() {
     }
 }
 
-String escape(const String& text) {
-    String out;
+espurna::string escape(const espurna::string& text) {
+    espurna::string out;
     out.reserve(text.length() + 4);
     for (size_t n = 0; n < text.length(); ++n) {
         const char c = text[n];
@@ -877,7 +877,7 @@ String escape(const String& text) {
             out += '\\';
             out += c;
         } else if (c == '\n') {
-            out += F("\\r");
+            out += "\\r";
         } else if (c != '\r') {
             out += c;
         }
@@ -886,7 +886,7 @@ String escape(const String& text) {
 }
 
 // true when the value is already on the TFT (assignments redraw and flicker, so they are not repeated)
-bool cached(const String& key, const String& value) {
+bool cached(const espurna::string& key, const espurna::string& value) {
     auto it = state.cache.find(key);
     if ((it != state.cache.end()) && ((*it).second == value)) {
         return true;
@@ -895,7 +895,7 @@ bool cached(const String& key, const String& value) {
     return false;
 }
 
-void forget(const String& prefix) {
+void forget(const espurna::string& prefix) {
     for (auto it = state.cache.begin(); it != state.cache.end();) {
         if ((*it).first.startsWith(prefix)) {
             it = state.cache.erase(it);
@@ -905,18 +905,18 @@ void forget(const String& prefix) {
     }
 }
 
-String name(const char* prefix, int n, const char* suffix) {
-    String out(prefix);
+espurna::string name(const char* prefix, int n, const char* suffix) {
+    espurna::string out(prefix);
     out += n;
     out += suffix;
     return out;
 }
 
-bool setNum(const String& obj, const char* attr, long value) {
-    String key(obj);
+bool setNum(const espurna::string& obj, const char* attr, long value) {
+    espurna::string key(obj);
     key += '.';
     key += attr;
-    const String text(value);
+    const espurna::string text(value);
     if (cached(key, text)) {
         return false;
     }
@@ -924,24 +924,24 @@ bool setNum(const String& obj, const char* attr, long value) {
     return true;
 }
 
-bool setText(const String& obj, const String& value) {
-    String key(obj);
-    key += F(".txt");
+bool setText(const espurna::string& obj, const espurna::string& value) {
+    espurna::string key(obj);
+    key += ".txt";
     if (cached(key, value)) {
         return false;
     }
-    String out(key);
-    out += F("=\"");
+    espurna::string out(key);
+    out += "=\"";
     out += escape(value);
     out += '"';
     cmd(std::move(out));
     return true;
 }
 
-void vis(const String& obj, bool on) {
-    String key(F("vis "));
+void vis(const espurna::string& obj, bool on) {
+    espurna::string key("vis ");
     key += obj;
-    const String value(on ? "1" : "0");
+    const espurna::string value(on ? "1" : "0");
     if (cached(key, value)) {
         return;
     }
@@ -951,7 +951,7 @@ void vis(const String& obj, bool on) {
 void setLevel(int level) {
     if (level != state.level) {
         state.level = level;
-        cmd(String(F("dim=")) + level);
+        cmd(espurna::string("dim=") + level);
     }
 }
 
@@ -961,38 +961,38 @@ void loadPage(int id, bool xy_touch = false) {
     state.cache.clear();
     state.home_k = 0;
     state.requested_page = id;
-    state.requested_at = millis();
+    state.requested_at = espurna::time::ms();
     state.touch_x = -1;
     state.touch_y = -1;
     const int8_t xy = xy_touch ? 1 : 0;
     if (xy != state.sendxy) {
         state.sendxy = xy;
-        cmd(String(F("sendxy=")) + xy);
+        cmd(espurna::string("sendxy=") + xy);
     }
-    cmd(String(F("page ")) + id);
+    cmd(espurna::string("page ") + id);
     sync();
     if ((id != page::Blank) && (id != 3)) {
-        cmd(F("busy_tm.en=0"));
-        cmd(F("vis busy1,0"));
-        cmd(F("vis busy2,0"));
-        cmd(F("vis busy3,0"));
+        cmd("busy_tm.en=0");
+        cmd("vis busy1,0");
+        cmd("vis busy2,0");
+        cmd("vis busy3,0");
     }
 }
 
 // pausing the refresh while the TFT still draws cuts the drawing off: sync first
 void refStop() {
     sync();
-    cmd(F("ref_stop"));
+    cmd("ref_stop");
 }
 
 void refStar() {
-    cmd(F("ref_star"));
+    cmd("ref_star");
     sync();
 }
 
 // filled circle (thermostat ring, drawn tile corners)
 void cirs(int x, int y, int r, uint16_t colour) {
-    String out(F("cirs "));
+    espurna::string out("cirs ");
     out += x;
     out += ',';
     out += y;
@@ -1004,7 +1004,7 @@ void cirs(int x, int y, int r, uint16_t colour) {
 }
 
 void fill(int x, int y, int w, int h, uint16_t colour) {
-    String out(F("fill "));
+    espurna::string out("fill ");
     out += x;
     out += ',';
     out += y;
@@ -1018,8 +1018,8 @@ void fill(int x, int y, int w, int h, uint16_t colour) {
 }
 
 // xstr x,y,w,h,font,pco,bco,xcen,ycen(1: centred),sta(3: no background, the text draws onto what is there),"text"
-void xstr(int x, int y, int w, int h, int font, uint16_t pco, uint16_t bco, int xcen, const String& text) {
-    String out(F("xstr "));
+void xstr(int x, int y, int w, int h, int font, uint16_t pco, uint16_t bco, int xcen, const espurna::string& text) {
+    espurna::string out("xstr ");
     out += x;
     out += ',';
     out += y;
@@ -1035,7 +1035,7 @@ void xstr(int x, int y, int w, int h, int font, uint16_t pco, uint16_t bco, int 
     out += bco;
     out += ',';
     out += xcen;
-    out += F(",1,3,\"");
+    out += ",1,3,\"";
     out += escape(text);
     out += '"';
     cmd(std::move(out));
@@ -1043,11 +1043,11 @@ void xstr(int x, int y, int w, int h, int font, uint16_t pco, uint16_t bco, int 
 
 void sendTheme() {
     const auto& bg = background();
-    cmd(String(F("th_accent=")) + accent());
-    cmd(String(F("th_text=")) + textColor());
-    cmd(String(F("th_dim=")) + dimColor());
-    cmd(String(F("bg_pic=")) + bg.pic);
-    cmd(String(F("bg_close=")) + bg.close);
+    cmd(espurna::string("th_accent=") + accent());
+    cmd(espurna::string("th_text=") + textColor());
+    cmd(espurna::string("th_dim=") + dimColor());
+    cmd(espurna::string("bg_pic=") + bg.pic);
+    cmd(espurna::string("bg_close=") + bg.close);
 }
 
 // -----------------------------------------------------------------------------
@@ -1057,7 +1057,7 @@ void sendTheme() {
 void markDirty() {
     if (!state.dirty) {
         state.dirty = true;
-        state.dirty_since = millis();
+        state.dirty_since = espurna::time::ms();
     }
 }
 
@@ -1067,16 +1067,16 @@ size_t rowSize() {
 }
 
 // one glyph per page of the row, circle-medium for the current one
-String dots(size_t count, size_t current) {
-    String out;
+espurna::string dots(size_t count, size_t current) {
+    espurna::string out;
     if (count <= 1) {
         return out;
     }
 
     if (count > DotsMax) {
-        out += String(current + 1);
+        out += espurna::string(current + 1);
         out += '/';
-        out += String(count);
+        out += espurna::string(count);
         return out;
     }
 
@@ -1092,10 +1092,10 @@ String dots(size_t count, size_t current) {
 void showDots(size_t count, size_t current) {
     const auto text = dots(count, current);
     if (text.length()) {
-        setText(F("dots"), text);
-        vis(F("dots"), true);
+        setText("dots", text);
+        vis("dots", true);
     } else {
-        vis(F("dots"), false);
+        vis("dots", false);
     }
 }
 
@@ -1125,21 +1125,21 @@ void homeClock() {
     if (timeValid(t)) {
         char buf[8];
         snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
-        setText(F("clock"), buf);
-        setText(F("date"), fit(lang::dateShort(t), Date));
-        vis(F("date"), true);
+        setText("clock", buf);
+        setText("date", fit(lang::dateShort(t), Date));
+        vis("date", true);
     } else {
-        setText(F("clock"), F("--:--"));
-        vis(F("date"), false);
+        setText("clock", "--:--");
+        vis("date", false);
     }
-    vis(F("clock"), true);
+    vis("clock", true);
 }
 
 void homeStatus() {
     const bool wifi = wifiConnected();
-    setText(F("wifi"), wifi ? String() : utf8(icons::WifiOff));
-    setNum(F("wifi"), "pco", color::Red);
-    vis(F("wifi"), true);
+    setText("wifi", wifi ? espurna::string() : utf8(icons::WifiOff));
+    setNum("wifi", "pco", color::Red);
+    vis("wifi", true);
 
 #if MQTT_SUPPORT
     const bool mqtt = mqttConnected();
@@ -1147,24 +1147,24 @@ void homeStatus() {
     const bool mqtt = true;
 #endif
     if (wifi && !mqtt) {
-        setText(F("top1"), utf8(icons::AlertCircleOutline));
-        setNum(F("top1"), "pco", color::Red);
-        vis(F("top1"), true);
+        setText("top1", utf8(icons::AlertCircleOutline));
+        setNum("top1", "pco", color::Red);
+        vis("top1", true);
     } else {
-        vis(F("top1"), false);
+        vis("top1", false);
     }
 }
 
 void homeIndoor() {
     const auto text = indoorText();
     if (text.length()) {
-        setText(F("row1_icon"), utf8(icons::HomeThermometerOutline));
-        vis(F("row1_icon"), true);
-        setText(F("row1"), fit(text, Row));
-        vis(F("row1"), true);
+        setText("row1_icon", utf8(icons::HomeThermometerOutline));
+        vis("row1_icon", true);
+        setText("row1", fit(text, Row));
+        vis("row1", true);
     } else {
-        vis(F("row1_icon"), false);
-        vis(F("row1"), false);
+        vis("row1_icon", false);
+        vis("row1", false);
     }
 }
 
@@ -1174,21 +1174,21 @@ void homeWeather() {
     const bool valid = config().weather && data.valid;
 
     if (valid) {
-        setNum(F("weather_pic"), "pic", bg.weather_home + weatherPicture(data.code, data.day));
-        vis(F("weather_pic"), true);
-        vis(F("weather_hs"), true);
-        setText(F("outdoor"), fit(temperatureText(data.temperature), Outdoor));
-        vis(F("outdoor"), true);
+        setNum("weather_pic", "pic", bg.weather_home + weatherPicture(data.code, data.day));
+        vis("weather_pic", true);
+        vis("weather_hs", true);
+        setText("outdoor", fit(temperatureText(data.temperature), Outdoor));
+        vis("outdoor", true);
     } else {
-        vis(F("weather_pic"), false);
-        vis(F("weather_hs"), false);
-        vis(F("outdoor"), false);
+        vis("weather_pic", false);
+        vis("weather_hs", false);
+        vis("outdoor", false);
     }
 
     // today's low, and the high after it: the variant k depends on the low's width (font 2, 6 px steps)
     int k = 0;
-    String low;
-    String high;
+    espurna::string low;
+    espurna::string high;
     if (valid && data.count) {
         low = temperatureText(data.days[0].tmin);
         high = temperatureText(data.days[0].tmax);
@@ -1209,21 +1209,21 @@ void homeWeather() {
     state.home_k = k;
 
     if (k) {
-        vis(F("low_arrow"), true);
+        vis("low_arrow", true);
         setText(name("low", k, ""), low);
         vis(name("low", k, ""), true);
         setText(name("high", k, ""), high);
         vis(name("high_arrow", k, ""), true);
         vis(name("high", k, ""), true);
     } else {
-        vis(F("low_arrow"), false);
+        vis("low_arrow", false);
     }
 }
 
 // tile / shortcut state
 struct ItemView {
     bool active { false };
-    String value;
+    espurna::string value;
 };
 
 const Thermostat* thermostatOf(const Item& item) {
@@ -1243,19 +1243,19 @@ float shownSetpoint(size_t index) {
 }
 
 // "21,9° → 21,5°", shorter variants when that does not fit the field (default: the tile state line)
-String thermostatTileText(size_t index, const Field& field = TileValue) {
+espurna::string thermostatTileText(size_t index, const Field& field = TileValue) {
     const auto* thermostat = thermostatOf(config().items[index]);
     if (!thermostat) {
-        return String();
+        return espurna::string();
     }
 
     const float current = entityNumber(thermostat->current);
     const float setpoint = shownSetpoint(index);
-    const String degree("\xC2\xB0");
-    const String arrow(" \xC2\xBB ");  // U+2192 is not in the TFT fonts
+    const espurna::string degree("\xC2\xB0");
+    const espurna::string arrow(" \xC2\xBB ");  // U+2192 is not in the TFT fonts
 
     if (std::isnan(current) && std::isnan(setpoint)) {
-        return F("--");
+        return "--";
     }
     if (std::isnan(setpoint)) {
         return temperatureShort(current) + degree;
@@ -1264,7 +1264,7 @@ String thermostatTileText(size_t index, const Field& field = TileValue) {
         return arrow.substring(1) + temperatureShort(setpoint) + degree;
     }
 
-    String out = temperatureShort(current) + degree + arrow + temperatureShort(setpoint) + degree;
+    espurna::string out = temperatureShort(current) + degree + arrow + temperatureShort(setpoint) + degree;
     if (fits(out, field)) {
         return out;
     }
@@ -1275,7 +1275,7 @@ String thermostatTileText(size_t index, const Field& field = TileValue) {
 ItemView itemView(size_t index) {
     ItemView out;
     const auto& item = config().items[index];
-    const auto now = millis();
+    const auto now = espurna::time::ms();
 
     switch (item.type) {
     case ItemType::Switch: {
@@ -1295,7 +1295,7 @@ ItemView itemView(size_t index) {
         const auto value = groupState(item.target.group);
         out.active = (value == 1);
         if (value == 1) {
-            out.value = String(lang::texts().on_count) + groupOnCount(item.target.group);
+            out.value = espurna::string(lang::texts().on_count) + groupOnCount(item.target.group);
         } else {
             out.value = (value == 0) ? lang::texts().off : "--";
         }
@@ -1353,14 +1353,14 @@ void homeRelays() {
 }
 
 // "–" while unknown; the format (one float conversion, checked by the parser) for numbers
-String infoValue(int entity, const Str& format) {
+espurna::string infoValue(int entity, const Str& format) {
     const auto* item = entityLive(entity);
     if (!item) {
-        return String();
+        return espurna::string();
     }
 
     if (!item->value.length()) {
-        return F("--");
+        return "--";
     }
     if (format.length() && !std::isnan(item->number)) {
         char buf[40];
@@ -1381,11 +1381,11 @@ void homeInfo() {
             vis(icon, true);
         }
 
-        String text = line.text;
+        espurna::string text = line.text;
         const auto value = infoValue(line.entity, line.format);
         if (value.length()) {
             if (text.length()) {
-                text += F("  ");
+                text += "  ";
             }
             text += value;
         }
@@ -1414,7 +1414,7 @@ void renderHome(bool full) {
     homeShortcuts();
     homeRelays();
     homeStatus();
-    vis(F("swipe"), true);
+    vis("swipe", true);
 
     if (full) {
         refStar();
@@ -1424,12 +1424,12 @@ void renderHome(bool full) {
 // Corner layout without a state line: the tile colour already shows on/off. The line above the
 // name holds the first half of a name that does not fit, both halves then use the small font.
 struct TileText {
-    String first;
-    String second;
+    espurna::string first;
+    espurna::string second;
     bool small { false };
 };
 
-TileText tileText(const String& text, const TilePage& page) {
+TileText tileText(const espurna::string& text, const TilePage& page) {
     TileText out;
     if (fits(text, page.name_field)) {
         out.second = text;
@@ -1469,7 +1469,7 @@ TileText tileText(const String& text, const TilePage& page) {
 }
 
 // one line in the name field: its own font, else the smaller one, shortened with "..." at last
-String tileName(const String& text, const TilePage& page, bool& small) {
+espurna::string tileName(const espurna::string& text, const TilePage& page, bool& small) {
     small = false;
     if (fits(text, page.name_field)) {
         return text;
@@ -1480,9 +1480,9 @@ String tileName(const String& text, const TilePage& page, bool& small) {
 
 // What a tile shows, independent of the layout objects
 struct TileFace {
-    String icon;
-    String value;              // corner: the line above the name
-    String name;
+    espurna::string icon;
+    espurna::string value;              // corner: the line above the name
+    espurna::string name;
     int32_t color { -1 };      // icon colour when active, -1 = accent
     bool active { false };
     bool corner { false };     // corner layout objects (_icon/_name/_value) instead of _center/_text
@@ -1523,10 +1523,10 @@ TileColors tileColors(const TileFace& face) {
 
 // thermostat state line of a tile: "21.9° » 21.5°", with " · Heating" while heating and " · 59%" (the humidity) where
 // they fit
-String thermostatFaceText(size_t index, const TilePage& page, bool heating) {
+espurna::string thermostatFaceText(size_t index, const TilePage& page, bool heating) {
     auto out = thermostatTileText(index, page.value_field);
     if (heating && page.states) {
-        auto longer = out + F(" \xC2\xB7 ") + lang::texts().heating;
+        auto longer = out + " \xC2\xB7 " + lang::texts().heating;
         if (fits(longer, page.value_field)) {
             out = longer;
         }
@@ -1536,7 +1536,7 @@ String thermostatFaceText(size_t index, const TilePage& page, bool heating) {
     const auto* thermostat = thermostatOf(config().items[index]);
     const float humidity = thermostat ? entityNumber(thermostat->humidity) : NAN;
     if (!std::isnan(humidity)) {
-        auto longer = out + F(" \xC2\xB7 ") + String(lroundf(humidity)) + '%';
+        auto longer = out + " \xC2\xB7 " + espurna::string(lroundf(humidity)) + '%';
         if (fits(longer, page.value_field)) {
             out = longer;
         }
@@ -1549,7 +1549,7 @@ TileFace itemFace(size_t index, const TilePage& page) {
     const auto view = itemView(index);
 
     TileFace face;
-    face.icon = item.icon;
+    face.icon = item.icon.c_str();
     face.active = view.active;
     face.color = item.color;
 
@@ -1665,20 +1665,20 @@ void showTile(size_t n, bool corner) {
 
 // a buttons page (`buttons`, or `buttons33` .. `buttons12` of the custom design): a card of items,
 // a "type": "settings" card, or the built-in settings (no card)
-void renderTiles(const String& title, bool settings, const Page* info, size_t first, size_t count,
+void renderTiles(const espurna::string& title, bool settings, const Page* info, size_t first, size_t count,
         bool dots, bool full, Grid grid = Grid::G4x2)
 {
     const auto& page = tilePage(grid);
     if (full) {
         loadPage(page.id);
-        setText(F("title"), fit(title, Title));
-        vis(F("title"), true);
-        vis(F("close"), true);
-        vis(F("close_hs"), true);
+        setText("title", fit(title, Title));
+        vis("title", true);
+        vis("close", true);
+        vis("close_hs", true);
         if (dots) {
             showCardDots();
         }
-        vis(F("swipe"), true);
+        vis("swipe", true);
     }
 
     bool corner[TilesMaxPage] {};
@@ -1705,7 +1705,7 @@ void renderTiles(const String& title, bool settings, const Page* info, size_t fi
 // -----------------------------------------------------------------------------
 
 struct RowView {
-    String value;
+    espurna::string value;
     bool active { false };
     bool plain { false };   // a value without on/off (text, thermostat): text colour, not dim
 };
@@ -1724,7 +1724,7 @@ RowView rowView(size_t index) {
     case ItemType::Button:
         break;
     case ItemType::Link:
-        out.value = F("\xC2\xBB");  // the fonts have no arrows
+        out.value = "\xC2\xBB";  // the fonts have no arrows
         break;
     case ItemType::Text:
         out.value = view.value;
@@ -1739,8 +1739,8 @@ RowView rowView(size_t index) {
 }
 
 // true when the object was shown since the page load (the vis cache)
-bool shown(const String& obj) {
-    String key(F("vis "));
+bool shown(const espurna::string& obj) {
+    espurna::string key("vis ");
     key += obj;
     const auto it = state.cache.find(key);
     return (it != state.cache.end()) && ((*it).second == "1");
@@ -1800,7 +1800,7 @@ void drawRow(size_t n, size_t index, bool full) {
     setNum(label, "pco", (view.active || view.plain) ? textColor() : dimColor());
     setText(label, fit(item.name, *label_field));
 
-    String value;
+    espurna::string value;
     if (value_part) {
         value = name("row", n, value_part);
         setNum(value, "pco", view.active ? on_icon : (view.plain ? textColor() : dimColor()));
@@ -1818,12 +1818,12 @@ void drawRow(size_t n, size_t index, bool full) {
 void renderList(const Card& card, bool full) {
     if (full) {
         loadPage(page::EntitiesRows, true);
-        setText(F("title"), fit(card.title, Title));
-        vis(F("title"), true);
-        vis(F("close"), true);
-        vis(F("close_hs"), true);
+        setText("title", fit(card.title, Title));
+        vis("title", true);
+        vis("close", true);
+        vis("close_hs", true);
         showCardDots();
-        vis(F("swipe"), true);
+        vis("swipe", true);
         refStop();
     }
 
@@ -1967,7 +1967,7 @@ void shape(int x, int y, int w, int h, uint16_t colour) {
     cirs(x + w - 1 - Radius, y + h - 1 - Radius, Radius, colour);
 }
 
-void text(int x, int y, const Box& box, int font, uint16_t pco, uint16_t bco, bool centred, const String& value) {
+void text(int x, int y, const Box& box, int font, uint16_t pco, uint16_t bco, bool centred, const espurna::string& value) {
     if (value.length()) {
         xstr(x + box.x, y + box.y, box.w, box.h, font, pco, bco, centred ? 1 : 0, value);
     }
@@ -1978,7 +1978,7 @@ void text(int x, int y, const Box& box, int font, uint16_t pco, uint16_t bco, bo
 bool drawTile(const Layout& layout, size_t n, const TileFace& face) {
     const auto colors = tileColors(face);
 
-    String look;
+    espurna::string look;
     look.reserve(face.icon.length() + face.value.length() + face.name.length() + 32);
     look += colors.bco;
     look += face.corner ? 'c' : 'm';
@@ -2030,13 +2030,13 @@ void renderDrawn(const Card& card, bool full) {
 
     if (full) {
         loadPage(page::Buttons, true);
-        cmd(F("vis 255,0"));
-        setText(F("title"), fit(card.title, Title));
-        vis(F("title"), true);
-        vis(F("close"), true);
-        vis(F("close_hs"), true);
+        cmd("vis 255,0");
+        setText("title", fit(card.title, Title));
+        vis("title", true);
+        vis("close", true);
+        vis("close_hs", true);
         showCardDots();
-        vis(F("swipe"), true);
+        vis("swipe", true);
     }
 
     const auto& info = config().pages[card.page];
@@ -2120,7 +2120,7 @@ void circle(int x, int y, int r, uint16_t colour) {
 
 // the background picture over a box (OHpanel restore())
 void restore(int x, int y, int w, int h) {
-    String out(F("picq "));
+    espurna::string out("picq ");
     out += x;
     out += ',';
     out += y;
@@ -2192,7 +2192,7 @@ int knobFor(const Thermostat& thermostat, float setpoint) {
     return static_cast<int>(lroundf(share * (Beads - 1)));
 }
 
-uint32_t textWidth(const String& text, uint8_t digit) {
+uint32_t textWidth(const espurna::string& text, uint8_t digit) {
     uint32_t units = 0;
     size_t pos = 0;
     while (pos < text.length()) {
@@ -2206,7 +2206,7 @@ void drawState(const Thermostat& thermostat) {
     const bool heating = thermostatActive(thermostat);
     const float humidity = entityNumber(thermostat.humidity);
 
-    String text;
+    espurna::string text;
     if (heating) {
         text = lang::texts().heating;
     }
@@ -2214,14 +2214,14 @@ void drawState(const Thermostat& thermostat) {
         char buf[16];
         snprintf(buf, sizeof(buf), "%ld%%", lroundf(humidity));
         if (heating) {
-            text += F(" \xC2\xB7 ");
+            text += " \xC2\xB7 ";
         }
         text += buf;
     }
     text = fit(text, ThermoState);
 
     const uint16_t colour = heating ? color::Heat : dimColor();
-    String key(text);
+    espurna::string key(text);
     key += '|';
     key += colour;
     if (key == state.thermo_state) {
@@ -2239,28 +2239,28 @@ void drawState(const Thermostat& thermostat) {
     const auto glyph = utf8(heating ? icons::Fire : icons::WaterPercent);
 
     // xstr x,y,w,h,font,pco,bco,xcen,ycen,sta(3: no background),"text"
-    String out(F("xstr "));
+    espurna::string out("xstr ");
     out += x;
     out += ',';
     out += StateY;
-    out += F(",24,");
+    out += ",24,";
     out += StateH;
-    out += F(",7,");
+    out += ",7,";
     out += colour;
-    out += F(",0,1,1,3,\"");
+    out += ",0,1,1,3,\"";
     out += glyph;
     out += '"';
     cmd(std::move(out));
 
-    out = F("xstr ");
+    out = "xstr ";
     out += x + 28;
     out += ',';
     out += StateY + 3;
     out += ',';
     out += width + 2;
-    out += F(",18,1,");
+    out += ",18,1,";
     out += colour;
-    out += F(",0,0,1,3,\"");
+    out += ",0,0,1,3,\"";
     out += escape(text);
     out += '"';
     cmd(std::move(out));
@@ -2307,7 +2307,7 @@ constexpr int PillW { 120 };
 constexpr int PillH { 32 };
 
 void line(int x1, int y1, int x2, int y2, uint16_t colour) {
-    String out(F("line "));
+    espurna::string out("line ");
     out += x1;
     out += ',';
     out += y1;
@@ -2326,7 +2326,7 @@ void pill() {
     xstr(PillX + 34, PillY + 7, PillW - 40, 18, 1, color::White, 0, 0, lang::texts().history);
 }
 
-void message(const String& text) {
+void message(const espurna::string& text) {
     drawn::shape(BoxX, BoxY, BoxW, BoxH, Box);
     xstr(BoxX, BoxY + BoxH / 2 - 12, BoxW, 24, 1, color::LightGrey, 0, 1, text);
 }
@@ -2421,7 +2421,7 @@ bool heating(const history::Series& series, const Scale& scale, size_t index) {
 // a colour bar and its name in font 0 (8 px per digit); where the next one starts. compact: four entries
 // (with the humidity) fit the plot width
 int legend(int x, uint16_t colour, const char* text, bool compact = false) {
-    const int width = static_cast<int>(thermo::textWidth(String(text), 8)) + 4;
+    const int width = static_cast<int>(thermo::textWidth(espurna::string(text), 8)) + 4;
     const int bar = compact ? 10 : 16;
     const int gap = compact ? 16 : 22;
     fill(x, BoxY + 13, bar, 3, colour);
@@ -2479,7 +2479,7 @@ void drawOn(const history::Series& series) {
     for (int percent = 0; percent <= 100; percent += 50) {
         const int y = scale.y(percent * 10);
         line(PlotX0, y, scale.right, y, Grid);
-        xstr(BoxX + 2, y - 9, PlotX0 - BoxX - 6, 18, 0, color::LightGrey, 0, 2, String(percent) + '%');
+        xstr(BoxX + 2, y - 9, PlotX0 - BoxX - 6, 18, 0, color::LightGrey, 0, 2, espurna::string(percent) + '%');
     }
     hours(series, scale);
 
@@ -2502,7 +2502,7 @@ void drawOn(const history::Series& series) {
     char buf[16];
     snprintf(buf, sizeof(buf), "%.1f", (sum / 100.0f) * series.step / 3600.0f);
     lang::decimal(buf);
-    legend(PlotX0, color::Heat, (String(lang::texts().on_count) + buf + lang::texts().hours).c_str());
+    legend(PlotX0, color::Heat, (espurna::string(lang::texts().on_count) + buf + lang::texts().hours).c_str());
 }
 
 void draw(const history::Series& series) {
@@ -2584,7 +2584,7 @@ void draw(const history::Series& series) {
     {
         const int y = scale.y(degree * 10);
         line(PlotX0, y, scale.right, y, Grid);
-        xstr(BoxX + 2, y - 9, PlotX0 - BoxX - 6, 18, 0, color::LightGrey, 0, 2, String(degree) + F("\xC2\xB0"));
+        xstr(BoxX + 2, y - 9, PlotX0 - BoxX - 6, 18, 0, color::LightGrey, 0, 2, espurna::string(degree) + "\xC2\xB0");
     }
 
     hours(series, scale);
@@ -2594,7 +2594,7 @@ void draw(const history::Series& series) {
         for (int percent = ((scale.hlow + every_h - 1) / every_h) * every_h; percent <= scale.hhigh; percent += every_h) {
             const int y = scale.y(scale.humidityAsDegrees(percent * 10));
             xstr(scale.right + 4, y - 9, BoxX + BoxW - scale.right - 6, 18, 0, Humidity, 0, 0,
-                String(percent) + '%');
+                espurna::string(percent) + '%');
         }
 
         std::vector<int16_t> mapped;
@@ -2630,13 +2630,13 @@ void renderChart(bool full) {
 
     if (full) {
         loadPage(page::Thermostat);
-        setText(F("title"), fit(item.name, Title));
-        vis(F("title"), true);
-        vis(F("close"), true);
-        vis(F("close_hs"), true);
-        vis(F("swipe"), true);
+        setText("title", fit(item.name, Title));
+        vis("title", true);
+        vis("close", true);
+        vis("close_hs", true);
+        vis("swipe", true);
         state.chart_drawn = false;
-        state.chart_since = millis();
+        state.chart_since = espurna::time::ms();
         history::open(historyOf(item));
         return;
     }
@@ -2644,14 +2644,14 @@ void renderChart(bool full) {
     history::Series series;
     if (history::take(series)) {
         const size_t count = std::min(std::max(series.temperature.size(), series.on.size()), chart::PointsMax);
-        String title(item.name);
-        title += F(" \xC2\xB7 ");
+        espurna::string title(item.name);
+        title += " \xC2\xB7 ";
         title += (series.step * (count - 1) + 1800) / 3600;
         title += lang::texts().hours;
-        setText(F("title"), fit(title, Title));
+        setText("title", fit(title, Title));
         chart::draw(series);
         state.chart_drawn = true;
-    } else if (!state.chart_drawn && (millis() - state.chart_since >= chart::WaitMs)) {
+    } else if (!state.chart_drawn && (espurna::time::ms() - state.chart_since >= chart::WaitMs)) {
         chart::message(lang::texts().no_history);
         state.chart_drawn = true;
     }
@@ -2699,62 +2699,62 @@ void renderThermostat(bool full) {
     if (full) {
         loadPage(page::Thermostat);
         state.knob = -1;
-        state.thermo_state = String();
-        setText(F("title"), fit(item.name, Title));
-        vis(F("title"), true);
-        vis(F("close"), true);
-        vis(F("close_hs"), true);
-        vis(F("swipe"), true);
+        state.thermo_state = espurna::string();
+        setText("title", fit(item.name, Title));
+        vis("title", true);
+        vis("close", true);
+        vis("close_hs", true);
+        vis("swipe", true);
         refStop();
-        setNum(F("minus"), "bco", color::Button);
-        setNum(F("minus"), "pco", color::White);
-        setNum(F("plus"), "bco", color::Button);
-        setNum(F("plus"), "pco", color::White);
-        setText(F("minus"), utf8(icons::Minus));
-        setText(F("plus"), utf8(icons::Plus));
+        setNum("minus", "bco", color::Button);
+        setNum("minus", "pco", color::White);
+        setNum("plus", "bco", color::Button);
+        setNum("plus", "pco", color::White);
+        setText("minus", utf8(icons::Minus));
+        setText("plus", utf8(icons::Plus));
     }
 
     const float current = entityNumber(thermostat->current);
-    String now;
+    espurna::string now;
     if (!std::isnan(current)) {
         now = temperatureShort(current);
-        now += F("\xC2\xB0");
+        now += "\xC2\xB0";
     } else {
-        now = F("--");
+        now = "--";
     }
     // a number must never become "22,...": the estimated width is too pessimistic for font 6,
     // only keep the byte limit (the TFT itself clips at worst the degree sign)
     if (now.length() > ThermoNow.bytes) {
-        now = String(lroundf(current)) + F("\xC2\xB0");
+        now = espurna::string(lroundf(current)) + "\xC2\xB0";
     }
-    setText(F("now"), now);
-    vis(F("now"), true);
+    setText("now", now);
+    vis("now", true);
 
     const float setpoint = shownSetpoint(state.thermo_item);
     const bool editing = (state.edit_item == static_cast<int>(state.thermo_item)) && !std::isnan(state.edit_value);
-    String target(lang::texts().target);
+    espurna::string target(lang::texts().target);
     if (std::isnan(setpoint)) {
-        target += F("--");
+        target += "--";
     } else {
         target += temperatureShort(setpoint);
-        target += F("\xC2\xB0");
+        target += "\xC2\xB0";
     }
-    setNum(F("target"), "pco", editing ? accent() : color::LightGrey);
-    setText(F("target"), fit(target, ThermoTarget));
-    vis(F("target"), true);
+    setNum("target", "pco", editing ? accent() : color::LightGrey);
+    setText("target", fit(target, ThermoTarget));
+    vis("target", true);
 
     if (full) {
         refStar();
         // shapes once the page is drawn: the discs under minus / plus, then the icons over them
         thermo::circle(thermo::MinusX, thermo::ButtonY, thermo::ButtonR, color::Button);
         thermo::circle(thermo::PlusX, thermo::ButtonY, thermo::ButtonR, color::Button);
-        vis(F("minus"), true);
-        vis(F("plus"), true);
-        vis(F("minus_hs"), true);
-        vis(F("plus_hs"), true);
+        vis("minus", true);
+        vis("plus", true);
+        vis("minus_hs", true);
+        vis("plus_hs", true);
         if (thermostat->history.length()) {
             chart::pill();
-            vis(F("m11_hs"), true);
+            vis("m11_hs", true);
         }
     }
 
@@ -2802,8 +2802,8 @@ void thermoLoop(uint32_t now) {
 // an edit of another thermostat is sent right away
 void thermoFlush() {
     if (state.edit_unsent) {
-        state.edit_tap = millis() - thermo::SendDelayMs;
-        thermoLoop(millis());
+        state.edit_tap = espurna::time::ms() - thermo::SendDelayMs;
+        thermoLoop(espurna::time::ms());
     }
 }
 
@@ -2833,12 +2833,12 @@ void thermoStep(int direction) {
     buzzer::beep();
     state.edit_item = index;
     state.edit_value = thermostatClamp(*thermostat, base + direction * thermostat->step);
-    state.edit_tap = millis();
+    state.edit_tap = espurna::time::ms();
     state.edit_unsent = true;
 
     // the TFT colours the icon with th_accent while it is pressed
-    String reset(direction < 0 ? F("minus") : F("plus"));
-    reset += F(".pco=");
+    espurna::string reset(direction < 0 ? "minus" : "plus");
+    reset += ".pco=";
     reset += color::White;
     cmd(std::move(reset));
     renderThermostat(false);
@@ -2848,7 +2848,7 @@ size_t weatherDays() {
     return std::min<size_t>(weather::current().count, config().weather_days);
 }
 
-void chip(size_t n, uint16_t glyph, const String& value, const String& label) {
+void chip(size_t n, uint16_t glyph, const espurna::string& value, const espurna::string& label) {
     const auto pic = name("chip", n, "_pic");
     const auto icon = name("chip", n, "_icon");
     const auto text = name("chip", n, "_value");
@@ -2872,32 +2872,32 @@ void renderWeather(bool full) {
 
     if (full) {
         loadPage(page::Weather);
-        vis(F("close"), true);
-        vis(F("close_hs"), true);
-        vis(F("swipe"), true);
+        vis("close", true);
+        vis("close_hs", true);
+        vis("swipe", true);
         refStop();
     }
 
     if (!days) {
-        setText(F("title"), lang::texts().no_weather);
-        vis(F("title"), true);
+        setText("title", lang::texts().no_weather);
+        vis("title", true);
     } else {
         const auto& day = data.days[state.day];
-        String title = (state.day == 0) ? String(lang::texts().today)
-            : (state.day == 1) ? String(lang::texts().tomorrow)
-            : String(lang::weekdayFull(day.wday));
-        title += F(" \xC2\xB7 ");
+        espurna::string title = (state.day == 0) ? espurna::string(lang::texts().today)
+            : (state.day == 1) ? espurna::string(lang::texts().tomorrow)
+            : espurna::string(lang::weekdayFull(day.wday));
+        title += " \xC2\xB7 ";
         title += lang::dayMonth(day.mday, day.mon);
-        setText(F("title"), fit(title, Title));
-        vis(F("title"), true);
+        setText("title", fit(title, Title));
+        vis("title", true);
 
-        setNum(F("weather_pic"), "pic", background().weather_page + weatherPicture(day.code, true));
-        vis(F("weather_pic"), true);
-        setText(F("high"), fit(temperatureText(day.tmax), WeatherHigh));
-        vis(F("high"), true);
-        vis(F("low_arrow"), true);
-        setText(F("low"), fit(temperatureText(day.tmin), WeatherLow));
-        vis(F("low"), true);
+        setNum("weather_pic", "pic", background().weather_page + weatherPicture(day.code, true));
+        vis("weather_pic", true);
+        setText("high", fit(temperatureText(day.tmax), WeatherHigh));
+        vis("high", true);
+        vis("low_arrow", true);
+        setText("low", fit(temperatureText(day.tmin), WeatherLow));
+        vis("low", true);
 
         size_t n = 1;
         char buf[16];
@@ -3114,7 +3114,7 @@ void leaveOther(bool show, bool tell) {
     other::closed = nullptr;
     state.screen = ((other::back == Screen::Other) || (other::back == Screen::Blank) || (other::back == Screen::None))
         ? Screen::Home : other::back;
-    state.last_touch = millis();
+    state.last_touch = espurna::time::ms();
     if (show) {
         showCurrent();
     }
@@ -3216,14 +3216,14 @@ void resetTransport() {
 void search() {
     const uint8_t ff[3] {0xFF, 0xFF, 0xFF};
     uart::port().write(ff, sizeof(ff));
-    write(F("sendme"));
-    write(F("get design_ver"));
-    state.last_search = millis();
+    write("sendme");
+    write("get design_ver");
+    state.last_search = espurna::time::ms();
 }
 
 void setLink(Link value) {
     state.link = value;
-    state.link_since = millis();
+    state.link_since = espurna::time::ms();
 }
 
 void lostLink(const char* reason) {
@@ -3235,21 +3235,21 @@ void lostLink(const char* reason) {
 
 void identify() {
     setLink(Link::Identify);
-    state.identify_sent = millis();
+    state.identify_sent = espurna::time::ms();
     if (!state.design_known) {
-        write(F("get design_ver"));
+        write("get design_ver");
     }
-    write(F("connect"));
-    write(F("sendme")); // swallowed after connect on the device
+    write("connect");
+    write("sendme"); // swallowed after connect on the device
 }
 
 void ready() {
     setLink(Link::Ready);
     state.was_ready = true;
     state.lost = false;
-    state.last_rx = millis();
-    state.last_ping = millis();
-    state.last_touch = millis();
+    state.last_rx = espurna::time::ms();
+    state.last_ping = espurna::time::ms();
+    state.last_touch = espurna::time::ms();
     state.level = -1;
     state.dimmed = false;
     state.asleep = false;
@@ -3285,10 +3285,10 @@ void onRebootFrame() {
         resetTransport();
         state.design_known = false;
         state.design_missing = false;
-        state.reboot_at = millis();
+        state.reboot_at = espurna::time::ms();
         setLink(Link::Rebooted);
     }
-    state.reboot_last = millis();
+    state.reboot_last = espurna::time::ms();
 }
 
 // -----------------------------------------------------------------------------
@@ -3297,7 +3297,7 @@ void onRebootFrame() {
 
 // any event but currentpage: true when the event must not act (it woke the screen)
 bool touched() {
-    state.last_touch = millis();
+    state.last_touch = espurna::time::ms();
     if (state.asleep) {
         state.asleep = false;
         state.dimmed = false;
@@ -3340,7 +3340,7 @@ void tap(size_t index) {
         if (state.pulse_until.size() != config().items.size()) {
             state.pulse_until.assign(config().items.size(), 0);
         }
-        state.pulse_until[index] = millis() + PulseMs;
+        state.pulse_until[index] = espurna::time::ms() + PulseMs;
         state.pulse_check = state.pulse_until[index] + 10;
         markDirty();
     }
@@ -3348,9 +3348,9 @@ void tap(size_t index) {
     itemTap(index, -1);
 }
 
-void swipe(const String& direction) {
-    const bool left = (direction == F("left"));
-    const bool right = (direction == F("right"));
+void swipe(const espurna::string& direction) {
+    const bool left = (direction == "left");
+    const bool right = (direction == "right");
 
     switch (state.screen) {
     case Screen::Home:
@@ -3465,8 +3465,8 @@ void settingsTap(long n) {
 }
 
 // a release that survived the swipe window
-void act(const String& component) {
-    if (component == F("close")) {
+void act(const espurna::string& component) {
+    if (component == "close") {
         buzzer::beep();
         if ((state.screen == Screen::Thermostat) && state.thermo_chart) {
             closeChart();
@@ -3487,29 +3487,29 @@ void act(const String& component) {
         if (state.thermo_chart) {
             return;
         }
-        if (component == F("minus")) {
+        if (component == "minus") {
             thermoStep(-1);
-        } else if (component == F("plus")) {
+        } else if (component == "plus") {
             thermoStep(1);
-        } else if (component == F("mode1")) {
+        } else if (component == "mode1") {
             openChart();
         }
         return;
     }
 
-    if (component.startsWith(F("tile")) && (state.screen == Screen::Settings)) {
+    if (component.startsWith("tile") && (state.screen == Screen::Settings)) {
         settingsTap(component.substring(4).toInt());
         return;
     }
 
-    if (component.startsWith(F("tile")) && (state.screen == Screen::Buttons) && (state.card < state.cards.size())
+    if (component.startsWith("tile") && (state.screen == Screen::Buttons) && (state.card < state.cards.size())
         && state.cards[state.card].settings)
     {
         settingsTap(component.substring(4).toInt());
         return;
     }
 
-    if ((component == F("weather")) && (state.screen == Screen::Home)) {
+    if ((component == "weather") && (state.screen == Screen::Home)) {
         if (config().weather && weatherDays()) {
             buzzer::beep();
             showWeather(0);
@@ -3517,7 +3517,7 @@ void act(const String& component) {
         return;
     }
 
-    if (component.startsWith(F("tile")) && (state.screen == Screen::Buttons) && (state.card < state.cards.size())) {
+    if (component.startsWith("tile") && (state.screen == Screen::Buttons) && (state.card < state.cards.size())) {
         const auto& card = state.cards[state.card];
         const int n = card.list ? -1 : slotTile(component.substring(4).toInt(), card.grid);
         if ((n >= 0) && (static_cast<size_t>(n) < card.count)) {
@@ -3527,7 +3527,7 @@ void act(const String& component) {
     }
 
     // "row<n>": a tap on a list row, from the sendxy coordinates
-    if (component.startsWith(F("row")) && (state.screen == Screen::Buttons) && (state.card < state.cards.size())) {
+    if (component.startsWith("row") && (state.screen == Screen::Buttons) && (state.card < state.cards.size())) {
         const auto& card = state.cards[state.card];
         const auto n = component.substring(3).toInt();
         if (card.list && (n >= 1) && (static_cast<size_t>(n) <= std::min<size_t>(card.count, RowsPerSheet))) {
@@ -3536,7 +3536,7 @@ void act(const String& component) {
         return;
     }
 
-    if (component.startsWith(F("shortcut")) && (state.screen == Screen::Home)) {
+    if (component.startsWith("shortcut") && (state.screen == Screen::Home)) {
         const auto n = component.substring(8).toInt();
         if ((n >= 1) && (static_cast<size_t>(n) <= std::min(config().shortcuts.size(), ShortcutsMax))) {
             tap(config().shortcuts[n - 1]);
@@ -3545,14 +3545,14 @@ void act(const String& component) {
     }
 }
 
-int pageId(const String& name) {
-    if (name == F("home")) {
+int pageId(const espurna::string& name) {
+    if (name == "home") {
         return page::Home;
     }
-    if (name == F("weather")) {
+    if (name == "weather") {
         return page::Weather;
     }
-    if (name == F("blank")) {
+    if (name == "blank") {
         return page::Blank;
     }
     // `buttons` and the grid pages of the custom design
@@ -3561,10 +3561,10 @@ int pageId(const String& name) {
             return tiles.id;
         }
     }
-    if (name == F("entities_rows")) {
+    if (name == "entities_rows") {
         return page::EntitiesRows;
     }
-    if (name == F("thermostat")) {
+    if (name == "thermostat") {
         return page::Thermostat;
     }
     return -1;
@@ -3572,15 +3572,15 @@ int pageId(const String& name) {
 
 void onEvent(const char* page_name, const char* component, const char* value) {
     ++state.events;
-    const String comp(component);
-    const String val(value);
+    const espurna::string comp(component);
+    const espurna::string val(value);
 
-    if (comp == F("currentpage")) {
+    if (comp == "currentpage") {
         state.tft_page_name = page_name;
         const int id = pageId(state.tft_page_name);
         // the TFT never navigates by itself; anything else is put back
         if ((state.link == Link::Ready) && (state.requested_page >= 0) && (id != state.requested_page)
-            && (millis() - state.requested_at >= PageRetryMs))
+            && (espurna::time::ms() - state.requested_at >= PageRetryMs))
         {
             DEBUG_MSG_P(PSTR("[NSPANEL] TFT shows '%s', expected page %d\n"), page_name, state.requested_page);
             showCurrent();
@@ -3602,8 +3602,8 @@ void onEvent(const char* page_name, const char* component, const char* value) {
         return;
     }
 
-    const auto now = millis();
-    if (comp == F("swipe")) {
+    const auto now = espurna::time::ms();
+    if (comp == "swipe") {
         state.last_swipe = now;
         state.release_pending = false;
         swipe(val);
@@ -3611,17 +3611,17 @@ void onEvent(const char* page_name, const char* component, const char* value) {
     }
 
     // a touch on the page background acts on nothing; it must not replace a pending row or tile release
-    if (comp == F("touch")) {
+    if (comp == "touch") {
         return;
     }
 
-    if (val == F("release")) {
+    if (val == "release") {
         if (now - state.last_swipe < SwipeGuardMs) {
             return;
         }
         // a tile of the page before the last page change: its slot means another item now
-        if (comp.startsWith(F("tile")) && (state.requested_page >= 0)) {
-            const int id = pageId(String(page_name));
+        if (comp.startsWith("tile") && (state.requested_page >= 0)) {
+            const int id = pageId(espurna::string(page_name));
             if ((id >= 0) && (id != state.requested_page)) {
                 return;
             }
@@ -3640,7 +3640,7 @@ void onTouchXY(int x, int y, bool press) {
     if (state.link != Link::Ready) {
         return;
     }
-    state.last_touch = millis();
+    state.last_touch = espurna::time::ms();
 
     if (press) {
         state.touch_x = x;
@@ -3668,7 +3668,7 @@ void onTouchXY(int x, int y, bool press) {
     // a list row, or a drawn tile (tile<n>, the slot of the n-th tile on a drawn card); none outside
     const size_t hit = card.list ? rowAt(down_x, down_y)
         : drawn::tileAt(card.grid, std::min<size_t>(card.count, gridTiles(card.grid)), down_x, down_y);
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (!hit || (now - state.last_swipe < SwipeGuardMs)) {
         DEBUG_MSG_P(PSTR("[NSPANEL] %s tap %d,%d dropped (hit %u, swipe %u ms ago)\n"),
             card.list ? "list" : "tile", down_x, down_y, hit, now - state.last_swipe);
@@ -3677,17 +3677,17 @@ void onTouchXY(int x, int y, bool press) {
 
     DEBUG_MSG_P(PSTR("[NSPANEL] %s tap %d,%d: %u\n"), card.list ? "list" : "tile", down_x, down_y, hit);
     state.release_pending = true;
-    state.release_component = String(card.list ? F("row") : F("tile")) + hit;
+    state.release_component = espurna::string(card.list ? "row" : "tile") + hit;
     state.release_at = now;
 }
 
 void onFrame(const uint8_t* data, size_t len) {
     ++state.rx_frames;
-    state.last_rx = millis();
+    state.last_rx = espurna::time::ms();
     state.ping_misses = 0;
 
     if (state.link == Link::Rebooted) {
-        state.reboot_last = millis();
+        state.reboot_last = espurna::time::ms();
     }
 
     if ((len == 3) && !data[0] && !data[1] && !data[2]) {
@@ -3727,7 +3727,7 @@ void onFrame(const uint8_t* data, size_t len) {
         if (state.waiting) {
             state.waiting = false;
             state.sync_misses = 0;
-            state.sync_rtt_max = std::max<uint32_t>(state.sync_rtt_max, millis() - state.wait_since);
+            state.sync_rtt_max = std::max<uint32_t>(state.sync_rtt_max, espurna::time::ms() - state.wait_since);
         }
         if (state.link == Link::Search) {
             identify();
@@ -3752,7 +3752,7 @@ void onFrame(const uint8_t* data, size_t len) {
     }
 
     if ((len > 6) && (0 == memcmp(data, "comok ", 6))) {
-        state.comok = String();
+        state.comok = espurna::string();
         for (size_t n = 0; (n < len) && (n < 96); ++n) {
             if ((data[n] >= 0x20) && (data[n] < 0x7F)) {
                 state.comok += static_cast<char>(data[n]);
@@ -3762,7 +3762,7 @@ void onFrame(const uint8_t* data, size_t len) {
         const int first = state.comok.indexOf(',');
         const int second = (first >= 0) ? state.comok.indexOf(',', first + 1) : -1;
         const int third = (second >= 0) ? state.comok.indexOf(',', second + 1) : -1;
-        state.model = ((second >= 0) && (third > second)) ? state.comok.substring(second + 1, third) : String();
+        state.model = ((second >= 0) && (third > second)) ? state.comok.substring(second + 1, third) : espurna::string();
         return;
     }
 
@@ -3785,20 +3785,21 @@ void onFrame(const uint8_t* data, size_t len) {
         const size_t size = std::min<size_t>(end - pos, sizeof(json) - 1);
         memcpy(json, data + pos, size);
         json[size] = '\0';
-
         if (config().debug) {
             DEBUG_MSG_P(PSTR("[NSPANEL] <- %s\n"), json);
         }
         publishEvent(json);
 
-        StaticJsonBuffer<384> buffer;
-        JsonObject& root = buffer.parseObject(json);
-        if (!root.success()) {
+        const auto root = espurna::json::parse(espurna::StringView(json, size));
+        if (!root.isObject()) {
             ++state.errors;
             return;
         }
 
-        onEvent(root["page"] | "", root["component"] | "", root["value"] | "");
+        const auto page = root["page"].asString();
+        const auto component = root["component"].asString();
+        const auto value = root["value"].asString();
+        onEvent(page.c_str(), component.c_str(), value.c_str());
         return;
     }
 
@@ -3965,7 +3966,7 @@ void loop() {
     systemHeapStep("ohpanel mirror");
 #endif
 
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     switch (state.link) {
     case Link::Search:
         if (now - state.last_search >= SearchRetryMs) {
@@ -4012,7 +4013,7 @@ void loop() {
         }
         state.last_ping = now;
         ++state.ping_misses;
-        write(F("sendme"));
+        write("sendme");
     }
 
     uiLoop(now);
@@ -4045,13 +4046,13 @@ void reload() {
 void mirrorRedraw() {
     mirror::overflow = false;
     if (!connected()) {
-        mirror::out = F("#offline\n");
-        mirror::since = millis();
+        mirror::out = "#offline\n";
+        mirror::since = espurna::time::ms();
         return;
     }
 
-    mirror::out = F("#reset\n");
-    mirror::since = millis();
+    mirror::out = "#reset\n";
+    mirror::since = espurna::time::ms();
     sendTheme();
     state.level = -1;
     // sent on a change only: the browsers must learn whether this page takes touches as coordinates
@@ -4068,9 +4069,9 @@ void mirrorStart() {
 constexpr uint32_t MirrorPostMs { 3000 };
 uint32_t mirror_posted_at { 0 };
 
-void mirrorSend(JsonObject& root) {
-    root["nspanelTft"] = mirror::out;
-    mirror::out = String();
+void mirrorSend(espurna::json::Writer& root) {
+    root.field("nspanelTft", mirror::out);
+    mirror::out = espurna::string();
     mirror::posted = false;
 }
 
@@ -4083,11 +4084,11 @@ void mirrorLoop() {
         mirror::active = false;
         mirror::posted = false;
         mirror::overflow = false;
-        mirror::out = String();
+        mirror::out = espurna::string();
         return;
     }
 
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     // a message dropped by the WS queue never calls back
     if (mirror::posted && (now - mirror_posted_at >= MirrorPostMs)) {
         mirror::posted = false;
@@ -4171,7 +4172,7 @@ void relayChanged(size_t id) {
 void showPage(int target) {
     if (connected()) {
         leaveOther(false, true);
-        state.last_touch = millis();
+        state.last_touch = espurna::time::ms();
         state.dimmed = false;
         state.asleep = false;
         showTarget(target);
@@ -4179,11 +4180,11 @@ void showPage(int target) {
     }
 }
 
-void send(String command) {
+void send(espurna::string command) {
     cmd(std::move(command));
 }
 
-void info(Print& out) {
+void info(::espurna::Output& out) {
     out.printf_P(PSTR("OHpanel: link %s, design %s%s, model %s, TFT page %d ('%s')\n"),
         linkName(state.link),
         state.design_known ? state.design.c_str() : (state.design_missing ? "none" : "unknown"),
@@ -4199,7 +4200,7 @@ void info(Print& out) {
     out.printf_P(PSTR("Screen: %s, card %u / %u, day %u, level %d, dimmed %s, asleep %s, idle %u s\n"),
         screenName(state.screen), state.card + 1, state.cards.size(), state.day + 1, state.level,
         state.dimmed ? "yes" : "no", state.asleep ? "yes" : "no",
-        static_cast<unsigned>((millis() - state.last_touch) / 1000));
+        static_cast<unsigned>((espurna::time::ms() - state.last_touch) / 1000));
     if ((state.screen == Screen::Buttons) && (state.card < state.cards.size())) {
         const auto& card = state.cards[state.card];
         const bool is_drawn = drawnCard(card);
@@ -4261,7 +4262,7 @@ public:
         return state.model.c_str();
     }
 
-    String design() const override {
+    espurna::string design() const override {
         return designText();
     }
 
@@ -4289,11 +4290,11 @@ public:
         ohpanel::showPage(page);
     }
 
-    void send(String payload) override {
+    void send(espurna::string payload) override {
         ohpanel::send(std::move(payload));
     }
 
-    void info(Print& out) override {
+    void info(::espurna::Output& out) override {
         ohpanel::info(out);
     }
 
@@ -4314,7 +4315,7 @@ public:
     }
 
     // start also sends the theme again, so a capture replays on its own in the Nextion Editor simulator
-    bool capture(Capture what, Print& out) override {
+    bool capture(Capture what, ::espurna::Output& out) override {
         switch (what) {
         case Capture::Probe:
             break;
@@ -4374,7 +4375,7 @@ int nspanelScreenShow(NspanelScreenDraw draw, NspanelScreenClosed closed) {
     other::closed = closed;
 
     // shown lit, also on a display that went to sleep
-    state.last_touch = millis();
+    state.last_touch = espurna::time::ms();
     state.dimmed = false;
     state.asleep = false;
     showOther();
@@ -4409,7 +4410,7 @@ void nspanelScreenText(int x, int y, int w, int h, int font, uint16_t colour, ui
     using namespace espurna::nspanel::ohpanel;
 
     if (other::drawing) {
-        xstr(x, y, w, h, font, colour, back, 1, String(text));
+        xstr(x, y, w, h, font, colour, back, 1, espurna::string(text));
     }
 }
 

@@ -12,7 +12,7 @@ Store layout (bk7231tools.analysis.kvstorage, the Tuya SDK's "simple flash"):
 
 */
 
-#if defined(LIBRETINY) || defined(TUYA_KV_HOST_TEST)
+#if defined(BK72XX) || defined(TUYA_KV_HOST_TEST)
 
 #include "tuya_kv_beken.h"
 #include "../../libs/text.h"

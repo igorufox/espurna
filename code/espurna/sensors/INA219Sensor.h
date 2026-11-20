@@ -460,10 +460,10 @@ public:
 
 #if SENSOR_DEBUG
         DEBUG_MSG(PSTR("[INA219] Maximum possible current %sA\n"),
-                String(max_possible_current, 3).c_str());
+                espurna::string(max_possible_current, 3).c_str());
         DEBUG_MSG(PSTR("[INA219] Current LSB Range %s...%s\n"),
-                String(_current_lsb_range.min, 6).c_str(),
-                String(_current_lsb_range.max, 6).c_str());
+                espurna::string(_current_lsb_range.min, 6).c_str(),
+                espurna::string(_current_lsb_range.max, 6).c_str());
 #endif
 
         _ratios_changed = true;
@@ -472,15 +472,15 @@ public:
         _ready = true;
     }
 
-    String address(unsigned char index) const override {
-        return String(_port.address(), 10);
+    espurna::string address(unsigned char index) const override {
+        return espurna::string(_port.address(), 10);
     }
 
-    String description() const override {
+    espurna::string description() const override {
         char buffer[32];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("INA219 @ I2C (0x%02X)"), _port.address());
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
     unsigned char type(unsigned char index) const override {
@@ -501,9 +501,9 @@ public:
 
 #if SENSOR_DEBUG
             DEBUG_MSG(PSTR("[INA219] Current LSB %s\n"),
-                    String(_calibration.current_lsb, 6).c_str());
+                    espurna::string(_calibration.current_lsb, 6).c_str());
             DEBUG_MSG(PSTR("[INA219] Power LSB %s\n"),
-                    String(_calibration.power_lsb, 6).c_str());
+                    espurna::string(_calibration.power_lsb, 6).c_str());
 
             uint8_t buf[2];
             std::memcpy(std::begin(buf), &_calibration.value, sizeof(buf));

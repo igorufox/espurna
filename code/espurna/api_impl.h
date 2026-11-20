@@ -8,7 +8,6 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <algorithm>
 #include <memory>
@@ -49,13 +48,13 @@ struct Request {
     void param_foreach(T&& handler) {
         const size_t params { _request.params() };
         for (size_t current = 0; current < params; ++current) {
-            handler(String(_request.paramName(current)), String(_request.paramValue(current)));
+            handler(espurna::string(_request.paramName(current)), espurna::string(_request.paramValue(current)));
         }
     }
 
     template <typename T>
-    void param_foreach(const String& name, T&& handler) {
-        param_foreach([&](const String& param_name, const String& param_value) {
+    void param_foreach(const espurna::string& name, T&& handler) {
+        param_foreach([&](const espurna::string& param_name, const espurna::string& param_value) {
             if (param_name == name) {
                 handler(param_value);
             }
@@ -70,7 +69,7 @@ struct Request {
         return _parts;
     }
 
-    String part(size_t index) const {
+    espurna::string part(size_t index) const {
         return _parts[index].toString();
     }
 
@@ -78,7 +77,7 @@ struct Request {
     // e.g. for the pair of `some/+/path` and `some/data/path`, calling `wildcard(0)` will return `data`
     // inline: the modules that register API paths (relay, sensors, light, rf, scheduler) work with it without being
     // linked against the api module (they call through the head, apiRegister())
-    String wildcard(int index) const {
+    espurna::string wildcard(int index) const {
         return PathParts::wildcard(_pattern, _parts, index).toString();
     }
 
@@ -87,7 +86,7 @@ struct Request {
     }
 
     // Extract form data parameter value from request by name
-    StringView param(const String& name) {
+    StringView param(const espurna::string& name) {
         const char* value = _request.param(name.c_str());
         return value ? StringView(value) : StringView();
     }
@@ -95,7 +94,7 @@ struct Request {
     // Send out the payload and finish the request
     // By default, payload is sent with status 200
     // For zero-length payloads, status is set to 204
-    void send(const String& payload) {
+    void send(const espurna::string& payload) {
         if (_done) {
             return;
         }

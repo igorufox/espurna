@@ -21,10 +21,8 @@ HTTP SERVER - the implementation (libs/http_server.h), part of libs/net_impl.h. 
 #include <new>
 #include <vector>
 
-// BearSSL: MD5 of the Digest login (the one hash library of ESPurna)
-// BearSSL: our fork (igorufox/bearssl-esp8266, code/libraries.ini `bearssl`) on every chip, the ESP8266 too (its
-// core's prebuilt libbearssl.a is taken out of the link, scripts/pio_main.py)
-#include <bearssl.h>
+// MD5 of the Digest login: mbedtls (libs/hash.h)
+#include "hash.h"
 
 namespace espurna {
 namespace http {
@@ -101,16 +99,16 @@ void urlDecode(char* text) {
     *out = '\0';
 }
 
-void md5Hex(br_md5_context& ctx, char* out) {
-    uint8_t digest[br_md5_SIZE];
-    br_md5_out(&ctx, digest);
+void md5Hex(hash::Md5& ctx, char* out) {
+    uint8_t digest[hash::Md5::Size];
+    ctx.finish(digest);
     hex(digest, sizeof(digest), out);
 }
 
-void md5Add(br_md5_context& ctx, const char* value, bool colon = true) {
-    br_md5_update(&ctx, value, strlen(value));
+void md5Add(hash::Md5& ctx, const char* value, bool colon = true) {
+    ctx.update(value, strlen(value));
     if (colon) {
-        br_md5_update(&ctx, ":", 1);
+        ctx.update(":", 1);
     }
 }
 
@@ -119,7 +117,7 @@ const char* nonce() {
     static char value[33] {};
     if (!value[0]) {
         uint8_t random[16];
-        ::espurna::tls::chip::random(random, sizeof(random));
+        ::espurna::tls::random(random, sizeof(random));
         hex(random, sizeof(random), value);
     }
     return value;
@@ -355,19 +353,22 @@ public:
 
         char ha1[33];
         char ha2[33];
-        br_md5_context ctx;
-        br_md5_init(&ctx);
-        md5Add(ctx, user);
-        md5Add(ctx, used_realm);
-        md5Add(ctx, password, false);
-        md5Hex(ctx, ha1);
+        {
+            hash::Md5 ctx;
+            md5Add(ctx, user);
+            md5Add(ctx, used_realm);
+            md5Add(ctx, password, false);
+            md5Hex(ctx, ha1);
+        }
 
-        br_md5_init(&ctx);
-        md5Add(ctx, _method_name);
-        md5Add(ctx, uri, false);
-        md5Hex(ctx, ha2);
+        {
+            hash::Md5 ctx;
+            md5Add(ctx, _method_name);
+            md5Add(ctx, uri, false);
+            md5Hex(ctx, ha2);
+        }
 
-        br_md5_init(&ctx);
+        hash::Md5 ctx;
         md5Add(ctx, ha1);
         md5Add(ctx, client_nonce);
         char qop[16];
@@ -676,10 +677,12 @@ private:
     void startBody() {
         _body_received = 0;
         _multipart = Multipart::None;
-        if (!_content_length || form() || !_route || !_route->body) {
+        if (!_content_length || form() || !_route) {
             return;
         }
 
+        // a multipart body is read for its field parts on every route (a browser's FormData: /setup, the module
+        // switches); its file parts go to the body handler, dropped where the route has none
         const char* type = contentType();
         if (!strncasecmp(type, "multipart/form-data", 19)) {
             char boundary[72];
@@ -701,11 +704,15 @@ private:
             return;
         }
 
-        if (!_route || !_route->body) {
+        if (!_route) {
             return;
         }
 
         if (_multipart == Multipart::None) {
+            if (!_route->body) {
+                return;
+            }
+
             const bool final = (_body_received == _content_length);
             _route->body(_request, "", _body_received - len, data, len, final);
             return;
@@ -812,7 +819,7 @@ private:
     // a file part to the body handler; a small field part becomes a parameter
     void fileData(const uint8_t* data, size_t len, bool final) {
         if (_part_file) {
-            if (len || final) {
+            if (_route->body && (len || final)) {
                 _route->body(_request, _part_filename, _part_index, data, len, final);
             }
             _part_index += len;
@@ -1077,8 +1084,13 @@ public:
         return *static_cast<const volatile size_t*>(&_active) + _listener.pending();
     }
 
+    void setConcurrency(size_t limit) {
+        _concurrency = limit;
+    }
+
     void loop() {
-        while (_requests.size() < RequestsMax) {
+        const size_t limit = (_concurrency && (_concurrency < RequestsMax)) ? _concurrency : RequestsMax;
+        while (_requests.size() < limit) {
             auto conn = _listener.accept();
             if (!conn) {
                 break;
@@ -1153,6 +1165,7 @@ private:
     DefaultHeaders _defaults;
     std::vector<std::unique_ptr<Request::Impl>> _requests;
     size_t _active { 0 };   // _requests.size() as of the last change, for busy()
+    size_t _concurrency { 0 };
 };
 
 void Request::Impl::step(Server::Impl& server) {
@@ -1351,6 +1364,7 @@ void Server::defaultHeader(const char* name, const char* value) { if (_impl) { _
 void Server::loop() { if (_impl) { _impl->loop(); } }
 size_t Server::active() const { return _impl ? _impl->active() : 0; }
 size_t Server::busy() const { return _impl ? _impl->busy() : 0; }
+void Server::setConcurrency(size_t limit) { if (_impl) { _impl->setConcurrency(limit); } }
 
 } // namespace server
 } // namespace http

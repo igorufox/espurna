@@ -30,3 +30,6 @@ firmware*
 code/safeboot/
 code/safeboot-app/sdkconfig.*
 !code/safeboot-app/sdkconfig.defaults
+# the same of the ESP32 build of ESPurna (platformio_esp32.ini, ESP-IDF): written from code/sdkconfig.defaults
+code/sdkconfig.*
+!code/sdkconfig.defaults

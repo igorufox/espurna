@@ -2,19 +2,16 @@
 
 WIFI MODULE, types of the FreeRTOS chips (ESP32, BK72xx with LibreTiny), ref. espurna_wifi.h
 
-Arduino WiFi class of the core, the esp8266 SDK names the common code uses
+The SDK types of the chip (wifi_sdk.h, arch/<chip>/core_wifi_chip.h), the esp8266 SDK names the common code uses
 
 */
 
 #pragma once
 
-#include <Arduino.h>
-#include <WiFi.h>
+#include "wifi_sdk.h"
 
-// ESP32: SDK calls of arch/esp32/wifi_driver_esp32.cpp
-#if __has_include(<esp_wifi.h>)
-#include <esp_wifi.h>
-#endif
+// the SDK headers of the chip (arch/<chip>/compat_sdk.h)
+#include "compat_chip.h"
 
 using AUTH_MODE = wifi_auth_mode_t;
 

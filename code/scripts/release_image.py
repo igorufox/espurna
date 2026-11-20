@@ -7,11 +7,11 @@
 # espurna-beken-quectel.uf2), the modules file espurna-<chip>-modules.bin and the install image espurna-<chip>.ota
 # (module_ota.py: the head(s) and every module package), all written by module_link.py and the chip's link script.
 # What only a chip has stays in a script of its own:
-#   esp32_merge.py           ESP32: the merged image (bootloader, partitions, boot_app0, ESPurna, safeboot)
+#   esp32_merge.py           ESP32: the merged image (bootloader, partitions, boot_app0, ESPurna)
 #   beken_quectel_image.py   Beken: the head for the Quectel bootloader
 # The version string of the build (APP_VERSION with the git revision): pio_main.py, the post: script of every chip.
 #
-# No SCons here: beken_quectel_image.py runs under ltchiptool's python.
+# No SCons here: beken_quectel_image.py imports it as a plain library.
 
 import gzip
 import hashlib

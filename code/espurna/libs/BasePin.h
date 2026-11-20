@@ -8,7 +8,6 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstdint>
 #include <memory>
@@ -29,7 +28,7 @@ public:
     BasePin& operator=(const BasePin&) = delete;
     BasePin& operator=(BasePin&&) = delete;
 
-    virtual String description() const;
+    virtual espurna::string description() const;
 
     virtual const char* id() const = 0;
     virtual unsigned char pin() const = 0;

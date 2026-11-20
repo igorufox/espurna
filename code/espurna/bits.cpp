@@ -3,14 +3,14 @@
 namespace espurna {
 namespace bits {
 
-String Range::toString() const {
+espurna::string Range::toString() const {
     char tmp[SizeMax]{};
 
     for (size_t bit = 0; bit < _mask.size(); ++bit) {
         tmp[bit] = _mask[bit] ? '1' : '0';
     }
 
-    String out;
+    espurna::string out;
     out.concat(&tmp[0], sizeof(tmp));
 
     return out;

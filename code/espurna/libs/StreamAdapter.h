@@ -9,13 +9,12 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <memory>
 
 template <typename T>
 struct StreamAdapter final : public Stream {
-    StreamAdapter(Print& writer, T&& begin, T&& end) :
+    StreamAdapter(::espurna::Output& writer, T&& begin, T&& end) :
         _writer(writer),
         _current(std::forward<T>(begin)),
         _begin(std::forward<T>(begin)),
@@ -54,7 +53,7 @@ struct StreamAdapter final : public Stream {
 
     private:
 
-    Print& _writer;
+    ::espurna::Output& _writer;
 
     T _current;
     T const _begin;

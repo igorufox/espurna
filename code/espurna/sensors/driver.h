@@ -77,7 +77,7 @@ inline bool pin_free(uint8_t pin) {
 // claims the port, the serial log and the serial terminal stop using it; a second sensor on a claimed port is not
 // started
 [[gnu::unused]]
-inline espurna::driver::uart::PortPtr uart_port(const __FlashStringHelper* key, uint8_t number = 0) {
+inline espurna::driver::uart::PortPtr uart_port(const char* key, uint8_t number = 0) {
     number = getSetting(key, number);
     if (!number) {
         return nullptr;
@@ -101,8 +101,8 @@ inline espurna::driver::uart::PortPtr uart_port(const __FlashStringHelper* key, 
 // i2c.cpp only starts the bus when both pins are set
 [[gnu::unused]]
 inline bool i2c_bus() {
-    const bool out = pin_set(getSetting(F("i2cSDA"), uint8_t{ I2C_SDA_PIN }))
-        && pin_set(getSetting(F("i2cSCL"), uint8_t{ I2C_SCL_PIN }));
+    const bool out = pin_set(getSetting("i2cSDA", uint8_t{ I2C_SDA_PIN }))
+        && pin_set(getSetting("i2cSCL", uint8_t{ I2C_SCL_PIN }));
     if (!out) {
         DEBUG_MSG_P(PSTR("[SENSOR] I2C bus is not configured (i2cSDA, i2cSCL)\n"));
     }

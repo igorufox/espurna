@@ -49,7 +49,7 @@ bool connected { false };
 // backend's start_delay(). After a restart by the network watchdog the start waits at least 5 minutes.
 constexpr uint32_t NetworkResetStartDelay { 300 };
 
-// millis() | 1 of the automatic start that is due, 0 when none
+// espurna::time::ms() | 1 of the automatic start that is due, 0 when none
 uint32_t start_at { 0 };
 
 // Plug endpoints of the relays: as many as the data model of the chip's Matter application has, at most 4
@@ -128,7 +128,7 @@ uint32_t window_left() {
         return 0;
     }
 
-    const auto elapsed = millis() - window_since;
+    const auto elapsed = espurna::time::ms() - window_since;
     if (elapsed >= WindowMs) {
         window_since = 0;
         return 0;
@@ -147,7 +147,7 @@ void copy_text(char* out, size_t size, const char* text, size_t length) {
     out[count] = '\0';
 }
 
-void copy_text(char* out, size_t size, const String& text) {
+void copy_text(char* out, size_t size, const espurna::string& text) {
     copy_text(out, size, text.c_str(), text.length());
 }
 
@@ -178,7 +178,7 @@ void push(const char* line) {
                 return;
             }
         }
-        ::delay(10);
+        espurna::time::sleep(10);
     }
 
     espurna::system::MutexLock lock(mutex);
@@ -256,7 +256,7 @@ void send(const char* text) {
     }
 
     message->length = snprintf(message->text, sizeof(message->text), "%u %u %s",
-        static_cast<unsigned>(millis()), static_cast<unsigned>(systemFreeHeap()), text);
+        static_cast<unsigned>(espurna::time::ms()), static_cast<unsigned>(systemFreeHeap()), text);
     message->length = std::min(message->length, sizeof(message->text) - 1);
     if (tcpip_callback(send_tcpip, message) != ERR_OK) {
         free(message);
@@ -288,7 +288,7 @@ void quiet(bool active) {
         return;
     }
 
-    quiet_since = active ? (millis() | 1) : 0;
+    quiet_since = active ? (espurna::time::ms() | 1) : 0;
 
 #if WEB_SUPPORT
     wsPause(active);
@@ -328,7 +328,7 @@ constexpr uint32_t VerdictMs { 10000 };
 uint32_t verdict_at { 0 };
 
 void verdict() {
-    if (!verdict_at || ((millis() - verdict_at) < VerdictMs)) {
+    if (!verdict_at || ((espurna::time::ms() - verdict_at) < VerdictMs)) {
         return;
     }
 
@@ -347,7 +347,7 @@ void verdict() {
 }
 
 void loop() {
-    if (start_at && connected && (static_cast<int32_t>(millis() - start_at) >= 0) && !pendingDeferredReset()
+    if (start_at && connected && (static_cast<int32_t>(espurna::time::ms() - start_at) >= 0) && !pendingDeferredReset()
 #if OTA_WEB_SUPPORT
         && !otaWebUploading()
 #endif
@@ -384,12 +384,12 @@ void loop() {
                 fabrics_before = fabrics();
                 verdict_at = 0;
             } else if (fabrics_before >= 0) {
-                verdict_at = millis() | 1;
+                verdict_at = espurna::time::ms() | 1;
             }
             break;
 
         case Event::Type::Window:
-            window_since = event.value ? (millis() | 1) : 0;
+            window_since = event.value ? (espurna::time::ms() | 1) : 0;
             DEBUG_MSG_P(PSTR("[MATTER] Pairing window %s\n"), event.value ? "open" : "closed");
             web_update();
             break;
@@ -400,7 +400,7 @@ void loop() {
         }
     }
 
-    if (!commissioning && quiet_since && ((millis() - quiet_since) > QuietMaxMs)) {
+    if (!commissioning && quiet_since && ((espurna::time::ms() - quiet_since) > QuietMaxMs)) {
         DEBUG_MSG_P(PSTR("[MATTER] No end of commissioning in %u s, resuming\n"), QuietMaxMs / 1000);
         quiet(false);
     }
@@ -413,11 +413,11 @@ void loop() {
 // The Matter application through its C API
 
 void plug_name(size_t index, PlugName& out) {
-    auto name = getSetting({"relayName", index}, String());
+    auto name = getSetting({"relayName", index}, espurna::string());
     if (!name.length()) {
         name = systemHostname();
         name += ' ';
-        name += String(index + 1);
+        name += espurna::string(index + 1);
     }
 
     copy_text(out.label, sizeof(out.label), name);
@@ -529,22 +529,22 @@ bool codes(char* manual, size_t manual_size, char* qr, size_t qr_size) {
 }
 
 // "vendor (0xVID) / product (0xPID), identity" for the panel and the status command
-String product() {
+espurna::string product() {
     backend::Identity identity;
     backend::describe(identity);
 
-    String out;
+    espurna::string out;
     out.reserve(112);
     out += identity.vendor;
-    out += F(" (0x");
-    out += String(identity.vendor_id, 16);
-    out += F(") / ");
+    out += " (0x";
+    out += espurna::string(identity.vendor_id, 16);
+    out += ") / ";
     out += identity.product;
-    out += F(" (0x");
-    out += String(identity.product_id, 16);
+    out += " (0x";
+    out += espurna::string(identity.product_id, 16);
     out += ')';
     if (identity.source.length()) {
-        out += F(", ");
+        out += ", ";
         out += identity.source;
     }
 
@@ -584,7 +584,7 @@ void wifi_event(espurna::wifi::Event event) {
                 start();
             } else {
                 DEBUG_MSG_P(PSTR("[MATTER] Starting in %u s\n"), delay);
-                start_at = (millis() + (delay * 1000)) | 1;
+                start_at = (espurna::time::ms() + (delay * 1000)) | 1;
             }
         }
         break;
@@ -626,18 +626,18 @@ PROGMEM_STRING(Remove, "MATTER.REMOVE");
 // MATTER.REMOVE <#>: the device leaves that controller (the number of the MATTER list)
 void command_remove(::terminal::CommandContext&& ctx) {
     if (!started) {
-        terminalError(ctx, F("Matter is not started"));
+        terminalError(ctx, "Matter is not started");
         return;
     }
 
     if (ctx.argv.size() != 2) {
-        terminalError(ctx, F("MATTER.REMOVE <controller #>"));
+        terminalError(ctx, "MATTER.REMOVE <controller #>");
         return;
     }
 
     const auto index = std::strtoul(ctx.argv[1].c_str(), nullptr, 10);
     if (!index || (index > 254) || !remove_controller(static_cast<uint8_t>(index))) {
-        terminalError(ctx, F("No such controller"));
+        terminalError(ctx, "No such controller");
         return;
     }
 
@@ -649,7 +649,7 @@ PROGMEM_STRING(Window, "MATTER.WINDOW");
 // Commissioning window again: it closes after 15 minutes and after a controller added the device
 void command_window(::terminal::CommandContext&& ctx) {
     if (!started) {
-        terminalError(ctx, F("Matter is not started"));
+        terminalError(ctx, "Matter is not started");
         return;
     }
 
@@ -662,7 +662,7 @@ PROGMEM_STRING(Ping, "MATTER.PING");
 // Work item through the Matter task, answered from the loop
 void command_ping(::terminal::CommandContext&& ctx) {
     if (!started) {
-        terminalError(ctx, F("Matter is not started"));
+        terminalError(ctx, "Matter is not started");
         return;
     }
 
@@ -674,13 +674,13 @@ PROGMEM_STRING(Start, "MATTER.START");
 
 void command_start(::terminal::CommandContext&& ctx) {
     if (!connected) {
-        terminalError(ctx, F("Not connected to Wi-Fi"));
+        terminalError(ctx, "Not connected to Wi-Fi");
         return;
     }
 
     start();
     if (!started) {
-        terminalError(ctx, F("Start failed"));
+        terminalError(ctx, "Start failed");
         return;
     }
 
@@ -692,14 +692,14 @@ PROGMEM_STRING(Codes, "MATTER.CODES");
 
 void command_codes(::terminal::CommandContext&& ctx) {
     if (!started) {
-        terminalError(ctx, F("Matter is not started"));
+        terminalError(ctx, "Matter is not started");
         return;
     }
 
     char manual[24];
     char qr[32];
     if (!codes(manual, sizeof(manual), qr, sizeof(qr))) {
-        terminalError(ctx, F("No commissioning data"));
+        terminalError(ctx, "No commissioning data");
         return;
     }
 
@@ -730,12 +730,12 @@ PROGMEM_STRING(Reset, "MATTER.RESET");
 // holds all of that in memory and writes it back
 void command_reset(::terminal::CommandContext&& ctx) {
     if (started) {
-        terminalError(ctx, F("Matter is running, reboot first (matterAuto 0 keeps it off)"));
+        terminalError(ctx, "Matter is running, reboot first (matterAuto 0 keeps it off)");
         return;
     }
 
     if (!backend::reset()) {
-        terminalError(ctx, F("Matter storage failed"));
+        terminalError(ctx, "Matter storage failed");
         return;
     }
 
@@ -767,25 +767,24 @@ STRING_VIEW_INLINE(Prefix, "matter");
 int fabrics { -1 };
 espurna::time::CoreClock::time_point last;
 
-bool onKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool onKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(Prefix);
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, Prefix);
 }
 
-void onData(JsonObject& root) {
-    root["matterStarted"] = started ? F("yes") : F("no");
-    root["matterFabrics"] = matter::fabrics();
-    root["matterProduct"] = product();
-    root["matterWindow"] = started ? window_left() : 0;
+void onData(espurna::json::Writer& root) {
+    root.field("matterStarted", started ? "yes" : "no");
+    root.field("matterFabrics", matter::fabrics());
+    root.field("matterProduct", product());
+    root.field("matterWindow", started ? window_left() : 0);
     // the pairing needs ~15 KB of heap: the panel warns below it (W93)
-    root["matterHeap"] = systemFreeHeap();
-    root["matterHeapMin"] = systemHeapMinimum();
-
+    root.field("matterHeap", systemFreeHeap());
+    root.field("matterHeapMin", systemHeapMinimum());
     // [[#, vendor id, "node id (hex)", "label"], ...]
-    JsonArray& list = root.createNestedArray("matterControllers");
+    root.array("matterControllers");
     Controller entries[MaxControllers];
     const auto count = controllers(entries, MaxControllers);
     for (size_t index = 0; index < count; ++index) {
@@ -793,71 +792,73 @@ void onData(JsonObject& root) {
         snprintf_P(node, sizeof(node), PSTR("%08X%08X"),
             static_cast<uint32_t>(entries[index].node >> 32), static_cast<uint32_t>(entries[index].node));
 
-        JsonArray& entry = list.createNestedArray();
-        entry.add(entries[index].index);
-        entry.add(entries[index].vendor);
-        entry.add(String(node));
-        entry.add(String(entries[index].label));
+        root.beginArray();
+        root.value(entries[index].index);
+        root.value(entries[index].vendor);
+        root.value(node);
+        root.value(entries[index].label);
+        root.end();
     }
+    root.end();
 
     char manual[24] {};
     char qr[32] {};
     if (codes(manual, sizeof(manual), qr, sizeof(qr))) {
-        root["matterManual"] = manual;
-        root["matterQr"] = qr;
+        root.field("matterManual", manual);
+        root.field("matterQr", qr);
     } else {
-        root["matterManual"] = "";
-        root["matterQr"] = "";
+        root.field("matterManual", "");
+        root.field("matterQr", "");
     }
 }
 
 // The identity choice (`matterIdentity`): in use, what the board has. No secrets: the custom VID / PID only
-void onIdentity(JsonObject& root) {
-    root["matterIdUse"] = identity::name(identity::choice());
-    root["matterIdFactory"] = identity::available(identity::Choice::Factory);
-
+void onIdentity(espurna::json::Writer& root) {
+    root.field("matterIdUse", identity::name(identity::choice()));
+    root.field("matterIdFactory", identity::available(identity::Choice::Factory));
     uint16_t vendor { 0 };
     uint16_t product { 0 };
     if (identity::custom_ids(vendor, product)) {
         char text[24];
         snprintf_P(text, sizeof(text), PSTR("VID 0x%04X PID 0x%04X"), vendor, product);
-        root["matterIdCustom"] = text;
+        root.field("matterIdCustom", text);
     } else {
-        root["matterIdCustom"] = "";
+        root.field("matterIdCustom", "");
     }
 }
 
-void onConnected(JsonObject& root) {
-    root["matterAuto"] = getSetting("matterAuto", true);
+void onConnected(espurna::json::Writer& root) {
+    root.field("matterAuto", getSetting("matterAuto", true));
     onIdentity(root);
     onData(root);
 }
 
-void message(uint32_t client_id, String text) {
-    wsPost(client_id, [text](JsonObject& root) {
-        root["message"] = text;
+void message(uint32_t client_id, espurna::string text) {
+    wsPost(client_id, [text](espurna::json::Writer& root) {
+        root.field("message", text);
     });
 }
 
 // Another identity: the controllers verified the old DAC. The panel asked for the confirmation; the restart, and the
 // module setup forgets the controllers before Matter starts (identity::setup(), backend::reset() as MATTER.RESET)
 void use_identity(uint32_t client_id, identity::Choice choice) {
-    setSetting(identity::Setting, String(identity::name(choice)));
-    message(client_id, F("Matter identity changed, restarting. Add the device to the controllers again."));
+    setSetting(identity::Setting, espurna::string(identity::name(choice)));
+    message(client_id, "Matter identity changed, restarting. Add the device to the controllers again.");
     prepareReset(CustomResetReason::Web);
 }
 
 // matterIdentity {use}: factory / espurna / custom
-void action_identity(uint32_t client_id, JsonObject& data) {
+void action_identity(uint32_t client_id, espurna::json::Value data) {
     identity::Choice choice;
-    if (!identity::parse(data["use"].as<const char*>(), choice) || !identity::available(choice)) {
-        message(client_id, F("This Matter identity is not available on this board"));
+    const auto use = data["use"].asString();
+    if (!identity::parse(use.c_str(), choice) || !identity::available(choice)) {
+        message(client_id, "This Matter identity is not available on this board");
         return;
     }
 
     if (choice == identity::choice()) {
-        setSetting(identity::Setting, String(identity::name(choice)));
-        message(client_id, F("This Matter identity is in use already"));
+        setSetting(identity::Setting, espurna::string(identity::name(choice)));
+        message(client_id, "This Matter identity is in use already");
         return;
     }
 
@@ -866,22 +867,31 @@ void action_identity(uint32_t client_id, JsonObject& data) {
 
 // matterIdentityUpload {dac, key, pai, cd}: base64 of DER, checked and stored, then in use (restart). The key text of
 // the message is wiped after the check, it is never logged or sent back
-void action_identity_upload(uint32_t client_id, JsonObject& data) {
-    auto* key = const_cast<char*>(data["key"].as<const char*>());
+void action_identity_upload(uint32_t client_id, espurna::json::Value data) {
+    // base64 has no escapes: the texts as they are in the message
+    auto key = data["key"].asString();
+    const auto dac = data["dac"].asString();
+    const auto pai = data["pai"].asString();
+    const auto cd = data["cd"].asString();
 
-    String error;
+    espurna::string error;
     if (commissioning_active) {
-        error = F("A controller is adding the device now, try again after it");
+        error = "A controller is adding the device now, try again after it";
     } else {
         // two signature checks and a signature: seconds on the BK7231N, the loop watchdog gets the commissioning time
         backend::commissioning(true);
-        identity::custom_store(data["dac"].as<const char*>(), key, data["pai"].as<const char*>(),
-            data["cd"].as<const char*>(), error);
+        identity::custom_store(dac.c_str(), const_cast<char*>(key.c_str()), pai.c_str(),
+            cd.c_str(), error);
         backend::commissioning(commissioning_active);
     }
 
-    if (key) {
-        std::memset(key, 0, std::strlen(key));
+    // the key text: the copy and the message it came in
+    if (key.size()) {
+        std::memset(const_cast<char*>(key.c_str()), 0, key.size());
+    }
+    const auto raw = data["key"].view();
+    if (raw.length()) {
+        std::memset(const_cast<char*>(raw.data()), 0, raw.length());
     }
 
     if (error.length()) {
@@ -892,7 +902,7 @@ void action_identity_upload(uint32_t client_id, JsonObject& data) {
     use_identity(client_id, identity::Choice::Custom);
 }
 
-void onAction(uint32_t client_id, const char* action, JsonObject& data) {
+void onAction(uint32_t client_id, const char* action, espurna::json::Value data) {
     if (std::strcmp(action, "matterIdentity") == 0) {
         action_identity(client_id, data);
         return;
@@ -904,7 +914,7 @@ void onAction(uint32_t client_id, const char* action, JsonObject& data) {
     }
 
     if (std::strcmp(action, "matterRemove") == 0) {
-        const auto index = data["index"].as<int>();
+        const auto index = data["index"].asLong();
         if ((index > 0) && (index < 255)) {
             remove_controller(static_cast<uint8_t>(index));
             // the list goes out again from web_tick() when the fabric count changed
@@ -1053,7 +1063,7 @@ void matter_pong(void) {
 // task wait. They only pass while a controller commissions, errors of every module always do
 void matter_log(const char* line) {
     using namespace espurna::matter;
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (strstr(line, "failed to match destination ID")) {
         ++unknown_case.count;
         unknown_case.last = now | 1;
@@ -1131,6 +1141,36 @@ void matterSetup() {
 }
 
 bool matterStarted() {
+    return espurna::matter::started;
+}
+
+// The matter_ble module (commissioning over BLE, linked against this module): a board without a Wi-Fi network has no
+// StationConnected to start Matter from, so the module starts it at once - its pairing window advertises on BLE, the
+// controller gives the network (arch/<chip>/matter_<chip>.cpp hands it to ESPurna's Wi-Fi). `matterAuto 0` keeps it
+// for MATTER.START, as on the network. false: not started
+// A controller that commissions over BLE gives the Wi-Fi network (Network Commissioning, the Matter task): it becomes
+// ESPurna's first network (ssid0 / pass0, as the WebUI saves it) and ESPurna's Wi-Fi connects to it, in loop(). Both
+// chips (arch/<chip>/matter_<chip>.cpp). false: not queued
+bool matterWifiFromController(const char* ssid, size_t ssid_length, const char* pass, size_t pass_length) {
+    if (!ssid || !ssid_length) {
+        return false;
+    }
+    espurna::string ssid_copy(ssid, ssid_length);
+    espurna::string pass_copy(pass ? pass : "", pass ? pass_length : 0);
+    const auto bytes = ssid_copy.length() + pass_copy.length();
+    return espurna::system::runInLoop([ssid_copy, pass_copy]() {
+        DEBUG_MSG_P(PSTR("[MATTER] Network from the controller: %s\n"), ssid_copy.c_str());
+        setSetting({"ssid", 0}, ssid_copy);
+        setSetting({"pass", 0}, pass_copy);
+        espurnaReload();
+    }, bytes);
+}
+
+bool matterStartForBle() {
+    if (!getSetting("matterAuto", true)) {
+        return espurna::matter::started;
+    }
+    espurna::matter::start();
     return espurna::matter::started;
 }
 

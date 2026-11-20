@@ -41,12 +41,12 @@ Copyright (C) 2020-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #include "espurna_chip.h"
 
-#include <Stream.h>
 
 // FS 'range', declared at compile time via .ld script PROVIDE declarations
 // (althought, in recent Core versions, these may be set at runtime)
 extern "C" uint32_t _FS_start;
 extern "C" uint32_t _FS_end;
+
 
 #if WEB_SUPPORT
 #include "web.h"
@@ -102,7 +102,7 @@ void help(CommandContext&& ctx) {
                 lhs.toString().begin(), rhs.begin(), lhs.length()) < 0;
         });
 
-    ctx.output.print(F("Available commands:\n"));
+    ctx.output.print("Available commands:\n");
     for (auto name : names) {
         ctx.output.printf("> %s\n", name.c_str());
     }
@@ -118,13 +118,13 @@ void light_sleep(CommandContext&& ctx) {
 
         const auto result = parse(ctx.argv[1], std::micro{});
         if (!result.ok) {
-            terminalError(ctx, F("Invalid time"));
+            terminalError(ctx, "Invalid time");
             return;
         }
 
         const auto duration = to_chrono<sleep::Microseconds>(result.value);
         if (!instantLightSleep(duration)) {
-            terminalError(ctx, F("Could not sleep"));
+            terminalError(ctx, "Could not sleep");
             return;
         }
 
@@ -138,7 +138,7 @@ PROGMEM_STRING(DeepSleep, "SLEEP.DEEP");
 
 void deep_sleep(CommandContext&& ctx) {
     if (ctx.argv.size() != 2) {
-        terminalError(ctx, F("SLEEP.DEEP <TIME (MICROSECONDS)>"));
+        terminalError(ctx, "SLEEP.DEEP <TIME (MICROSECONDS)>");
         return;
     }
 
@@ -146,13 +146,13 @@ void deep_sleep(CommandContext&& ctx) {
     const auto result = parse(ctx.argv[1], std::micro{});
 
     if (!result.ok) {
-        terminalError(ctx, F("Invalid time"));
+        terminalError(ctx, "Invalid time");
         return;
     }
 
     const auto duration = to_chrono<sleep::Microseconds>(result.value);
     if (!instantDeepSleep(duration)) {
-        terminalError(ctx, F("Could not sleep"));
+        terminalError(ctx, "Could not sleep");
         return;
     }
 }
@@ -165,6 +165,21 @@ void reset(CommandContext&& ctx) {
     prepareReset(CustomResetReason::Terminal);
     terminalOK(ctx);
 }
+
+#if defined(ESP8266)
+PROGMEM_STRING(ResetRom, "RESET.ROM");
+
+// the ROM's UART download mode, no GPIO0 jumper: esptool --before no-reset --no-stub writes the flash right after it
+void reset_rom(CommandContext&& ctx) {
+    terminalOK(ctx);
+    espurnaRegisterOnce([]() {
+        espurna::time::sleep(200);
+        espurna::core::chip::rom_loader();
+    });
+}
+
+#endif
+
 
 PROGMEM_STRING(EraseConfig, "ERASE.CONFIG");
 
@@ -335,18 +350,17 @@ private:
 };
 
 StringView flash_chip_mode() {
-    static const String out = ([]() -> String {
-        switch (ESP.getFlashChipMode()) {
-        case FM_DIO:
-            return PSTR("DIO");
-        case FM_DOUT:
-            return PSTR("DOUT");
-        case FM_QIO:
+    static const espurna::string out = ([]() -> espurna::string {
+        // the SPI mode of the flash chip as the image header has it: 0 QIO, 1 QOUT, 2 DIO, 3 DOUT
+        switch (espurna::core::chip::flash_mode()) {
+        case 0:
             return PSTR("QIO");
-        case FM_QOUT:
+        case 1:
             return PSTR("QOUT");
-        case FM_UNKNOWN:
-            break;
+        case 2:
+            return PSTR("DIO");
+        case 3:
+            return PSTR("DOUT");
         }
 
         return PSTR("UNKNOWN");
@@ -364,19 +378,19 @@ void storage(CommandContext&& ctx) {
         return;
     }
 
-    ctx.output.printf_P(PSTR("flash chip ID: 0x%06X\n"), ESP.getFlashChipId());
-    ctx.output.printf_P(PSTR("speed: %u\n"), ESP.getFlashChipSpeed());
+    ctx.output.printf_P(PSTR("flash chip ID: 0x%06X\n"), ESP_COMPAT.getFlashChipId());
+    ctx.output.printf_P(PSTR("speed: %u\n"), espurna::core::chip::flash_speed());
     ctx.output.printf_P(PSTR("mode: %s\n"), flash_chip_mode().c_str());
 
     ctx.output.printf_P(PSTR("size: %u (SPI), %u (SDK)\n"),
-        ESP.getFlashChipRealSize(), ESP.getFlashChipSize());
+        espurna::core::chip::flash_size(), espurna::core::chip::flash_size());
 
-    Layouts layouts(ESP.getFlashChipRealSize());
+    Layouts layouts(espurna::core::chip::flash_size());
 
     // SDK specifies a hard-coded layout, there's no data beyond
     // (...addressable by the Core, since it adheres the setting)
-    if (ESP.getFlashChipRealSize() > ESP.getFlashChipSize()) {
-        layouts.add("unused", ESP.getFlashChipRealSize() - ESP.getFlashChipSize());
+    if (espurna::core::chip::flash_size() > espurna::core::chip::flash_size()) {
+        layouts.add("unused", espurna::core::chip::flash_size() - espurna::core::chip::flash_size());
     }
 
     // app is at a normal location, [0...size), but... since it is offset by the free space, make sure it is aligned
@@ -385,7 +399,7 @@ void storage(CommandContext&& ctx) {
     layouts.add("sdk", 4 * SPI_FLASH_SEC_SIZE);
     layouts.add("eeprom", eepromSpace());
 
-    auto app_size = (ESP.getSketchSize() + FLASH_SECTOR_SIZE - 1) & (~(FLASH_SECTOR_SIZE - 1));
+    auto app_size = (espurna::core::chip::sketch_size() + FLASH_SECTOR_SIZE - 1) & (~(FLASH_SECTOR_SIZE - 1));
     auto ota_size = layouts.current() - app_size;
 
     // OTA is allowed to use all but one eeprom sectors that, leaving the last one
@@ -407,9 +421,9 @@ PROGMEM_STRING(Adc, "ADC");
 void adc(CommandContext&& ctx) {
     const int pin = (ctx.argv.size() == 2)
         ? ctx.argv[1].toInt()
-        : A0;
+        : espurna::pins::Adc0;
 
-    ctx.output.printf_P(PSTR("value %d\n"), analogRead(pin));
+    ctx.output.printf_P(PSTR("value %d\n"), espurna::pins::analog(pin));
     terminalOK(ctx);
 }
 
@@ -453,6 +467,9 @@ static constexpr ::terminal::Command List[] PROGMEM {
     {Reset, commands::reset},
     {Reboot, commands::reset},
     {EraseConfig, commands::erase_config},
+#if defined(ESP8266)
+    {ResetRom, commands::reset_rom},
+#endif
 
 #if SYSTEM_CHECK_ENABLED
     {Stable, commands::stable},
@@ -476,7 +493,7 @@ void empty_loop() {
 
 namespace internal {
 
-Stream* stream { nullptr };
+::espurna::ByteStream* stream { nullptr };
 LoopFunc loop { empty_loop };
 
 } // namespace internal
@@ -494,14 +511,14 @@ void processing_loop() {
     buffer.append(port, available);
 
     if (buffer.overflow()) {
-        terminal::error(port, F("Serial buffer overflow"));
+        terminal::error(port, "Serial buffer overflow");
         buffer.reset();
     }
 
     for (;;) {
         const auto result = buffer.next();
         if (result.overflow) {
-            terminal::error(port, F("Command line buffer overflow"));
+            terminal::error(port, "Command line buffer overflow");
             continue;
         }
 
@@ -529,15 +546,34 @@ const char* release(size_t index) {
     return PSTR("terminal");
 }
 
-void setup() {
+bool attach() {
     auto port = uartPort(build::serialPort());
     if (!port || (!port->rx || !port->tx) || uartClaimed(build::serialPort())) {
-        return;
+        return false;
     }
 
     internal::stream = port->stream;
     internal::loop = processing_loop;
     uartOnClaim(release);
+    return true;
+}
+
+// the port comes with the `uart` module, which starts after the head's setup: until it is there, look for it once a
+// second (19.11: the terminal never attached on the bench, the log ran but no command was read)
+void waiting_loop() {
+    static uint32_t last { 0 };
+    const uint32_t now = espurna::time::millis().time_since_epoch().count();
+    if (now - last < 1000) {
+        return;
+    }
+    last = now;
+    attach();
+}
+
+void setup() {
+    if (!attach()) {
+        internal::loop = waiting_loop;
+    }
 }
 
 } // namespace serial
@@ -569,7 +605,7 @@ void setup() {
             // TODO: or, at least, make it growable on-demand and cap at MSS?
             // TODO: PrintLine<...> instead of one giant blob?
 
-            auto ptr = std::make_shared<String>(payload.toString());
+            auto ptr = std::make_shared<espurna::string>(payload.toString());
 
             espurnaRegisterOnce([ptr]() {
                 PrintString out(TCP_MSS);
@@ -590,61 +626,7 @@ void setup() {
 } // namespace mqtt
 #endif
 
-#if WEB_SUPPORT
-namespace web {
 
-STRING_VIEW_INLINE(Prefix, "cmd");
-
-constexpr auto BufferHint = espurna::web::ws::InplaceLog::BufferHint;
-using Output = PrintLine<espurna::web::ws::InplaceLog>;
-
-struct Command {
-    String line;
-    uint32_t id;
-};
-
-void onVisible(JsonObject& root) {
-    wsPayloadModule(root, Prefix);
-}
-
-void onAction(uint32_t client_id, const char* action, JsonObject& data) {
-    STRING_VIEW_INLINE(Cmd, "cmd");
-    if (Cmd != action) {
-        return;
-    }
-
-    STRING_VIEW_INLINE(Line, "line");
-    auto cmd = Command{
-        .line = data[Line].as<String>(),
-        .id = client_id,
-    };
-
-    if (!cmd.line.length()) {
-        return;
-    }
-
-    const auto shared =
-        std::make_shared<Command>(std::move(cmd));
-
-    espurnaRegisterOnce([shared]() {
-        wsPostManual(shared->id,
-            [shared](JsonObject& root) {
-                Output out(root, shared->id);
-                out.output().wait_time(espurnaLoopDelay());
-                api_find_and_call(shared->line, out);
-            },
-            BufferHint);
-    });
-}
-
-void setup() {
-    wsRegister()
-        .onVisible(onVisible)
-        .onAction(onAction);
-}
-
-} // namespace web
-#endif
 
 // -----------------------------------------------------------------------------
 // Pubic API
@@ -661,7 +643,7 @@ STRING_VIEW_INLINE(Key, "termWebApiPath");
 // XXX: new `apiRegister()` depends that `webServer()` is available, meaning we can't call this setup func
 // before the `webSetup()` is called. ATM, just make sure it is in order.
 
-using Commands = std::shared_ptr<std::vector<String>>;
+using Commands = std::shared_ptr<std::vector<espurna::string>>;
 
 #define API_UPDATE_COMMANDS(OUT, NAME, VALUE) \
     if (!OUT) {\
@@ -675,7 +657,7 @@ using Commands = std::shared_ptr<std::vector<String>>;
 #define API_SCHEDULE_COMMANDS(REQUEST, COMMANDS) \
     espurna::web::print::scheduleFromRequest(\
         REQUEST,\
-        [COMMANDS](Print& out) {\
+        [COMMANDS](::espurna::Output& out) {\
             for (const auto& cmd : *COMMANDS) {\
                 api_find_and_call(cmd, out);\
             }\
@@ -687,7 +669,7 @@ void setup() {
         getSetting(Key, Path),
         [](ApiRequest& api) {
             api.handle([](WebRequest& request) {
-                String out;
+                espurna::string out;
                 for (const auto view : names()) {
                     out += view.toString();
                     out += "\r\n";
@@ -702,7 +684,7 @@ void setup() {
             Commands cmds;
 
             api.param_foreach(
-                [&](const String& name, const String& value) {
+                [&](const espurna::string& name, const espurna::string& value) {
                     API_UPDATE_COMMANDS(cmds, name, value);
                 });
 
@@ -721,7 +703,7 @@ void setup() {
     webRequestRegister([](WebRequest& request) {
         STRING_VIEW_INLINE(BasePath, API_BASE_PATH);
 
-        String path;
+        espurna::string path;
         path += BasePath;
         path += getSetting(Key, Path);
 
@@ -737,8 +719,8 @@ void setup() {
         Commands cmds;
 
         for (size_t n = 0; n < request.params(); ++n) {
-            const String name(request.paramName(n));
-            const String value(request.paramValue(n));
+            const espurna::string name(request.paramName(n));
+            const espurna::string value(request.paramValue(n));
             if (!apiReservedParam(name)) {
                 API_UPDATE_COMMANDS(cmds, name, value);
             }
@@ -773,11 +755,6 @@ void setup() {
     serial::setup();
 #endif
 
-#if WEB_SUPPORT
-    // Show DEBUG panel with input
-    web::setup();
-#endif
-
 #if MQTT_SUPPORT && TERMINAL_MQTT_SUPPORT
     // Similar to the above, accept cmdline(s) in payload
     mqtt::setup();
@@ -799,15 +776,15 @@ void terminalOK(const espurna::terminal::CommandContext& ctx) {
 }
 
 void terminalError(const espurna::terminal::CommandContext& ctx) {
-    espurna::terminal::error(ctx, String());
+    espurna::terminal::error(ctx, espurna::string());
 }
 
-void terminalError(const espurna::terminal::CommandContext& ctx, const String& message) {
+void terminalError(const espurna::terminal::CommandContext& ctx, const espurna::string& message) {
     espurna::terminal::error(ctx, message);
 }
 
-void terminalError(const espurna::terminal::CommandContext& ctx, const __FlashStringHelper* message) {
-    espurna::terminal::error(ctx, String(message));
+void terminalError(const espurna::terminal::CommandContext& ctx, const char* message) {
+    espurna::terminal::error(ctx, espurna::string(message));
 }
 
 void terminalError(const espurna::terminal::CommandContext& ctx, espurna::StringView message) {

@@ -15,7 +15,6 @@ inline bool rtcmemSysStatus() {
     return rtcmemStatus();
 }
 
-// the module guard found the loop stalled: the Beken saves the context of every task (CRASH prints it), here the
-// chip's own stall report (ESP32 coredump) or nothing
-inline void rtcmemStallSnapshot() {
-}
+// the module guard found the loop stalled (modules.cpp): the stall record of the common watcher, kept while the loop
+// stands (arch/rtos/system_rtos.cpp)
+void rtcmemStallSnapshot();

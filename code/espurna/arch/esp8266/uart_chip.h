@@ -1,115 +1,81 @@
 /*
 
-UART MODULE, esp8266 part (ref. uart_driver.h)
+UART MODULE, ESP8266 on ESP8266_RTOS_SDK (ref. uart_driver.h)
 
-UART0 on the console pins (1 & 3) or swapped (15 & 13), UART1 is TX-only on pin 2
+UART0 on GPIO1 (TX) / GPIO3 (RX), the console, or swapped to GPIO15 (TX) / GPIO13 (RX); UART1 transmits only, on GPIO2.
+The port is SdkStream (arch/rtos/uart_stream.h) on the UART calls of the chip (core_esp8266.cpp uart_*, the SDK's
+UART driver); the pins pick the port
 
 */
 
 #pragma once
 
-#include <Arduino.h>
+#include "../rtos/uart_stream.h"
 
 namespace espurna {
 namespace driver {
 namespace uart {
 namespace hardware {
 
-// todo; technically, tx==2 is also possible
-// but, we reserve that for the uart1 TX-only interface
-constexpr bool uart0_normal(uint8_t tx, uint8_t rx) {
-    return ((tx == 1) && (rx == 3))
-        || ((tx == GPIO_NONE) && (rx == 3))
-        || ((tx == 1) && (rx == GPIO_NONE));
-}
-
-constexpr bool uart0_swapped(uint8_t tx, uint8_t rx) {
-    return ((tx == 15) && (rx == 13))
-        || ((tx == GPIO_NONE) && (rx == 13))
-        || ((tx == 15) && (rx == GPIO_NONE));
-}
-
-constexpr bool uart1_normal(uint8_t tx, uint8_t rx) {
-    return (tx == 2) && (rx == GPIO_NONE);
-}
-
 inline bool& used(int number) {
     static bool ports[2] {false, false};
     return ports[number];
 }
 
+// UART0 on its own pins or the swapped ones
+constexpr bool uart0_pins(uint8_t tx, uint8_t rx) {
+    return (((tx == 1) || (tx == GPIO_NONE)) && ((rx == 3) || (rx == GPIO_NONE))
+            && ((tx != GPIO_NONE) || (rx != GPIO_NONE)))
+        || (((tx == 15) || (tx == GPIO_NONE)) && ((rx == 13) || (rx == GPIO_NONE))
+            && ((tx != GPIO_NONE) || (rx != GPIO_NONE)));
+}
+
+// UART1: TX on GPIO2, nothing to receive with
+constexpr bool uart1_pins(uint8_t tx, uint8_t rx) {
+    return (tx == 2) && (rx == GPIO_NONE);
+}
+
 inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert, size_t rx_buffer) {
     const int number =
-        uart0_normal(tx, rx)
+        uart0_pins(tx, rx)
             ? 0 :
-        uart0_swapped(tx, rx)
-            ? 0 :
-        uart1_normal(tx, rx)
+        uart1_pins(tx, rx)
             ? 1
             : -1;
-
     if ((number < 0) || used(number)) {
         return Opened{nullptr, Type::Unknown};
     }
 
-    const int mode =
-        (tx == GPIO_NONE)
-            ? SERIAL_RX_ONLY :
-        (rx == GPIO_NONE)
-            ? SERIAL_TX_ONLY :
-        ((tx != GPIO_NONE) && (rx != GPIO_NONE))
-            ? SERIAL_FULL
-            : -1;
-    if (mode < 0) {
+    const auto pin = [](uint8_t value) {
+        return (value == GPIO_NONE) ? core::chip::NoPin : value;
+    };
+
+    const auto port = core::chip::uart_open(baudrate,
+        sdk_config(config.data_bits, config.parity == Parity::Even, config.parity == Parity::Odd, config.stop_bits),
+        pin(rx), pin(tx), invert, rx_buffer);
+    if (port < 0) {
         return Opened{nullptr, Type::Unknown};
     }
 
     used(number) = true;
-
-    auto* ptr = new HardwareSerial(number);
-    if (rx_buffer) {
-        ptr->setRxBufferSize(rx_buffer);
-    }
-    ptr->begin(baudrate,
-        static_cast<SerialConfig>(serial_config(config)),
-        static_cast<SerialMode>(mode),
-        tx, invert);
-    if ((number == 0) && (uart0_swapped(tx, rx))) {
-        ptr->flush();
-        ptr->swap();
-    }
-
-    return Opened{ptr, (number == 0) ? Type::Uart0 : Type::Uart1};
+    return Opened{new SdkStream(port), (number == 0) ? Type::Uart0 : Type::Uart1};
 }
 
-// another speed for a hardware port
-inline bool baud(Stream* stream, Type type, uint32_t value) {
+// another speed for a hardware port, after what is queued went out
+inline bool baud(ByteStream* stream, Type type, uint32_t value) {
     if ((type != Type::Uart0) && (type != Type::Uart1)) {
         return false;
     }
 
-    auto* serial = static_cast<HardwareSerial*>(stream);
-    serial->flush();
-    serial->updateBaudRate(value);
-    return true;
+    return stream->baud(value);
 }
 
+// the console UART keeps its RX
 inline void disable_uart0_rx() {
-    ets_isr_mask(1 << ETS_UART_INUM);
 }
 
-inline void sdk_log(Type type) {
-    switch (type) {
-    case Type::Uart0:
-        uart_set_debug(0);
-        break;
-    case Type::Uart1:
-        uart_set_debug(1);
-        break;
-    default:
-        uart_set_debug(UART_NO);
-        break;
-    }
+// SDK log goes to the console port, nothing to switch
+inline void sdk_log(Type) {
 }
 
 } // namespace hardware

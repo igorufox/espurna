@@ -115,7 +115,7 @@ constexpr unsigned char pin() {
     return IR_TX_PIN;
 }
 
-// (optional) whether the LED will turn ON when GPIO is LOW and OFF when it's HIGH
+// (optional) whether the LED will turn ON when GPIO is false and OFF when it's true
 // (disabled by default)
 constexpr bool inverted() {
     return IR_TX_INVERTED == 1;
@@ -303,7 +303,7 @@ std::unique_ptr<IRrecv> instance;
 } // namespace rx
 
 // TODO: since the exceptions are disabled, and parsing failure is not really an 'exceptional' result anyway...
-//       result struct may be in need of an additional struct describing the error, instead of just a boolean true or false
+//       result struct may be in need of an additional struct describing the error, instead of just a bool true or false
 //       (something like std::expected - http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p0323r8.html)
 //       current implementation may be adjusted, but not the using DecodeResult = std::optional<T> mentioned above
 
@@ -521,8 +521,8 @@ uint64_t decode(StringView view) {
     return 0;
 }
 
-String encode(uint64_t input) {
-    String out;
+espurna::string encode(uint64_t input) {
+    espurna::string out;
 
     if (input) {
         const uint64_t Value { __builtin_bswap64(input) };
@@ -553,7 +553,7 @@ decode_type_t type(StringView view) {
     constexpr int First { -1 };
     constexpr int Last { static_cast<int>(decode_type_t::kLastDecodeType) };
 
-    String value(view);
+    espurna::string value(view);
 
     int result { value.toInt() };
     if ((First < result) && (result < Last)) {
@@ -584,8 +584,8 @@ unsigned long delay(StringView value) {
 }
 
 template <typename T>
-String encode(T& result) {
-    String out;
+espurna::string encode(T& result) {
+    espurna::string out;
     out.reserve(28);
 
     out += static_cast<int>(result.type());
@@ -647,7 +647,7 @@ Payload prepare(StringView type, StringView value, StringView bits, StringView r
 // The message is encoded as time in microseconds for the IR LED to be in a certain state.
 // First one is always ON, and the second one - OFF.
 
-// Also see IRutils.h's `String resultToTimingInfo(decode_results*)` for all of timing info, with a nice table output
+// Also see IRutils.h's `espurna::string resultToTimingInfo(decode_results*)` for all of timing info, with a nice table output
 // Not really applicable here, though
 
 namespace raw {
@@ -680,17 +680,17 @@ namespace time {
 // > +100-200AbB-300Cc
 //    |A| |B|    |C|
 
-String encode(const uint16_t* begin, const uint16_t* end) {
+espurna::string encode(const uint16_t* begin, const uint16_t* end) {
     static_assert((kRawTick == 2), "");
 
-    String out;
+    espurna::string out;
     out.reserve((end - begin) * 5);
 
     for (const uint16_t* it = begin; it != end; ++it) {
         if (out.length()) {
             out += ',';
         }
-        out += String((*it) * kRawTick, 10);
+        out += espurna::string((*it) * kRawTick, 10);
     }
 
     return out;
@@ -717,13 +717,13 @@ uint16_t time(StringView value) {
 }
 
 template <typename T>
-String encode(T& result) {
+espurna::string encode(T& result) {
     auto raw = result.raw();
     if (raw) {
         return time::encode(raw.begin(), raw.end());
     }
 
-    return String('0');
+    return espurna::string('0');
 }
 
 } // namespace payload
@@ -805,12 +805,12 @@ struct Payload {
 
 namespace value {
 
-String encode(const uint8_t* begin, const uint8_t* end) {
+espurna::string encode(const uint8_t* begin, const uint8_t* end) {
     return hexEncode(begin, end);
 }
 
 template <typename T>
-String encode(T&& range) {
+espurna::string encode(T&& range) {
     return hexEncode(range.begin(), range.end());
 }
 
@@ -830,8 +830,8 @@ Value decode(StringView view) {
 namespace payload {
 
 template <typename T>
-String encode(T& result) {
-    String out;
+espurna::string encode(T& result) {
+    espurna::string out;
     out.reserve(4 + (result.bytes() * 2));
 
     out += static_cast<int>(result.type());
@@ -923,7 +923,7 @@ void setup(BasePinPtr&& pin) {
 // >     uint32_t address;  // Decoded device address.
 // >     uint32_t command;  // Decoded command.
 // >   };
-// >   uint8_t state[kStateSizeMax];  // Multi-byte results.
+// >   byte state[kStateSizeMax];  // Multi-byte results.
 // > };
 //
 // Where `kStateSizeMax` is either:
@@ -931,7 +931,7 @@ void setup(BasePinPtr&& pin) {
 // - otherwise, it's just `sizeof(uint64_t)`
 // (i.e. only extra data is lost, as union members always start at the beginning of the struct)
 
-// Also see IRutils.h's `String resultToHumanReadableBasic(decode_results*);` for type + value as a single line
+// Also see IRutils.h's `espurna::string resultToHumanReadableBasic(decode_results*);` for type + value as a single line
 
 struct DecodeResult {
     template <typename T>
@@ -1149,9 +1149,9 @@ void loop() {
     }
 
     auto& payload = internal::queue.front();
-    static unsigned long last { millis() - payload->delay() - 1ul };
+    static unsigned long last { espurna::time::ms() - payload->delay() - 1ul };
 
-    const unsigned long timestamp { millis() };
+    const unsigned long timestamp { espurna::time::ms() };
     if (timestamp - last < payload->delay()) {
         return;
     }
@@ -1447,7 +1447,7 @@ static constexpr uint32_t GenericKeys[] PROGMEM {
 };
 
 // command of the button, empty when the code is not a button of this preset
-String command(int preset, uint64_t value) {
+espurna::string command(int preset, uint64_t value) {
     switch (preset) {
     case 1:
     case 2:
@@ -1455,7 +1455,7 @@ String command(int preset, uint64_t value) {
         const size_t column = (preset == 1) ? 0 : (preset == 2) ? 1 : 2;
         for (const auto& key : LightKeys) {
             if (key.codes[column] == value) {
-                return String(FPSTR(key.command));
+                return espurna::string(key.command);
             }
         }
 
@@ -1468,7 +1468,7 @@ String command(int preset, uint64_t value) {
         const auto* end = (preset == 3) ? std::end(SamsungKeys) : std::end(GenericKeys);
         for (const auto* it = begin; it != end; ++it) {
             if (*it == value) {
-                String out;
+                espurna::string out;
                 out += STRING_VIEW("relay ");
                 out += static_cast<unsigned>(std::distance(begin, it));
                 out += STRING_VIEW(" toggle");
@@ -1481,7 +1481,7 @@ String command(int preset, uint64_t value) {
 
     }
 
-    return String();
+    return espurna::string();
 }
 
 } // namespace preset
@@ -1510,7 +1510,7 @@ void process(rx::DecodeResult& result) {
 
     const auto value = ir::simple::value::encode(result.value());
 
-    String key;
+    espurna::string key;
     key += STRING_VIEW("irCmd");
     key += value;
 
@@ -1613,8 +1613,8 @@ void loop() {
             return;
         }
 
-        static unsigned long last { millis() - internal::delay - 1ul };
-        unsigned long ts { millis() };
+        static unsigned long last { espurna::time::ms() - internal::delay - 1ul };
+        unsigned long ts { espurna::time::ms() };
         if (ts - last < internal::delay) {
             return;
         }
@@ -1630,11 +1630,11 @@ void loop() {
 namespace relay {
 namespace settings {
 
-String relayOn(size_t id) {
+espurna::string relayOn(size_t id) {
     return getSetting(espurna::settings::Key{"irRelayOn", id});
 }
 
-String relayOff(size_t id) {
+espurna::string relayOff(size_t id) {
     return getSetting(espurna::settings::Key{"irRelayOff", id});
 }
 
@@ -1677,7 +1677,7 @@ void setup() {
     // irRx, irTx, irRxPreset ... of a device template (WebUI) are saved through the WebSocket,
     // also when no pin is configured yet
     wsRegister()
-        .onKeyCheck([](StringView key, const JsonVariant&) {
+        .onKeyCheck([](StringView key, espurna::json::Value) {
             return key.startsWith(STRING_VIEW("ir"));
         });
 #endif
@@ -1752,8 +1752,8 @@ namespace {
 // TODO: may be useful if struct and values comparison error dump happens. but, not really nice looking for structs b/c of the length and no field highlight
 
 #if 0
-String serialize(const espurna::ir::simple::Payload& payload) {
-    String out;
+espurna::string serialize(const espurna::ir::simple::Payload& payload) {
+    espurna::string out;
     out.reserve(128);
 
     out += STRING_VIEW("{ .type=decode_type_t::");
@@ -1765,42 +1765,42 @@ String serialize(const espurna::ir::simple::Payload& payload) {
     out += STRING_VIEW(", ");
 
     out += STRING_VIEW(".bits=");
-    out += String(payload.bits, 10);
+    out += espurna::string(payload.bits, 10);
     out += STRING_VIEW(", ");
 
     out += STRING_VIEW(".repeats=");
-    out += String(payload.repeats, 10);
+    out += espurna::string(payload.repeats, 10);
     out += STRING_VIEW(", ");
 
     out += STRING_VIEW(".series=");
-    out += String(payload.series, 10);
+    out += espurna::string(payload.series, 10);
     out += STRING_VIEW(", ");
 
     out += STRING_VIEW(".delay=");
-    out += String(payload.delay, 10);
+    out += espurna::string(payload.delay, 10);
     out += STRING_VIEW(" }");
 
     return out;
 }
 
-String serialize(const espurna::ir::raw::Payload& payload) {
-    String out;
+espurna::string serialize(const espurna::ir::raw::Payload& payload) {
+    espurna::string out;
     out.reserve(128);
 
     out += STRING_VIEW("{ .frequency=");
-    out += String(payload.frequency, 10);
+    out += espurna::string(payload.frequency, 10);
     out += STRING_VIEW(", ");
 
     out += STRING_VIEW(".series=");
-    out += String(payload.series, 10);
+    out += espurna::string(payload.series, 10);
     out += STRING_VIEW(", ");
 
     out += STRING_VIEW(".delay=");
-    out += String(payload.delay, 10);
+    out += espurna::string(payload.delay, 10);
     out += STRING_VIEW(", ");
 
     out += STRING_VIEW(".time[");
-    out += String(payload.time.size(), 10);
+    out += espurna::string(payload.time.size(), 10);
     out += STRING_VIEW("]={");
 
     bool comma { false };
@@ -1808,7 +1808,7 @@ String serialize(const espurna::ir::raw::Payload& payload) {
         if (comma) {
             out += STRING_VIEW(", ");
         }
-        out += String(value, 10);
+        out += espurna::string(value, 10);
         comma = true;
     }
 
@@ -1833,7 +1833,7 @@ struct Report {
         return _repr;
     }
 
-    String toString() const {
+    espurna::string toString() const {
         return _repr.toString();
     }
 

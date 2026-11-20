@@ -8,11 +8,10 @@ Copyright (C) 2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #pragma once
 
-#include <Arduino.h>
 #include <cstdint>
 
-bool tspkEnqueueRelay(unsigned char index, const String& value);
-bool tspkEnqueueMagnitude(unsigned char index, const String& value);
+bool tspkEnqueueRelay(unsigned char index, const espurna::string& value);
+bool tspkEnqueueMagnitude(unsigned char index, const espurna::string& value);
 void tspkFlush();
 
 bool tspkEnabled();

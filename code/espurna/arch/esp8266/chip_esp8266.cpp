@@ -1,6 +1,6 @@
 /*
 
-CHIP DESCRIPTION AND LWIP GLUE, esp8266 part (ref. espurna_chip.h)
+CHIP DESCRIPTION AND LWIP GLUE, ESP8266 on ESP8266_RTOS_SDK 3.4 (ref. espurna_chip.h)
 
 */
 
@@ -8,140 +8,124 @@ CHIP DESCRIPTION AND LWIP GLUE, esp8266 part (ref. espurna_chip.h)
 
 #include "../../espurna_chip.h"
 
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 
-#include <lwip/init.h>
-#include <lwip/tcp.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
-// not yet CONNECTING or LISTENING
-extern "C" struct tcp_pcb *tcp_bound_pcbs;
-// accepting or sending data
-extern "C" struct tcp_pcb *tcp_active_pcbs;
-// // TIME-WAIT status
-extern "C" struct tcp_pcb *tcp_tw_pcbs;
+#include <memory>
+#include <new>
 
 namespace espurna {
 namespace chip {
 
-void ws_connected(JsonObject& root) {
-    root[F("arch")] = F("esp8266");
-    root[F("mcu")] = F("ESP8266");
-}
-
-void ws_visible(JsonObject&) {
-}
-
-void info(Print& out) {
-    out.printf_P(PSTR("mcu: esp8266 chipid: %s freq: %hhumhz\n"),
-            systemChipId().c_str(), system_get_cpu_freq());
-}
-
-void memory(Print&) {
-}
-
-bool netstat(Print& out) {
-    const struct tcp_pcb* pcbs[] {
-        tcp_active_pcbs,
-        tcp_tw_pcbs,
-        tcp_bound_pcbs,
+WebInfo web_info() {
+    return WebInfo{
+        .arch = "esp8266",
+        .mcu = "ESP8266EX",
+        .layout = nullptr,
+        .tcm_used = 0,
+        .tcm_size = 0,
     };
+}
 
-    for (const auto* list : pcbs) {
-        for (const tcp_pcb* pcb = list; pcb != nullptr; pcb = pcb->next) {
-            out.printf_P(PSTR("state %s local %s:%hu remote %s:%hu\n"),
-                    tcp_debug_state_str(pcb->state),
-                    IPAddress(pcb->local_ip).toString().c_str(),
-                    pcb->local_port,
-                    IPAddress(pcb->remote_ip).toString().c_str(),
-                    pcb->remote_port);
-        }
+void info(::espurna::Output& out) {
+    out.printf_P(PSTR("mcu: ESP8266EX chipid: %s freq: %umhz\n"),
+            systemChipId().c_str(), static_cast<unsigned>(system_get_cpu_freq()));
+}
+
+// HEAP: every task, its priority and the bytes of its stack never used (the stacks are most of the RAM of the RTOS
+// build: loopTask, the Wi-Fi's ppT, esp_timer, the timer service, the event loop, tcpip, idle)
+void memory(::espurna::Output& out) {
+    UBaseType_t count = uxTaskGetNumberOfTasks();
+    std::unique_ptr<TaskStatus_t[]> tasks(new (std::nothrow) TaskStatus_t[count + 2]);
+    if (!tasks) {
+        return;
     }
+
+    count = uxTaskGetSystemState(tasks.get(), count + 2, nullptr);
+    out.printf_P(PSTR("tasks: %u\n"), static_cast<unsigned>(count));
+    for (UBaseType_t index = 0; index < count; ++index) {
+        const auto& task = tasks[index];
+        // the TCB and the stack too: a panic's registers (an address in the heap) name the task they point into
+        out.printf_P(PSTR("  %-16s prio %2u stack free %5u tcb %p stack %p\n"), task.pcTaskName,
+            static_cast<unsigned>(task.uxCurrentPriority), static_cast<unsigned>(task.usStackHighWaterMark),
+            task.xHandle, task.pxStackBase);
+    }
+}
+
+// lwIP of the SDK: IPv4 and IPv6 in one ip_addr_t
+espurna::Ip4 address(const ip_addr_t* addr) {
+    return espurna::Ip4(ip_addr_get_ip4_u32(addr));
+}
+
+// Flash is split into the partitions of the SDK's partition table
+bool storage(::espurna::Output& out, const char* mode) {
+    out.printf_P(PSTR("speed: %u\n"), espurna::core::chip::flash_speed());
+    out.printf_P(PSTR("mode: %s\n"), mode);
+    out.printf_P(PSTR("size: %u\n"), espurna::core::chip::flash_size());
+
+    const auto* running = esp_ota_get_running_partition();
+
+    // the SDK has no 'any type': the app partitions, then the data ones
+    for (const auto type : {ESP_PARTITION_TYPE_APP, ESP_PARTITION_TYPE_DATA}) {
+        auto it = esp_partition_find(type, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+        for (; it != nullptr; it = esp_partition_next(it)) {
+            const auto* part = esp_partition_get(it);
+            out.printf_P(PSTR("%-8s [%08X...%08X) (%u bytes)%s\n"),
+                part->label, part->address, part->address + part->size, part->size,
+                (part == running) ? PSTR(" running") : PSTR(""));
+        }
+        esp_partition_iterator_release(it);
+    }
+
+    out.printf_P(PSTR("app: %u bytes, free for OTA: %u bytes\n"),
+        espurna::core::chip::sketch_size(), espurna::core::chip::sketch_space());
 
     return true;
 }
 
-void wdt_pause() {
-    ESP.wdtDisable();
+espurna::string image() {
+    return ESPURNA_IMAGE;
 }
 
-void wdt_resume() {
-    ESP.wdtEnable(5000);
-}
-
-IPAddress address(const ip_addr_t* addr) {
-    return IPAddress(addr);
-}
-
-bool address_set(const IPAddress& ip) {
-    return ip.isSet();
-}
-
-err_t gethostbyname(const char* name, IPAddress& out, dns_found_callback callback, void* arg) {
-    return dns_gethostbyname(name, out, callback, arg);
-}
-
-// on (owner 2026-11-11, plan section 7: «D2 (лимит соединений и порог heap) оставлены»; the 11-10 «as upstream» was
-// replaced by it). The 1 MB head with modules runs at 4-9 KB free and one request takes several KB: without the gate
-// 12 parallel requests ran it out, hundreds of failed allocations a round and an OOM abort (10.0.5.0 2026-11-14, W47).
-// The connections limit is what holds it; the heap floor only below what the board has idle: 5120 locked 10.0.5.0
-// out of the web and telnet (4 KB idle with 9 modules and MQTT, 2026-11-14).
-// One HTTP request at a time (WebSockets not counted): a request costs ~6 KB (2 KB receive ring, ~2 KB request, the
-// head, the queued answer); with 10 modules the 3 connections of `conns` (one of them the WebUI's WebSocket) still
-// ran the heap out, oom counts in the hundreds a round (W64, 11-16). The others wait in TCP (web_guard.cpp)
+// the heap of the ESP8266 is the NONOS build's size (~40 KB free after start), the same guard as there
 WebGuard web_guard() {
+    // 19.11: the MODULES page opened its parts in parallel, 4 connections x (TCP send buffer + request) took the heap to
+    // 2.4 KB (largest block < 1 KB), the Wi-Fi driver dropped the received frames (pings lost for seconds). One request
+    // at a time, a new connection waits while the heap or its largest block is short
     return WebGuard{
-        .heap = 2048,
-        .block = 0,
+        .heap = 12288,
+        .block = 4096,
         .lwip = 0,
-        .conns = 3,
+        .conns = 6,
         .requests = 1,
     };
 }
 
-// fixed layout, printed by the terminal itself
-bool storage(Print&, const char*) {
-    return false;
+// the SDK, no Arduino core (lib/espurna-core is the layer of the Arduino names)
+espurna::string core_version() {
+    return espurna::string("ESP8266_RTOS_SDK ") + esp_get_idf_version();
 }
 
-String image() {
-    return F(ESPURNA_IMAGE);
-}
-
-String core_version() {
-    String out;
-#ifdef ARDUINO_ESP8266_RELEASE
-    out = ESP.getCoreVersion();
-    if (out.equals("00000000")) {
-        out = String(ARDUINO_ESP8266_RELEASE);
-    }
-    out.replace('_', '.');
-#elif defined(ARDUINO_ESP8266_GIT_DESC)
-#define _GET_COREVERSION_STR(X) #X
-#define GET_COREVERSION_STR(X) _GET_COREVERSION_STR(X)
-    out = GET_COREVERSION_STR(ARDUINO_ESP8266_GIT_DESC);
-#undef _GET_COREVERSION_STR
-#undef GET_COREVERSION_STR
-#else
-    out = "unknown";
-#endif
-    return out;
-}
-
-String core_revision() {
-#ifdef ARDUINO_ESP8266_GIT_VER
-    return String(ARDUINO_ESP8266_GIT_VER, 16);
-#else
-    return String(F("(unspecified)"));
-#endif
+espurna::string core_revision() {
+    return esp_get_idf_version();
 }
 
 } // namespace chip
 } // namespace espurna
 
-bool equalsConstantTime(const String& lhs, const String& rhs) {
-    return lhs.equalsConstantTime(rhs);
-}
+// utils.h: espurna::Ip4 of the layer (ArduinoCore-API) has no toString()
+espurna::string ipToString(const espurna::Ip4& ip) {
+    espurna::string out;
+    out.reserve(16);
+    for (int index = 0; index < 4; ++index) {
+        if (index) {
+            out += '.';
+        }
+        out += espurna::string(ip[index]);
+    }
 
-// the core's IPAddress has toString(), utils.h
-String ipToString(const IPAddress& ip) {
-    return ip.toString();
+    return out;
 }

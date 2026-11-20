@@ -8,7 +8,6 @@ Copyright (C) 2024 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <chrono>
 #include <cstdint>
@@ -289,23 +288,23 @@ Context delta(const Context&, Days);
 Seconds tz_offset(const Context&);
 
 // generic string format used for datetime output, without timezone
-String format(const tm&);
+espurna::string format(const tm&);
 
 // prepare 'tm' for the format(const tm&)
-String format_local(time_t);
-String format_utc(time_t);
+espurna::string format_local(time_t);
+espurna::string format_utc(time_t);
 
 // prepare 'time_point' for the formatter
-String format_local(Clock::time_point);
-String format_utc(Clock::time_point);
+espurna::string format_local(Clock::time_point);
+espurna::string format_utc(Clock::time_point);
 
 // generic iso8601 format w/ timezone offset
-String format_local_tz(const Context&);
-String format_local_tz(Clock::time_point);
-String format_local_tz(time_t);
+espurna::string format_local_tz(const Context&);
+espurna::string format_local_tz(Clock::time_point);
+espurna::string format_local_tz(time_t);
 
-String format_utc_tz(const Context&);
-String format_utc_tz(const tm&);
+espurna::string format_utc_tz(const Context&);
+espurna::string format_utc_tz(const tm&);
 
 } // namespace datetime
 

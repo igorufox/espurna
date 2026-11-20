@@ -25,7 +25,7 @@ class AnimAssemble : public Anim {
         int p = 0;
         for (auto i = 0; i < numLeds; ++i) {
             leds[i] = 0;
-            Color c = palette->getCachedPalColor((byte)p);
+            Color c = palette->getCachedPalColor((uint8_t)p);
             ledstmp[i] = c;
 
             p = p + inc;
@@ -44,7 +44,7 @@ class AnimAssemble : public Anim {
     void Run() override {
         if (phase == Phases::Assemmble) {
             if (pos < numLeds) {
-                byte cur_point = seq[pos];
+                uint8_t cur_point = seq[pos];
                 leds[cur_point] = ledstmp[cur_point];
                 ++pos;
             } else {
@@ -65,7 +65,7 @@ class AnimAssemble : public Anim {
             }
         } else {
             if (pos < numLeds) {
-                byte cur_point = seq[pos];
+                uint8_t cur_point = seq[pos];
                 leds[cur_point] = 0;
                 ++pos;
             } else {

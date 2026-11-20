@@ -1,8 +1,7 @@
 /*
 
 IMAGE RECEIVER - the one code that takes a firmware image in, everything ESPurna builds: the head of every chip
-(/upgrade: ota_web.cpp), code/migration-app (/upgrade, the download of the full
-image) and code/safeboot-app (/upload, the download by an URL). No Arduino, header only.
+(/upgrade: ota_web.cpp) and code/migration-app (/upgrade, the download of the full image). No Arduino, header only.
 
 - the image comes a piece at a time: the body of an upload (libs/http_server.h) or the body of a download
   (libs/http_client.h, the receiver is its sink: 200 and Content-Length, the SHA-256 of the release list is checked
@@ -18,7 +17,6 @@ image) and code/safeboot-app (/upload, the download by an URL). No Arduino, head
 What differs is only where the bytes go, the Target of the image:
 - the head: Arduino Update and the chip's checks (ota.cpp, arch/<chip>/ota_driver_<chip>.h)
 - the migration image: the free space behind the running image and eboot, read back before eboot is told (migration-app)
-- the safeboot: app0 by esp_ota, an application image or the app0 part of a merged image (safeboot-app)
 
 */
 

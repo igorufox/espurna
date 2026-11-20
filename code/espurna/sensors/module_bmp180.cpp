@@ -15,7 +15,7 @@ using namespace espurna::sensor::module;
 ESPURNA_SENSOR_DRIVER(bmp180, "bmp180Addr|i2c|Address (0 - find it)|0") {
     if (i2c_bus()) {
         auto* sensor = new BMP180Sensor();
-        sensor->setAddress(getSetting(F("bmp180Addr"), uint8_t{ BMP180_ADDRESS }));
+        sensor->setAddress(getSetting("bmp180Addr", uint8_t{ BMP180_ADDRESS }));
         sensorAdd(sensor);
     }
 }

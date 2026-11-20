@@ -39,7 +39,7 @@ namespace {
 
 #define KINGART_DEBUG_MSG_P(...) do { if (_curtain_debug_flag) { DEBUG_MSG_P(__VA_ARGS__); } } while(0)
 
-Stream* _curtain_port { nullptr };
+::espurna::ByteStream* _curtain_port { nullptr };
 
 char _KACurtainBuffer[KINGART_CURTAIN_BUFFER_SIZE];
 bool _KACurtainNewData = false;
@@ -75,7 +75,7 @@ void curtainUpdateUI() {
 }
 
 //------------------------------------------------------------------------------
-int setButtonFromSwitchText(const String& text) {
+int setButtonFromSwitchText(const espurna::string& text) {
     if(text == "on")
         return CURTAIN_BUTTON_OPEN;
     else if(text == "off")
@@ -103,7 +103,7 @@ bool _KAValidStatus() {
 //------------------------------------------------------------------------------
 //We consider that the curtain is moving. A timer is set to get the position of the curtain sending AT+START messages in the loop()
 void _KASetMoving() {
-    last_uptime = millis() + 1000; //Let the returned curtain position to be refreshed to know of the curtain is still moving
+    last_uptime = espurna::time::ms() + 1000; //Let the returned curtain position to be refreshed to know of the curtain is still moving
      _curtain_moving = true;
 }
 
@@ -130,21 +130,21 @@ void _KACurtainSet(int button, int position = CURTAIN_POSITION_UNKNOWN) {
         snprintf_P(
             tx_buffer, sizeof(tx_buffer),
             PSTR("AT+UPDATE=\"sequence\":\"%d%03u\",\"switch\":\"%s\",\"setclose\":%d"),
-            now(), millis() % 1000,
+            now(), espurna::time::ms() % 1000,
             (button == CURTAIN_BUTTON_PAUSE ? "pause" : (button == CURTAIN_BUTTON_OPEN ? "on" : "off")), position
         );
     } else if(button == CURTAIN_BUTTON_UNKNOWN) {
         snprintf_P(
             tx_buffer, sizeof(tx_buffer),
             PSTR("AT+UPDATE=\"sequence\":\"%d%03u\",\"setclose\":%d"),
-            now(), millis() % 1000,
+            now(), espurna::time::ms() % 1000,
            position
         );
     } else {
             snprintf_P(
             tx_buffer, sizeof(tx_buffer),
             PSTR("AT+UPDATE=\"sequence\":\"%d%03u\",\"switch\":\"%s\""),
-            now(), millis() % 1000,
+            now(), espurna::time::ms() % 1000,
             (button == CURTAIN_BUTTON_PAUSE ? "pause" : (button == CURTAIN_BUTTON_OPEN ? "on" : "off"))
         );
     }
@@ -247,7 +247,7 @@ void _KACurtainResult() {
     _KACurtainSend("AT+SEND=ok");
 
     //Init receive stats : The buffer which may contain : "setclose":INT(0-100) or "switch":["on","off","pause"]
-    const String buffer(_KACurtainBuffer);
+    const espurna::string buffer(_KACurtainBuffer);
     _curtain_button = CURTAIN_BUTTON_UNKNOWN;
     _curtain_position = CURTAIN_POSITION_UNKNOWN;
 
@@ -271,7 +271,7 @@ void _KACurtainResult() {
         // Get switch status from MCU
         int switch_idx = buffer.indexOf("switch");
         if (switch_idx > 0) {
-            String switch_text = buffer.substring(switch_idx + strlen("switch") + 3, buffer.length());
+            espurna::string switch_text = buffer.substring(switch_idx + strlen("switch") + 3, buffer.length());
             int leftovers = switch_text.indexOf('"');
             if (leftovers > 0) { //We must find leftover as it is text
                 switch_text = switch_text.substring(0, leftovers);
@@ -281,7 +281,7 @@ void _KACurtainResult() {
         // Get position from MCU
         int setclose_idx = buffer.indexOf("setclose");
         if (setclose_idx > 0) {
-            String position = buffer.substring(setclose_idx + strlen("setclose") + 2, buffer.length());
+            espurna::string position = buffer.substring(setclose_idx + strlen("setclose") + 2, buffer.length());
             int leftovers = position.indexOf(',');
             if (leftovers > 0) { // Not found if finishing by setclose
                 position = position.substring(0, leftovers);
@@ -315,7 +315,7 @@ void _KACurtainResult() {
         _curtain_last_position = _curtain_position;
 
 #if MQTT_SUPPORT
-        mqttSend(MQTT_TOPIC_CURTAIN, String(_curtain_last_position, 10).c_str());
+        mqttSend(MQTT_TOPIC_CURTAIN, espurna::string(_curtain_last_position, 10).c_str());
 #endif
     }
 
@@ -375,44 +375,45 @@ void _curtainMQTTCallback(unsigned int type, espurna::StringView topic, espurna:
 STRING_VIEW_INLINE(CurtainPrefix, "curtain");
 
 //------------------------------------------------------------------------------
-void _curtainWebSocketOnConnected(JsonObject& root) {
-    root["curtainType"] = getSetting("curtainType", "0");
-    root["curtainBoot"] = getSetting("curtainBoot", "0");
+void _curtainWebSocketOnConnected(espurna::json::Writer& root) {
+    root.field("curtainType", getSetting("curtainType", "0"));
+    root.field("curtainBoot", getSetting("curtainBoot", "0"));
 }
 
 //------------------------------------------------------------------------------
-bool _curtainWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant& value) {
+bool _curtainWebSocketOnKeyCheck(espurna::StringView key, espurna::json::Value value) {
     return key.startsWith(CurtainPrefix);
 }
 
 //------------------------------------------------------------------------------
-void _curtainWebSocketUpdate(JsonObject& root) {
-    JsonObject& state = root.createNestedObject("curtainState");
-    state["get"] = _curtain_last_position;
+void _curtainWebSocketUpdate(espurna::json::Writer& root) {
+    root.object(STRING_VIEW("curtainState"));
+    root.field(STRING_VIEW("get"), _curtain_last_position);
     if(_curtain_position_set == CURTAIN_POSITION_UNKNOWN) {
         _curtain_position_set = _curtain_last_position;
     }
-    state["set"] = _curtain_position_set;
-    state["button"] = _curtain_last_button;
-    state["moving"] = _curtain_moving;
-    state["type"] = getSetting("curtainType", "0");
+    root.field(STRING_VIEW("set"), _curtain_position_set);
+    root.field(STRING_VIEW("button"), _curtain_last_button);
+    root.field(STRING_VIEW("moving"), _curtain_moving);
+    root.field(STRING_VIEW("type"), getSetting("curtainType", "0"));
+    root.end();
 }
 
 //------------------------------------------------------------------------------
-void _curtainWebSocketOnAction(uint32_t client_id, const char * action, JsonObject& data) {
+void _curtainWebSocketOnAction(uint32_t client_id, const char * action, espurna::json::Value data) {
 
     if (strcmp(action, "curtainAction") == 0) {
-        if (data.containsKey("position")) {
-            _curtain_position_set = data["position"].as<int>();
+        if (data.has("position")) {
+            _curtain_position_set = data["position"].asLong();
             _KACurtainSet(CURTAIN_BUTTON_UNKNOWN, _curtain_position_set);
-        } else if(data.containsKey("button")){
-            _curtain_last_button = data["button"].as<int>();
+        } else if(data.has("button")){
+            _curtain_last_button = data["button"].asLong();
              _KACurtainSet(_curtain_last_button);
         }
     }
 }
 
-void _curtainWebSocketOnVisible(JsonObject& root) {
+void _curtainWebSocketOnVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, CurtainPrefix);
 }
 
@@ -428,7 +429,7 @@ static void _KACurtainLoop() {
     if(_KACurtainReceiveUART()) {
         _KACurtainResult();
     } else if(_curtain_moving) { //When curtain move and no messages, get position every 600ms with AT+START
-        unsigned long uptime = millis();
+        unsigned long uptime = espurna::time::ms();
         long diff = uptime - last_uptime;
         if(diff >= 600) {
             _KACurtainSend("AT+START");
@@ -469,7 +470,7 @@ void _kingartCurtainSetup() {
 
 #if UART_DRIVERS_CLAIM_PORT
     // serial log and terminal let go of the port (board builds have them compiled out)
-    if (!uartClaim(number - 1, F("KingArt curtain"))) {
+    if (!uartClaim(number - 1, "KingArt curtain")) {
         return;
     }
 #endif

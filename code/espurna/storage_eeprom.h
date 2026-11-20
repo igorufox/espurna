@@ -11,7 +11,8 @@ pool is, arch/<chip>/storage_flash_<chip>.cpp (ref. espurna::storage::flash belo
 
 #pragma once
 
-#include <Arduino.h>
+#include "text_types.h"
+
 
 #if __has_include(<spi_flash_mmap.h>)
 #include <spi_flash_mmap.h>    // ESP-IDF 5 (core 3.x): SPI_FLASH_SEC_SIZE
@@ -61,7 +62,7 @@ public:
     void write(size_t address, uint8_t value);
     bool commit();
 
-    void dump(Print& print) const;
+    void dump(::espurna::Output& print) const;
 
     // flash sectors of the settings: the base one and how many sectors the copies take under it (esp8266 EEPROM_Rotate)
     uint32_t base() const;
@@ -117,7 +118,7 @@ void done();
 bool legacyErasedWhenDone();
 
 // EEPROM command, a line about the chip's storage
-void info(Print&);
+void info(::espurna::Output&);
 
 } // namespace flash
 } // namespace storage
@@ -127,7 +128,7 @@ bool eepromReady();
 
 void eepromRotate(bool value);
 
-String eepromSectors();
+espurna::string eepromSectors();
 size_t eepromSpace();
 
 void eepromClear();

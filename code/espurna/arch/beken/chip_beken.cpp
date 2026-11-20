@@ -1,16 +1,13 @@
 /*
 
-CHIP DESCRIPTION AND LWIP GLUE, LibreTiny part (ref. espurna_chip.h)
+CHIP DESCRIPTION AND LWIP GLUE, BK72xx part (ref. espurna_chip.h)
 
 */
 
+#include "beken_api.h"
 #include "../../espurna.h"
 
 #include "../../espurna_chip.h"
-
-#if WEB_SUPPORT
-#include "../../ws.h"
-#endif
 
 #include "layout_beken.h"
 
@@ -19,45 +16,38 @@ CHIP DESCRIPTION AND LWIP GLUE, LibreTiny part (ref. espurna_chip.h)
 namespace espurna {
 namespace chip {
 
-void ws_connected(JsonObject& root) {
-    root[F("arch")] = F("beken");
-    root[F("mcu")] = lt_cpu_get_model_name();
-
-    // Beken bootloader (Tuya / Quectel), shown in the WebUI
-    root[F("fwLayout")] = espurna::beken::layoutName(espurna::beken::flashLayout().layout);
-}
-
-void ws_visible(JsonObject& root) {
-#if WEB_SUPPORT
-    // static data in the TCM of the BK7231N, it does not change while running
+// the Beken bootloader (Tuya / Quectel) and the static data in the TCM of the BK7231N (it does not change while
+// running), shown in the WebUI
+WebInfo web_info() {
     const auto tcm = systemTcmStats();
-    if (tcm.size) {
-        wsPayloadModule(root, STRING_VIEW("tcm"));
-        root[F("tcmUsed")] = tcm.used;
-        root[F("tcmSize")] = tcm.size;
-    }
-#endif
+    return WebInfo{
+        .arch = "beken",
+        .mcu = ::espurna::beken::cpu_model(),
+        .layout = espurna::beken::layoutName(espurna::beken::flashLayout().layout),
+        .tcm_used = static_cast<uint32_t>(tcm.used),
+        .tcm_size = static_cast<uint32_t>(tcm.size),
+    };
 }
 
-void info(Print& out) {
+void info(::espurna::Output& out) {
     out.printf_P(PSTR("mcu: %s chipid: %s freq: %hhumhz\n"),
-            lt_cpu_get_model_name(),
+            ::espurna::beken::cpu_model(),
             systemChipId().c_str(), system_get_cpu_freq());
 
     // bootloader / flash layout of the board, ref. arch/beken/layout_beken.cpp
     const auto& layout = ::espurna::beken::flashLayout();
     if (layout.installs_rbl) {
         out.printf_P(PSTR("flash: %u KiB, %s bootloader, OTA at 0x%06X\n"),
-            static_cast<unsigned>(lt_flash_get_size() / 1024),
+            static_cast<unsigned>(::espurna::beken::flash_size() / 1024),
             ::espurna::beken::layoutName(layout.layout), layout.download_offset);
     } else {
         out.printf_P(PSTR("flash: %u KiB, %s bootloader 3.00, no firmware OTA (UART only)\n"),
-            static_cast<unsigned>(lt_flash_get_size() / 1024),
+            static_cast<unsigned>(::espurna::beken::flash_size() / 1024),
             ::espurna::beken::layoutName(layout.layout));
     }
 }
 
-void memory(Print& out) {
+void memory(::espurna::Output& out) {
 #if LWIP_STATS && MEM_STATS
     // lwip has its own heap there, queued tcp data and received frames live in it
     out.printf_P(PSTR("lwip: size: %u used: %u max: %u errors: %u\n"),
@@ -71,12 +61,12 @@ void memory(Print& out) {
     }
 }
 
-IPAddress address(const ip_addr_t* addr) {
-    return IPAddress(ip_addr_get_ip4_u32(addr));
+espurna::Ip4 address(const ip_addr_t* addr) {
+    return espurna::Ip4(ip_addr_get_ip4_u32(addr));
 }
 
 // fixed layout, printed by the terminal itself
-bool storage(Print&, const char*) {
+bool storage(::espurna::Output&, const char*) {
     return false;
 }
 
@@ -93,17 +83,17 @@ WebGuard web_guard() {
     };
 }
 
-// SDK version is the LibreTiny one (ref. system_get_sdk_version()), core is the Beken BDK under it
+// the core is the Beken BDK (CFG_BDK_VERSION of scripts/beken_bdk.py)
 // one head, two initial images: espurna-beken-tuya.uf2 (Tuya bootloader), espurna-beken-quectel.uf2 (Quectel)
-String image() {
-    String out(F(ESPURNA_IMAGE));
+espurna::string image() {
+    espurna::string out(ESPURNA_IMAGE);
     if (out.length()) {
         switch (espurna::beken::flashLayout().layout) {
         case espurna::beken::Layout::Tuya:
-            out += F("-tuya");
+            out += "-tuya";
             break;
         case espurna::beken::Layout::Quectel:
-            out += F("-quectel");
+            out += "-quectel";
             break;
         case espurna::beken::Layout::Unknown:
             break;
@@ -113,26 +103,28 @@ String image() {
     return out;
 }
 
-String core_version() {
-    String out;
-#if defined(CFG_BDK_VERSION)
+espurna::string core_version() {
+    espurna::string out;
     out.reserve(16);
-    out += F("BDK ");
-    out += String(CFG_BDK_VERSION / 10000);
+    out += "BDK ";
+    out += espurna::string(CFG_BDK_VERSION / 10000);
     out += '.';
-    out += String((CFG_BDK_VERSION / 100) % 100);
+    out += espurna::string((CFG_BDK_VERSION / 100) % 100);
     out += '.';
-    out += String(CFG_BDK_VERSION % 100);
-#else
-    out = F("LibreTiny");
-#endif
+    out += espurna::string(CFG_BDK_VERSION % 100);
     return out;
 }
 
-String core_revision() {
-    return String(F("(unspecified)"));
+espurna::string core_revision() {
+    return espurna::string("(unspecified)");
 }
 
 } // namespace chip
 } // namespace espurna
 
+// utils.h
+espurna::string ipToString(const espurna::Ip4& ip) {
+    char out[16];
+    ip.toString(out, sizeof(out));
+    return espurna::string(out);
+}

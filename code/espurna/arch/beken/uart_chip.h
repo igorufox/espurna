@@ -1,16 +1,18 @@
 /*
 
-UART MODULE, LibreTiny part (ref. uart_driver.h)
+UART MODULE, BK72xx part (ref. uart_driver.h)
 
 Pins are fixed, UART1 is P11 (TX) & P10 (RX), same pads are used for flashing.
-UART2 is P0 (TX) & P1 (RX), SDK and LibreTiny log there by default.
-Unlike esp8266, config is ArduinoCore-API SERIAL_... values. esp8266 pin pairs mean nothing here
+UART2 is P0 (TX) & P1 (RX).
+esp8266 pin pairs mean nothing here.
+The port is SdkStream (arch/rtos/uart_stream.h, the same as the other chips) on the UART calls of the chip (core_beken.cpp
+uart_*, the BDK's UART driver with a receive ring buffer)
 
 */
 
 #pragma once
 
-#include <Arduino.h>
+#include "../rtos/uart_stream.h"
 
 namespace espurna {
 namespace driver {
@@ -22,18 +24,9 @@ inline bool& used(int slot) {
     return ports[slot];
 }
 
-constexpr uint16_t libretiny_config(Config config) {
-    return ((config.data_bits == 5) ? SERIAL_DATA_5 :
-            (config.data_bits == 6) ? SERIAL_DATA_6 :
-            (config.data_bits == 7) ? SERIAL_DATA_7 : SERIAL_DATA_8)
-        | ((config.parity == Parity::Even) ? SERIAL_PARITY_EVEN :
-            (config.parity == Parity::Odd) ? SERIAL_PARITY_ODD : SERIAL_PARITY_NONE)
-        | ((config.stop_bits == 2) ? SERIAL_STOP_BIT_2 : SERIAL_STOP_BIT_1);
-}
-
 // no inverted levels
-// LibreTiny's receive buffer has a fixed size: rx_buffer is not taken
-inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool, size_t) {
+// the receive ring buffer of core_beken.cpp has a fixed size: rx_buffer is not taken
+inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert, size_t rx_buffer) {
     const auto pins = [&](uint8_t port_tx, uint8_t port_rx) {
         return ((tx == port_tx) || (tx == GPIO_NONE))
             && ((rx == port_rx) || (rx == GPIO_NONE))
@@ -52,26 +45,28 @@ inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, boo
         return Opened{nullptr, Type::Unknown};
     }
 
+    const auto pin = [](uint8_t value) {
+        return (value == GPIO_NONE) ? core::chip::NoPin : value;
+    };
+
+    const auto port = core::chip::uart_open(baudrate,
+        sdk_config(config.data_bits, config.parity == Parity::Even, config.parity == Parity::Odd, config.stop_bits),
+        pin(rx), pin(tx), invert, rx_buffer);
+    if (port < 0) {
+        return Opened{nullptr, Type::Unknown};
+    }
+
     used(slot) = true;
-
-    auto* ptr = new SerialClass(number,
-        (rx == GPIO_NONE) ? PIN_INVALID : rx,
-        (tx == GPIO_NONE) ? PIN_INVALID : tx);
-    ptr->begin(baudrate, libretiny_config(config));
-
-    return Opened{ptr, (number == 1) ? Type::Uart0 : Type::Uart1};
+    return Opened{new SdkStream(port), (number == 1) ? Type::Uart0 : Type::Uart1};
 }
 
-// another speed for a hardware port (LibreTiny reconfigures it, 8N1)
-inline bool baud(Stream* stream, Type type, uint32_t value) {
+// another speed for a hardware port, after what is queued went out
+inline bool baud(ByteStream* stream, Type type, uint32_t value) {
     if ((type != Type::Uart0) && (type != Type::Uart1)) {
         return false;
     }
 
-    auto* serial = static_cast<SerialClass*>(stream);
-    serial->flush();
-    serial->configure(value);
-    return true;
+    return stream->baud(value);
 }
 
 // SDK owns its log UART

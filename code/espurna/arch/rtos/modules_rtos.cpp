@@ -11,13 +11,6 @@ MODULES: what ESP32 and Beken share of the module loader (modules_core.h arch::)
 #include "modules.h"
 #include "modules_core.h"
 
-#if __has_include(<freertos/FreeRTOS.h>)
-#include <freertos/FreeRTOS.h>
-#include <freertos/timers.h>
-#else
-#include <FreeRTOS.h>
-#include <timers.h>
-#endif
 
 namespace espurna {
 namespace modules {

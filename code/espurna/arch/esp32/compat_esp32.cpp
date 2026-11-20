@@ -4,43 +4,43 @@ esp8266 Core API shims, ESP32 part of the ESP object (ref. compat_chip.h)
 
 */
 
-#include "espurna.h"
+#include "../../espurna.h"
 
 // system_esp32.cpp: the loop() stall that rebooted the chip last time, empty if none
-String systemStallInfo();
+espurna::string systemStallInfo();
 
-String EspCompat::getResetReason() {
+espurna::string EspCompat::getResetReason() {
     switch (esp_reset_reason()) {
-    case ESP_RST_POWERON: return F("Power On");
-    case ESP_RST_EXT: return F("External System");
-    case ESP_RST_SW: return F("Software/System restart");
-    case ESP_RST_PANIC: return F("Exception");
-    case ESP_RST_INT_WDT: return F("Interrupt Watchdog");
-    case ESP_RST_TASK_WDT: return F("Task Watchdog");
-    case ESP_RST_WDT: return F("Watchdog");
-    case ESP_RST_DEEPSLEEP: return F("Deep-Sleep Wake");
-    case ESP_RST_BROWNOUT: return F("Brownout");
-    case ESP_RST_SDIO: return F("SDIO");
+    case ESP_RST_POWERON: return "Power On";
+    case ESP_RST_EXT: return "External System";
+    case ESP_RST_SW: return "Software/System restart";
+    case ESP_RST_PANIC: return "Exception";
+    case ESP_RST_INT_WDT: return "Interrupt Watchdog";
+    case ESP_RST_TASK_WDT: return "Task Watchdog";
+    case ESP_RST_WDT: return "Watchdog";
+    case ESP_RST_DEEPSLEEP: return "Deep-Sleep Wake";
+    case ESP_RST_BROWNOUT: return "Brownout";
+    case ESP_RST_SDIO: return "SDIO";
     case ESP_RST_UNKNOWN:
         break;
     }
-    return F("Unknown");
+    return "Unknown";
 }
 
-String EspCompat::getResetInfo() {
-    String out(F("Reset reason: "));
-    out += String(static_cast<int>(esp_reset_reason()), 10);
+espurna::string EspCompat::getResetInfo() {
+    espurna::string out("Reset reason: ");
+    out += espurna::string(static_cast<int>(esp_reset_reason()), 10);
     const auto stall = systemStallInfo();
     if (stall.length()) {
-        out += F(", ");
+        out += ", ";
         out += stall;
     }
     return out;
 }
 
-// the framework EspClass reads them out of the efuse / SPI flash
+// the boot header of the bootloader (core_esp32.cpp)
 uint32_t EspCompat::getFlashChipSpeed() {
-    return static_cast<EspClass&>(*this).getFlashChipSpeed();
+    return espurna::core::chip::flash_speed();
 }
 
 uint32_t EspCompat::getFlashChipId() {
@@ -48,15 +48,15 @@ uint32_t EspCompat::getFlashChipId() {
 }
 
 uint32_t EspCompat::getFreeSketchSpace() {
-    return static_cast<EspClass&>(*this).getFreeSketchSpace();
+    return espurna::core::chip::sketch_space();
 }
 
 uint32_t EspCompat::getSketchSize() {
-    return static_cast<EspClass&>(*this).getSketchSize();
+    return espurna::core::chip::sketch_size();
 }
 
 uint32_t EspCompat::getMaxAllocHeap() {
-    return static_cast<EspClass&>(*this).getMaxAllocHeap();
+    return espurna::core::chip::heap_max_alloc();
 }
 
 bool EspCompat::flashRead(uint32_t, uint32_t*, size_t) {

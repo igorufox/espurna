@@ -9,7 +9,7 @@ MATTER: THE IDENTITY OF THE BOARD (one code on ESP32 and Beken)
   discriminator and salt (+ the SPAKE2+ verifier), and a DAC with its own key - the SDK development DAC (VID 0xFFF1,
   PID 0x8000) with this board's serial number, public key and key identifier, signed by the public development PAI
   "Matter Dev PAI 0xFFF1 no PID" (connectedhomeip credentials/development). Controllers that accept the SDK example
-  devices accept it; it is not a certified identity. An OTA update, the safeboot, a Matter factory reset leave it, so
+  devices accept it; it is not a certified identity. An OTA update, a Matter factory reset leave it, so
   the QR code / pairing code stays.
 - Custom: the owner's DAC, its private key, PAI and (optionally) certification declaration, uploaded in the MATTER panel
   of the WebUI and checked there (the key belongs to the DAC, the PAI signed the DAC), kept in the same namespace. VID /
@@ -1080,7 +1080,7 @@ bool ids(uint16_t& vendor, uint16_t& product) {
 }
 
 bool custom_store(const char* dac_text, const char* key_text, const char* pai_text, const char* declaration_text,
-    String& error)
+    espurna::string& error)
 {
     std::unique_ptr<uint8_t[]> dac;
     std::unique_ptr<uint8_t[]> key;
@@ -1092,17 +1092,17 @@ bool custom_store(const char* dac_text, const char* key_text, const char* pai_te
     size_t declaration_length { 0 };
 
     if (!decode(dac_text, CertificateMax, dac, dac_length) || !dac_length) {
-        error = F("DAC: missing, not base64 or longer than 600 bytes");
+        error = "DAC: missing, not base64 or longer than 600 bytes";
         return false;
     }
 
     if (!decode(pai_text, CertificateMax, pai, pai_length) || !pai_length) {
-        error = F("PAI: missing, not base64 or longer than 600 bytes");
+        error = "PAI: missing, not base64 or longer than 600 bytes";
         return false;
     }
 
     if (!decode(declaration_text, DeclarationMax, declaration, declaration_length)) {
-        error = F("Certification declaration: not base64 or longer than 800 bytes");
+        error = "Certification declaration: not base64 or longer than 800 bytes";
         return false;
     }
 
@@ -1120,7 +1120,7 @@ bool custom_store(const char* dac_text, const char* key_text, const char* pai_te
     const bool key_decoded = decode(key_text, PrivateKeyMax, key, key_length);
     Wipe wipe_key { key, key_text ? ((std::strlen(key_text) + 3) / 4) * 3 : 0 };
     if (!key_decoded || !key_length) {
-        error = F("Private key: missing, not base64 or too long");
+        error = "Private key: missing, not base64 or too long";
         return false;
     }
 
@@ -1128,12 +1128,12 @@ bool custom_store(const char* dac_text, const char* key_text, const char* pai_te
     const ByteSpan pai_span(pai.get(), pai_length);
 
     if (Crypto::VerifyAttestationCertificateFormat(dac_span, Crypto::AttestationCertType::kDAC) != CHIP_NO_ERROR) {
-        error = F("DAC: not a Matter device attestation certificate (X.509 DER, P-256, VID and PID in the subject)");
+        error = "DAC: not a Matter device attestation certificate (X.509 DER, P-256, VID and PID in the subject)";
         return false;
     }
 
     if (Crypto::VerifyAttestationCertificateFormat(pai_span, Crypto::AttestationCertType::kPAI) != CHIP_NO_ERROR) {
-        error = F("PAI: not a Matter product attestation intermediate certificate (X.509 DER, P-256)");
+        error = "PAI: not a Matter product attestation intermediate certificate (X.509 DER, P-256)";
         return false;
     }
 
@@ -1141,12 +1141,12 @@ bool custom_store(const char* dac_text, const char* key_text, const char* pai_te
     if ((Crypto::ExtractVIDPIDFromX509Cert(dac_span, vidpid) != CHIP_NO_ERROR)
         || !vidpid.mVendorId.HasValue() || !vidpid.mProductId.HasValue())
     {
-        error = F("DAC: no VID and PID in the subject");
+        error = "DAC: no VID and PID in the subject";
         return false;
     }
 
     if (verify_issued(dac_span, pai_span) != CHIP_NO_ERROR) {
-        error = F("The DAC is not signed by this PAI");
+        error = "The DAC is not signed by this PAI";
         return false;
     }
 
@@ -1155,7 +1155,7 @@ bool custom_store(const char* dac_text, const char* key_text, const char* pai_te
         if (!der(declaration.get(), declaration_length, message) || (message.tag != 0x30)
             || (message.total != declaration_length))
         {
-            error = F("Certification declaration: not a CMS message (DER)");
+            error = "Certification declaration: not a CMS message (DER)";
             return false;
         }
     }
@@ -1176,14 +1176,14 @@ bool custom_store(const char* dac_text, const char* key_text, const char* pai_te
     std::memset(secret, 0, sizeof(secret));
 
     if (!parsed) {
-        error = F("Private key: not a P-256 key (DER SEC1 or PKCS#8, PEM, or the 32 raw bytes)");
+        error = "Private key: not a P-256 key (DER SEC1 or PKCS#8, PEM, or the 32 raw bytes)";
         return false;
     }
 
     // the key belongs to the DAC: a signature with it checks out with the DAC's public key
     Crypto::P256PublicKey dac_public;
     if (Crypto::ExtractPubkeyFromX509Cert(dac_span, dac_public) != CHIP_NO_ERROR) {
-        error = F("DAC: no P-256 public key");
+        error = "DAC: no P-256 public key";
         return false;
     }
     std::memcpy(made.keypair, dac_public.ConstBytes(), Crypto::kP256_PublicKey_Length);
@@ -1208,7 +1208,7 @@ bool custom_store(const char* dac_text, const char* key_text, const char* pai_te
         }
 
         if (err != CHIP_NO_ERROR) {
-            error = F("The private key does not belong to the DAC");
+            error = "The private key does not belong to the DAC";
             return false;
         }
     }
@@ -1231,7 +1231,7 @@ bool custom_store(const char* dac_text, const char* key_text, const char* pai_te
         || !store_write(KeyCustom, reinterpret_cast<const uint8_t*>(&made), sizeof(made)))
     {
         custom_present = false;
-        error = F("The key-value store of the chip failed");
+        error = "The key-value store of the chip failed";
         return false;
     }
 
@@ -1308,21 +1308,21 @@ bool factory() {
     return source == Source::Factory;
 }
 
-String status() {
-    String out;
+espurna::string status() {
+    espurna::string out;
 
     switch ((source != Source::None) ? source : chosen) {
     case Source::None:
-        return F("SDK test codes and DAC");
+        return "SDK test codes and DAC";
 
     case Source::Factory:
-        out = F("factory identity");
+        out = "factory identity";
         break;
 
     case Source::Own: {
-        out = F("own identity (development DAC made on the board)");
+        out = "own identity (development DAC made on the board)";
         if (stored.magic == Magic) {
-            out += F(", serial ");
+            out += ", serial ";
             static constexpr char Hex[] = "0123456789abcdef";
             for (const auto byte : stored.serial) {
                 out += Hex[byte >> 4];
@@ -1342,11 +1342,11 @@ String status() {
     }
 
     if (fallback) {
-        out += F(", the chosen one is not available");
+        out += ", the chosen one is not available";
     }
 
     if ((source != Source::None) && (source != Source::Factory) && !installed) {
-        out += F(", not installed");
+        out += ", not installed";
     }
 
     return out;

@@ -78,9 +78,9 @@ class ECH1560Sensor : public BaseEmonSensor {
 
             if (!_dirty) return;
 
-            pinMode(_clk.pin(), INPUT);
-            pinMode(_miso, INPUT);
-            _clk.attach(this, handleInterrupt, RISING);
+            espurna::pins::mode(_clk.pin(), espurna::pins::Input);
+            espurna::pins::mode(_miso, espurna::pins::Input);
+            _clk.attach(this, handleInterrupt, espurna::pins::Rising);
 
             _energy_ready = false;
             _dirty = false;
@@ -96,19 +96,19 @@ class ECH1560Sensor : public BaseEmonSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[35];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("ECH1560 (CLK,SDO) @ GPIO(%hhu,%hhu)"), _clk.pin(), _miso);
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
+        espurna::string address(unsigned char) const override {
             char buffer[8];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("%hhu:%hhu"), _clk.pin(), _miso);
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Type for slot # index
@@ -141,9 +141,9 @@ class ECH1560Sensor : public BaseEmonSensor {
                 _clk_count = 0;
 
                 // register how long the ClkHigh is high to evaluate if we are at the part where clk goes high for 1-2 ms
-                while (digitalRead(_clk.pin()) == HIGH) {
+                while (espurna::pins::read(_clk.pin()) == true) {
                     _clk_count += 1;
-                    delayMicroseconds(30);  //can only use delayMicroseconds in an interrupt.
+                    espurna::time::sleep_us(30);  //can only use delayMicroseconds in an interrupt.
                 }
 
                 // if the Clk was high between 1 and 2 ms than, its a start of a SPI-transmission
@@ -179,13 +179,13 @@ class ECH1560Sensor : public BaseEmonSensor {
                     if (_bits_count < 9) { // first Byte/8 bits in byte1
 
                         byte1 = byte1 << 1;
-                        if (digitalRead(_miso) == HIGH) byte1 |= 1;
+                        if (espurna::pins::read(_miso) == true) byte1 |= 1;
                         _nextbit = false;
 
                     } else if (_bits_count < 17) { // bit 9-16 is byte 7, store in byte2
 
                         byte2 = byte2 << 1;
-                        if (digitalRead(_miso) == HIGH) byte2 |= 1;
+                        if (espurna::pins::read(_miso) == true) byte2 |= 1;
                         _nextbit = false;
 
                     }
@@ -215,19 +215,19 @@ class ECH1560Sensor : public BaseEmonSensor {
                         if (_bits_count < 9) {
 
                             byte1 = byte1 << 1;
-                            if (digitalRead(_miso) == HIGH) byte1 |= 1;
+                            if (espurna::pins::read(_miso) == true) byte1 |= 1;
                             _nextbit = false;
 
                         } else if (_bits_count < 17) {
 
                             byte2 = byte2 << 1;
-                            if (digitalRead(_miso) == HIGH) byte2 |= 1;
+                            if (espurna::pins::read(_miso) == true) byte2 |= 1;
                             _nextbit = false;
 
                         } else {
 
                             byte3 = byte3 << 1;
-                            if (digitalRead(_miso) == HIGH) byte3 |= 1;
+                            if (espurna::pins::read(_miso) == true) byte3 |= 1;
                             _nextbit = false;
 
                         }

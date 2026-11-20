@@ -1,6 +1,6 @@
 /*
 
-SETTINGS STORAGE, the BK72xx flash (LibreTiny lt_flash_*; the storage itself is storage_eeprom.cpp, one for every chip)
+SETTINGS STORAGE, the BK72xx flash (beken_api.h flash_*; the storage itself is storage_eeprom.cpp, one for every chip)
 
 The pool: the 16 sectors of 'userdata' from 0x1DB000 up to the crash record of rtcmem_beken.cpp (0x1EB000; the Tuya
 config with the stock GPIO assignments is above it, 0x1ED000), the base sector the top one, 0x1EA000.
@@ -12,9 +12,10 @@ have yet (system_beken.cpp) is never erased
 
 */
 
-#include "espurna.h"
+#include "beken_api.h"
+#include "../../espurna.h"
 
-#include "storage_eeprom.h"
+#include "../../storage_eeprom.h"
 #include "../../libs/crc32_ieee.h"
 
 #include <algorithm>
@@ -56,7 +57,7 @@ uint32_t address(size_t slot) {
 }
 
 bool header(size_t slot, Header& out) {
-    if (lt_flash_read(address(slot) + FLASH_SECTOR_SIZE, reinterpret_cast<uint8_t*>(&out), sizeof(out)) != sizeof(out)) {
+    if (::espurna::beken::flash_read(address(slot) + FLASH_SECTOR_SIZE, reinterpret_cast<uint8_t*>(&out), sizeof(out)) != sizeof(out)) {
         return false;
     }
 
@@ -87,7 +88,7 @@ bool load(uint8_t* data) {
 
     for (size_t index = 0; index < count; ++index) {
         const auto& candidate = candidates[index];
-        if (lt_flash_read(address(candidate.slot), data, SPI_FLASH_SEC_SIZE) != SPI_FLASH_SEC_SIZE) {
+        if (::espurna::beken::flash_read(address(candidate.slot), data, SPI_FLASH_SEC_SIZE) != SPI_FLASH_SEC_SIZE) {
             continue;
         }
 
@@ -120,22 +121,22 @@ Pool pool() {
 }
 
 bool read(uint32_t sector, uint8_t* data) {
-    return inside(sector) && (lt_flash_read(address(sector), data, FLASH_SECTOR_SIZE) == FLASH_SECTOR_SIZE);
+    return inside(sector) && (::espurna::beken::flash_read(address(sector), data, FLASH_SECTOR_SIZE) == FLASH_SECTOR_SIZE);
 }
 
 bool erase(uint32_t sector) {
-    return inside(sector) && lt_flash_erase(address(sector), FLASH_SECTOR_SIZE);
+    return inside(sector) && ::espurna::beken::flash_erase(address(sector), FLASH_SECTOR_SIZE);
 }
 
 // read back: flash protection or a worn out sector silently drop writes
 bool write(uint32_t sector, const uint8_t* data) {
-    if (!inside(sector) || (lt_flash_write(address(sector), data, FLASH_SECTOR_SIZE) != FLASH_SECTOR_SIZE)) {
+    if (!inside(sector) || (::espurna::beken::flash_write(address(sector), data, FLASH_SECTOR_SIZE) != FLASH_SECTOR_SIZE)) {
         return false;
     }
 
     uint8_t check[64];
     for (uint32_t at = 0; at < FLASH_SECTOR_SIZE; at += sizeof(check)) {
-        if ((lt_flash_read(address(sector) + at, check, sizeof(check)) != sizeof(check))
+        if ((::espurna::beken::flash_read(address(sector) + at, check, sizeof(check)) != sizeof(check))
             || (std::memcmp(check, &data[at], sizeof(check)) != 0))
         {
             return false;
@@ -169,7 +170,7 @@ bool legacyErasedWhenDone() {
     return false;
 }
 
-void info(Print& out) {
+void info(::espurna::Output& out) {
     out.printf_P(PSTR("Region 0x%06X..0x%06X\n"), RegionOffset, RegionEnd);
 }
 

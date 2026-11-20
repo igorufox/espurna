@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <pgmspace.h>
+#include "../progmem.h"
 
 const char PROGMEM _ssl_letsencrypt_isrg_x1_ca[] = R"EOF(
 -----BEGIN CERTIFICATE-----

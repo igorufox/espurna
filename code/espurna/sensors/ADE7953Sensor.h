@@ -153,7 +153,7 @@ private:
 
     static void write(uint8_t address, uint16_t reg, uint32_t value, size_t size) {
         i2c_write_most(address, reg, value, size);
-        delayMicroseconds(5); // > Bus-free time minimum 4.7us
+        espurna::time::sleep_us(5); // > Bus-free time minimum 4.7us
     }
 
     uint16_t _address;
@@ -388,7 +388,7 @@ private:
 
 using I2CPortPtr = std::shared_ptr<I2CPort>;
 
-String description(char tag, const I2CPort& port) {
+espurna::string description(char tag, const I2CPort& port) {
     char buffer[25];
 
     char extra[3];
@@ -402,14 +402,14 @@ String description(char tag, const I2CPort& port) {
 
     snprintf_P(buffer, sizeof(buffer),
         PSTR("ADE7953%s @ I2C (0x%02X)"), extra, port.address());
-    return String(buffer);
+    return espurna::string(buffer);
 }
 
-String address(const I2CPort& port) {
+espurna::string address(const I2CPort& port) {
     char buffer[5];
     snprintf_P(buffer, sizeof(buffer),
         PSTR("0x%02X"), port.address());
-    return String(buffer);
+    return espurna::string(buffer);
 }
 
 class PortValuesBase {
@@ -448,7 +448,7 @@ public:
         return std::size(Magnitudes);
     }
 
-    String description() const override {
+    espurna::string description() const override {
         return ade7953::description('\0', *_port);
     }
 
@@ -626,12 +626,12 @@ public:
     }
 
     // Descriptive name of the sensor
-    String description() const override {
+    espurna::string description() const override {
         return ade7953::description(_tag, *_port);
     }
 
     // Address of the sensor (it could be the GPIO or I2C address)
-    String address(unsigned char) const override {
+    espurna::string address(unsigned char) const override {
         return ade7953::address(*_port);
     }
 

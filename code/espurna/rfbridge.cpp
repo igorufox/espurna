@@ -57,7 +57,7 @@ std::unique_ptr<RCSwitch> _rfb_modem;
 #endif
 
 #if RFB_PROVIDER_EFM8BB1_SUPPORT
-Stream* _rfb_port { nullptr };
+::espurna::ByteStream* _rfb_port { nullptr };
 #endif
 
 #if RFB_PROVIDER == RFB_PROVIDER_EFM8BB1
@@ -367,29 +367,29 @@ STRING_VIEW_INLINE(Off, "rfbOFF");
 
 } // namespace keys
 
-String off(size_t id) {
+espurna::string off(size_t id) {
     return getSetting({keys::Off, id});
 }
 
-String on(size_t id) {
+espurna::string on(size_t id) {
     return getSetting({keys::On, id});
 }
 
-void store(StringView prefix, size_t id, const String& value) {
+void store(StringView prefix, size_t id, const espurna::string& value) {
     const espurna::settings::Key key(prefix, id);
     setSetting(key, value);
     DEBUG_MSG_P(PSTR("[RF] Saved %s => \"%s\"\n"), key.c_str(), value.c_str());
 }
 
-void off(size_t id, const String& value) {
+void off(size_t id, const espurna::string& value) {
     store(keys::Off, id, value);
 }
 
-void on(size_t id, const String& value) {
+void on(size_t id, const espurna::string& value) {
     store(keys::On, id, value);
 }
 
-void from_status(size_t id, bool status, String code) {
+void from_status(size_t id, bool status, espurna::string code) {
     if (status) {
         on(id, code);
     } else {
@@ -397,7 +397,7 @@ void from_status(size_t id, bool status, String code) {
     }
 }
 
-String from_status(size_t id, bool status) {
+espurna::string from_status(size_t id, bool status) {
     return status
         ? rfbridge::settings::on(id)
         : rfbridge::settings::off(id);
@@ -411,11 +411,11 @@ String from_status(size_t id, bool status) {
 
 namespace {
 
-void _rfbStore(size_t id, bool status, String code) {
+void _rfbStore(size_t id, bool status, espurna::string code) {
     espurna::rfbridge::settings::from_status(id, status, std::move(code));
 }
 
-String _rfbRetrieve(size_t id, bool status) {
+espurna::string _rfbRetrieve(size_t id, bool status) {
     return espurna::rfbridge::settings::from_status(id, status);
 }
 
@@ -431,7 +431,7 @@ namespace {
 
 #if WEB_SUPPORT
 
-void _rfbWebSocketOnVisible(JsonObject& root) {
+void _rfbWebSocketOnVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, espurna::rfbridge::settings::Prefix);
 #if RFB_PROVIDER_RCSWITCH_SUPPORT
     if (!_rfbEfm8bb1()) {
@@ -442,56 +442,58 @@ void _rfbWebSocketOnVisible(JsonObject& root) {
 
 #if RELAY_SUPPORT
 
-void _rfbWebSocketSendCodeArray(JsonObject& root, size_t start, size_t size) {
-    JsonObject& rfb = root.createNestedObject("rfb");
-    rfb["start"] = start;
+void _rfbWebSocketSendCodeArray(espurna::json::Writer& root, size_t start, size_t size) {
+    root.object(STRING_VIEW("rfb"));
+    root.field(STRING_VIEW("start"), start);
 
-    JsonArray& codes = rfb.createNestedArray("codes");
-
+    root.array(STRING_VIEW("codes"));
     for (auto id = start; id < (start + size); ++id) {
-        JsonArray& pair = codes.createNestedArray();
-        pair.add(espurna::rfbridge::settings::off(id));
-        pair.add(espurna::rfbridge::settings::on(id));
+        root.beginArray();
+        root.value(espurna::rfbridge::settings::off(id));
+        root.value(espurna::rfbridge::settings::on(id));
+        root.end();
     }
+    root.end();
+    root.end();
 }
 
-void _rfbWebSocketOnData(JsonObject& root) {
+void _rfbWebSocketOnData(espurna::json::Writer& root) {
     _rfbWebSocketSendCodeArray(root, 0ul, relayCount());
 }
 
 #endif // RELAY_SUPPORT
 
-void _rfbWebSocketOnConnected(JsonObject& root) {
-    root["rfbRepeat"] = getSetting("rfbRepeat", RFB_SEND_REPEATS);
+void _rfbWebSocketOnConnected(espurna::json::Writer& root) {
+    root.field("rfbRepeat", getSetting("rfbRepeat", RFB_SEND_REPEATS));
 #if RELAY_SUPPORT
-    root["rfbCount"] = relayCount();
+    root.field("rfbCount", relayCount());
 #endif
 #if RFB_PROVIDER_RCSWITCH_SUPPORT
     if (!_rfbEfm8bb1()) {
-        root["rfbRX"] = getSetting("rfbRX", RFB_RX_PIN);
-        root["rfbTX"] = getSetting("rfbTX", RFB_TX_PIN);
+        root.field("rfbRX", getSetting("rfbRX", RFB_RX_PIN));
+        root.field("rfbTX", getSetting("rfbTX", RFB_TX_PIN));
     }
 #endif
 }
 
-void _rfbWebSocketOnAction(uint32_t client_id, const char* action, JsonObject& data) {
+void _rfbWebSocketOnAction(uint32_t client_id, const char* action, espurna::json::Value data) {
 #if RELAY_SUPPORT
     if (STRING_VIEW("rfb") == action) {
         return;
     }
 
-    auto idValue = data[F("id")];
-    if (!idValue.success()) {
+    auto idValue = data["id"];
+    if (!idValue.valid()) {
         return;
     }
 
-    auto statusValue = data[F("status")];
-    if (!statusValue.success()) {
+    auto statusValue = data["status"];
+    if (!statusValue.valid()) {
         return;
     }
 
-    const size_t id { idValue.as<size_t>() };
-    const size_t status { statusValue.as<bool>() };
+    const size_t id { static_cast<size_t>(idValue.asULong()) };
+    const size_t status { statusValue.asBool() };
 
     if (STRING_VIEW("rfblearn") == action) {
         rfbLearn(id, status);
@@ -501,7 +503,7 @@ void _rfbWebSocketOnAction(uint32_t client_id, const char* action, JsonObject& d
 #endif
 }
 
-bool _rfbWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant& value) {
+bool _rfbWebSocketOnKeyCheck(espurna::StringView key, espurna::json::Value value) {
     return key.startsWith(espurna::rfbridge::settings::Prefix);
 }
 
@@ -533,7 +535,7 @@ bool _rfbCompare(const char* lhs, const char* rhs, size_t length) {
         return false;
     }
 
-    if (getSetting(F("rfbAnyProto"), false)) {
+    if (getSetting("rfbAnyProto", false)) {
         return 0 == std::memcmp((lhs + 8), (rhs + 8), length - 8);
     }
 
@@ -562,7 +564,7 @@ RfbRelayMatch _rfbMatch(espurna::StringView code) {
     using namespace espurna::rfbridge::settings::keys;
 
     espurna::settings::foreach_prefix(
-        [code, &matched](espurna::StringView prefix, String key, const espurna::settings::kvs_type::ReadResult& value) {
+        [code, &matched](espurna::StringView prefix, espurna::string key, const espurna::settings::kvs_type::ReadResult& value) {
             if (code.length() != value.valueLength()) {
                 return;
             }
@@ -612,14 +614,14 @@ void _rfbLearnFromString(std::unique_ptr<RfbLearn>& learn, espurna::StringView b
         return;
     }
 
-    DEBUG_MSG_P(PSTR("[RF] Learned relay ID %u after %u ms\n"), learn->id, millis() - learn->ts);
+    DEBUG_MSG_P(PSTR("[RF] Learned relay ID %u after %u ms\n"), learn->id, espurna::time::ms() - learn->ts);
     _rfbStore(learn->id, learn->status, buffer.toString());
 
     // Websocket update needs to happen right here, since the only time
     // we send these in bulk is at the very start of the connection
 #if WEB_SUPPORT
     auto id = learn->id;
-    wsPost([id](JsonObject& root) {
+    wsPost([id](espurna::json::Writer& root) {
         _rfbWebSocketSendCodeArray(root, id, 1ul);
     });
 #endif
@@ -763,7 +765,7 @@ void _rfbParse(uint8_t code, const std::vector<uint8_t>& payload) {
         _rfbAckImpl();
 #if RELAY_SUPPORT
         if (_rfb_learn) {
-            DEBUG_MSG_P(PSTR("[RF] Learn timeout after %u ms\n"), millis() - _rfb_learn->ts);
+            DEBUG_MSG_P(PSTR("[RF] Learn timeout after %u ms\n"), espurna::time::ms() - _rfb_learn->ts);
             _rfb_learn.reset(nullptr);
         }
 #endif
@@ -961,7 +963,7 @@ void _rfbRcsSend(const RfbMessage& message) {
         _rfb_modem->setPulseLength(message.timing);
     }
 
-    yield();
+    espurna::time::yield();
 
     _rfb_modem->send(message.value, message.bits);
     _rfb_modem->resetAvailable();
@@ -984,7 +986,6 @@ size_t _rfbModemPack(uint8_t (&out)[RfbMessage::BufferSize], RfbMessage::code_ty
     out[index++] = static_cast<uint8_t>(timing >> 8);
     out[index++] = static_cast<uint8_t>(timing);
     out[index++] = static_cast<uint8_t>(bits);
-
     auto bytes = _rfb_bytes_for_bits(bits);
     if (bytes > (sizeof(out) - index)) {
         return 0;
@@ -1007,8 +1008,8 @@ size_t _rfbModemPack(uint8_t (&out)[RfbMessage::BufferSize], RfbMessage::code_ty
 #if RELAY_SUPPORT
 
 void _rfbLearnFromReceived(std::unique_ptr<RfbLearn>& learn, espurna::StringView buffer) {
-    if (millis() - learn->ts > RFB_LEARN_TIMEOUT) {
-        DEBUG_MSG_P(PSTR("[RF] Learn timeout after %u ms\n"), millis() - learn->ts);
+    if (espurna::time::ms() - learn->ts > RFB_LEARN_TIMEOUT) {
+        DEBUG_MSG_P(PSTR("[RF] Learn timeout after %u ms\n"), espurna::time::ms() - learn->ts);
         learn.reset(nullptr);
         return;
     }
@@ -1034,12 +1035,12 @@ void _rfbRcsReceive() {
 
 #if RFB_RECEIVE_DELAY
     static unsigned long last = 0;
-    if (millis() - last < RFB_RECEIVE_DELAY) {
+    if (espurna::time::ms() - last < RFB_RECEIVE_DELAY) {
         _rfb_modem->resetAvailable();
         return;
     }
 
-    last = millis();
+    last = espurna::time::ms();
 #endif
 
     uint8_t message[RfbMessage::BufferSize];
@@ -1142,8 +1143,8 @@ void _rfbSendQueued() {
     if (_rfb_message_queue.empty()) return;
 
     static unsigned long last = 0;
-    if (millis() - last < RFB_SEND_DELAY) return;
-    last = millis();
+    if (espurna::time::ms() - last < RFB_SEND_DELAY) return;
+    last = espurna::time::ms();
 
     auto message = _rfb_message_queue.front();
     _rfb_message_queue.pop_front();
@@ -1156,7 +1157,7 @@ void _rfbSendQueued() {
         _rfb_message_queue.push_back(std::move(message));
     }
 
-    yield();
+    espurna::time::yield();
 }
 
 // Check if the payload looks like a HEX code (plus comma, specifying the 'repeats' arg for the queue)
@@ -1257,16 +1258,16 @@ void _rfbMqttCallback(unsigned int type, espurna::StringView topic, espurna::Str
 
 void _rfbApiSetup() {
 
-    apiRegister(F(MQTT_TOPIC_RFOUT),
+    apiRegister(MQTT_TOPIC_RFOUT,
         apiOk, // just a stub, nothing to return
         [](ApiRequest& request) {
-            _rfbSendFromPayload(request.param(F("value")).c_str());
+            _rfbSendFromPayload(request.param("value").c_str());
             return true;
         }
     );
 
 #if RELAY_SUPPORT
-    apiRegister(F(MQTT_TOPIC_RFLEARN),
+    apiRegister(MQTT_TOPIC_RFLEARN,
         [](ApiRequest& request) {
             char buffer[64] { 0 };
             if (_rfb_learn) {
@@ -1280,7 +1281,7 @@ void _rfbApiSetup() {
             return true;
         },
         [](ApiRequest& request) {
-            _rfbLearnStartFromPayload(request.param(F("value")).c_str());
+            _rfbLearnStartFromPayload(request.param("value").c_str());
             return true;
         }
     );
@@ -1288,10 +1289,10 @@ void _rfbApiSetup() {
 
 #if RFB_PROVIDER_EFM8BB1_SUPPORT
     if (_rfbEfm8bb1()) {
-        apiRegister(F(MQTT_TOPIC_RFRAW),
+        apiRegister(MQTT_TOPIC_RFRAW,
             apiOk, // just a stub, nothing to return
             [](ApiRequest& request) {
-                _rfbSendRawFromPayload(request.param(F("value")));
+                _rfbSendRawFromPayload(request.param("value"));
                 return true;
             }
         );
@@ -1313,7 +1314,7 @@ void _rfbCommandStatusDispatch(::terminal::CommandContext&& ctx, size_t id, Rela
         return;
     case PayloadStatus::Toggle:
     case PayloadStatus::Unknown:
-        terminalError(ctx, F("Invalid status"));
+        terminalError(ctx, "Invalid status");
         break;
     }
 }
@@ -1326,7 +1327,7 @@ void _rfbCommandSend(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    terminalError(ctx, F("RFB.SEND <CODE>"));
+    terminalError(ctx, "RFB.SEND <CODE>");
 }
 
 #if RELAY_SUPPORT
@@ -1334,13 +1335,13 @@ PROGMEM_STRING(RfbCommandLearn, "RFB.LEARN");
 
 void _rfbCommandLearn(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() != 3) {
-        terminalError(ctx, F("RFB.LEARN <ID> <STATUS>"));
+        terminalError(ctx, "RFB.LEARN <ID> <STATUS>");
         return;
     }
 
     size_t id;
     if (!tryParseId(ctx.argv[1], relayCount(), id)) {
-        terminalError(ctx, F("Invalid relay ID"));
+        terminalError(ctx, "Invalid relay ID");
         return;
     }
 
@@ -1351,13 +1352,13 @@ PROGMEM_STRING(RfbCommandForget, "RFB.FORGET");
 
 void _rfbCommandForget(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() < 2) {
-        terminalError(ctx, F("RFB.FORGET <ID> [<STATUS>]"));
+        terminalError(ctx, "RFB.FORGET <ID> [<STATUS>]");
         return;
     }
 
     size_t id;
     if (!tryParseId(ctx.argv[1], relayCount(), id)) {
-        terminalError(ctx, F("Invalid relay ID"));
+        terminalError(ctx, "Invalid relay ID");
         return;
     }
 
@@ -1378,12 +1379,12 @@ PROGMEM_STRING(RfbCommandWrite, "RFB.WRITE");
 
 void _rfbCommandWrite(::terminal::CommandContext&& ctx) {
     if (!_rfbEfm8bb1()) {
-        terminalError(ctx, F("EFM8BB1 only (rfbProv)"));
+        terminalError(ctx, "EFM8BB1 only (rfbProv)");
         return;
     }
 
     if (ctx.argv.size() != 2) {
-        terminalError(ctx, F("RFB.WRITE <PAYLOAD>"));
+        terminalError(ctx, "RFB.WRITE <PAYLOAD>");
         return;
     }
     _rfbSendRawFromPayload(ctx.argv[1]);
@@ -1438,15 +1439,15 @@ void rfbStatus(size_t id, bool status) {
 }
 
 void rfbLearn(size_t id, bool status) {
-    _rfb_learn.reset(new RfbLearn { millis(), id, status });
+    _rfb_learn.reset(new RfbLearn { espurna::time::ms(), id, status });
     _rfbLearnImpl();
 }
 
-String rfbRetrieve(size_t id, bool status) {
+espurna::string rfbRetrieve(size_t id, bool status) {
     return _rfbRetrieve(id, status);
 }
 
-void rfbStore(size_t id, bool status, String code) {
+void rfbStore(size_t id, bool status, espurna::string code) {
     _rfbStore(id, status, std::move(code));
 }
 
@@ -1459,7 +1460,7 @@ void rfbForget(size_t id, bool status) {
     // Websocket update needs to happen right here, since the only time
     // we send these in bulk is at the very start of the connection
 #if WEB_SUPPORT
-    wsPost([id](JsonObject& root) {
+    wsPost([id](espurna::json::Writer& root) {
         _rfbWebSocketSendCodeArray(root, id, 1ul);
     });
 #endif
@@ -1478,7 +1479,7 @@ namespace {
 
 // TODO: remove this in 1.16.0
 
-bool _rfbSettingsMigrateCode(String& out, const String& in) {
+bool _rfbSettingsMigrateCode(espurna::string& out, const espurna::string& in) {
     out = "";
 
     if (18 == in.length()) {
@@ -1499,7 +1500,7 @@ bool _rfbSettingsMigrateCode(String& out, const String& in) {
 
 void _rfbSettingsMigrate(int version) {
     if (version < 4) {
-        String buffer;
+        espurna::string buffer;
 
         auto relays = relayCount();
         for (decltype(relays) id = 0; id < relays; ++id) {
@@ -1550,7 +1551,7 @@ void rfbSetup() {
 
 #if RFB_PROVIDER == RFB_PROVIDER_ANY
         // serial log and terminal let go of the port (the board build has them compiled out)
-        if (!uartClaim(RFB_PORT - 1, F("RF Bridge"))) {
+        if (!uartClaim(RFB_PORT - 1, "RF Bridge")) {
             return;
         }
 

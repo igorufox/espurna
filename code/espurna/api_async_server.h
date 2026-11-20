@@ -11,7 +11,7 @@ Copyright (C) 2020-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #include "web.h"
 
-bool apiAuthenticateHeader(WebRequest&, const String& key);
-bool apiAuthenticateParam(WebRequest&, const String& key);
+bool apiAuthenticateHeader(WebRequest&, const espurna::string& key);
+bool apiAuthenticateParam(WebRequest&, const espurna::string& key);
 bool apiAuthenticate(WebRequest&);
 

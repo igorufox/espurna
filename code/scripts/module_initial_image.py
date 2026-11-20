@@ -13,7 +13,7 @@
 #   Beken    the OTA 'download' partition + 4096: not behind the head, a separate run of the UF2 written by the flasher
 #            (beken_module_link.py, beken_quectel_image.py: `<file>+0x1000=flasher:download`)
 #
-# Used by the chip link scripts; no SCons here (beken_quectel_image.py runs under ltchiptool's python).
+# Used by the chip link scripts; no SCons here (beken_quectel_image.py is a plain library as well).
 
 import os
 import re

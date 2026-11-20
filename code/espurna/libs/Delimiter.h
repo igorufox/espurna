@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../types.h"
+#include "../byte_stream.h"
 
 #include <array>
 #include <iterator>
@@ -49,9 +50,9 @@ struct DelimiterBuffer {
         append(value.c_str(), value.length());
     }
 
-    void append(Stream&, size_t);
+    void append(::espurna::ByteStream&, size_t);
 
-    void append(Stream& stream) {
+    void append(::espurna::ByteStream& stream) {
         const auto available = stream.available();
         if (available > 0) {
             append(stream, static_cast<size_t>(available));

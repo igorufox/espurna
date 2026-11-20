@@ -1,6 +1,6 @@
 /*
 
-WIFI MODULE, ESP32 (Arduino core 3, ESP-IDF) part: what only ESP-IDF knows (ref. wifi_driver_rtos.h). The driver
+WIFI MODULE, ESP32 (ESP-IDF) part: what only ESP-IDF knows (ref. wifi_driver_rtos.h). The driver
 itself (events, link state, connection, scan, AP settings) is the shared one, wifi_driver_rtos.cpp
 
 */
@@ -9,7 +9,8 @@ itself (events, link state, connection, scan, AP settings) is the shared one, wi
 
 #include "../rtos/wifi_driver_rtos.h"
 
-#include <WiFi.h>
+#include "../rtos/wifi_sdk.h"
+
 #include <esp_wifi.h>
 #include <esp_netif.h>
 #if __has_include(<esp_wifi_ap_get_sta_list.h>)
@@ -18,14 +19,18 @@ itself (events, link state, connection, scan, AP settings) is the shared one, wi
 #include <soc/soc.h>
 #include <soc/rtc_cntl_reg.h>
 
+#include <cmath>
+
 namespace espurna {
 namespace wifi {
 namespace driver {
 namespace chip {
 namespace {
 
+namespace sdk = ::espurna::core::chip;
+
 bool started() {
-    return WiFi.getMode() != WIFI_MODE_NULL;
+    return sdk::wifi_get_mode() != WIFI_MODE_NULL;
 }
 
 // EU country code, channels 12 and 13 are scanned and used as well
@@ -47,14 +52,11 @@ void init() {
     // brownouts and risks flash corruption mid-write.
     WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 #endif
-
-    WiFi.persistent(false);
-    WiFi.setAutoReconnect(false);
 }
 
 void opmode(uint8_t mode) {
     const bool was = started();
-    WiFi.mode(static_cast<wifi_mode_t>(mode));
+    sdk::wifi_mode(static_cast<wifi_mode_t>(mode));
 
     if (!was) {
         apply_country();
@@ -85,6 +87,27 @@ void apply_sleep() {
     esp_wifi_set_ps(type);
 }
 
+// what the driver runs now (WIFI.DEBUG): the setting is applied when the radio allows it, the SDK may hold its own
+const char* sleep_name() {
+    wifi_ps_type_t type { WIFI_PS_NONE };
+    if (!started() || (esp_wifi_get_ps(&type) != ESP_OK)) {
+        return "-";
+    }
+
+    switch (type) {
+    case WIFI_PS_NONE:
+        return "none";
+    case WIFI_PS_MIN_MODEM:
+        return "modem (min)";
+    case WIFI_PS_MAX_MODEM:
+        return "modem (max)";
+    default:
+        break;
+    }
+
+    return "?";
+}
+
 // in 0.25dBm units, driver accepts 2..20dBm
 void apply_tx_power() {
     if (!started()) {
@@ -95,10 +118,9 @@ void apply_tx_power() {
     esp_wifi_set_max_tx_power(static_cast<int8_t>(std::clamp(quarters, 8, 80)));
 }
 
-// auto reconnect stays off: the common code decides when and where to connect
+// the SDK never reconnects by itself (core_esp32.cpp): the common code decides when and where to connect
 void stop_station() {
-    WiFi.setAutoReconnect(false);
-    WiFi.disconnect();
+    sdk::wifi_sta_disconnect();
 }
 
 // the driver does not reconnect by itself
@@ -123,18 +145,27 @@ Attempt attempt_event(const AttemptDisconnect& disconnect, Mac& bssid) {
     return Attempt::Failed;
 }
 
-const char* reason_name(int reason) {
-    return WiFi.disconnectReasonName(static_cast<wifi_err_reason_t>(reason));
+// the negotiated security is not read out on the ESP32 yet (regress-todo.md 40)
+const char* sta_security() {
+    return "";
 }
 
-// WiFi.scanComplete(), keeps waiting past its own timeout until ours (ref. rtos::ScanTimeout)
+const char* auth_name(int mode) {
+    return (mode == WIFI_AUTH_WAPI_PSK) ? "WAPI-PSK" : nullptr;
+}
+
+const char* reason_name(int reason) {
+    return sdk::wifi_reason_name(reason);
+}
+
+// the SDK's scan count, waiting until our timeout at the latest (ref. rtos::ScanTimeout)
 bool scan_finished(rtos::Scan& scan, int16_t& count) {
-    count = WiFi.scanComplete();
+    count = sdk::wifi_scan_count();
     return (count >= 0) || rtos::expired(scan.at, rtos::ScanTimeout);
 }
 
-// WiFi.setHostname() only takes effect when the STA interface is created (before WiFi.mode(WIFI_STA)), so DHCP sent
-// the default 'esp32-XXXXXX' (10.0.5.66, 2026-11-09). The interface exists by now, it gets the name directly.
+// The hostname goes to the STA interface right before the connection (DHCP sent the default 'esp32-XXXXXX' when it was
+// set too early, 10.0.5.66, 2026-11-09).
 // The driver keeps the AP on the station channel while the station is connected
 void before_connect(const StaConnect& connect) {
     auto* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -155,10 +186,10 @@ void ap_stop() {
 }
 
 size_t ap_stations() {
-    return WiFi.softAPgetStationNum();
+    return sdk::wifi_ap_stations();
 }
 
-size_t print_stations(Print& out) {
+size_t print_stations(::espurna::Output& out) {
     wifi_sta_list_t list{};
 #if ESP_IDF_VERSION_MAJOR >= 5
     // ESP-IDF 5 (core 3.x): esp_netif_get_sta_list() became esp_wifi_ap_get_sta_list_with_ip()
@@ -178,17 +209,21 @@ size_t print_stations(Print& out) {
         const auto& sta = netif_list.sta[index];
         out.printf_P(PSTR("%02X:%02X:%02X:%02X:%02X:%02X %s\n"),
             sta.mac[0], sta.mac[1], sta.mac[2], sta.mac[3], sta.mac[4], sta.mac[5],
-            IPAddress(sta.ip.addr).toString().c_str());
+            ipToString(espurna::Ip4(sta.ip.addr)).c_str());
     }
 
     return static_cast<size_t>(netif_list.num);
 }
 
-// the Arduino core adds the link-local address on every STA connect once enabled; a station that is connected
+// the chip adds the link-local address on every STA connect once enabled (core_esp32.cpp); a station that is connected
 // already (the Matter module starts after wifiSetup()) gets it now
 void ipv6(bool enabled) {
-    WiFi.enableIPv6(enabled);
-    if (enabled && (WiFi.status() == WL_CONNECTED)) {
+    sdk::wifi_ipv6(enabled);
+
+    uint32_t ip { 0 };
+    uint32_t netmask { 0 };
+    uint32_t gateway { 0 };
+    if (enabled && sdk::wifi_sta_address(ip, netmask, gateway) && ip) {
         auto* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
         if (netif) {
             esp_netif_create_ip6_linklocal(netif);

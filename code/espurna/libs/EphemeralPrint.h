@@ -1,22 +1,14 @@
 /*
 
-Arduino Print without any buffer.
+An output that drops everything.
 
 */
 
 #pragma once
 
-#include <Arduino.h>
+#include "../text_types.h"
 
-#include <cstdint>
-#include <cstddef>
-
-struct EphemeralPrint : public Print {
-    size_t write(uint8_t) override {
-        return 0;
-    }
-
-    size_t write(const uint8_t*, size_t) override {
-        return 0;
+struct EphemeralPrint : public espurna::Output {
+    void write(const char*, size_t) override {
     }
 };

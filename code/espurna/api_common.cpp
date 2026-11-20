@@ -66,7 +66,7 @@ bool restful() {
     return getSetting(keys::Restful, build::restful());
 }
 
-String key() {
+espurna::string key() {
     return getSetting(keys::Key, build::key());
 }
 
@@ -77,18 +77,18 @@ namespace web {
 
 STRING_VIEW_INLINE(Prefix, "api");
 
-bool onKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool onKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(Prefix);
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, Prefix);
 }
 
-void onConnected(JsonObject& root) {
-    root[settings::keys::Enabled] = apiEnabled();
-    root[settings::keys::Key] = apiKey();
-    root[settings::keys::Restful] = apiRestFul();
+void onConnected(espurna::json::Writer& root) {
+    root.field(settings::keys::Enabled, apiEnabled());
+    root.field(settings::keys::Key, apiKey());
+    root.field(settings::keys::Restful, apiRestFul());
 }
 
 void setup() {
@@ -98,7 +98,7 @@ void setup() {
         .onKeyCheck(onKeyCheck);
 }
 
-bool authenticate_header(WebRequest& request, const String& key) {
+bool authenticate_header(WebRequest& request, const espurna::string& key) {
     if (settings::enabled() && key.length()) {
         const char* header = request.header("Api-Key");
         if (header && key.equals(header)) {
@@ -109,7 +109,7 @@ bool authenticate_header(WebRequest& request, const String& key) {
     return false;
 }
 
-bool authenticate_param(WebRequest& request, const String& key) {
+bool authenticate_param(WebRequest& request, const espurna::string& key) {
     const auto name = espurna::api::param::Key.toString();
     const char* param = request.param(name.c_str());
     return param && key.equals(param);
@@ -133,11 +133,11 @@ bool authenticate(WebRequest& request) {
 } // namespace espurna
 
 #if WEB_SUPPORT
-bool apiAuthenticateHeader(WebRequest& request, const String& key) {
+bool apiAuthenticateHeader(WebRequest& request, const espurna::string& key) {
     return espurna::api::web::authenticate_header(request, key);
 }
 
-bool apiAuthenticateParam(WebRequest& request, const String& key) {
+bool apiAuthenticateParam(WebRequest& request, const espurna::string& key) {
     return espurna::api::web::authenticate_param(request, key);
 }
 
@@ -150,7 +150,7 @@ bool apiReservedParam(espurna::StringView value) {
     return espurna::api::reserved_param(value);
 }
 
-String apiKey() {
+espurna::string apiKey() {
     return espurna::api::settings::key();
 }
 

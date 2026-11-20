@@ -211,15 +211,15 @@ void _eepromLoop() {
         _eepromCommit();
         if (_eeprom_dirty) {
             // Commit just failed - schedule a backoff retry
-            _next_retry_ms = millis() + 5000;
+            _next_retry_ms = espurna::time::ms() + 5000;
         }
         return;
     }
 
     // Background retry: if a prior commit failed and nothing triggered another save in a while, attempt it again
     // every 5 seconds
-    if (_eeprom_dirty && _next_retry_ms && (long)(millis() - _next_retry_ms) >= 0) {
-        _next_retry_ms = millis() + 5000;
+    if (_eeprom_dirty && _next_retry_ms && (long)(espurna::time::ms() - _next_retry_ms) >= 0) {
+        _next_retry_ms = espurna::time::ms() + 5000;
         _eepromCommit();
         if (!_eeprom_dirty) {
             _next_retry_ms = 0;
@@ -227,8 +227,8 @@ void _eepromLoop() {
     }
 }
 
-String _eepromSectors() {
-    String out;
+espurna::string _eepromSectors() {
+    espurna::string out;
     for (size_t index = 0; index < _eeprom.pool.size; ++index) {
         if (index) {
             out += STRING_VIEW(", ").toString();
@@ -238,7 +238,7 @@ String _eepromSectors() {
         if (current) {
             out += '(';
         }
-        out += String(_eepromSector(index));
+        out += espurna::string(_eepromSector(index));
         if (current) {
             out += ')';
         }
@@ -247,7 +247,7 @@ String _eepromSectors() {
     return out;
 }
 
-void _eepromDump(Print& out, const uint8_t* data) {
+void _eepromDump(::espurna::Output& out, const uint8_t* data) {
     char ascii[17];
     ascii[16] = '\0';
     for (size_t address = 0; address < EepromSize; address += 16) {
@@ -258,7 +258,7 @@ void _eepromDump(Print& out, const uint8_t* data) {
             ascii[index] = ((value > 31) && (value < 127)) ? static_cast<char>(value) : '.';
         }
         out.println(ascii);
-        yield();
+        espurna::time::yield();
     }
 }
 
@@ -268,7 +268,7 @@ STRING_VIEW_INLINE(EepromCommand, "EEPROM");
 
 void _eepromCommand(::terminal::CommandContext&& ctx) {
     if (!_eeprom_ready) {
-        terminalError(ctx, F("Storage is not available, settings are NOT saved"));
+        terminalError(ctx, "Storage is not available, settings are NOT saved");
         return;
     }
 
@@ -289,7 +289,7 @@ STRING_VIEW_INLINE(EepromCommitCommand, "EEPROM.COMMIT");
 void _eepromCommandCommit(::terminal::CommandContext&& ctx) {
     _eepromCommit();
     if (_eeprom_dirty) {
-        terminalError(ctx, F("Commit failed"));
+        terminalError(ctx, "Commit failed");
         return;
     }
 
@@ -314,13 +314,13 @@ void _eepromCommandFlashDump(::terminal::CommandContext&& ctx) {
 
     const auto sector = espurna::settings::internal::convert<uint32_t>(ctx.argv[1]);
     if ((sector > _eeprom.pool.base) || ((_eeprom.pool.base - sector) >= _eeprom.pool.size)) {
-        terminalError(ctx, F("Not a sector of the settings pool"));
+        terminalError(ctx, "Not a sector of the settings pool");
         return;
     }
 
     std::unique_ptr<uint8_t[]> data(new (std::nothrow) uint8_t[EepromSize]);
     if (!data || !flash::read(sector, data.get())) {
-        terminalError(ctx, F("Cannot read"));
+        terminalError(ctx, "Cannot read");
         return;
     }
 
@@ -387,7 +387,7 @@ void StorageEEPROM_Rotate::write(size_t address, uint8_t value) {
     _eepromWrite(address, value);
 }
 
-void StorageEEPROM_Rotate::dump(Print& print) const {
+void StorageEEPROM_Rotate::dump(::espurna::Output& print) const {
     _eepromDump(print, _eepromBuffer());
 }
 
@@ -415,7 +415,7 @@ bool eepromReady() {
     return _eeprom_ready;
 }
 
-String eepromSectors() {
+espurna::string eepromSectors() {
     _eepromLoad();
     return _eepromSectors();
 }
@@ -475,8 +475,8 @@ void eepromSetup() {
         // Everything keeps working in RAM, make sure it is visible that nothing is actually saved
         DEBUG_MSG_P(PSTR("[EEPROM] Error: Could not initialize the storage! Settings will not be saved.\n"));
 #if WEB_SUPPORT
-        wsRegister().onConnected([](JsonObject& root) {
-            root[F("message")] = F("Settings storage is not available, changes will be lost on reboot!");
+        wsRegister().onConnected([](espurna::json::Writer& root) {
+            root.field("message", "Settings storage is not available, changes will be lost on reboot!");
         });
 #endif
         return;

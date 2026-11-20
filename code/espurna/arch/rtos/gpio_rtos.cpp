@@ -16,8 +16,15 @@ namespace espurna {
 namespace gpio {
 namespace {
 
-// same pin numbers as the interrupt table, every GPIO of the chip
-class Hardware final : public HardwareGpioBase<isr::Pins> {
+// every GPIO of the chip: the pins of the interrupt table, and on the ESP8266 GPIO16 too (the RTC pad: a plain
+// input / output without an interrupt, gpio_esp8266.cpp; the relay 1 of an LC-Tech x4 board, 11-18)
+#if defined(ESP8266)
+constexpr size_t HardwarePins { isr::Pins + 1 };
+#else
+constexpr size_t HardwarePins { isr::Pins };
+#endif
+
+class Hardware final : public HardwareGpioBase<HardwarePins> {
 public:
     bool valid(unsigned char pin) const override {
         return (pin < Pins) && chip::valid(pin);
@@ -53,7 +60,7 @@ public:
     }
 
     int digitalRead() override {
-        return ::digitalRead(_pin);
+        return espurna::pins::read(_pin);
     }
 
 private:

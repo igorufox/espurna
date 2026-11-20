@@ -29,8 +29,8 @@ constexpr unsigned int ValueMax { (1u << 8) - 1 };
 
 my92xx_model_t model() {
     // the library's plain enum is one byte with -fshort-enums (LibreTiny): compared by hand
-    const auto value = getSetting(F("ltMy92xxModel"));
-    if (value.equals(F("9231"))) {
+    const auto value = getSetting("ltMy92xxModel");
+    if (value.equals("9231")) {
         return MY92XX_MODEL_MY9231;
     }
 
@@ -43,7 +43,7 @@ public:
         _driver(model, chips, di, dcki, Command)
     {
         for (size_t index = 0; index < channels; ++index) {
-            _map[index] = getSetting({F("ltMy92xxCh"), index}, static_cast<uint8_t>(index));
+            _map[index] = getSetting({"ltMy92xxCh", index}, static_cast<uint8_t>(index));
         }
     }
 
@@ -69,18 +69,18 @@ private:
 } // namespace
 
 ESPURNA_MODULE(light_my92xx, "light_my92xx", 11) {
-    if (!getSetting(F("ltProvider")).equals(F("my92xx"))) {
+    if (!getSetting("ltProvider").equals("my92xx")) {
         return;
     }
 
-    const auto channels = std::min<size_t>(getSetting(F("ltMy92xxChannels"), 0), espurna::light::ChannelsMax);
-    const auto di = getSetting(F("ltMy92xxDiGPIO"), uint8_t{ GPIO_NONE });
-    const auto dcki = getSetting(F("ltMy92xxDckiGPIO"), uint8_t{ GPIO_NONE });
+    const auto channels = std::min<size_t>(getSetting("ltMy92xxChannels", 0), espurna::light::ChannelsMax);
+    const auto di = getSetting("ltMy92xxDiGPIO", uint8_t{ GPIO_NONE });
+    const auto dcki = getSetting("ltMy92xxDckiGPIO", uint8_t{ GPIO_NONE });
     if (!channels || !gpioValid(di) || !gpioValid(dcki) || !gpioLock(di) || !gpioLock(dcki)) {
         return;
     }
 
-    lightSetProvider(std::make_unique<My92xxOutput>(model(), getSetting(F("ltMy92xxChips"), 1), di, dcki, channels));
+    lightSetProvider(std::make_unique<My92xxOutput>(model(), getSetting("ltMy92xxChips", 1), di, dcki, channels));
     for (size_t index = 0; index < channels; ++index) {
         lightAdd();
     }

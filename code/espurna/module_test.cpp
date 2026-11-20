@@ -57,7 +57,7 @@ void command(::terminal::CommandContext&& ctx) {
 
 ESPURNA_MODULE(test, "test", 90) {
     using namespace espurna::modules::test;
-    started = millis();
+    started = espurna::time::ms();
     timer.repeat(espurna::duration::Seconds(1), []() {
         ticks.tick();
     });

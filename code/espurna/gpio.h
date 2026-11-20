@@ -14,7 +14,7 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <bitset>
 #include <cstddef>
 
-class Print;
+#include "text_types.h"
 
 enum class GpioType : int {
     None,
@@ -54,7 +54,7 @@ namespace chip {
 void setup();
 
 // state of the pin for the GPIO terminal command, rest of the line after the lock mark
-void print_pin(Print&, uint8_t pin);
+void print_pin(::espurna::Output&, uint8_t pin);
 
 // Pins of the FreeRTOS chips are driven through the Arduino API (arch/rtos/gpio_rtos.cpp), what differs per chip:
 // which pins exist, which of them have an output driver, how a mode and a level reach the pad (ESP8266: its own gpio
@@ -70,7 +70,7 @@ void write(uint8_t pin, int8_t value);
 namespace settings {
 namespace internal {
 
-String serialize(GpioType);
+espurna::string serialize(GpioType);
 
 } // namespace internal
 } // namespace settings

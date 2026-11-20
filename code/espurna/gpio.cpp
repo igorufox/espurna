@@ -30,11 +30,11 @@ namespace gpio {
 namespace {
 
 enum class ModeOption : int {
-    Default = INPUT,
-    Output = OUTPUT,
-    Input = INPUT,
-    InputPulldown = INPUT_PULLDOWN,
-    InputPullup = INPUT_PULLUP,
+    Default = espurna::pins::Input,
+    Output = espurna::pins::Output,
+    Input = espurna::pins::Input,
+    InputPulldown = espurna::pins::InputPulldown,
+    InputPullup = espurna::pins::InputPullup,
 };
 
 namespace settings {
@@ -94,8 +94,8 @@ void add(Origin origin) {
 #if WEB_SUPPORT
 namespace web {
 
-void onVisible(JsonObject& root) {
-    JsonObject& config = root.createNestedObject(F("gpioConfig"));
+void onVisible(espurna::json::Writer& root) {
+    root.object(STRING_VIEW("gpioConfig"));
 
     constexpr GpioType known_types[] {
         GpioType::Hardware,
@@ -104,36 +104,46 @@ void onVisible(JsonObject& root) {
 #endif
     };
 
-    JsonArray& types = config.createNestedArray(F("types"));
+    root.array(STRING_VIEW("types"));
+    for (auto& type : known_types) {
+        auto* base = gpioBase(type);
+        if (base) {
+            root.beginArray();
+            root.value(base->id());
+            root.value(static_cast<int>(type));
+            root.end();
+        }
+    }
+    root.end();
 
     for (auto& type : known_types) {
         auto* base = gpioBase(type);
         if (base) {
-            JsonArray& entry = types.createNestedArray();
-            entry.add(base->id());
-            entry.add(static_cast<int>(type));
-
-            JsonArray& pins = config.createNestedArray(base->id());
+            root.array(base->id());
             for (size_t pin = 0; pin < base->pins(); ++pin) {
                 if (base->valid(pin)) {
-                    pins.add(pin);
+                    root.value(pin);
                 }
             }
+            root.end();
         }
     }
+    root.end();
 
-    JsonObject& info = root.createNestedObject(F("gpioInfo"));
-
-    JsonArray& locks = info.createNestedArray(F("failed-locks"));
+    root.object(STRING_VIEW("gpioInfo"));
+    root.array(STRING_VIEW("failed-locks"));
     for (auto& origin : origin::internal::origins) {
         if (!origin.result) {
-            JsonArray& entry = locks.createNestedArray();
-            entry.add(origin.pin);
-            entry.add(origin.location.file);
-            entry.add(origin.location.func);
-            entry.add(origin.location.line);
+            root.beginArray();
+            root.value(origin.pin);
+            root.value(origin.location.file);
+            root.value(origin.location.func);
+            root.value(origin.location.line);
+            root.end();
         }
     }
+    root.end();
+    root.end();
 }
 
 void setup() {
@@ -167,7 +177,7 @@ void gpio_list_origins(::terminal::CommandContext&& ctx) {
 
 PROGMEM_STRING(Gpio, "GPIO");
 
-int gpio_pin(const String& value) {
+int gpio_pin(const espurna::string& value) {
     int pin = espurna::settings::internal::convert<int>(value);
     if (pin < 0) {
         return pin;
@@ -197,10 +207,10 @@ void gpio_read_write(::terminal::CommandContext&& ctx) {
     switch (ctx.argv.size()) {
     case 3:
     {
-        // even in INPUT mode, we are still techically allowed to set output register
-        // (like it is used in software I2C implementation with INPUT_PULLUP)
+        // even in espurna::pins::Input mode, we are still techically allowed to set output register
+        // (like it is used in software I2C implementation with espurna::pins::InputPullup)
         const bool status = espurna::settings::internal::convert<bool>(ctx.argv[2]);
-        hardwareGpio().pin(pin)->digitalWrite(status ? HIGH : LOW);
+        hardwareGpio().pin(pin)->digitalWrite(status ? true : false);
         break;
     }
 
@@ -228,8 +238,8 @@ void gpio_read_write(::terminal::CommandContext&& ctx) {
 
 PROGMEM_STRING(Mode, "GPIO.MODE");
 
-String gpio_mode_options() {
-    String out;
+espurna::string gpio_mode_options() {
+    espurna::string out;
 
     const auto begin = settings::options::ModeOptions.begin();
     const auto end = settings::options::ModeOptions.end();
@@ -260,7 +270,7 @@ void gpio_mode(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    static const String hint = STRING_VIEW("GPIO.MODE <GPIO> <").toString()
+    static const espurna::string hint = STRING_VIEW("GPIO.MODE <GPIO> <").toString()
         + gpio_mode_options()
         + '>';
     terminalError(ctx, hint);
@@ -277,7 +287,7 @@ void reg_read(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    terminalError(ctx, F("REG.READ <ADDRESS>"));
+    terminalError(ctx, "REG.READ <ADDRESS>");
 }
 
 PROGMEM_STRING(RegWrite, "REG.WRITE");
@@ -294,7 +304,7 @@ void reg_write(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    terminalError(ctx, F("REG.WRITE <ADDRESS> <VALUE>"));
+    terminalError(ctx, "REG.WRITE <ADDRESS> <VALUE>");
 }
 
 static constexpr espurna::terminal::Command Commands[] PROGMEM {
@@ -325,11 +335,11 @@ using gpio::settings::options::GpioTypeOptions;
 
 // numbers are accepted as well, earlier ESP32 builds stored them
 template <>
-GpioType convert(const String& value) {
+GpioType convert(const espurna::string& value) {
     return convert(GpioTypeOptions, value, GpioType::None);
 }
 
-String serialize(GpioType value) {
+espurna::string serialize(GpioType value) {
     return serialize(GpioTypeOptions, value);
 }
 
@@ -350,7 +360,7 @@ String serialize(GpioType value) {
 // `~BasePin() = default;` is technically inlined, so leaving that in the header.
 // Thus, ::description() implementation here becomes that anchor for the BasePin.
 
-String BasePin::description() const {
+espurna::string BasePin::description() const {
     char buffer[64];
     snprintf_P(buffer, sizeof(buffer),
         PSTR("%s @ GPIO%02hhu"), id(), pin());

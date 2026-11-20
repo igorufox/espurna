@@ -1,9 +1,8 @@
-# ESP32: the merged image espurna-<env>.bin (bootloader, partitions, boot_app0, ESPurna, safeboot), flashed at 0x0
-# and the release file (naming, listing: scripts/release_image.py). The partition table of the build
-# (board_build.partitions) is read by scripts/esp32_partitions.py, which also writes its entries as the C header
-# esp32_partition_csv.h for the firmware (the table the WebUI migration writes, arch/esp32/safeboot_esp32.cpp)
+# ESP32: the merged image espurna-<env>.bin (bootloader, partitions, boot_app0, ESPurna), flashed at 0x0, and the
+# release file (naming, listing: scripts/release_image.py). The partition table of the build (board_build.partitions,
+# esp32_4mb.csv) is read by scripts/esp32_partitions.py
 
-Import("env", "projenv")
+Import("env")
 import os
 import sys
 
@@ -14,32 +13,36 @@ import esp32_partitions  # noqa: E402
 
 
 def _partitions_csv(env):
-    """the partition csv of the build: the project's, else the framework's"""
-    csv = env.BoardConfig().get("build.partitions", "default.csv")
-    path = os.path.join(env.subst("$PROJECT_DIR"), csv)
-    if not os.path.exists(path):
-        framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
-        path = os.path.join(framework_dir, "tools", "partitions", csv)
-    return path
+    """the partition csv of the build: the project's (board_build.partitions)"""
+    csv = env.BoardConfig().get("build.partitions", "esp32_4mb.csv")
+    return os.path.join(env.subst("$PROJECT_DIR"), csv)
 
 
-def _app_offsets(env):
-    """Offsets of the app slot (ota_0, else the first app) and of the factory partition when there is an ota_0 too"""
+def _app_offset(env):
+    """the offset of the application partition (ota_0, else the first app)"""
     path = _partitions_csv(env)
     try:
-        offset, factory = esp32_partitions.app_offsets(esp32_partitions.read_csv(path))
+        offset = esp32_partitions.app_offset(esp32_partitions.read_csv(path))
     except ValueError as error:
         raise Exception("[POST-BUILD] {}: {}".format(path, error))
-    return hex(offset), (hex(factory) if factory is not None else None)
+    return hex(offset)
 
 
-def _partition_header(env, projenv):
-    """esp32_partition_csv.h in $BUILD_DIR/generated, on the include path of the firmware and the modules"""
-    path = _partitions_csv(env)
-    folder = os.path.join(env.subst("$BUILD_DIR"), "generated")
-    esp32_partitions.write_header(esp32_partitions.read_csv(path), path,
-                                  os.path.join(folder, "esp32_partition_csv.h"))
-    projenv.Append(CPPPATH=[folder])
+def _otadata_app0(path):
+    """the OTA data that boots app0 (ota_0), what Arduino-ESP32's boot_app0.bin held: in the first sector the entry of
+    sequence 1 (its label and state erased, CRC-32 of the sequence as esp_rom_crc32_le(UINT32_MAX, ...) computes it),
+    in the second one sequence 0"""
+    import struct
+    import zlib
+
+    sequence = struct.pack("<I", 1)
+    erased = bytes([0xFF])
+    first = sequence + erased * 24 + struct.pack("<I", zlib.crc32(sequence, 0xFFFFFFFF))
+    second = struct.pack("<I", 0)
+    data = first.ljust(0x1000, erased) + second.ljust(0x1000, erased)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
 
 
 def _esptool(env, platform):
@@ -86,25 +89,17 @@ def merge_bin(source, target, env):
     except (TypeError, ValueError):
         raise Exception(
             "[POST-BUILD] Could not parse build.f_flash={!r} from board config".format(flash_freq))
-    bootloader_suffix = "{}_{}m".format(flash_mode, freq_mhz)
 
     output = path(build_dir, pio_env)
 
+    # ESP-IDF builds the bootloader of sdkconfig.defaults and the partition table; the OTA data that boots app0
+    # (otadata at 0xE000 of esp32_4mb.csv) is made here
     bootloader = os.path.join(build_dir, "bootloader.bin")
-    if not os.path.exists(bootloader):
-        framework_dir = platform.get_package_dir("framework-arduinoespressif32")
-        # e.g. bootloader_dout_40m.bin, bootloader_dio_80m.bin, …
-        bootloader = os.path.join(framework_dir, "tools", "sdk", "bin",
-                                  "bootloader_{}.bin".format(bootloader_suffix))
-
     partitions = os.path.join(build_dir, "partitions.bin")
-    boot_app0 = os.path.join(build_dir, "boot_app0.bin")
-    if not os.path.exists(boot_app0):
-        framework_dir = platform.get_package_dir("framework-arduinoespressif32")
-        boot_app0 = os.path.join(framework_dir, "tools", "partitions", "boot_app0.bin")
+    boot_app0 = _otadata_app0(os.path.join(build_dir, "boot_app0.bin"))
 
     firmware = os.path.join(build_dir, "firmware.bin")
-    app_offset, safeboot_offset = _app_offsets(env)
+    app_offset = _app_offset(env)
 
     missing = [f for f in (bootloader, partitions, boot_app0, firmware) if not os.path.exists(f)]
     if missing:
@@ -131,17 +126,6 @@ def merge_bin(source, target, env):
         app_offset=app_offset,
     )
 
-    # Safeboot layout: the factory partition holds the ESPurna safeboot image (code/safeboot-app, built before
-    # this one: `pio run -d safeboot-app`). A merged image without it would leave the factory partition empty: the
-    # build fails instead of releasing such an image
-    project = env.subst("$PROJECT_DIR")
-    safeboot = os.path.join(project, "safeboot-app", ".pio", "build", "esp32-safeboot", "firmware.bin")
-    if safeboot_offset:
-        if not os.path.exists(safeboot):
-            raise Exception("[POST-BUILD] no safeboot image ({}): build code/safeboot-app first "
-                            "(pio run -d safeboot-app)".format(safeboot))
-        cmd += " {} {}".format(safeboot_offset, _quote(safeboot))
-
     print("Running: " + cmd)
     rc = env.Execute(cmd)
     if rc:
@@ -149,5 +133,4 @@ def merge_bin(source, target, env):
     listing([output])
 
 
-_partition_header(env, projenv)  # noqa: F821
 env.AddPostAction("$BUILD_DIR/firmware.bin", merge_bin)

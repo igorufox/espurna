@@ -35,23 +35,25 @@ Included before hardware.h / general.h: their #ifndef defaults do not apply to w
    The chip's ini adds its own objects to a module (custom_modules: a line of the same name, its objects go first),
    its own modules (a line of a new name) and leaves out the modules it does not build (custom_modules_skip).
 
-ws | ws_server.cpp.o module_ws.cpp.o | | wsPost wsPostManual wsPostAll wsPostSequence wsSend wsClientInfo wsPause wsConnected wsDebugSend
-api | api.cpp.o api_common.cpp.o module_api.cpp.o | | apiRegister
-ntp | ntp.cpp.o ntp_driver.cpp.o module_ntp.cpp.o | | ntpOnTick ntpDateTime ntpSynced
-relay | relay.cpp.o module_relay.cpp.o | | relayCount relayStatus relayToggle relayParsePayload relayPayload relayOnStatusChange relayOnStatusNotify relayOnReady relayBtnGpio
-button | button.cpp.o module_button.cpp.o | DebounceEvent.cpp.o ac_switch.cpp.o | buttonSetCustomAction
-led | led.cpp.o module_led.cpp.o | |
-i2c | i2c.cpp.o module_i2c.cpp.o | |
-sensors | sensor.cpp.o module_sensors.cpp.o | | magnitudeCount magnitudeInfo magnitudeTypeTopic magnitudeUnitsName sensorReady sensorWebSocketMagnitudes sensorOnMagnitudeRead sensorOnMagnitudeReport magnitudeValue magnitudeReportValue magnitudeReadValue magnitudeType magnitudeIndex magnitudeTopic
+tools | json.cpp.o ws_utils.cpp.o datetime.cpp.o module_tools.cpp.o | |
+arduino | module_arduino.cpp.o | |
+ws | ws_server.cpp.o settings_json.cpp.o ws_head.cpp.o module_ws.cpp.o | | wsPost wsPostManual wsPostAll wsPostSequence wsSend wsClientInfo wsPause wsConnected wsDebugSend | tools
+api | api.cpp.o api_common.cpp.o module_api.cpp.o | | apiRegister| tools
+ntp | ntp.cpp.o ntp_driver.cpp.o module_ntp.cpp.o | | ntpOnTick ntpDateTime ntpSynced| tools
+relay | relay.cpp.o module_relay.cpp.o | | relayCount relayStatus relayToggle relayParsePayload relayPayload relayOnStatusChange relayOnStatusNotify relayOnReady relayBtnGpio| tools
+button | button.cpp.o module_button.cpp.o | DebounceEvent.cpp.o ac_switch.cpp.o | buttonSetCustomAction| tools
+led | led.cpp.o module_led.cpp.o | || tools
+i2c | i2c.cpp.o module_i2c.cpp.o | || tools arduino
+sensors | sensor.cpp.o module_sensors.cpp.o | | magnitudeCount magnitudeInfo magnitudeTypeTopic magnitudeUnitsName sensorReady sensorWebSocketMagnitudes sensorOnMagnitudeRead sensorOnMagnitudeReport magnitudeValue magnitudeReportValue magnitudeReadValue magnitudeType magnitudeIndex magnitudeTopic| tools
 a02yyu | sensors/module_a02yyu.cpp.o | | | sensors uart
 am2320 | sensors/module_am2320.cpp.o | | | sensors i2c
 analog | sensors/module_analog.cpp.o | | | sensors
 bh1750 | sensors/module_bh1750.cpp.o | | | sensors i2c
 bmp180 | sensors/module_bmp180.cpp.o | | | sensors i2c
 bmx280 | sensors/module_bmx280.cpp.o | | | sensors i2c
-bme680 | sensors/module_bme680.cpp.o | | | sensors i2c
+bme680 | sensors/module_bme680.cpp.o | | | sensors i2c arduino
 cse7766 | sensors/module_cse7766.cpp.o | | | sensors uart
-dallas | sensors/module_dallas.cpp.o driver_onewire.cpp.o | | | sensors
+dallas | sensors/module_dallas.cpp.o driver_onewire.cpp.o | | | sensors arduino
 dht | sensors/module_dht.cpp.o | | | sensors
 digital | sensors/module_digital.cpp.o | | | sensors
 dummy | sensors/module_dummy.cpp.o | | | sensors
@@ -63,10 +65,10 @@ events | sensors/module_events.cpp.o | | | sensors
 ezoph | sensors/module_ezoph.cpp.o | | | sensors uart
 geiger | sensors/module_geiger.cpp.o | | | sensors
 guvas12sd | sensors/module_guvas12sd.cpp.o | | | sensors
-hlw8012 | sensors/module_hlw8012.cpp.o | | | sensors
+hlw8012 | sensors/module_hlw8012.cpp.o | | | sensors arduino
 ina219 | sensors/module_ina219.cpp.o | | | sensors i2c
 ldr | sensors/module_ldr.cpp.o | | | sensors
-max6675 | sensors/module_max6675.cpp.o | | | sensors
+max6675 | sensors/module_max6675.cpp.o | | | sensors arduino
 mhz19 | sensors/module_mhz19.cpp.o | | | sensors uart
 mics2710 | sensors/module_mics2710.cpp.o | | | sensors
 mics5525 | sensors/module_mics5525.cpp.o | | | sensors
@@ -80,48 +82,53 @@ sds011 | sensors/module_sds011.cpp.o | | | sensors uart
 sht3x | sensors/module_sht3x.cpp.o | | | sensors i2c
 si7021 | sensors/module_si7021.cpp.o | | | sensors i2c
 sm300d2 | sensors/module_sm300d2.cpp.o | | | sensors uart
-sonar | sensors/module_sonar.cpp.o | | | sensors
+sonar | sensors/module_sonar.cpp.o | | | sensors arduino
 t6613 | sensors/module_t6613.cpp.o | | | sensors uart
 tmp3x | sensors/module_tmp3x.cpp.o | | | sensors
 v9261f | sensors/module_v9261f.cpp.o | | | sensors uart
-veml6075 | sensors/module_veml6075.cpp.o | | | sensors i2c
-vl53l1x | sensors/module_vl53l1x.cpp.o | | | sensors i2c
+veml6075 | sensors/module_veml6075.cpp.o | | | sensors i2c arduino
+vl53l1x | sensors/module_vl53l1x.cpp.o | | | sensors i2c arduino
 ade7953 | sensors/module_ade7953.cpp.o | | | sensors i2c
-si1145 | sensors/module_si1145.cpp.o | | | sensors i2c
+si1145 | sensors/module_si1145.cpp.o | | | sensors i2c arduino
 hdc1080 | sensors/module_hdc1080.cpp.o | | | sensors i2c
 pzem004tv30 | sensors/module_pzem004tv30.cpp.o | | | sensors uart
-scheduler | scheduler.cpp.o module_scheduler.cpp.o | | | ntp
-alexa | alexa.cpp.o module_alexa.cpp.o | | alexaPause
-mdns | mdns.cpp.o module_mdns.cpp.o | | mdnsRunning mdnsServiceQuery
-mqtt | mqtt.cpp.o module_mqtt.cpp.o | | mqttHeartbeat mqttRegister mqttOnPublish mqttOnSubscribe mqttTopic mqttTopicSetter mqttMagnitude mqttSendRaw mqttSubscribeRaw mqttSubscribe mqttUnsubscribeRaw mqttUnsubscribe mqttSend mqttSendStatus mqttFlush mqttEnqueue mqttPayloadOnline mqttPayloadOffline mqttPayloadStatus mqttEnabled mqttForward mqttConnected mqttDisconnect mqttSetup
-homeassistant | homeassistant.cpp.o module_homeassistant.cpp.o | | | mqtt
-domoticz | domoticz.cpp.o module_domoticz.cpp.o | | domoticzSendMagnitude | mqtt
-thingspeak | thingspeak.cpp.o module_thingspeak.cpp.o | | tspkEnqueueMagnitude | http
-light | light.cpp.o module_light.cpp.o | | lightBlue lightBrightness lightBrightnessPercent lightChannel lightChannels lightColdWhite lightColor lightGreen lightHasColdWhite lightHasColor lightHasWarmWhite lightHasWhite lightHs lightHsv lightMiredsRange lightOnReport lightRed lightRgb lightState lightTemperature lightTransitionStep lightTransitionTime lightUpdate lightUseRGB lightWarmWhite lightBrightnessStep lightMakeStateRelayProvider
+ble | ble.cpp.o module_ble.cpp.o | || tools
+ble_wifi | ble_wifi.cpp.o module_ble_wifi.cpp.o | || ble tools
+ble_proxy | ble_proxy.cpp.o module_ble_proxy.cpp.o | || ble mqtt tools
+ble_sensors | sensors/module_ble_sensors.cpp.o | | | sensors ble
+scheduler | scheduler.cpp.o module_scheduler.cpp.o | | | ntp tools
+alexa | alexa.cpp.o module_alexa.cpp.o | | alexaPause| tools arduino
+mdns | mdns.cpp.o module_mdns.cpp.o | | mdnsRunning mdnsServiceQuery| tools
+mqtt | mqtt.cpp.o module_mqtt.cpp.o | | mqttHeartbeat mqttRegister mqttOnPublish mqttOnSubscribe mqttTopic mqttTopicSetter mqttMagnitude mqttSendRaw mqttSubscribeRaw mqttSubscribe mqttUnsubscribeRaw mqttUnsubscribe mqttSend mqttSendStatus mqttFlush mqttEnqueue mqttPayloadOnline mqttPayloadOffline mqttPayloadStatus mqttEnabled mqttForward mqttConnected mqttDisconnect mqttSetup| tools
+homeassistant | homeassistant.cpp.o module_homeassistant.cpp.o | | | mqtt tools
+domoticz | domoticz.cpp.o module_domoticz.cpp.o | | domoticzSendMagnitude | mqtt tools
+thingspeak | thingspeak.cpp.o module_thingspeak.cpp.o | | tspkEnqueueMagnitude | http tools
+light | light.cpp.o module_light.cpp.o | | lightBlue lightBrightness lightBrightnessPercent lightChannel lightChannels lightColdWhite lightColor lightGreen lightHasColdWhite lightHasColor lightHasWarmWhite lightHasWhite lightHs lightHsv lightMiredsRange lightOnReport lightRed lightRgb lightState lightTemperature lightTransitionStep lightTransitionTime lightUpdate lightUseRGB lightWarmWhite lightBrightnessStep lightMakeStateRelayProvider| tools
 light_pwm | module_light_pwm.cpp.o | pwm.cpp.o | | light
-light_my92xx | module_light_my92xx.cpp.o | | | light
-rf | rfbridge.cpp.o module_rf.cpp.o | | rfbSend rfbOnCode
-matter | matter.cpp.o matter_app.cpp.o matter_identity.cpp.o module_matter.cpp.o | | matterWindowOpen matterWindowStart matterPairingCodes | mdns
-nspanel | nspanel.cpp.o nspanel_config.cpp.o nspanel_storage.cpp.o nspanel_net.cpp.o nspanel_link.cpp.o nspanel_flash.cpp.o nspanel_web.cpp.o nspanel_lovelace.cpp.o nspanel_ohpanel.cpp.o nspanelqr.cpp.o module_nspanel.cpp.o | | | uart tls http | 32768
-uart | uart.cpp.o module_uart.cpp.o | | uartPort uartClaim uartClaimed uartOnClaim uartOpen uartBaud
+light_my92xx | module_light_my92xx.cpp.o | | | light arduino
+rf | rfbridge.cpp.o module_rf.cpp.o | | rfbSend rfbOnCode| tools arduino
+matter | matter.cpp.o matter_app.cpp.o matter_identity.cpp.o module_matter.cpp.o | | matterWindowOpen matterWindowStart matterPairingCodes | mdns tools
+matter_ble | matter_ble.cpp.o module_matter_ble.cpp.o | || ble matter tools
+nspanel | nspanel.cpp.o nspanel_config.cpp.o nspanel_storage.cpp.o nspanel_net.cpp.o nspanel_link.cpp.o nspanel_flash.cpp.o nspanel_web.cpp.o nspanel_lovelace.cpp.o nspanel_ohpanel.cpp.o nspanelqr.cpp.o module_nspanel.cpp.o | | | uart tls http tools | 32768
+uart | uart.cpp.o module_uart.cpp.o | | uartPort uartClaim uartClaimed uartOnClaim uartOpen uartBaud| tools
 tls | module_tls.cpp.o | |
-http | http.cpp.o module_http.cpp.o | |
-captive | captive.cpp.o module_captive.cpp.o | |
-spi | spi.cpp.o module_spi.cpp.o | |
-mcp23s08 | mcp23s08.cpp.o module_mcp23s08.cpp.o | | | spi
-rpnrules | rpnrules.cpp.o module_rpnrules.cpp.o | | | relay ntp
-encoder | encoder.cpp.o module_encoder.cpp.o | | | light
-tuya | tuya.cpp.o module_tuya.cpp.o | | tuya::makeRelayProvider | relay light uart
-uartmqtt | uartmqtt.cpp.o module_uartmqtt.cpp.o | | | uart mqtt
-ir | ir.cpp.o module_ir.cpp.o | |
-rfm69 | rfm69.cpp.o module_rfm69.cpp.o | | | spi
-garland | garland.cpp.o module_garland.cpp.o | |
-thermostat | thermostat.cpp.o module_thermostat.cpp.o | | displayOn | relay sensors i2c ntp
-influxdb | influxdb.cpp.o module_influxdb.cpp.o | | | http
-prometheus | prometheus.cpp.o module_prometheus.cpp.o | | | api sensors
-curtain_kingart | curtain_kingart.cpp.o module_curtain_kingart.cpp.o | | | uart ntp
-ifan | ifan.cpp.o module_ifan.cpp.o | | fanMakeRelayProvider fanSpeed | relay
-lightfox | lightfox.cpp.o module_lightfox.cpp.o | | lightfoxMakeRelayProvider lightfoxMakeButtonPin | relay button uart
+http | http.cpp.o module_http.cpp.o | || tools
+captive | captive.cpp.o module_captive.cpp.o | || tools
+spi | spi.cpp.o module_spi.cpp.o | || tools arduino
+mcp23s08 | mcp23s08.cpp.o module_mcp23s08.cpp.o | | | spi tools arduino
+rpnrules | rpnrules.cpp.o module_rpnrules.cpp.o | | | relay ntp tools arduino
+encoder | encoder.cpp.o module_encoder.cpp.o | | | light tools
+tuya | tuya.cpp.o module_tuya.cpp.o | | tuya::makeRelayProvider | relay light uart tools
+uartmqtt | uartmqtt.cpp.o module_uartmqtt.cpp.o | | | uart mqtt tools
+ir | ir.cpp.o module_ir.cpp.o | || tools arduino
+rfm69 | rfm69.cpp.o module_rfm69.cpp.o | | | spi tools arduino
+garland | garland.cpp.o module_garland.cpp.o | || tools arduino
+thermostat | thermostat.cpp.o module_thermostat.cpp.o | | displayOn | relay sensors ntp tools arduino
+influxdb | influxdb.cpp.o module_influxdb.cpp.o | | | http tools
+prometheus | prometheus.cpp.o module_prometheus.cpp.o | | | api sensors tools
+curtain_kingart | curtain_kingart.cpp.o module_curtain_kingart.cpp.o | | | uart ntp tools
+ifan | ifan.cpp.o module_ifan.cpp.o | | fanMakeRelayProvider fanSpeed | relay tools
+lightfox | lightfox.cpp.o module_lightfox.cpp.o | | lightfoxMakeRelayProvider lightfoxMakeButtonPin | relay button uart tools
 ssdp | ssdp.cpp.o module_ssdp.cpp.o | |
 llmnr | llmnr.cpp.o module_llmnr.cpp.o | |
 netbios | netbios.cpp.o module_netbios.cpp.o | |
@@ -248,7 +255,7 @@ ESPURNA_MODULES */
 
 // what exists only on some chips: Matter (ESP32 and Beken, there is no Matter SDK for the ESP8266, the chip's ini
 // leaves the module out: custom_modules_skip); the NSPanel (its display on a UART port) on every chip
-#if defined(ESP32) || defined(LIBRETINY)
+#if defined(ESP32) || defined(BK72XX)
 #define MATTER_SUPPORT              1
 #endif
 #define NSPANEL_SUPPORT             1

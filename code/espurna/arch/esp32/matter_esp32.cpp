@@ -1,6 +1,6 @@
 /*
 
-MATTER, WHAT ONLY THE ESP32 HAS (Arduino-ESP32 core 3.x, ESP-IDF 5.5)
+MATTER, WHAT ONLY THE ESP32 HAS (ESP-IDF 5.5)
 
 The Matter application is libMatterApp.a of matter-espurna, the same as on the BK7231N (connectedhomeip, the plug.zap
 data model, the C API of espurna_matter.h), on connectedhomeip's ESP32 platform (scripts/matter_lib.py); the rest of the
@@ -10,12 +10,12 @@ Commissioning is on-network only: ESPurna is on Wi-Fi already, the library is bu
 
 */
 
-#include "espurna.h"
+#include "../../espurna.h"
 
 #if MATTER_SUPPORT
 
-#include "espurna_matter.h"
-#include "matter_identity.h"
+#include "../../espurna_matter.h"
+#include "../../matter_identity.h"
 
 #include <app/server/Server.h>
 #include <platform/CHIPDeviceLayer.h>
@@ -23,6 +23,12 @@ Commissioning is on-network only: ESPurna is on Wi-Fi already, the library is bu
 #include <platform/KeyValueStoreManager.h>
 
 #include <nvs.h>
+
+// what the Matter library needs from the SDK of this firmware (FreeRTOS, lwIP, mbedTLS, the layout of the types it
+// shares with it): a mismatch stops the build here. Libraries before that check have no such header
+#if __has_include(<app/matter_requirements.h>)
+#include <app/matter_requirements.h>
+#endif
 
 #include <cstring>
 
@@ -71,7 +77,7 @@ void describe(Identity& out) {
         espurna::matter::identity::ids(vendor, product);
     }
 
-    out.vendor = F("ESPurna");
+    out.vendor = "ESPurna";
     out.vendor_id = vendor;
     out.product = systemDevice().toString();
     out.product_id = product;
@@ -142,5 +148,11 @@ bool factory_read(const char*, uint8_t*, size_t, size_t&) {
 } // namespace identity
 } // namespace matter
 } // namespace espurna
+
+// The network a controller gives over BLE (connectedhomeip's ESP32 Wi-Fi commissioning driver, patched by
+// matter-espurna tools/chip_patch.py): to ESPurna's Wi-Fi, as on the Beken (matter.cpp). 0 - queued
+extern "C" int matter_wifi_connect(const char* ssid, size_t ssid_length, const char* key, size_t key_length) {
+    return matterWifiFromController(ssid, ssid_length, key, key_length) ? 0 : -1;
+}
 
 #endif

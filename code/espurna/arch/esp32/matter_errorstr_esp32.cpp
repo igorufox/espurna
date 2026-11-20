@@ -12,9 +12,12 @@ Arduino-ESP32 build). The monolithic images keep the library's version (MODULE_B
 
 */
 
-#include "espurna.h"
+#include "../../espurna.h"
 
 #if MODULE_BUILD && MATTER_SUPPORT
+
+// the library's options before its headers (ESP-IDF's sdkconfig.h has none of them)
+#include "matter_config_chip.h"
 
 #include <lib/core/ErrorStr.h>
 

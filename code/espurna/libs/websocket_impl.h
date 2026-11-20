@@ -16,9 +16,8 @@ WEBSOCKET - the implementation (libs/websocket.h), part of libs/net_impl.h. No A
 #include <new>
 #include <vector>
 
-// BearSSL: our fork (igorufox/bearssl-esp8266, code/libraries.ini `bearssl`) on every chip, the ESP8266 too (its
-// core's prebuilt libbearssl.a is taken out of the link, scripts/pio_main.py)
-#include <bearssl.h>
+// SHA-1 of the accept key: mbedtls (libs/hash.h)
+#include "hash.h"
 
 size_t systemFreeHeap();
 
@@ -153,12 +152,11 @@ public:
         }
 
         // Sec-WebSocket-Accept: base64 of the SHA-1 of the key and the GUID
-        br_sha1_context sha;
-        br_sha1_init(&sha);
-        br_sha1_update(&sha, key, strlen(key));
-        br_sha1_update(&sha, Guid, sizeof(Guid) - 1);
-        uint8_t digest[br_sha1_SIZE];
-        br_sha1_out(&sha, digest);
+        hash::Sha1 sha;
+        sha.update(key, strlen(key));
+        sha.update(Guid, sizeof(Guid) - 1);
+        uint8_t digest[hash::Sha1::Size];
+        sha.finish(digest);
 
         struct Out {
             char data[40];

@@ -110,7 +110,7 @@ void _mcp23s08Begin() {
         return;
     }
 
-    _mcp23s08_cs = getSetting(F("mcp23s08CS"), uint8_t{MCP23S08_CS_PIN});
+    _mcp23s08_cs = getSetting("mcp23s08CS", uint8_t{MCP23S08_CS_PIN});
     if (!gpioLock(_mcp23s08_cs)) {
         DEBUG_MSG_P(PSTR("[MCP23S08] CS GPIO%hhu is already used\n"), _mcp23s08_cs);
         return;
@@ -122,8 +122,8 @@ void _mcp23s08Begin() {
     SPI.setFrequency(1000000);
     SPI.setDataMode(SPI_MODE0);
 
-    pinMode(_mcp23s08_cs, OUTPUT);
-    digitalWrite(_mcp23s08_cs, HIGH);
+    espurna::pins::mode(_mcp23s08_cs, espurna::pins::Output);
+    espurna::pins::write(_mcp23s08_cs, true);
 }
 
 } // namespace
@@ -136,7 +136,7 @@ void MCP23S08Setup()
  * @brief Set a expander MCP23S08 the pin direction.
  *
  * @param pinNumber Pin number for set.
- * @param mode direction mode. 0 - INPUT, 1 - OUTPUT.
+ * @param mode direction mode. 0 - espurna::pins::Input, 1 - espurna::pins::Output.
  *
  * @return void
  */
@@ -144,7 +144,7 @@ void MCP23S08SetDirection(uint8_t pinNumber, uint8_t mode)
 {
     uint8_t registerData = MCP23S08ReadRegister(IODIR);
 
-    if (INPUT == mode)
+    if (espurna::pins::Input == mode)
     {
         registerData |= (1 << pinNumber);
     }
@@ -168,9 +168,9 @@ uint8_t MCP23S08ReadRegister(uint8_t address)
     _mcp23s08TxData[0] = READ_CMD;
     _mcp23s08TxData[1] = address;
 
-    digitalWrite(_mcp23s08_cs, LOW);
+    espurna::pins::write(_mcp23s08_cs, false);
     SPI.transferBytes(_mcp23s08TxData, _mcp23s08RxData, 3);
-    digitalWrite(_mcp23s08_cs, HIGH);
+    espurna::pins::write(_mcp23s08_cs, true);
 
     return _mcp23s08RxData[2];
 }
@@ -189,9 +189,9 @@ void MCP23S08WriteRegister(uint8_t address, uint8_t data)
     _mcp23s08TxData[1] = address;
     _mcp23s08TxData[2] = data;
 
-    digitalWrite(_mcp23s08_cs, LOW);
+    espurna::pins::write(_mcp23s08_cs, false);
     SPI.transferBytes(_mcp23s08TxData, _mcp23s08RxData, 3);
-    digitalWrite(_mcp23s08_cs, HIGH);
+    espurna::pins::write(_mcp23s08_cs, true);
 }
 
 /**

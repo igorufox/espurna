@@ -5,7 +5,7 @@ NETBIOS MODULE
 Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 The NetBIOS name service (RFC 1002): a name query for the hostname on UDP 137 (broadcast) gets the address of the
-board. One responder on every chip, on lwIP (EspurnaUdp of lib/DNSServer); the ESP8266 core's ESP8266NetBIOS is gone,
+board. One responder on every chip, on lwIP (libs/udp.h); the ESP8266 core's ESP8266NetBIOS is gone,
 ESP32 and Beken never had one
 
 */
@@ -16,7 +16,7 @@ ESP32 and Beken never had one
 
 #include "netbios.h"
 
-#include <EspurnaUdp.h>
+#include "libs/udp.h"
 
 #include <cctype>
 #include <cstring>
@@ -28,13 +28,13 @@ constexpr uint16_t Port { 137 };
 constexpr uint8_t TypeNb { 0x20 };
 constexpr uint32_t Ttl { 300000 };
 
-EspurnaUdp udp;
+espurna::udp::Socket udp;
 
 // the first level encoding of the hostname (upper case, 15 characters padded with spaces, the suffix 0x00 of a
 // workstation): 32 letters of the nibbles + 'A'
 uint8_t encoded[32];
 
-void encode(const String& hostname) {
+void encode(const espurna::string& hostname) {
     uint8_t name[16];
     std::memset(name, ' ', 15);
     name[15] = 0x00;
@@ -69,13 +69,13 @@ bool asks(const uint8_t* data, size_t len) {
     return (data[12 + 34] == 0x00) && (data[12 + 35] == TypeNb) && (data[12 + 36] == 0x00) && (data[12 + 37] == 0x01);
 }
 
-void answer(EspurnaUdpPacket& packet) {
-    const auto ip = WiFi.localIP();
+void answer(espurna::udp::Packet& packet) {
+    const auto ip = wifiStaIp();
     if (!ip[0]) {
         return;
     }
 
-    EspurnaUdpMessage message(12 + 34 + 16);
+    espurna::udp::Message message(12 + 34 + 16);
     if (!message) {
         return;
     }
@@ -106,7 +106,7 @@ void netbiosSetup() {
     netbios::encode(hostname);
 
     // lwIP's context: answered right there
-    netbios::udp.onPacket([](EspurnaUdpPacket& packet) {
+    netbios::udp.onPacket([](espurna::udp::Packet& packet) {
         if (netbios::asks(packet.data(), packet.length())) {
             netbios::answer(packet);
         }

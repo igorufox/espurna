@@ -8,7 +8,6 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstddef>
 
@@ -25,8 +24,8 @@ using namespace espurna::terminal;
 
 void terminalOK(const espurna::terminal::CommandContext&);
 void terminalError(const espurna::terminal::CommandContext&);
-void terminalError(const espurna::terminal::CommandContext&, const String&);
-void terminalError(const espurna::terminal::CommandContext&, const __FlashStringHelper*);
+void terminalError(const espurna::terminal::CommandContext&, const espurna::string&);
+void terminalError(const espurna::terminal::CommandContext&, const char*);
 void terminalError(const espurna::terminal::CommandContext&, espurna::StringView);
 
 void terminalRegisterCommand(espurna::StringView name, espurna::terminal::CommandFunc func);

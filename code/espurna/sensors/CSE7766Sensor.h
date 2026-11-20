@@ -86,7 +86,7 @@ class CSE7766Sensor : public BaseEmonSensor {
 
         // ---------------------------------------------------------------------
 
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _dirty = true;
             _serial = port;
         }
@@ -110,8 +110,8 @@ class CSE7766Sensor : public BaseEmonSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("CSE7766");
+        espurna::string description() const override {
+            return "CSE7766";
         }
 
         // Loop-like method, call it in your main loop
@@ -317,7 +317,7 @@ class CSE7766Sensor : public BaseEmonSensor {
 
         // ---------------------------------------------------------------------
 
-        Stream* _serial;
+        ::espurna::ByteStream* _serial;
 
         double _active = 0;
         double _reactive = 0;

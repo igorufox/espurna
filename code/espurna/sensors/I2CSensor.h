@@ -93,7 +93,7 @@ public:
     using T::T;
 
     // Descriptive name of the slot # index
-    String description(unsigned char) const override {
+    espurna::string description(unsigned char) const override {
         return static_cast<const T*>(this)->description();
     };
 
@@ -102,12 +102,12 @@ public:
         return _sensor_address.address();
     }
 
-    // String representation of the sensor address
-    String address(unsigned char) const override {
+    // espurna::string representation of the sensor address
+    espurna::string address(unsigned char) const override {
         char buffer[5];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("0x%02X"), _sensor_address.address());
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
     void setAddress(uint8_t address) {

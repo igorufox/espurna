@@ -1,6 +1,6 @@
 /*
 
-MATTER FOR BEKEN (LibreTiny): WHAT ONLY THIS CHIP HAS
+MATTER FOR BEKEN (BDK): WHAT ONLY THIS CHIP HAS
 
 The Matter application (the C API of espurna_matter.h: matter_app_start() ...) is libMatterApp.a of matter-espurna
 (connectedhomeip for the BK7231N), the rest of the Matter layer is matter.cpp. Here only what that library and this
@@ -13,21 +13,23 @@ chip need underneath: the bk_* platform API it was written against (matter_pal.h
 - Wi-Fi status and the connected / got IP events from the ESPurna wifi module
 - the store and the factory data of the board's identity (matter_identity.cpp, one code with the ESP32; the library
   calls matter_identity_install() before its server init)
-- entropy from the TRNG of the chip
 - the watchdog while a controller commissions, IGMP on the netif for the mDNS of Matter
 
 */
 
-#include "espurna.h"
+#include "beken_api.h"
+#include "../../espurna.h"
 
 #if MATTER_SUPPORT
 
-#include "espurna_matter.h"
-#include "espurna_tasks.h"
-#include "matter_identity.h"
+#include "../../espurna_matter.h"
+#include "../../espurna_tasks.h"
+#include "../../espurna_wifi.h"
+#include "../../matter_identity.h"
 #include "layout_beken.h"
 #include "tuya_kv_beken.h"
 
+#include <wifi_sdk.h>
 #include <FreeRTOS.h>
 #include <semphr.h>
 #include <flashdb.h>
@@ -35,6 +37,12 @@ chip need underneath: the bk_* platform API it was written against (matter_pal.h
 #include <lwip/igmp.h>
 #include <lwip/netif.h>
 #include <lwip/tcpip.h>
+
+// what the Matter library needs from the SDK of this firmware (FreeRTOS, lwIP, mbedTLS, the layout of the types it
+// shares with it): a mismatch stops the build here. Libraries before that check have no such header
+#if __has_include(<app/matter_requirements.h>)
+#include <app/matter_requirements.h>
+#endif
 
 #include <algorithm>
 #include <cstring>
@@ -169,7 +177,7 @@ State state { State::Unknown };
 MatterFactory* data { nullptr };
 
 bool flash_read(uint32_t offset, uint8_t* out, size_t size) {
-    return lt_flash_read(offset, out, size) == size;
+    return ::espurna::beken::flash_read(offset, out, size) == size;
 }
 
 const MatterFactory* get() {
@@ -396,20 +404,20 @@ bool read(const char* name, uint8_t* out, size_t size, size_t& length) {
 
 // Where the identity of the board comes from, for MATTER.FACTORY and the MATTER page. No secrets. Empty: no factory
 // DAC, the board makes and uses its own development identity (matter_identity.cpp)
-String source() {
+espurna::string source() {
     size_t length { 0 };
     if (!read("dac-cert", nullptr, 0, length)) {
-        return String();
+        return espurna::string();
     }
 
     const auto& layout = ::espurna::beken::flashLayout();
-    String out;
+    espurna::string out;
     if (layout.matter_offset) {
-        out = F("Quectel factory table at 0x");
-        out += String(layout.matter_offset, 16);
+        out = "Quectel factory table at 0x";
+        out += espurna::string(layout.matter_offset, 16);
     } else {
-        out = F("Tuya key-value store at 0x");
-        out += String(tuya::data->offset, 16);
+        out = "Tuya key-value store at 0x";
+        out += espurna::string(tuya::data->offset, 16);
     }
 
     return out;
@@ -422,7 +430,7 @@ bool quectel_read(const char* name, uint8_t* out, size_t size, size_t& length) {
 
     for (uint32_t offset = 0; offset < TableSize; offset += sizeof(Entry)) {
         Entry entry;
-        if (lt_flash_read(TableOffset + offset, reinterpret_cast<uint8_t*>(&entry), sizeof(entry)) != sizeof(entry)) {
+        if (::espurna::beken::flash_read(TableOffset + offset, reinterpret_cast<uint8_t*>(&entry), sizeof(entry)) != sizeof(entry)) {
             return false;
         }
 
@@ -442,7 +450,7 @@ bool quectel_read(const char* name, uint8_t* out, size_t size, size_t& length) {
         length = entry.length;
 
         const auto copy = std::min(size, static_cast<size_t>(entry.length));
-        return !copy || (lt_flash_read(DataOffset + entry.offset, out, copy) == copy);
+        return !copy || (::espurna::beken::flash_read(DataOffset + entry.offset, out, copy) == copy);
     }
 
     return false;
@@ -473,13 +481,13 @@ uint32_t read_number(const char* name) {
     return out;
 }
 
-String read_text(const char* name) {
+espurna::string read_text(const char* name) {
     std::vector<uint8_t> value;
     if (!read(name, value)) {
-        return String();
+        return espurna::string();
     }
 
-    String out;
+    espurna::string out;
     out.concat(reinterpret_cast<const char*>(value.data()), value.size());
 
     return out;
@@ -516,8 +524,8 @@ bool init() {
     return ready;
 }
 
-String key(const char* ns, const char* name) {
-    String out;
+espurna::string key(const char* ns, const char* name) {
+    espurna::string out;
     out.reserve(std::strlen(ns) + std::strlen(name) + 1);
     out += ns;
     out += '/';
@@ -555,11 +563,11 @@ int write(const char* ns, const char* name, const char* buf, uint32_t len) {
 
     struct fdb_blob blob;
     const auto full = key(ns, name);
-    const auto start = millis();
+    const auto start = espurna::time::ms();
     const auto out = (fdb_kv_set_blob(&db, full.c_str(), fdb_blob_make(&blob, buf, len)) == FDB_NO_ERR) ? BkOk : BkFail;
 
     // W50: the Matter task held its lock 8.5 s in the flash driver at the start: how long each write takes
-    const auto took = millis() - start;
+    const auto took = espurna::time::ms() - start;
     static uint32_t writes { 0 };
     static uint32_t total { 0 };
     ++writes;
@@ -599,10 +607,10 @@ int clear(const char* ns) {
         return BkFail;
     }
 
-    String prefix(ns);
+    espurna::string prefix(ns);
     prefix += '/';
 
-    std::vector<String> names;
+    std::vector<espurna::string> names;
 
     struct fdb_kv_iterator iterator;
     fdb_kv_iterator_init(&iterator);
@@ -628,7 +636,7 @@ int clear_all() {
         return BkFail;
     }
 
-    std::vector<String> names;
+    std::vector<espurna::string> names;
 
     struct fdb_kv_iterator iterator;
     fdb_kv_iterator_init(&iterator);
@@ -723,36 +731,6 @@ void remove(event_module_t module, event_cb_t callback) {
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-namespace trng {
-
-constexpr uintptr_t Ctrl { 0x00802480 };
-constexpr uintptr_t Data { 0x00802484 };
-constexpr uint32_t Enable { 1 };
-
-void fill(unsigned char* out, size_t length) {
-    auto* ctrl = reinterpret_cast<volatile uint32_t*>(Ctrl);
-    const auto* data = reinterpret_cast<const volatile uint32_t*>(Data);
-
-    *ctrl = *ctrl | Enable;
-
-    while (length) {
-        uint32_t word { 0 };
-        for (size_t index = 0; index < 4; ++index) {
-            delayMicroseconds(20);
-            word = (word << 7) ^ (word >> 25) ^ *data;
-        }
-
-        const auto copy = std::min(length, sizeof(word));
-        std::memcpy(out, &word, copy);
-        out += copy;
-        length -= copy;
-    }
-
-    *ctrl = *ctrl & ~Enable;
-}
-
-} // namespace trng
-
 // The lwIP port of the BDK brings the netif up without NETIF_FLAG_IGMP (MLD6 is set), joining an IPv4 multicast
 // group then fails with ERR_VAL, and the minimal mDNS of Matter cannot answer on 224.0.0.251. Runs in the tcpip thread
 void enable_igmp(void*) {
@@ -787,7 +765,7 @@ PROGMEM_STRING(Kvs, "MATTER.KVS");
 
 void kvs_report(::terminal::CommandContext&& ctx) {
     if (!kv::init()) {
-        terminalError(ctx, F("No FlashDB on the 'kvs' partition"));
+        terminalError(ctx, "No FlashDB on the 'kvs' partition");
         return;
     }
 
@@ -858,21 +836,21 @@ void network(bool up) {
 void commissioning(bool active) {
     constexpr uint32_t LoopWdtMs { 10000 };
     constexpr uint32_t CommissioningWdtMs { 30000 };
-    lt_wdt_enable(active ? CommissioningWdtMs : LoopWdtMs);
+    ::espurna::beken::wdt_enable(active ? CommissioningWdtMs : LoopWdtMs);
 }
 
 void describe(Identity& out) {
     const auto source = factory::source();
     // no factory data, or `matterIdentity` chose the own or the custom identity (matter_identity.cpp)
     if (!source.length() || (identity::choice() != identity::Choice::Factory)) {
-        out.vendor = F("ESPurna");
+        out.vendor = "ESPurna";
         out.vendor_id = 0xfff1;
-        out.product = F("ESPurna plug");
+        out.product = "ESPurna plug";
         out.product_id = 0x8000;
         identity::ids(out.vendor_id, out.product_id);
         out.source = identity::status();
         if (!source.length()) {
-            out.source += F(", no factory data");
+            out.source += ", no factory data";
         }
         return;
     }
@@ -881,7 +859,7 @@ void describe(Identity& out) {
     out.vendor_id = factory::read_number("vendor-id");
     out.product = factory::read_text("product-name");
     out.product_id = factory::read_number("product-id");
-    out.source = F("factory identity, ");
+    out.source = "factory identity, ";
     out.source += source;
 
     // sizes only (a read without a buffer)
@@ -892,13 +870,13 @@ void describe(Identity& out) {
     factory::read("pai-cert", nullptr, 0, pai);
     factory::read("cert-dclrn", nullptr, 0, cd);
 
-    out.details = F("certificates: DAC ");
-    out.details += String(dac);
-    out.details += F(", PAI ");
-    out.details += String(pai);
-    out.details += F(", declaration ");
-    out.details += String(cd);
-    out.details += F(" bytes");
+    out.details = "certificates: DAC ";
+    out.details += espurna::string(dac);
+    out.details += ", PAI ";
+    out.details += espurna::string(pai);
+    out.details += ", declaration ";
+    out.details += espurna::string(cd);
+    out.details += " bytes";
 }
 
 // everything but the own identity of the board (namespace "espurna-id", matter_identity.cpp), so the pairing code stays
@@ -1034,17 +1012,37 @@ bk_err_t bk_event_unregister_cb(event_module_t module, int, event_cb_t cb) {
     return espurna::matter::BkOk;
 }
 
-// Wi-Fi belongs to ESPurna, Matter never connects on its own (on-network commissioning only)
-bk_err_t bk_wifi_sta_set_config(const wifi_sta_config_t*) {
-    return espurna::matter::BkFail;
+// Wi-Fi belongs to ESPurna. A controller that commissions over BLE (the matter_ble module) gives the network with
+// Network Commissioning: matterWifiFromController() (matter.cpp, both chips); the library learns the result from the
+// Wi-Fi events, as on the network
+namespace espurna {
+namespace matter {
+namespace {
+
+wifi_sta_config_t staging {};
+
+} // namespace
+} // namespace matter
+} // namespace espurna
+
+bk_err_t bk_wifi_sta_set_config(const wifi_sta_config_t* config) {
+    if (!config || !config->ssid[0]) {
+        return espurna::matter::BkFail;
+    }
+    espurna::matter::staging = *config;
+    espurna::matter::staging.ssid[sizeof(espurna::matter::staging.ssid) - 1] = 0;
+    espurna::matter::staging.password[sizeof(espurna::matter::staging.password) - 1] = 0;
+    return espurna::matter::BkOk;
 }
 
 bk_err_t bk_wifi_sta_start(void) {
-    return espurna::matter::BkFail;
+    return espurna::matter::BkOk;
 }
 
 bk_err_t bk_wifi_sta_connect(void) {
-    return espurna::matter::BkFail;
+    const auto& staging = espurna::matter::staging;
+    return matterWifiFromController(staging.ssid, strnlen(staging.ssid, sizeof(staging.ssid)), staging.password,
+        strnlen(staging.password, sizeof(staging.password))) ? espurna::matter::BkOk : espurna::matter::BkFail;
 }
 
 bk_err_t bk_wifi_sta_get_link_status(wifi_link_status_t* status) {
@@ -1053,22 +1051,17 @@ bk_err_t bk_wifi_sta_get_link_status(wifi_link_status_t* status) {
         return espurna::matter::BkFail;
     }
 
-    const auto ssid = WiFi.SSID();
-    std::strncpy(status->ssid, ssid.c_str(), sizeof(status->ssid) - 1);
-
-    const auto* bssid = WiFi.BSSID();
-    if (bssid) {
-        std::memcpy(status->bssid, bssid, sizeof(status->bssid));
-    }
-
-    status->channel = WiFi.channel();
-    status->rssi = WiFi.RSSI();
+    const auto info = wifiStaInfo();
+    std::strncpy(status->ssid, info.ssid.c_str(), sizeof(status->ssid) - 1);
+    std::memcpy(status->bssid, info.bssid.data(), std::min(sizeof(status->bssid), info.bssid.size()));
+    status->channel = info.channel;
+    status->rssi = info.rssi;
 
     return espurna::matter::BkOk;
 }
 
 bk_err_t bk_wifi_sta_get_mac(uint8_t* mac) {
-    WiFi.macAddress(mac);
+    ::espurna::core::chip::wifi_mac(false, mac);
     return espurna::matter::BkOk;
 }
 
@@ -1098,13 +1091,7 @@ void bk_erase_ota_data_in_flash(void) {
 }
 
 size_t prvHeapGetTotalSize(void) {
-    return lt_heap_get_size();
-}
-
-int mbedtls_hardware_poll(void*, unsigned char* output, size_t len, size_t* olen) {
-    espurna::matter::trng::fill(output, len);
-    *olen = len;
-    return 0;
+    return ::espurna::beken::heap_size();
 }
 
 } // extern "C"

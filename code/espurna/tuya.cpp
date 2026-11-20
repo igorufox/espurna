@@ -22,7 +22,7 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include <functional>
 #include <queue>
 #include <forward_list>
-#include <StreamString.h>
+#include "libs/PrintString.h"
 
 #include "tuya_types.h"
 #include "tuya_transport.h"
@@ -55,13 +55,13 @@ namespace tuya {
             value(std::move(other.value))
         {}
 
-        Config(String&& key_, String&& value_) noexcept :
+        Config(espurna::string&& key_, espurna::string&& value_) noexcept :
             key(std::move(key_)),
             value(std::move(value_))
         {}
 
-        String key;
-        String value;
+        espurna::string key;
+        espurna::string value;
     };
 
     Transport* tuyaSerial { nullptr };
@@ -90,7 +90,7 @@ namespace tuya {
     bool reportWiFi { false };
     bool filter { false };
 
-    String product;
+    espurna::string product;
     std::forward_list<Config> config;
 
     DpMap switchIds;
@@ -183,7 +183,7 @@ namespace tuya {
 
     // --------------------------------------------
 
-    void addConfig(String&& key, String&& value) {
+    void addConfig(espurna::string&& key, espurna::string&& value) {
         Config kv{std::move(key), std::move(value)};
         config.push_front(std::move(kv));
     }
@@ -191,8 +191,8 @@ namespace tuya {
     void updatePins(uint8_t led, uint8_t rst) {
         static bool done { false };
         if (!done) {
-            addConfig("ledGpio0", String(led));
-            addConfig("btnGpio0", String(rst));
+            addConfig("ledGpio0", espurna::string(led));
+            addConfig("btnGpio0", espurna::string(rst));
             done = true;
         }
     }
@@ -204,8 +204,8 @@ namespace tuya {
     template <typename T>
     void dataframeDebugSend(const char* tag, const T& frame) {
         if (!transportDebug) return;
-        StreamString out;
-        Output writer(out, frame.length());
+        PrintString out((frame.length() * 2) + 8);
+        Output writer(out);
         writer.writeHex(frame.serialize());
         DEBUG_MSG("[TUYA] %s: %s\n", tag, out.c_str());
     }
@@ -237,11 +237,11 @@ namespace tuya {
 
     void sendHeartbeat(Heartbeat heartbeat) {
         static unsigned long interval = 0ul;
-        static unsigned long last = millis() + 1ul;
+        static unsigned long last = espurna::time::ms() + 1ul;
 
-        if (millis() - last > interval) {
+        if (espurna::time::ms() - last > interval) {
             interval = heartbeatInterval(heartbeat);
-            last = millis();
+            last = espurna::time::ms();
             outputFrames.emplace(Command::Heartbeat);
         }
     }
@@ -592,14 +592,14 @@ error:
     static void terminalShow(::terminal::CommandContext&& ctx) {
         ctx.output.printf_P(PSTR("Product: %s\n"), product.length() ? product.c_str() : "(unknown)");
 
-        ctx.output.print(F("\nConfig:\n"));
+        ctx.output.print("\nConfig:\n");
         for (auto& kv : config) {
             ctx.output.printf_P(
                 PSTR("\"%s\" => \"%s\"\n"),
                 kv.key.c_str(), kv.value.c_str());
         }
 
-        ctx.output.print(F("\nKnown DP(s):\n"));
+        ctx.output.print("\nKnown DP(s):\n");
 #if LIGHT_PROVIDER_CUSTOM_SUPPORT
         if (channelStateId) {
             ctx.output.printf_P(
@@ -666,7 +666,7 @@ error:
 
 #if UART_DRIVERS_CLAIM_PORT
         // serial log and terminal let go of the port (board builds have them compiled out)
-        if (!uartClaim(number - 1, F("Tuya"))) {
+        if (!uartClaim(number - 1, "Tuya")) {
             return;
         }
 #endif

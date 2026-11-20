@@ -8,10 +8,9 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Arduino.h>
-#include <Print.h>
+#include "../text_types.h"
 
-struct PrintString final : public Print, public String {
+struct PrintString final : public espurna::Output, public espurna::string {
     PrintString() = delete;
     PrintString(size_t reserved) :
         _reserved(reserved)
@@ -19,9 +18,11 @@ struct PrintString final : public Print, public String {
         reserve(reserved);
     }
 
-    size_t write(const uint8_t* data, size_t size) override {
+    using espurna::Output::write;
+
+    void write(const char* data, size_t size) override {
         if (!size || !data) {
-            return 0;
+            return;
         }
 
         // we *will* receive C-strings as input
@@ -32,22 +33,21 @@ struct PrintString final : public Print, public String {
         }
 
         if (want > _reserved) {
-            return 0;
+            return;
         }
 
-        concat(reinterpret_cast<const char*>(data), size);
-
-        return size;
-    }
-
-    size_t write(uint8_t ch) override {
-        if (length() + 1 > _reserved) {
-            return 0;
-        }
-
-        return concat(static_cast<char>(ch));
+        concat(data, size);
     }
 
 private:
     size_t _reserved;
+};
+
+// grows as it is written to, nothing reserved ahead
+struct StringPrint final : public espurna::Output, public espurna::string {
+    using espurna::Output::write;
+
+    void write(const char* data, size_t size) override {
+        concat(data, size);
+    }
 };

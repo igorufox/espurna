@@ -9,8 +9,9 @@ Shared state is guarded with a spinlock (critical section), which works across b
 
 #pragma once
 
-#include <Arduino.h>
+#include "../rtos/chip_sdk.h"
 
+#include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <soc/gpio_reg.h>
 
@@ -23,11 +24,12 @@ namespace isr {
 constexpr size_t Pins { 40 };
 
 inline bool attachable(uint8_t pin) {
-    return digitalPinToInterrupt(pin) != NOT_AN_INTERRUPT;
+    return GPIO_IS_VALID_GPIO(pin);
 }
 
+// `mode`: the edge numbers of chip_sdk.h (CHANGE / FALLING / RISING of the common code have the same values)
 inline void attach(uint8_t pin, void (*handler)(void*), void* arg, int mode) {
-    attachInterruptArg(pin, handler, arg, mode);
+    ::espurna::core::chip::pin_attach(pin, handler, arg, static_cast<uint8_t>(mode));
 }
 
 // Direct register read, the handler must not call anything in flash

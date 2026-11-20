@@ -36,7 +36,7 @@ public:
     // - some external tool. For example, using USB2TTL adapter and a PC app
     // - `pzem.address` with **only** one device on the line
     //    (because we would change all 0xf8-addressed devices at the same time)
-    static PZEM004TV30Sensor* make(Stream* port, uint8_t address, TimeSource::duration timeout) {
+    static PZEM004TV30Sensor* make(::espurna::ByteStream* port, uint8_t address, TimeSource::duration timeout) {
         static_assert(std::is_same<TimeSource::duration, espurna::duration::Milliseconds>::value, "");
         if (!_instance) {
             _instance.reset(new PZEM004TV30Sensor(port, address, timeout));
@@ -516,13 +516,13 @@ public:
         _ready = true;
     }
 
-    String description() const override {
+    espurna::string description() const override {
         STRING_VIEW_INLINE(Base, "PZEM004TV30 @ 0x");
-        return Base + String(_address, 16);
+        return Base + espurna::string(_address, 16);
     }
 
-    String address(unsigned char) const override {
-        return String(_address, 16);
+    espurna::string address(unsigned char) const override {
+        return espurna::string(_address, 16);
     }
 
     unsigned char type(unsigned char index) const override {
@@ -576,14 +576,14 @@ public:
 #endif
 private:
     PZEM004TV30Sensor() = delete;
-    PZEM004TV30Sensor(Stream* port, uint8_t address, TimeSource::duration timeout) :
+    PZEM004TV30Sensor(::espurna::ByteStream* port, uint8_t address, TimeSource::duration timeout) :
         BaseEmonSensor(Magnitudes),
         _port(port),
         _address(address),
         _read_timeout(timeout)
     {}
 
-    Stream* _port { nullptr };
+    ::espurna::ByteStream* _port { nullptr };
     uint8_t _address { DefaultAddress };
     TimeSource::duration _read_timeout { DefaultReadTimeout };
 

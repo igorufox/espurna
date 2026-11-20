@@ -12,7 +12,7 @@ https://github.com/esp8266/Arduino/issues/2283#issuecomment-299635604
 
 #if SSDP_SUPPORT
 
-#include <EspurnaUdp.h>
+#include "libs/udp.h"
 
 #include "web.h"
 
@@ -20,28 +20,28 @@ namespace ssdp {
 namespace {
 namespace settings {
 
-String name() {
+espurna::string name() {
     return getSetting("ssdpName", systemHostname());
 }
 
 // needs to be in the response
 // ref. https://github.com/esp8266/Arduino/issues/2283
 
-String type() {
-    return getSetting("ssdpType", F(SSDP_DEVICE_TYPE));
+espurna::string type() {
+    return getSetting("ssdpType", SSDP_DEVICE_TYPE);
 }
 
-String udn() {
-    String out;
-    out += F("38323636-4558-4dda-9188-cda0e6");
-    out += String(systemShortChipId());
+espurna::string udn() {
+    espurna::string out;
+    out += "38323636-4558-4dda-9188-cda0e6";
+    out += espurna::string(systemShortChipId());
     return out;
 }
 
 } // namespace settings
 
-String entry(const String& tag, const String& value) {
-    String out;
+espurna::string entry(const espurna::string& tag, const espurna::string& value) {
+    espurna::string out;
     out.reserve((tag.length() * 2) + value.length() + 16);
 
     out += '<';
@@ -50,19 +50,19 @@ String entry(const String& tag, const String& value) {
 
     out += value;
 
-    out += F("</");
+    out += "</";
     out += tag;
     out += '>';
 
     return out;
 }
 
-String entry(const String& tag, espurna::StringView value) {
-    return entry(tag, String(value));
+espurna::string entry(const espurna::string& tag, espurna::StringView value) {
+    return entry(tag, espurna::string(value));
 }
 
-String response() {
-    String out;
+espurna::string response() {
+    espurna::string out;
     out.reserve(512);
 
     out += F("<?xml version=\"1.0\"?>"
@@ -73,73 +73,73 @@ String response() {
              "</specVersion>");
 
     // <URLBase>http://%s:%u/</URLBase>
-    String base;
-    base += F("http://");
-    base += ipToString(WiFi.localIP());
+    espurna::string base;
+    base += "http://";
+    base += ipToString(wifiStaIp());
     base += ':';
-    base += String(webPort(), 10);
+    base += espurna::string(webPort(), 10);
     base += '/';
 
-    out += entry(F("URLBase"), base);
+    out += entry("URLBase", base);
 
     // <device> ... </device>
-    String device;
+    espurna::string device;
 
     // <deviceType>%s</deviceType>
-    device += entry(F("deviceType"), settings::type());
+    device += entry("deviceType", settings::type());
 
     // <friendlyName>%s</friendlyName>
-    device += entry(F("friendlyName"), settings::name());
+    device += entry("friendlyName", settings::name());
 
     // <presentationURL>/</presentationURL>
-    device += entry(F("presentationURL"), String('/'));
+    device += entry("presentationURL", espurna::string('/'));
 
     // <serialNumber>%u</serialNumber>
-    device += entry(F("serialNumber"), systemShortChipId());
+    device += entry("serialNumber", systemShortChipId());
 
     const auto app = buildApp();
 
     // <modelName>%s</modelName>
-    device += entry(F("modelName"), app.name);
+    device += entry("modelName", app.name);
 
     // <modelNumber>%s</modelNumber>
-    device += entry(F("modelNumber"), app.version);
+    device += entry("modelNumber", app.version);
 
     // <modelURL>%s</modelURL>
-    device += entry(F("modelURL"), app.website);
+    device += entry("modelURL", app.website);
 
     // <manufacturer>%s</manufacturer>
-    device += entry(F("manufacturer"), systemDevice());
+    device += entry("manufacturer", systemDevice());
 
     // <manufacturerURL>%s</manufacturerURL>
-    device += entry(F("manufacturerURL"), app.website);
+    device += entry("manufacturerURL", app.website);
 
     // <UDN>uuid:38323636-4558-4dda-9188-cda0e6%06x</UDN>
-    device += entry(F("UDN"), settings::udn());
+    device += entry("UDN", settings::udn());
 
-    out += entry(F("device"), device);
-    out += F("</root>");
+    out += entry("device", device);
+    out += "</root>";
 
     return out;
 }
 
 // --- the responder: M-SEARCH on 239.255.255.250:1900 answered with where description.xml is (the same on every
-// chip, on lwIP: EspurnaUdp of lib/DNSServer; the cores' SSDP libraries are gone, Beken never had one)
+// chip, on lwIP: libs/udp.h; the cores' SSDP libraries are gone, Beken never had one)
 
 constexpr uint16_t Port { 1900 };
 
-EspurnaUdp udp;
+espurna::udp::Socket udp;
 
-bool wanted(const String& st) {
-    return st.equalsIgnoreCase(F("ssdp:all"))
-        || st.equalsIgnoreCase(F("upnp:rootdevice"))
+bool wanted(const espurna::string& st) {
+    return st.equalsIgnoreCase("ssdp:all")
+        || st.equalsIgnoreCase("upnp:rootdevice")
         || st.equalsIgnoreCase(settings::type())
-        || st.equalsIgnoreCase(String(F("uuid:")) + settings::udn());
+        || st.equalsIgnoreCase(espurna::string("uuid:") + settings::udn());
 }
 
 // "ST: <value>" of a request, empty when there is none
-String header(const String& request, const __FlashStringHelper* name) {
-    const String key(name);
+espurna::string header(const espurna::string& request, const char* name) {
+    const espurna::string key(name);
     int at = 0;
     while (at < static_cast<int>(request.length())) {
         int end = request.indexOf('\n', at);
@@ -147,39 +147,40 @@ String header(const String& request, const __FlashStringHelper* name) {
             end = request.length();
         }
 
-        String line = request.substring(at, end);
+        espurna::string line = request.substring(at, end);
         line.trim();
         at = end + 1;
 
         const int colon = line.indexOf(':');
         if ((colon > 0) && line.substring(0, colon).equalsIgnoreCase(key)) {
-            String value = line.substring(colon + 1);
+            espurna::string value = line.substring(colon + 1);
             value.trim();
             return value;
         }
     }
 
-    return String();
+    return espurna::string();
 }
 
-void answer(const String& st, const IPAddress& to, uint16_t port) {
-    String out;
+// `to` IPv4 in network order (libs/udp.h)
+void answer(const espurna::string& st, uint32_t to, uint16_t port) {
+    espurna::string out;
     out.reserve(320);
-    out += F("HTTP/1.1 200 OK\r\nEXT:\r\nCACHE-CONTROL: max-age=1800\r\nSERVER: ESPurna UPnP/1.1\r\nST: ");
+    out += "HTTP/1.1 200 OK\r\nEXT:\r\nCACHE-CONTROL: max-age=1800\r\nSERVER: ESPurna UPnP/1.1\r\nST: ";
     out += st;
-    out += F("\r\nUSN: uuid:");
+    out += "\r\nUSN: uuid:";
     out += settings::udn();
-    if (!st.startsWith(F("uuid:"))) {
-        out += F("::");
+    if (!st.startsWith("uuid:")) {
+        out += "::";
         out += st;
     }
-    out += F("\r\nLOCATION: http://");
-    out += ipToString(WiFi.localIP());
+    out += "\r\nLOCATION: http://";
+    out += ipToString(wifiStaIp());
     out += ':';
-    out += String(webPort(), 10);
-    out += F("/description.xml\r\n\r\n");
+    out += espurna::string(webPort(), 10);
+    out += "/description.xml\r\n\r\n";
 
-    EspurnaUdpMessage message(out.length());
+    espurna::udp::Message message(out.length());
     if (message) {
         message.write(reinterpret_cast<const uint8_t*>(out.c_str()), out.length());
         udp.sendTo(message, to, port);
@@ -192,21 +193,21 @@ void setup() {
     });
 
     // lwIP's context: answered right there (a short text, no loop needed)
-    udp.onPacket([](EspurnaUdpPacket& packet) {
-        String request;
+    udp.onPacket([](espurna::udp::Packet& packet) {
+        espurna::string request;
         request.concat(reinterpret_cast<const char*>(packet.data()), packet.length());
-        if (!request.startsWith(F("M-SEARCH"))) {
+        if (!request.startsWith("M-SEARCH")) {
             return;
         }
 
-        const auto st = header(request, F("ST"));
+        const auto st = header(request, "ST");
         if (wanted(st)) {
-            answer(st.equalsIgnoreCase(F("ssdp:all")) ? String(F("upnp:rootdevice")) : st,
+            answer(st.equalsIgnoreCase("ssdp:all") ? espurna::string("upnp:rootdevice") : st,
                 packet.remoteIP(), packet.remotePort());
         }
     });
 
-    if (!udp.listen(Port) || !udp.joinGroup(IPAddress(239, 255, 255, 250))) {
+    if (!udp.listen(Port) || !udp.joinGroup(espurna::udp::ip4(239, 255, 255, 250))) {
         DEBUG_MSG_P(PSTR("[SSDP] Cannot listen on %u\n"), Port);
         return;
     }

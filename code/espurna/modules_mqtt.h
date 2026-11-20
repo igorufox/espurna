@@ -19,10 +19,10 @@ struct MqttModuleApi {
     void (*onPublish)(uint16_t, MqttPidCallback);
     void (*onSubscribe)(uint16_t, MqttPidCallback);
 
-    String (*topic)(const String&);
-    String (*topicIndex)(const String&, size_t);
-    String (*setter)(const String&);
-    String (*setterIndex)(const String&, size_t);
+    espurna::string (*topic)(const espurna::string&);
+    espurna::string (*topicIndex)(const espurna::string&, size_t);
+    espurna::string (*setter)(const espurna::string&);
+    espurna::string (*setterIndex)(const espurna::string&, size_t);
     espurna::StringView (*magnitude)(espurna::StringView);
 
     uint16_t (*sendRaw4)(const char*, const char*, bool, int);
@@ -47,8 +47,8 @@ struct MqttModuleApi {
     void (*flush)();
     void (*enqueue)(espurna::StringView, espurna::StringView);
 
-    const String& (*payloadOnline)();
-    const String& (*payloadOffline)();
+    const espurna::string& (*payloadOnline)();
+    const espurna::string& (*payloadOffline)();
     const char* (*payloadStatus)(bool);
 
     void (*setEnabled)(bool);

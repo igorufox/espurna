@@ -1,8 +1,8 @@
 /*
 
-WIFI MODULE, the shared driver of the chips with an Arduino WiFi class on an RTOS (ESP32, Beken / LibreTiny)
+WIFI MODULE, the shared driver of the FreeRTOS chips (ESP32, Beken)
 
-wifi_driver_rtos.cpp implements every function of wifi_driver.h on top of the Arduino WiFi class both cores have:
+wifi_driver_rtos.cpp implements every function of wifi_driver.h on the SDK calls of the chip (wifi_sdk.h, no WiFi class):
 WiFi events arrive from another task, the handler queues each one whole (espurna::system::EventQueue) and loop() delivers
 them to the common code in the order they came, so the state machine in wifi.cpp runs in loop() only. The link state (connecting / linked), the last connection request, the
 scan and the AP settings are kept here. What only the chip's SDK knows is behind `chip::` below, ref.
@@ -12,6 +12,8 @@ arch/esp32/wifi_driver_esp32.cpp and arch/beken/wifi_driver_beken.cpp.
 
 #pragma once
 
+#include "text_types.h"
+
 #include "../../wifi_driver.h"
 
 namespace espurna {
@@ -19,9 +21,9 @@ namespace wifi {
 namespace driver {
 namespace rtos {
 
-// millis() based, safe across the wrap
+// espurna::time::ms() based, safe across the wrap
 inline bool expired(uint32_t since, uint32_t timeout) {
-    return static_cast<int32_t>(millis() - since) >= static_cast<int32_t>(timeout);
+    return static_cast<int32_t>(espurna::time::ms() - since) >= static_cast<int32_t>(timeout);
 }
 
 // 802.11 reasons: 'unspecified' (the AP dropped us), 'disassociated because sending STA is leaving' (our own)
@@ -35,7 +37,7 @@ constexpr uint32_t ScanTimeout { 15000 };
 
 // The scan the shared part started (ref. chip::scan_finished())
 struct Scan {
-    // millis() of the start
+    // espurna::time::ms() of the start
     uint32_t at { 0 };
 
     // started while the station was connected
@@ -60,8 +62,8 @@ struct State {
     Mac linked_bssid{};
 
     // the AP settings of the last ap_start()
-    String ap_ssid;
-    String ap_passphrase;
+    espurna::string ap_ssid;
+    espurna::string ap_passphrase;
 };
 
 State& state();
@@ -84,6 +86,9 @@ void opmode(uint8_t mode);
 // once the station got its address
 void apply_sleep();
 void apply_tx_power();
+
+// the power save the driver runs now ("none", "modem (min)" ...), WIFI.DEBUG
+const char* sleep_name();
 
 // stop the station: no association, no retries by the SDK
 void stop_station();
@@ -138,6 +143,12 @@ Attempt attempt_event(const AttemptDisconnect&, Mac& bssid);
 
 const char* reason_name(int reason);
 
+// the security of the current connection as negotiated ("WPA3-PSK", "WPA2-PSK", "OPEN"), empty when unknown
+const char* sta_security();
+
+// the name of an auth mode only this chip's SDK has (ESP-IDF and BDK: WAPI), nullptr for any other
+const char* auth_name(int mode);
+
 // Polled while our scan runs. false while it goes on, otherwise `count` is the result (negative: failed, no results).
 // ESP-IDF: WiFi.scanComplete(). BDK: the SDK's 'scan done' event (LibreTiny reports results of other scans as well),
 // a scan while connected without it gave no results
@@ -156,7 +167,7 @@ void ap_started();
 // the AP is being stopped (dropping the AP bit from the opmode is what stops it, ref. wifi.cpp ap::disable())
 void ap_stop();
 size_t ap_stations();
-size_t print_stations(Print&);
+size_t print_stations(::espurna::Output&);
 
 void ipv6(bool);
 

@@ -94,12 +94,12 @@ class AnalogSensor : public BaseAnalogSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return String(F("ANALOG @ ")) + espurna::adc::chip::pad(_pin);
+        espurna::string description() const override {
+            return espurna::string("ANALOG @ ") + espurna::adc::chip::pad(_pin);
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
+        espurna::string address(unsigned char) const override {
             return espurna::adc::chip::address(_pin);
         }
 
@@ -151,7 +151,7 @@ class AnalogSensor : public BaseAnalogSensor {
 
             ++_sample;
             _last = now;
-            const auto raw = ::analogRead(pin);
+            const auto raw = espurna::pins::analog(pin);
             _sum += raw;
             _sum_millivolts += espurna::adc::chip::millivolts(pin, raw);
 
@@ -195,7 +195,7 @@ class AnalogSensor : public BaseAnalogSensor {
         double _factor { 1.0 };
         double _offset { 0.0 };
 
-        uint8_t _pin { A0 };
+        uint8_t _pin { espurna::pins::Adc0 };
 };
 
 #ifndef __cpp_inline_variables

@@ -7,7 +7,7 @@ connectivity checks of phones and PCs (/generate_204, /connecttest.txt, /hotspot
 the board, so a client of the AP shows the board's page by itself. Without the module the AP works the same, the page
 is at the AP address (192.168.4.1).
 
-The DNS server is lib/DNSServer (on its EspurnaUdp, asynchronous: no loop polling), linked into the module only.
+The DNS server is lib/DNSServer (on libs/udp.h, asynchronous: no loop polling), linked into the module only.
 
 */
 
@@ -30,7 +30,7 @@ namespace {
 namespace internal {
 
 DNSServer dns;
-IPAddress running;
+Ip4 running;
 
 } // namespace internal
 
@@ -38,16 +38,16 @@ IPAddress running;
 void update() {
     const auto ip = (wifiConnectable() && wifiApCaptive())
         ? wifiApIp()
-        : IPAddress();
+        : Ip4();
 
     if (ip == internal::running) {
         return;
     }
 
     internal::dns.stop();
-    internal::running = IPAddress();
+    internal::running = Ip4();
 
-    if (static_cast<uint32_t>(ip) == 0) {
+    if (!ip.value()) {
         return;
     }
 
@@ -66,7 +66,7 @@ void onWifiEvent(wifi::Event event) {
 // to the page of the access point while it is on, else 404
 void onRequest(WebRequest& request) {
     if (wifiConnectable()) {
-        const String location = String(F("http://")) + ipToString(wifiApIp());
+        const espurna::string location = espurna::string("http://") + ipToString(wifiApIp());
         request.addHeader("Location", location.c_str());
         request.send(302, "", "");
         return;

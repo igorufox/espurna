@@ -80,7 +80,7 @@ class AnimWaves : public Anim {
     ColorWave generateShortWave() {
         uint16_t waveLen = garlandRandom(10, 30);
         bool cleanColors = garlandRandom(10) > 7;
-        byte fade = palette->bright() ? garlandRandom(180, 220) : 0;
+        uint8_t fade = palette->bright() ? garlandRandom(180, 220) : 0;
         float speed = garlandRandom(5, 15) / 10.0;
         int dir = randDir();
         return ColorWave(ColorWave::Params{numLeds, palette, waveLen, cleanColors, fade, ledstmp, WaveType::Wave, speed, dir, false});
@@ -98,7 +98,7 @@ class AnimWaves : public Anim {
         Palette* wavePal = &pals[garlandRandom(palsNum)];
         uint16_t waveLen = garlandRandom(10, 50);
         bool cleanColors = fiftyFifty();
-        byte fade = fiftyFifty() ? 0 : palette->bright() ? garlandRandom(180, 220) : 120;
+        uint8_t fade = fiftyFifty() ? 0 : palette->bright() ? garlandRandom(180, 220) : 120;
         float speed = garlandRandom(5, 20) / 10.0;
         bool startEmpty = fiftyFifty();
         return ColorWave(ColorWave::Params{numLeds, wavePal, waveLen, cleanColors, fade, pixelCache, waveType, speed, dir, startEmpty});

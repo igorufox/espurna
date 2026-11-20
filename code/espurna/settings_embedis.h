@@ -11,7 +11,6 @@ Reimplementation of the Embedis storage format:
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <algorithm>
 #include <memory>
@@ -189,14 +188,14 @@ private:
     }
 
     template <typename T>
-    static void value_concat(std::true_type, std::false_type, String& dst, T&& src, uint16_t length) {
+    static void value_concat(std::true_type, std::false_type, espurna::string& dst, T&& src, uint16_t length) {
         const auto data = src.data(length);
         const auto* ptr = reinterpret_cast<const char*>(data.data());
         dst.concat(ptr, data.size());
     }
 
     template <typename T>
-    static void value_concat(std::false_type, std::true_type, String& dst, T&& src, uint16_t length) {
+    static void value_concat(std::false_type, std::true_type, espurna::string& dst, T&& src, uint16_t length) {
         dst.reserve(length);
         while (src) {
             dst += static_cast<char>((src++).read());
@@ -204,12 +203,12 @@ private:
     }
 
     template <typename T>
-    static void value_concat(std::true_type, std::true_type, String& dst, T&& src, uint16_t length) {
+    static void value_concat(std::true_type, std::true_type, espurna::string& dst, T&& src, uint16_t length) {
         value_concat(std::true_type{}, std::false_type{}, dst, std::forward<T>(src), length);
     }
 
     template <typename T>
-    static void value_concat(std::false_type, std::false_type, String&, T&&, uint16_t); // can't be defined
+    static void value_concat(std::false_type, std::false_type, espurna::string&, T&&, uint16_t); // can't be defined
 
     template <typename T>
     static bool value_compare(std::true_type, std::false_type, StringView rhs, T&& src, uint16_t length) {
@@ -506,8 +505,8 @@ public:
             return out;
         }
 
-        String toString() const {
-            String out;
+        espurna::string toString() const {
+            espurna::string out;
             value_concat(
                 typename Traits::storage_can_data_span{},
                 typename Traits::storage_can_read_vector{},
@@ -639,11 +638,11 @@ public:
     // Try to find the matching key. Datastructure that we use does not specify
     // any value 'type' inside of it. We expect 'key' to be the first non-empty string,
     // 'value' can be empty.
-    ValueResult get(const String& key) {
+    ValueResult get(const espurna::string& key) {
         return _get(key, true);
     }
 
-    bool has(const String& key) {
+    bool has(const espurna::string& key) {
         return static_cast<bool>(_get(key, false));
     }
 
@@ -664,7 +663,7 @@ public:
     }
 
     // set or update key with value contents. ensure 'key' isn't empty, 'value' can be empty
-    bool set(const String& key, const String& value) {
+    bool set(const espurna::string& key, const espurna::string& value) {
         // ref. 'estimate()' implementation in regards to the storage calculation
         auto need = estimate(key, value);
         if (!need) {
@@ -765,7 +764,7 @@ public:
     }
 
     // remove key from the storage. will check that 'key' argument isn't empty
-    bool del(const String& key) {
+    bool del(const espurna::string& key) {
         size_t key_len = key.length();
         if (!key_len) {
             return false;
@@ -867,7 +866,7 @@ protected:
     // any value 'type' inside of it. We expect 'key' to be the first non-empty string,
     // 'value' can be empty.
     // To implement has(), allow to skip reading the value
-    ValueResult _get(const String& key, bool read_value) {
+    ValueResult _get(const espurna::string& key, bool read_value) {
         ValueResult out;
         const auto key_len = key.length();
 
@@ -882,7 +881,7 @@ protected:
                 if (read_value) {
                     out = kv.value.toString();
                 } else {
-                    out = String();
+                    out = espurna::string();
                 }
                 stop.set_done();
                 return;

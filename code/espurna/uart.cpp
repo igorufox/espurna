@@ -45,11 +45,11 @@ static constexpr std::array<settings::options::Enumeration<driver::uart::Parity>
 } // namespace
 
 template <>
-driver::uart::Parity convert(const String& value) {
+driver::uart::Parity convert(const espurna::string& value) {
     return convert(ParityOptions, value, driver::uart::Parity::None);
 }
 
-String serialize(driver::uart::Parity value) {
+espurna::string serialize(driver::uart::Parity value) {
     return espurna::settings::internal::serialize(ParityOptions, value);
 }
 
@@ -160,8 +160,8 @@ STRING_VIEW_INLINE(RelayButton, "relayBtnGpio");
 STRING_VIEW_INLINE(Led, "ledGpio");
 
 // key of the setting that took the pin, empty when the pin stays with the port
-String tx_user;
-String rx_user;
+espurna::string tx_user;
+espurna::string rx_user;
 
 bool digits(StringView value) {
     if (!value.length()) {
@@ -178,19 +178,19 @@ bool digits(StringView value) {
 }
 
 // only <prefix><index> = <pin>, not btnGpioType0 & co
-String user(uint8_t pin) {
-    String out;
+espurna::string user(uint8_t pin) {
+    espurna::string out;
     if (pin == GPIO_NONE) {
         return out;
     }
 
     espurna::settings::foreach_prefix(
-        [&](StringView prefix, String key, const espurna::settings::kvs_type::ReadResult& value) {
+        [&](StringView prefix, espurna::string key, const espurna::settings::kvs_type::ReadResult& value) {
             if (out.length()) {
                 return;
             }
 
-            if (!digits(StringView(key.begin() + prefix.length(), key.end()))) {
+            if (!digits(espurna::StringView(key.begin() + prefix.length(), key.end()))) {
                 return;
             }
 
@@ -270,7 +270,7 @@ size_t rx_buffer(size_t index) {
 
 } // namespace settings
 
-using StreamPtr = std::unique_ptr<Stream>;
+using StreamPtr = std::unique_ptr<ByteStream>;
 
 struct BasePort {
     Type type;
@@ -286,7 +286,7 @@ namespace internal {
 BasePortPtr ports[build::PortsMax];
 
 // exclusive owner of the port, ref. claim()
-const __FlashStringHelper* owners[build::PortsMax] {};
+const char* owners[build::PortsMax] {};
 
 // serial log and serial terminal
 UartClaimRelease on_claim[4] {};
@@ -345,14 +345,53 @@ constexpr types::SoftwareConfig from_config(Config config) {
 
 }
 
+// the library's port (an Arduino Stream) as ESPurna's stream
+class SoftwareStream final : public ByteStream {
+public:
+    SoftwareStream(int8_t rx, int8_t tx, bool invert) :
+        _port(rx, tx, invert)
+    {}
+
+    SoftwareSerial& port() {
+        return _port;
+    }
+
+    using ByteStream::write;
+    using ByteStream::read;
+
+    void write(const char* data, size_t size) override {
+        _port.write(reinterpret_cast<const uint8_t*>(data), size);
+    }
+
+    void flush() override {
+        _port.flush();
+    }
+
+    size_t available() override {
+        const auto out = _port.available();
+        return (out > 0) ? static_cast<size_t>(out) : 0;
+    }
+
+    int read() override {
+        return _port.read();
+    }
+
+    int peek() override {
+        return _port.peek();
+    }
+
+private:
+    SoftwareSerial _port;
+};
+
 BasePortPtr software_serial_port(
         uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert)
 {
     const int8_t tx_pin = (tx == GPIO_NONE) ? -1 : tx;
     const int8_t rx_pin = (rx == GPIO_NONE) ? -1 : rx;
 
-    auto* ptr = new SoftwareSerial(rx_pin, tx_pin, invert);
-    ptr->begin(baudrate, from_config<types::SoftwareConfig>(config));
+    auto* ptr = new SoftwareStream(rx_pin, tx_pin, invert);
+    ptr->port().begin(baudrate, from_config<types::SoftwareConfig>(config));
 
     return std::make_unique<BasePort>(
         BasePort{
@@ -421,7 +460,7 @@ STRING_VIEW_INLINE(Prefix, "uart");
 namespace query {
 
 #define ID_VALUE(NAME)\
-String NAME (size_t id) {\
+espurna::string NAME (size_t id) {\
     return espurna::settings::internal::serialize(\
             espurna::driver::uart::settings::NAME(id));\
 }
@@ -470,7 +509,7 @@ void setup() {
 namespace terminal {
 namespace commands {
 
-String port_type(Type type) {
+espurna::string port_type(Type type) {
     const char* out = PSTR("UNKNOWN");
 
     switch (type) {
@@ -498,9 +537,9 @@ void uart(::terminal::CommandContext&& ctx) {
                 break;
             }
 
-            String owner;
+            espurna::string owner;
             if (internal::owners[index]) {
-                owner = F(" owner=");
+                owner = " owner=";
                 owner += internal::owners[index];
             }
 
@@ -515,17 +554,17 @@ void uart(::terminal::CommandContext&& ctx) {
     } else if (ctx.argv.size() == 2) {
         const auto result = parseUnsigned(ctx.argv[1], 10);
         if (!result.ok) {
-            terminalError(ctx, F("Invalid ID"));
+            terminalError(ctx, "Invalid ID");
             return;
         }
 
         if (result.value >= ports()) {
-            ctx.output.print(F("(Not active)"));
+            ctx.output.print("(Not active)");
         }
 
         settingsDump(ctx, settings::query::IndexedSettings, result.value);
     } else {
-        terminalError(ctx, F("UART [<ID>]"));
+        terminalError(ctx, "UART [<ID>]");
         return;
     }
 
@@ -585,7 +624,7 @@ bool baud(size_t index, uint32_t value) {
     return hardware::baud(ptr->stream.get(), ptr->type, value);
 }
 
-const __FlashStringHelper* claimed(size_t index) {
+const char* claimed(size_t index) {
     return (index < std::size(internal::owners))
         ? internal::owners[index]
         : nullptr;
@@ -604,7 +643,7 @@ void on_claim(UartClaimRelease callback) {
     }
 }
 
-bool claim(size_t index, const __FlashStringHelper* owner) {
+bool claim(size_t index, const char* owner) {
     if ((index >= std::size(internal::ports)) || !internal::ports[index] || !owner) {
         return false;
     }
@@ -616,14 +655,14 @@ bool claim(size_t index, const __FlashStringHelper* owner) {
         }
 
         DEBUG_MSG_P(PSTR("[UART] Port #%zu is already used by %s\n"),
-            index, String(current).c_str());
+            index, espurna::string(current).c_str());
         return false;
     }
 
     current = owner;
 
     // owner is set first, nothing reaches the serial log from here on
-    String released;
+    espurna::string released;
     for (const auto& callback : internal::on_claim) {
         if (!callback) {
             break;
@@ -632,18 +671,18 @@ bool claim(size_t index, const __FlashStringHelper* owner) {
         const auto* name = callback(index);
         if (name) {
             if (released.length()) {
-                released += F(" and ");
+                released += " and ";
             }
-            released += FPSTR(name);
+            released += name;
         }
     }
 
     if (released.length()) {
         DEBUG_MSG_P(PSTR("[UART] Port #%zu belongs to %s, %s stopped using it\n"),
-            index, String(owner).c_str(), released.c_str());
+            index, espurna::string(owner).c_str(), released.c_str());
     } else {
         DEBUG_MSG_P(PSTR("[UART] Port #%zu belongs to %s\n"),
-            index, String(owner).c_str());
+            index, espurna::string(owner).c_str());
     }
 
     return true;
@@ -653,18 +692,19 @@ bool claim(size_t index, const __FlashStringHelper* owner) {
 namespace web {
 
 // RELAYS panel: the pins of the first port, what the build gives it and who took one of them (ref. html/src/uart.mjs)
-void onConnected(JsonObject& root) {
-    JsonObject& pins = root.createNestedObject(F("uartPins"));
-    pins[F("tx")] = build::tx(0);
-    pins[F("rx")] = build::rx(0);
-    pins[F("txUser")] = release::tx_user;
-    pins[F("rxUser")] = release::rx_user;
+void onConnected(espurna::json::Writer& root) {
+    root.object(STRING_VIEW("uartPins"));
+    root.field(STRING_VIEW("tx"), build::tx(0));
+    root.field(STRING_VIEW("rx"), build::rx(0));
+    root.field(STRING_VIEW("txUser"), release::tx_user);
+    root.field(STRING_VIEW("rxUser"), release::rx_user);
+    root.end();
 
-    root[String(FPSTR(settings::keys::TxPin)) + '0'] = settings::tx(0);
-    root[String(FPSTR(settings::keys::RxPin)) + '0'] = settings::rx(0);
+    root.field(espurna::string(settings::keys::TxPin) + '0', settings::tx(0));
+    root.field(espurna::string(settings::keys::RxPin) + '0', settings::rx(0));
 }
 
-bool onKeyCheck(StringView key, const JsonVariant&) {
+bool onKeyCheck(StringView key, espurna::json::Value) {
     return key.startsWith(settings::Prefix);
 }
 
@@ -725,11 +765,11 @@ void uartOnClaim(UartClaimRelease callback) {
     espurna::driver::uart::on_claim(callback);
 }
 
-bool uartClaim(size_t index, const __FlashStringHelper* owner) {
+bool uartClaim(size_t index, const char* owner) {
     return espurna::driver::uart::claim(index, owner);
 }
 
-const __FlashStringHelper* uartClaimed(size_t index) {
+const char* uartClaimed(size_t index) {
     return espurna::driver::uart::claimed(index);
 }
 

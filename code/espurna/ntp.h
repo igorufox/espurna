@@ -9,7 +9,6 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #pragma once
 
-#include <Arduino.h>
 #include <ctime>
 
 enum class NtpTick {
@@ -20,7 +19,7 @@ enum class NtpTick {
 using NtpTickCallback = void(*)(NtpTick);
 void ntpOnTick(NtpTickCallback);
 
-String ntpDateTime();
+espurna::string ntpDateTime();
 bool ntpSynced();
 
 void ntpSetup();

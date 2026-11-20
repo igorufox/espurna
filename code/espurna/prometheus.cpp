@@ -40,7 +40,7 @@ static_assert(relaySupport() || sensorSupport(), "");
 namespace {
 
 void handler(WebRequest& request) {
-    String out;
+    espurna::string out;
     char line[64];
 
     if (build::relaySupport()) {
@@ -70,7 +70,7 @@ void handler(WebRequest& request) {
 
 void setup() {
 #if API_SUPPORT
-    apiRegister(F("metrics"),
+    apiRegister("metrics",
         [](ApiRequest& request) {
             request.handle(handler);
             return true;

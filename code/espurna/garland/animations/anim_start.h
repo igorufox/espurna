@@ -24,13 +24,13 @@ class AnimStart : public Anim {
             for (auto i = 0; i < numLeds; ++i) {
                 short r = numLeds + 255 - phase + rngb();
                 r = min(r, (short)255);
-                leds[i].r = (byte)max(r, (short)0);
+                leds[i].r = (uint8_t)max(r, (short)0);
                 short g = numLeds + 255 - phase + rngb();
                 g = min(g, (short)255);
-                leds[i].g = (byte)max(g, (short)0);
+                leds[i].g = (uint8_t)max(g, (short)0);
                 short b = numLeds + 255 - phase + rngb();
                 b = min(b, (short)255);
-                leds[i].b = (byte)max(b, (short)0);
+                leds[i].b = (uint8_t)max(b, (short)0);
             }
             phase++;
         }

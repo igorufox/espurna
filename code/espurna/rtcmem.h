@@ -16,11 +16,10 @@ Where it lives is the chip's:
 
 #pragma once
 
-#include <Arduino.h>
 #include <cstdint>
 
 // Change this when modifying RtcmemData
-#define RTCMEM_MAGIC 0x46535077
+#define RTCMEM_MAGIC 0x46535078
 
 struct RtcmemEnergy {
     uint32_t kwh;
@@ -40,6 +39,16 @@ struct RtcmemData {
     uint32_t ota_trace;
     uint32_t ota_bytes;
     uint32_t ota_size;
+    // the AP of the last connection (wifi.cpp): the first attempt after a reset goes straight to it, no scan of every
+    // channel (owner 19.11: 2 s of the 6.5 s connect); `ssid` is a hash of the network's SSID, 0 - nothing kept
+    // whole words only: the RTC memory of the ESP8266 takes no byte stores (a byte store wrote its byte into every
+    // byte of the word, 19.11). bssid: bytes 0..3 in bssid_lo, 4..5 in the low half of bssid_hi; channel in bits 16..23
+    // of bssid_hi, bit 31 - the last attempt to it failed
+    struct {
+        uint32_t ssid;
+        uint32_t bssid_lo;
+        uint32_t bssid_hi;
+    } wifi;
 };
 
 extern volatile RtcmemData* Rtcmem;

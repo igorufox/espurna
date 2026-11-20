@@ -1,8 +1,8 @@
 /*
 
-OTA MODULE, LibreTiny part (ref. ota_driver.h)
+OTA MODULE, BK72xx part (ref. ota_driver.h)
 
-LibreTiny Update takes the .uf2 package: espurna-beken-tuya.uf2 (Tuya bootloader) or espurna-beken-quectel.uf2
+The board's UF2 OTA takes the .uf2 package (chip::ota_* of ota_beken.cpp): espurna-beken-tuya.uf2 (Tuya bootloader) or espurna-beken-quectel.uf2
 (Quectel bootloader). Which of the two the board takes, ref. arch/beken/ota_beken.cpp. The head of the install image
 (.ota) is the RBL alone, the same for both bootloaders: the board writes it itself (own_image())
 
@@ -10,11 +10,13 @@ LibreTiny Update takes the .uf2 package: espurna-beken-tuya.uf2 (Tuya bootloader
 
 #pragma once
 
-#include <Arduino.h>
-#include <Update.h>
+#include <chip_sdk.h>
 
 #include <cstddef>
 #include <cstdint>
+
+// espurna::system::stall::pass()
+#include "system_chip.h"
 
 namespace espurna {
 namespace ota {
@@ -38,26 +40,23 @@ inline bool verify_header(const uint8_t* data, size_t len) {
 
 // .uf2 package is a lot bigger than the image it carries, Update checks the OTA partition itself
 inline size_t update_size() {
-    return UPDATE_SIZE_UNKNOWN;
+    return ::espurna::core::chip::OtaSizeUnknown;
 }
 
 inline void update_prepare() {
 }
 
-// same as esp8266, mDNS is handled by the mdns module (and only when enabled)
-template <typename T>
-inline void arduino_ota_begin(T& ota) {
-    ota.setMdnsEnabled(false);
-    ota.begin();
+inline void espota_started() {
 }
 
-inline void arduino_ota_started() {
+// espota (libs/espota.h) receives the whole image inside of a single loop() call: the loop stall watcher (arch/rtos/system_rtos.cpp,
+// SYSTEM_LOOP_STALL s without a loop() pass) is fed between the chunks, a slow upload is not aborted (the watchdog
+// itself is fed by the core's yield())
+inline void espota_progress() {
+    ::espurna::system::stall::pass();
 }
 
-inline void arduino_ota_progress() {
-}
-
-inline void arduino_ota_stopped() {
+inline void espota_stopped() {
 }
 
 const char* upload_check(const uint8_t* data, size_t len);

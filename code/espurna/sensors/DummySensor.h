@@ -58,7 +58,7 @@ struct Sensor : public BaseEmonSensor {
         _ready = true;
     }
 
-    String description() const override {
+    espurna::string description() const override {
         return STRING_VIEW("DummySensor").toString();
     }
 
@@ -66,7 +66,7 @@ struct Sensor : public BaseEmonSensor {
         return _counter;
     }
 
-    String address(unsigned char) const override {
+    espurna::string address(unsigned char) const override {
         return STRING_VIEW("/dev/null").toString();
     }
 

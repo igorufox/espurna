@@ -138,7 +138,7 @@ class HLW8012Sensor : public BaseEmonSensor {
             _sel_current = value;
         }
 
-        // RISING, FALLING or CHANGE (CHANGE for the HLW8012, FALLING for the BL0937 / HJL-01)
+        // espurna::pins::Rising, espurna::pins::Falling or espurna::pins::Change (espurna::pins::Change for the HLW8012, espurna::pins::Falling for the BL0937 / HJL-01)
         void setInterruptMode(uint8_t mode) {
             _interrupt_mode = mode;
         }
@@ -224,7 +224,7 @@ class HLW8012Sensor : public BaseEmonSensor {
         void begin() override {
 
             // Initialize HLW8012
-            // void begin(unsigned char cf_pin, unsigned char cf1_pin, unsigned char sel_pin, unsigned char currentWhen = HIGH, bool use_interrupts = false, unsigned long pulse_timeout = PULSE_TIMEOUT);
+            // void begin(unsigned char cf_pin, unsigned char cf1_pin, unsigned char sel_pin, unsigned char currentWhen = true, bool use_interrupts = false, unsigned long pulse_timeout = PULSE_TIMEOUT);
             // * cf_pin, cf1_pin and sel_pin are GPIOs to the HLW8012 IC
             // * currentWhen is the value in sel_pin to select current sampling
             // * set use_interrupts to true to use interrupts to monitor pulse widths
@@ -247,19 +247,19 @@ class HLW8012Sensor : public BaseEmonSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[28];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("HLW8012 @ GPIO(%hhu,%hhu,%hhu)"), _sel, _cf.pin(), _cf1.pin());
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
+        espurna::string address(unsigned char) const override {
             char buffer[12];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("%hhu:%hhu:%hhu"), _sel, _cf.pin(), _cf1.pin());
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Type for slot # index

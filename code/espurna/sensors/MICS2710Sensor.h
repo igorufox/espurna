@@ -41,8 +41,8 @@ class MICS2710Sensor : public AnalogSensor {
 
         // Initialization method, must be idempotent
         void begin() override {
-            pinMode(_preGPIO, OUTPUT);
-            digitalWrite(_preGPIO, HIGH);
+            espurna::pins::mode(_preGPIO, espurna::pins::Output);
+            espurna::pins::write(_preGPIO, true);
             _heating = true;
             _heating_start = TimeSource::now();
 
@@ -55,7 +55,7 @@ class MICS2710Sensor : public AnalogSensor {
 
             static constexpr auto PreheatTime = TimeSource::duration { MICS2710_PREHEAT_TIME };
             if (_heating && (TimeSource::now() - _heating_start > PreheatTime)) {
-                digitalWrite(_preGPIO, LOW);
+                espurna::pins::write(_preGPIO, false);
                 _heating = false;
             }
 
@@ -68,8 +68,8 @@ class MICS2710Sensor : public AnalogSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("MICS-2710 @ TOUT");
+        espurna::string description() const override {
+            return "MICS-2710 @ TOUT";
         }
 
         // Type for slot # index

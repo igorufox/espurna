@@ -61,7 +61,7 @@ Value::operator bool() const {
 
 namespace {
 
-String error(unsigned char error) {
+espurna::string error(unsigned char error) {
     const char* result { nullptr };
 
     switch (error) {
@@ -877,7 +877,7 @@ PROGMEM_STRING(SaveEvery, "snsSave");
 PROGMEM_STRING(RealTimeValues, "snsRealTime");
 
 espurna::settings::Key get(espurna::StringView prefix, espurna::StringView suffix, size_t index) {
-    String key;
+    espurna::string key;
     key.reserve(prefix.length() + suffix.length() + 4);
     key.concat(prefix.c_str(), prefix.length());
     key.concat(suffix.c_str(), suffix.length());
@@ -892,26 +892,26 @@ espurna::settings::Key get(const Magnitude& magnitude, espurna::StringView suffi
 } // namespace keys
 
 espurna::duration::Seconds readInterval() {
-    return std::clamp(getSetting(FPSTR(keys::ReadInterval), build::readInterval()),
+    return std::clamp(getSetting(keys::ReadInterval, build::readInterval()),
             build::ReadIntervalMin, build::ReadIntervalMax);
 }
 
 espurna::duration::Seconds initInterval() {
-    return std::clamp(getSetting(FPSTR(keys::InitInterval), build::initInterval()),
+    return std::clamp(getSetting(keys::InitInterval, build::initInterval()),
             build::ReadIntervalMin, build::ReadIntervalMax);
 }
 
 size_t reportEvery() {
-    return std::clamp(getSetting(FPSTR(keys::ReportEvery), build::reportEvery()),
+    return std::clamp(getSetting(keys::ReportEvery, build::reportEvery()),
             build::ReportEveryMin, build::ReportEveryMax);
 }
 
 int saveEvery() {
-    return getSetting(FPSTR(keys::SaveEvery), build::saveEvery());
+    return getSetting(keys::SaveEvery, build::saveEvery());
 }
 
 bool realTimeValues() {
-    return getSetting(FPSTR(keys::RealTimeValues), build::realTimeValues());
+    return getSetting(keys::RealTimeValues, build::realTimeValues());
 }
 
 } // namespace settings
@@ -923,22 +923,22 @@ namespace settings {
 namespace internal {
 
 template <>
-espurna::sensor::Unit convert(const String& value) {
+espurna::sensor::Unit convert(const espurna::string& value) {
     return convert(espurna::sensor::settings::units::Options, value,
             espurna::sensor::Unit::None);
 }
 
-String serialize(espurna::sensor::Unit unit) {
+espurna::string serialize(espurna::sensor::Unit unit) {
     return serialize(espurna::sensor::settings::units::Options, unit);
 }
 
 template <>
-espurna::sensor::Filter convert(const String& value) {
+espurna::sensor::Filter convert(const espurna::string& value) {
     return convert(espurna::sensor::settings::filters::Options, value,
             espurna::sensor::Filter::Median);
 }
 
-String serialize(espurna::sensor::Filter filter) {
+espurna::string serialize(espurna::sensor::Filter filter) {
     return serialize(espurna::sensor::settings::filters::Options, filter);
 }
 
@@ -1007,24 +1007,19 @@ static constexpr double correction(unsigned char type) {
 
 } // namespace build
 
-String format(double value, unsigned char decimals) {
-    // XXX: dtostrf only handles basic floating point values and will never produce scientific notation
-    //      ensure decimals is within some sane limit and the actual value never goes above this buffer size
-    char buffer[64];
-    dtostrf(value, 1, decimals, buffer);
-
-    return buffer;
+espurna::string format(double value, unsigned char decimals) {
+    return formatDecimalString(value, decimals);
 }
 
-String format(const Magnitude& magnitude, double value) {
+espurna::string format(const Magnitude& magnitude, double value) {
     return format(value, magnitude.decimals);
 }
 
-String format(const Magnitude& magnitude, ValuePair value) {
+espurna::string format(const Magnitude& magnitude, ValuePair value) {
     return format(magnitude, value.value);
 }
 
-String format_slot(const Magnitude& magnitude) {
+espurna::string format_slot(const Magnitude& magnitude) {
     const auto slot = make_slot(
         SlotValues{
             .id = magnitude.sensor->id(),
@@ -1035,12 +1030,12 @@ String format_slot(const Magnitude& magnitude) {
             .slot = static_cast<unsigned char>(magnitude.slot + 1),
         });
 
-    const auto out = StringView(slot.data(), slot.size());
+    const auto out = espurna::StringView(slot.data(), slot.size());
 
     return out.toString();
 }
 
-String name(unsigned char type) {
+espurna::string name(unsigned char type) {
     const char* result = nullptr;
 
     switch (type) {
@@ -1161,10 +1156,10 @@ String name(unsigned char type) {
         break;
     }
 
-    return String(result);
+    return espurna::string(result);
 }
 
-String topic(unsigned char type) {
+espurna::string topic(unsigned char type) {
     const char* result = PSTR("unknown");
 
     switch (type) {
@@ -1287,23 +1282,23 @@ String topic(unsigned char type) {
         break;
     }
 
-    return String(result);
+    return espurna::string(result);
 }
 
-String topic(const Magnitude& magnitude) {
+espurna::string topic(const Magnitude& magnitude) {
     return topic(magnitude.type);
 }
 
-String topicWithIndex(const Magnitude& magnitude) {
+espurna::string topicWithIndex(const Magnitude& magnitude) {
     auto out = topic(magnitude);
     if (sensor::build::useIndex() || (types_count(magnitude.type) > 1)) {
-        out += '/' + String(magnitude.index_global, 10);
+        out += '/' + espurna::string(magnitude.index_global, 10);
     }
 
     return out;
 }
 
-String description(const Magnitude& magnitude) {
+espurna::string description(const Magnitude& magnitude) {
     return magnitude.sensor->description(magnitude.slot);
 }
 
@@ -1537,7 +1532,7 @@ Info info(const Magnitude& magnitude) {
         .units = magnitude.units,
         .decimals = magnitude.decimals,
         .topic = topicWithIndex(magnitude),
-        .description = String(),
+        .description = espurna::string(),
     };
 }
 
@@ -1913,11 +1908,11 @@ void forEachCounted(T&& callback) {
     }
 }
 
-String name(Unit unit) {
+espurna::string name(Unit unit) {
     return espurna::settings::internal::serialize(unit);
 }
 
-String name(const Magnitude& magnitude) {
+espurna::string name(const Magnitude& magnitude) {
     return name(magnitude.units);
 }
 
@@ -1936,8 +1931,8 @@ void setup(unsigned char type) {
 
 namespace magnitude {
 
-String format_with_units(const Magnitude& magnitude, const ValuePair& pair) {
-    String out;
+espurna::string format_with_units(const Magnitude& magnitude, const ValuePair& pair) {
+    espurna::string out;
 
     if (std::isnan(pair.value)) {
         out += STRING_VIEW("nan").toString();
@@ -1967,10 +1962,10 @@ struct Persist {
     {}
 
     void operator()() const {
-        setSetting({F("eneTotal"), _index}, _energy.asString());
+        setSetting({"eneTotal", _index}, _energy.asString());
 #if NTP_SUPPORT
         if (ntpSynced()) {
-            setSetting({F("eneTime"), _index}, ntpDateTime());
+            setSetting({"eneTime", _index}, ntpDateTime());
         }
 #endif
     }
@@ -2084,7 +2079,7 @@ ParseResult convert(StringView value) {
     const auto begin = value.begin();
     const auto end = value.end();
 
-    String kwh_number;
+    espurna::string kwh_number;
 
     auto it = begin;
     while (it != end) {
@@ -2113,7 +2108,7 @@ ParseResult convert(StringView value) {
         }
 
         const auto result = parseUnsigned(
-                StringView(it, end), 10);
+                espurna::StringView(it, end), 10);
         if (!result.ok) {
             return out;
         }
@@ -2170,8 +2165,8 @@ Energy get(unsigned char index) {
 }
 
 void reset(unsigned char index) {
-    delSetting({F("eneTotal"), index});
-    delSetting({F("eneTime"), index});
+    delSetting({"eneTotal", index});
+    delSetting({"eneTime", index});
     if (index < (sizeof(Rtcmem->energy) / sizeof(*Rtcmem->energy))) {
         Rtcmem->energy[index].kwh = 0;
         Rtcmem->energy[index].ws = 0;
@@ -2251,7 +2246,7 @@ namespace settings {
 namespace query {
 
 #define EXACT_VALUE(NAME, FUNC)\
-String NAME () {\
+espurna::string NAME () {\
     return espurna::settings::internal::serialize(FUNC());\
 }
 
@@ -2274,13 +2269,13 @@ static constexpr espurna::settings::query::Setting Settings[] {
 namespace getter {
 
 #define EXACT_VALUE(NAME)\
-String NAME (const Magnitude& magnitude) {\
+espurna::string NAME (const Magnitude& magnitude) {\
     return espurna::settings::internal::serialize(magnitude.NAME);\
 }
 
 struct Type {
     using Check = bool(*)(unsigned char);
-    using Get = String(*)(const Magnitude&);
+    using Get = espurna::string(*)(const Magnitude&);
 
     StringView suffix;
     Check check;
@@ -2291,9 +2286,9 @@ EXACT_VALUE(correction)
 EXACT_VALUE(decimals)
 EXACT_VALUE(filter_type)
 
-String ratio(const Magnitude& magnitude) {
+espurna::string ratio(const Magnitude& magnitude) {
     const auto ptr = reinterpret_cast<BaseEmonSensor*>(magnitude.sensor.get());
-    return String(ptr->defaultRatio(magnitude.slot));
+    return espurna::string(ptr->defaultRatio(magnitude.slot));
 }
 
 EXACT_VALUE(units)
@@ -2373,47 +2368,47 @@ void migrate(int version) {
 
     // Some keys from older versions were longer
     if (version < 3) {
-        moveSetting(F("powerUnits"), F("pwrUnits"));
-        moveSetting(F("energyUnits"), F("eneUnits"));
+        moveSetting("powerUnits", "pwrUnits");
+        moveSetting("energyUnits", "eneUnits");
     }
 
     // Energy is now indexed (based on magnitude.index_global)
 	// Also update PZEM004T energy total across multiple devices
     if (version < 5) {
-        moveSetting(F("eneTotal"), firstKey(MAGNITUDE_ENERGY, suffix::Total));
-        moveSettings(F("pzEneTotal"), prefix::get(MAGNITUDE_ENERGY).toString() + StringView(suffix::Total).toString());
+        moveSetting("eneTotal", firstKey(MAGNITUDE_ENERGY, suffix::Total));
+        moveSettings("pzEneTotal", prefix::get(MAGNITUDE_ENERGY).toString() + espurna::StringView(suffix::Total).toString());
     }
 
     // Unit ID is no longer shared, drop when equal to Min_ or None
     if (version < 5) {
-        delSetting(F("pwrUnits"));
-        delSetting(F("eneUnits"));
-        delSetting(F("tmpUnits"));
+        delSetting("pwrUnits");
+        delSetting("eneUnits");
+        delSetting("tmpUnits");
     }
 
     // Generic pwr settings now have type-specific prefixes
     // (index 0, assuming there's only one emon sensor)
     if (version < 7) {
-        moveSetting(F("pwrVoltage"), firstKey(MAGNITUDE_VOLTAGE, suffix::Mains));
-        moveSetting(F("pwrRatioC"), firstKey(MAGNITUDE_CURRENT, suffix::Ratio));
-        moveSetting(F("pwrRatioV"), firstKey(MAGNITUDE_VOLTAGE, suffix::Ratio));
-        moveSetting(F("pwrRatioP"), firstKey(MAGNITUDE_POWER_ACTIVE, suffix::Ratio));
-        moveSetting(F("pwrRatioE"), firstKey(MAGNITUDE_ENERGY, suffix::Ratio));
+        moveSetting("pwrVoltage", firstKey(MAGNITUDE_VOLTAGE, suffix::Mains));
+        moveSetting("pwrRatioC", firstKey(MAGNITUDE_CURRENT, suffix::Ratio));
+        moveSetting("pwrRatioV", firstKey(MAGNITUDE_VOLTAGE, suffix::Ratio));
+        moveSetting("pwrRatioP", firstKey(MAGNITUDE_POWER_ACTIVE, suffix::Ratio));
+        moveSetting("pwrRatioE", firstKey(MAGNITUDE_ENERGY, suffix::Ratio));
     }
 
 #if HLW8012_SUPPORT
     if (version < 9) {
-        moveSetting(F("snsHlw8012SelGPIO"), F("hlw8012SEL"));
-        moveSetting(F("snsHlw8012CfGPIO"), F("hlw8012CF"));
-        moveSetting(F("snsHlw8012Cf1GPIO"), F("hlw8012CF1"));
+        moveSetting("snsHlw8012SelGPIO", "hlw8012SEL");
+        moveSetting("snsHlw8012CfGPIO", "hlw8012CF");
+        moveSetting("snsHlw8012Cf1GPIO", "hlw8012CF1");
     }
 #endif
 
     if (version < 11) {
-        moveSetting(F("apiRealTime"), FPSTR(keys::RealTimeValues));
-        moveSetting(F("tmpMinDelta"), firstKey(MAGNITUDE_TEMPERATURE, suffix::MinDelta));
-        moveSetting(F("humMinDelta"), firstKey(MAGNITUDE_HUMIDITY, suffix::MinDelta));
-        moveSetting(F("eneMaxDelta"), firstKey(MAGNITUDE_ENERGY, suffix::MaxDelta));
+        moveSetting("apiRealTime", keys::RealTimeValues);
+        moveSetting("tmpMinDelta", firstKey(MAGNITUDE_TEMPERATURE, suffix::MinDelta));
+        moveSetting("humMinDelta", firstKey(MAGNITUDE_HUMIDITY, suffix::MinDelta));
+        moveSetting("eneMaxDelta", firstKey(MAGNITUDE_ENERGY, suffix::MaxDelta));
     }
 }
 
@@ -2430,7 +2425,7 @@ namespace {
 // a '#' in a key is the index 0 .. repeat - 1
 template <typename T>
 void for_each_driver_key(const Driver& driver, T&& callback) {
-    const String spec(FPSTR(driver.spec));
+    const espurna::string spec(driver.spec);
 
     int start = 0;
     while (start < static_cast<int>(spec.length())) {
@@ -2439,10 +2434,10 @@ void for_each_driver_key(const Driver& driver, T&& callback) {
             end = spec.length();
         }
 
-        const String field = spec.substring(start, end);
+        const espurna::string field = spec.substring(start, end);
         start = end + 1;
 
-        String parts[6];
+        espurna::string parts[6];
         int from = 0;
         for (auto& part : parts) {
             const int to = field.indexOf('|', from);
@@ -2466,8 +2461,8 @@ void for_each_driver_key(const Driver& driver, T&& callback) {
 
         const long repeat = parts[5].toInt();
         for (long index = 0; index < repeat; ++index) {
-            String out = key.substring(0, hash);
-            out += String(index);
+            espurna::string out = key.substring(0, hash);
+            out += espurna::string(index);
             out += key.substring(hash + 1);
             callback(out);
         }
@@ -2478,8 +2473,8 @@ void for_each_driver_key(const Driver& driver, T&& callback) {
 bool driver_key(StringView key) {
     for (const auto& driver : internal::drivers) {
         bool found { false };
-        for_each_driver_key(driver, [&](const String& name) {
-            found = found || (key == StringView(name));
+        for_each_driver_key(driver, [&](const espurna::string& name) {
+            found = found || (key == espurna::StringView(name));
         });
         if (found) {
             return true;
@@ -2493,24 +2488,27 @@ bool driver_key(StringView key) {
 
 namespace web {
 
-bool onKeyCheck(StringView key, const JsonVariant&) {
+bool onKeyCheck(StringView key, espurna::json::Value) {
     return settings::query::check(key) || driver_key(key);
 }
 
 // the drivers and their settings, for the SENSORS panel: the spec as the driver wrote it (the WebUI parses it,
 // ref. sensors/driver.h) and the stored values of its keys (empty - not set, the WebUI shows the default)
-void drivers(JsonObject& root) {
-    JsonArray& out = root.createNestedArray(STRING_VIEW("snsDrivers"));
+void drivers(espurna::json::Writer& root) {
+    root.array(STRING_VIEW("snsDrivers"));
     for (const auto& driver : internal::drivers) {
-        JsonObject& entry = out.createNestedObject();
-        entry[STRING_VIEW("name")] = driver.name;
-        entry[STRING_VIEW("spec")] = String(FPSTR(driver.spec));
+        root.beginObject();
+        root.field(STRING_VIEW("name"), driver.name);
+        root.field(STRING_VIEW("spec"), driver.spec);
 
-        JsonObject& values = entry.createNestedObject(STRING_VIEW("values"));
-        for_each_driver_key(driver, [&](const String& key) {
-            values[key] = getSetting(key);
+        root.object(STRING_VIEW("values"));
+        for_each_driver_key(driver, [&](const espurna::string& key) {
+            root.field(espurna::StringView(key), getSetting(key));
         });
+        root.end();
+        root.end();
     }
+    root.end();
 }
 
 // Entries related to things reported by the module.
@@ -2521,44 +2519,45 @@ void drivers(JsonObject& root) {
 // e.g. voltMains is specific to the MAGNITUDE_VOLTAGE but *only* in analog mode, or eneRatio specific to MAGNITUDE_ENERGY
 // but, notice that the sensor will probably be used to 'get' certain properties, to generate certain keys list
 
-void types(JsonObject& root) {
+void types(espurna::json::Writer& root) {
     espurna::web::ws::EnumerablePayload payload{root, STRING_VIEW("types")};
     payload(STRING_VIEW("values"), {MAGNITUDE_NONE + 1, MAGNITUDE_MAX},
         [](size_t type) {
             return magnitude::types_count(type) > 0;
         },
-        {{STRING_VIEW("type"), [](JsonArray& out, size_t index) {
-            out.add(index);
+        {{STRING_VIEW("type"), [](espurna::json::Writer& out, size_t index) {
+            out.value(index);
         }},
-        {STRING_VIEW("prefix"), [](JsonArray& out, size_t index) {
-            out.add(settings::prefix::get(index));
+        {STRING_VIEW("prefix"), [](espurna::json::Writer& out, size_t index) {
+            out.value(settings::prefix::get(index));
         }},
-        {STRING_VIEW("name"), [](JsonArray& out, size_t index) {
-            out.add(sensor::magnitude::name(index));
+        {STRING_VIEW("name"), [](espurna::json::Writer& out, size_t index) {
+            out.value(sensor::magnitude::name(index));
         }},
-        {STRING_VIEW("units"), [](JsonArray& out, size_t index) {
-            JsonArray& units = out.createNestedArray();
+        {STRING_VIEW("units"), [](espurna::json::Writer& out, size_t index) {
+            out.beginArray();
             const auto range = units::range(index);
             for (auto entry : range) {
-                units.add(static_cast<units::underlying_type>(entry));
+                out.value(static_cast<units::underlying_type>(entry));
             }
+            out.end();
         }},
     });
 }
 
-void errors(JsonObject& root) {
+void errors(espurna::json::Writer& root) {
     espurna::web::ws::EnumerablePayload payload{root, STRING_VIEW("errors")};
     payload(STRING_VIEW("values"), SENSOR_ERROR_MAX,
-        {{STRING_VIEW("type"), [](JsonArray& out, size_t index) {
-            out.add(index);
+        {{STRING_VIEW("type"), [](espurna::json::Writer& out, size_t index) {
+            out.value(index);
         }},
-        {STRING_VIEW("name"), [](JsonArray& out, size_t index) {
-            out.add(error(index));
+        {STRING_VIEW("name"), [](espurna::json::Writer& out, size_t index) {
+            out.value(error(index));
         }}
     });
 }
 
-void units(JsonObject& root) {
+void units(espurna::json::Writer& root) {
     espurna::web::ws::EnumerablePayload payload{root, STRING_VIEW("units")};
     payload(STRING_VIEW("values"),
         {
@@ -2568,60 +2567,59 @@ void units(JsonObject& root) {
         [](size_t type) {
             return units::count(static_cast<Unit>(type)) > 0;
         },
-        {{STRING_VIEW("type"), [](JsonArray& out, size_t index) {
-            out.add(index);
+        {{STRING_VIEW("type"), [](espurna::json::Writer& out, size_t index) {
+            out.value(index);
         }},
-        {STRING_VIEW("name"), [](JsonArray& out, size_t index) {
-            out.add(sensor::units::name(static_cast<Unit>(index)));
+        {STRING_VIEW("name"), [](espurna::json::Writer& out, size_t index) {
+            out.value(sensor::units::name(static_cast<Unit>(index)));
         }}
     });
 }
 
-void initial(JsonObject& root) {
+void initial(espurna::json::Writer& root) {
     if (!sensor::ready()) {
-        root[STRING_VIEW("magnitudes-pending")] = 1;
+        root.field(STRING_VIEW("magnitudes-pending"), 1);
         return;
     }
 
-    JsonObject& init =
-        root.createNestedObject(F("magnitudes-init"));
-
-    types(init);
-    errors(init);
-    units(init);
+    root.object(STRING_VIEW("magnitudes-init"));
+    types(root);
+    errors(root);
+    units(root);
+    root.end();
 }
 
-void list(JsonObject& root) {
+void list(espurna::json::Writer& root) {
     if (!sensor::ready()) {
         return;
     }
 
     espurna::web::ws::EnumerablePayload payload{root, STRING_VIEW("magnitudes-list")};
     payload(STRING_VIEW("values"), magnitude::count(),
-        {{STRING_VIEW("type"), [](JsonArray& out, size_t index) {
-            out.add(magnitude::get(index).type);
+        {{STRING_VIEW("type"), [](espurna::json::Writer& out, size_t index) {
+            out.value(magnitude::get(index).type);
         }},
-        {STRING_VIEW("index_global"), [](JsonArray& out, size_t index) {
-            out.add(magnitude::get(index).index_global);
+        {STRING_VIEW("index_global"), [](espurna::json::Writer& out, size_t index) {
+            out.value(magnitude::get(index).index_global);
         }},
-        {STRING_VIEW("description"), [](JsonArray& out, size_t index) {
-            out.add(magnitude::description(magnitude::get(index)));
+        {STRING_VIEW("description"), [](espurna::json::Writer& out, size_t index) {
+            out.value(magnitude::description(magnitude::get(index)));
         }},
-        {STRING_VIEW("units"), [](JsonArray& out, size_t index) {
-            out.add(static_cast<int>(magnitude::get(index).units));
+        {STRING_VIEW("units"), [](espurna::json::Writer& out, size_t index) {
+            out.value(static_cast<int>(magnitude::get(index).units));
         }}
     });
 }
 
-void threshold_or_nan(JsonArray& out, const double& threshold) {
+void threshold_or_nan(espurna::json::Writer& out, const double& threshold) {
     if (!std::isnan(threshold)) {
-        out.add(threshold);
+        out.value(threshold);
     } else {
-        out.add("NaN");
+        out.value("NaN");
     }
 }
 
-void settings(JsonObject& root) {
+void settings(espurna::json::Writer& root) {
     if (!sensor::ready()) {
         return;
     }
@@ -2633,52 +2631,50 @@ void settings(JsonObject& root) {
 
     espurna::web::ws::EnumerablePayload payload{root, STRING_VIEW("magnitudes-settings")};
     payload(STRING_VIEW("values"), magnitude::count(),
-        {{settings::suffix::Correction, [](JsonArray& out, size_t index) {
+        {{settings::suffix::Correction, [](espurna::json::Writer& out, size_t index) {
             const auto& magnitude = magnitude::get(index);
             if (magnitude::traits::correction_supported(magnitude.type)) {
-                out.add(magnitude.correction);
+                out.value(magnitude.correction);
             } else {
-                out.add(NullSymbol);
+                out.value(NullSymbol);
             }
         }},
-        {settings::suffix::Ratio, [](JsonArray& out, size_t index) {
+        {settings::suffix::Ratio, [](espurna::json::Writer& out, size_t index) {
             const auto& magnitude = magnitude::get(index);
             if (isEmon(magnitude.sensor) && magnitude::traits::ratio_supported(magnitude.type)) {
-                out.add(static_cast<BaseEmonSensor*>(magnitude.sensor.get())->getRatio(magnitude.slot));
+                out.value(static_cast<BaseEmonSensor*>(magnitude.sensor.get())->getRatio(magnitude.slot));
             } else {
-                out.add(NullSymbol);
+                out.value(NullSymbol);
             }
         }},
-        {settings::suffix::ZeroThreshold, [](JsonArray& out, size_t index) {
+        {settings::suffix::ZeroThreshold, [](espurna::json::Writer& out, size_t index) {
             const auto threshold = magnitude::get(index).zero_threshold;
             threshold_or_nan(out, threshold);
         }},
-        {settings::suffix::MinThreshold, [](JsonArray& out, size_t index) {
+        {settings::suffix::MinThreshold, [](espurna::json::Writer& out, size_t index) {
             const auto threshold = magnitude::get(index).min_threshold;
             threshold_or_nan(out, threshold);
         }},
-        {settings::suffix::MaxThreshold, [](JsonArray& out, size_t index) {
+        {settings::suffix::MaxThreshold, [](espurna::json::Writer& out, size_t index) {
             const auto threshold = magnitude::get(index).max_threshold;
             threshold_or_nan(out, threshold);
         }},
-        {settings::suffix::MinDelta, [](JsonArray& out, size_t index) {
-            out.add(magnitude::get(index).min_delta);
+        {settings::suffix::MinDelta, [](espurna::json::Writer& out, size_t index) {
+            out.value(magnitude::get(index).min_delta);
         }},
-        {settings::suffix::MaxDelta, [](JsonArray& out, size_t index) {
-            out.add(magnitude::get(index).max_delta);
+        {settings::suffix::MaxDelta, [](espurna::json::Writer& out, size_t index) {
+            out.value(magnitude::get(index).max_delta);
         }}
     });
 
-    root[FPSTR(settings::keys::RealTimeValues)] = magnitude::prefer_real_time_values();
-
-    root[FPSTR(settings::keys::ReadInterval)] = readInterval().count();
-    root[FPSTR(settings::keys::InitInterval)] = initInterval().count();
-    root[FPSTR(settings::keys::ReportEvery)] = reportEvery();
-
-    root[FPSTR(settings::keys::SaveEvery)] = energy::internal::tracker.every();
+    root.field(settings::keys::RealTimeValues, magnitude::prefer_real_time_values());
+    root.field(settings::keys::ReadInterval, readInterval().count());
+    root.field(settings::keys::InitInterval, initInterval().count());
+    root.field(settings::keys::ReportEvery, reportEvery());
+    root.field(settings::keys::SaveEvery, energy::internal::tracker.every());
 }
 
-void energy(JsonObject& root) {
+void energy(espurna::json::Writer& root) {
 #if NTP_SUPPORT
     if (!energy::internal::tracker || !energy::internal::tracker.size()) {
         return;
@@ -2689,57 +2685,57 @@ void energy(JsonObject& root) {
         [](size_t index) {
             return magnitude::get(index).type == MAGNITUDE_ENERGY;
         },
-        {{STRING_VIEW("id"), [](JsonArray& out, size_t index) {
-            out.add(index);
+        {{STRING_VIEW("id"), [](espurna::json::Writer& out, size_t index) {
+            out.value(index);
         }},
-        {STRING_VIEW("saved"), [](JsonArray& out, size_t index) {
+        {STRING_VIEW("saved"), [](espurna::json::Writer& out, size_t index) {
             if (energy::internal::tracker) {
-                out.add(getSetting({F("eneTime"), magnitude::get(index).index_global}, F("(unknown)")));
+                out.value(getSetting({"eneTime", magnitude::get(index).index_global}, "(unknown)"));
             } else {
-                out.add("");
+                out.value("");
             }
         }}
     });
 #endif
 }
 
-void magnitudes(JsonObject& root) {
+void magnitudes(espurna::json::Writer& root) {
     espurna::web::ws::EnumerablePayload payload{root, STRING_VIEW("magnitudes")};
     payload(STRING_VIEW("values"), magnitude::count(), {
-        {STRING_VIEW("value"), [](JsonArray& out, size_t index) {
+        {STRING_VIEW("value"), [](espurna::json::Writer& out, size_t index) {
             const auto& magnitude = magnitude::get(index);
-            out.add(magnitude::format(magnitude, magnitude.last));
+            out.value(magnitude::format(magnitude, magnitude.last));
         }},
-        {STRING_VIEW("units"), [](JsonArray& out, size_t index) {
+        {STRING_VIEW("units"), [](espurna::json::Writer& out, size_t index) {
             const auto& magnitude = magnitude::get(index);
-            out.add(static_cast<int>(magnitude.last.units));
+            out.value(static_cast<int>(magnitude.last.units));
         }},
-        {STRING_VIEW("error"), [](JsonArray& out, size_t index) {
-            out.add(magnitude::error(index));
+        {STRING_VIEW("error"), [](espurna::json::Writer& out, size_t index) {
+            out.value(magnitude::error(index));
         }},
     });
 }
 
-void onData(JsonObject& root) {
+void onData(espurna::json::Writer& root) {
     if (magnitude::count()) {
         magnitudes(root);
         energy(root);
     }
 }
 
-void onAction(uint32_t client_id, const char* action, JsonObject& data) {
+void onAction(uint32_t client_id, const char* action, espurna::json::Value data) {
     if (STRING_VIEW("emon-expected") == action) {
-        auto id = data["id"].as<size_t>();
+        auto id = static_cast<size_t>(data["id"].asULong());
         if (id < magnitude::count()) {
-            auto expected = data["expected"].as<float>();
-            wsPost(client_id, [id, expected](JsonObject& root) {
+            auto expected = data["expected"].asDouble();
+            wsPost(client_id, [id, expected](espurna::json::Writer& root) {
                 const auto& magnitude = magnitude::get(id);
 
-                String key { F("result:") };
+                espurna::string key { "result:" };
                 key += settings::keys::get(
                     magnitude, settings::suffix::Ratio).value();
 
-                root[key] = energy::ratioFromValue(magnitude, expected);
+                root.field(key, energy::ratioFromValue(magnitude, expected));
             });
         }
         return;
@@ -2759,7 +2755,7 @@ void onAction(uint32_t client_id, const char* action, JsonObject& data) {
     }
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, STRING_VIEW("sns"));
     for (auto sensor : internal::sensors) {
         if (isEmon(sensor)) {
@@ -2796,18 +2792,17 @@ void onVisible(JsonObject& root) {
     }
 }
 
-void module(JsonObject& root, StringView prefix, SensorWebSocketMagnitudesCallback callback) {
+void module(espurna::json::Writer& root, StringView prefix, SensorWebSocketMagnitudesCallback callback) {
     espurna::web::ws::EnumerablePayload payload{root, STRING_VIEW("magnitudes-module")};
 
-    auto& container = payload.root();
-    container[STRING_VIEW("prefix")] = prefix;
+    payload.root().field(STRING_VIEW("prefix"), prefix);
 
     payload(STRING_VIEW("values"), magnitude::count(),
-        {{STRING_VIEW("type"), [](JsonArray& out, size_t index) {
-            out.add(magnitude::get(index).type);
+        {{STRING_VIEW("type"), [](espurna::json::Writer& out, size_t index) {
+            out.value(magnitude::get(index).type);
         }},
-        {STRING_VIEW("index_global"), [](JsonArray& out, size_t index) {
-            out.add(magnitude::get(index).index_global);
+        {STRING_VIEW("index_global"), [](espurna::json::Writer& out, size_t index) {
+            out.value(magnitude::get(index).index_global);
         }},
         {STRING_VIEW("index_module"), callback}
     });
@@ -2851,15 +2846,17 @@ bool tryHandle(ApiRequest& request, unsigned char type, T&& callback) {
 }
 
 void setup() {
-    apiRegister(F("magnitudes"),
-        [](ApiRequest&, JsonObject& root) {
-            JsonArray& magnitudes = root.createNestedArray("magnitudes");
+    apiRegister("magnitudes",
+        [](ApiRequest&, espurna::json::Writer& root) {
+            root.array("magnitudes");
             for (auto& magnitude : magnitude::internal::magnitudes) {
-                JsonArray& data = magnitudes.createNestedArray();
-                data.add(sensor::magnitude::topicWithIndex(magnitude));
-                data.add(magnitude.last.value);
-                data.add(magnitude.reported.value);
+                root.beginArray();
+                root.value(sensor::magnitude::topicWithIndex(magnitude));
+                root.value(magnitude.last.value);
+                root.value(magnitude.reported.value);
+                root.end();
             }
+            root.end();
             return true;
         },
         nullptr
@@ -2885,7 +2882,7 @@ void setup() {
             put = [](ApiRequest& request) {
                 return tryHandle(request, MAGNITUDE_ENERGY,
                     [&](const Magnitude& magnitude) {
-                        energy::set(magnitude, request.param(F("value")));
+                        energy::set(magnitude, request.param("value"));
                     });
             };
         }
@@ -2908,7 +2905,7 @@ void report(const Value& report, const Magnitude& magnitude [[gnu::unused]]) {
 
     const auto address = magnitude.sensor->address(magnitude.slot);
     if (address.length()) {
-        String address_topic;
+        espurna::string address_topic;
         address_topic.reserve(1 + report.topic.length() + AddressTopic.length());
         address_topic.concat(AddressTopic.data(), AddressTopic.length());
         address_topic += '/';
@@ -2948,7 +2945,7 @@ void callback(unsigned int type, StringView topic, StringView payload) {
     }
 
     case MQTT_CONNECT_EVENT:
-        mqttSubscribe((base + F("/+")).c_str());
+        mqttSubscribe((base + "/+").c_str());
         break;
 
     }
@@ -2969,7 +2966,7 @@ PROGMEM_STRING(Sensors, "SENSORS");
 
 void sensors(::terminal::CommandContext&& ctx) {
     if (!magnitude::count()) {
-        terminalError(ctx, F("No magnitudes"));
+        terminalError(ctx, "No magnitudes");
         return;
     }
 
@@ -2989,7 +2986,7 @@ PROGMEM_STRING(Magnitudes, "MAGNITUDES");
 
 void magnitudes(::terminal::CommandContext&& ctx) {
     if (!magnitude::count()) {
-        terminalError(ctx, F("No magnitudes"));
+        terminalError(ctx, "No magnitudes");
         return;
     }
 
@@ -3018,16 +3015,16 @@ void expected(::terminal::CommandContext&& ctx) {
                 magnitude, espurna::settings::internal::convert<double>(ctx.argv[2]));
             const auto key = settings::keys::get(
                 magnitude, settings::suffix::Ratio);
-            ctx.output.printf("%s => %s\n", key.c_str(), String(result).c_str());
+            ctx.output.printf("%s => %s\n", key.c_str(), espurna::string(result).c_str());
             terminalOK(ctx);
             return;
         }
 
-        terminalError(ctx, F("Invalid magnitude ID"));
+        terminalError(ctx, "Invalid magnitude ID");
         return;
     }
 
-    terminalError(ctx, F("EXPECTED <ID> <VALUE>"));
+    terminalError(ctx, "EXPECTED <ID> <VALUE>");
 }
 
 PROGMEM_STRING(ResetRatios, "RESET.RATIOS");
@@ -3043,7 +3040,7 @@ void energy(::terminal::CommandContext&& ctx) {
     using IndexType = decltype(Magnitude::index_global);
 
     if (ctx.argv.size() < 2) {
-        terminalError(ctx, F("ENERGY <ID> [<VALUE>]"));
+        terminalError(ctx, "ENERGY <ID> [<VALUE>]");
         return;
     }
 
@@ -3051,7 +3048,7 @@ void energy(::terminal::CommandContext&& ctx) {
 
     const auto* magnitude = magnitude::find(MAGNITUDE_ENERGY, index);
     if (!magnitude) {
-        terminalError(ctx, F("Invalid magnitude ID"));
+        terminalError(ctx, "Invalid magnitude ID");
         return;
     }
 
@@ -3067,7 +3064,7 @@ void energy(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() == 3) {
         const auto energy = energy::convert(ctx.argv[2]);
         if (!energy) {
-            terminalError(ctx, F("Invalid energy string"));
+            terminalError(ctx, "Invalid energy string");
             return;
         }
 
@@ -3682,7 +3679,7 @@ void add_preinit_impl(PreInitPtr ptr) {
 #if WEB_SUPPORT
 // Used by modules to generate magnitude_id<->module_id mapping for the WebUI
 // Prefix controls the UI templates, supplied callback should retrieve module-specific value Id
-void sensorWebSocketMagnitudes(JsonObject& root, espurna::StringView prefix, SensorWebSocketMagnitudesCallback callback) {
+void sensorWebSocketMagnitudes(espurna::json::Writer& root, espurna::StringView prefix, SensorWebSocketMagnitudesCallback callback) {
     espurna::sensor::web::module(root, prefix, callback);
 }
 #endif // WEB_SUPPORT
@@ -3734,31 +3731,31 @@ espurna::sensor::Value magnitudeValue(unsigned char index) {
         : safe_value_reported(index);
 }
 
-String magnitudeDescription(unsigned char index) {
+espurna::string magnitudeDescription(unsigned char index) {
     using namespace espurna::sensor;
 
     if (index < magnitude::count()) {
         return magnitude::description(magnitude::get(index));
     }
 
-    return String();
+    return espurna::string();
 }
 
-String magnitudeTopic(unsigned char index) {
+espurna::string magnitudeTopic(unsigned char index) {
     using namespace espurna::sensor;
 
     if (index < magnitude::count()) {
         return magnitude::topicWithIndex(magnitude::get(index));
     }
 
-    return String();
+    return espurna::string();
 }
 
-String magnitudeTypeTopic(unsigned char type) {
+espurna::string magnitudeTypeTopic(unsigned char type) {
     return espurna::sensor::magnitude::topic(type);
 }
 
-String magnitudeUnitsName(espurna::sensor::Unit units) {
+espurna::string magnitudeUnitsName(espurna::sensor::Unit units) {
     return espurna::sensor::units::name(units);
 }
 
@@ -3774,8 +3771,8 @@ espurna::sensor::Info magnitudeInfo(unsigned char index) {
         .index = 0,
         .units = Unit::None,
         .decimals = 0,
-        .topic = String(),
-        .description = String(),
+        .topic = espurna::string(),
+        .description = espurna::string(),
     };
 }
 
@@ -3783,8 +3780,8 @@ bool sensorReady() {
     return espurna::sensor::ready();
 }
 
-String sensorList() {
-    String out;
+espurna::string sensorList() {
+    espurna::string out;
     for (const auto& driver : espurna::sensor::internal::drivers) {
         if (out.length()) {
             out += ' ';

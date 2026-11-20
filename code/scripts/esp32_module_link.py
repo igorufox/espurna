@@ -13,11 +13,13 @@
 #   links every image with --wrap for Matter, the head without the Matter library keeps `U __wrap_esp_matter_mem_*`,
 #   and --just-symbols handed those to every module link, which then pulled the whole CHIP stack in.
 #
-# The initial image espurna-esp32.bin: the merged image of scripts/esp32_merge.py (bootloader, partitions, safeboot,
-# the head in app0) and the modules file of the modules on by default at the start of the module area, the first 64 KB
-# page behind the app image in app0 (modules_esp32.cpp findArea(); module_initial_image.py). The install image
-# espurna-esp32.ota: the head (the app image, the safeboot writes it to app0) and every package.
+# The initial image espurna-esp32.bin: the merged image of scripts/esp32_merge.py (bootloader, partitions, the head in
+# app0) and the modules file of the modules on by default at the start of the module area, the first 64 KB page behind
+# the app image in app0 (modules_esp32.cpp findArea(); module_initial_image.py). The install image espurna-esp32.ota:
+# the head (the app image) and every package; the ESP32 head is not replaced over the network (no safeboot, owner
+# 2026-11-18), the modules are.
 
+import hashlib
 import os
 import struct
 import sys
@@ -34,10 +36,11 @@ from release_image import name as release_name, path as release_path, write  # n
 
 DROM_A = 0x50000000
 IROM_A = 0x70000000
+IRAM_A = 0x40000000
 
-# esp32_4mb_safeboot.csv: app0 (ota_0)
-APP_OFFSET = 0xE0000
-APP_SIZE = 0x2D0000
+# esp32_4mb.csv: app0 (ota_0)
+APP_OFFSET = 0x10000
+APP_SIZE = 0x3A0000
 # the MMU page: the module area starts on one (modules_esp32.cpp findArea())
 PAGE = 0x10000
 
@@ -65,8 +68,11 @@ class Esp32Linker(module_link.Linker):
     bases = (("DROM", DROM_A, 0x50400000, "data view"),
              ("RAM", 0x60000000, 0x60100000, "RAM"),
              ("IROM", IROM_A, 0x70300000, "code view"))
-    own_sections = (".mod_rodata", ".mod_text", ".mod_data", ".mod_bss")
-    image_sections = (".mod_rodata", ".mod_text", ".mod_data")
+    # the pool code (IRAM_ATTR: the BT controller's ISR, what runs with the flash cache off), into the IRAM pool of
+    # the head (modules_esp32.cpp pools()); package version 7
+    pool_base = ("IRAM", IRAM_A, 0x40020000, "IRAM pool")
+    own_sections = (".mod_rodata", ".mod_text", ".mod_iram", ".mod_data", ".mod_bss")
+    image_sections = (".mod_rodata", ".mod_text", ".mod_iram", ".mod_data")
     # the core config of the xtensa toolchain
     head_link_flags = ("-m",)
 
@@ -77,6 +83,11 @@ class Esp32Linker(module_link.Linker):
     def archives_in(self, build_dir):
         """the framework libraries, this env's archives and its library object folders packed into archives"""
         out = dict(self.framework_archives())
+        # the bt component of ESP-IDF (NimBLE, the controller's glue): the ble module's, not the head's (the other
+        # component archives of esp-idf/ are the head's)
+        bt = os.path.join(build_dir, "esp-idf", "bt", "libbt.a")
+        if os.path.isfile(bt):
+            out["libbt.a"] = bt
         work = os.path.join(build_dir, "mod-pio")
         os.makedirs(work, exist_ok=True)
         for entry in sorted(os.listdir(build_dir)):
@@ -105,9 +116,13 @@ class Esp32Linker(module_link.Linker):
         return out
 
     def head_symbols(self, build_dir, head_elf):
-        """the head's DEFINED global symbols as `"name" = address;` (an implicit linker script)"""
-        if head_elf in self._head_symbols:
-            return self._head_symbols[head_elf]
+        """the head's DEFINED global symbols as `"name" = address;` (an implicit linker script); per head image: the
+        relinked head (new exports) is the same path, a cache by path kept the old symbols and every relink exported the
+        same symbols again"""
+        stat = os.stat(head_elf)
+        key = (head_elf, stat.st_mtime_ns, stat.st_size)
+        if key in self._head_symbols:
+            return self._head_symbols[key]
         path = os.path.join(build_dir, "head-symbols.ld")
         lines = []
         for line in self.run([self.tool("nm"), "-g", "--defined-only", head_elf]).splitlines():
@@ -116,8 +131,8 @@ class Esp32Linker(module_link.Linker):
                 lines.append(f'"{parts[2]}" = 0x{parts[0]};')
         with open(path, "w", newline=chr(10)) as f:
             f.write(chr(10).join(lines) + chr(10))
-        self._head_symbols[head_elf] = path.replace(chr(92), "/")
-        return self._head_symbols[head_elf]
+        self._head_symbols[key] = path.replace(chr(92), "/")
+        return self._head_symbols[key]
 
     def symbols_arg(self, build_dir, elf, names, out):
         """the symbols of a provider module as the head's: `"name" = address;` (an implicit linker script)"""
@@ -132,23 +147,63 @@ class Esp32Linker(module_link.Linker):
             f.write(chr(10).join(lines) + chr(10))
         return path.replace(chr(92), "/")
 
+    def link(self, build_dir, name, head_elf, objects, archives, tag, placed, providers=(), keep=()):
+        """the module's objects with the literals of their IRAM_ATTR functions next to them in the pool code"""
+        objects = [self.iram_literals(build_dir, obj) for obj in objects]
+        return super().link(build_dir, name, head_elf, objects, archives, tag, placed, providers, keep)
+
+    def iram_literals(self, build_dir, obj):
+        """an IRAM_ATTR function defined in a header (an inline, a template: a COMDAT) keeps its literals in
+        .literal.<function>, not .iram1.<n>.literal: the link script would put them in the code view (flash), and an
+        l32r of the pool code reaches only back into the pool. A copy of the object with those sections renamed
+        .iram1.literal.<function> (esp32_module.ld: .mod_iram, literals first); the object itself when it has none"""
+        with self._libs_lock:
+            cache = self.__dict__.setdefault("_iram_literal_cache", {})
+            stamp = (obj, os.path.getmtime(obj))
+            if stamp in cache:
+                return cache[stamp]
+
+        functions = set()
+        for line in self.run([self.tool("objdump"), "-t", obj]).splitlines():
+            parts = line.split()
+            if len(parts) >= 6 and parts[-3].startswith(".iram1") and "F" in parts[1:-3]:
+                functions.add(parts[-1])
+        renames = []
+        if functions:
+            for line in self.run([self.tool("objdump"), "-h", obj]).splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].startswith(".literal."):
+                    if parts[1][len(".literal."):] in functions:
+                        renames.append(parts[1])
+
+        out = obj
+        if renames:
+            folder = os.path.join(build_dir, "mod-iram-literals")
+            os.makedirs(folder, exist_ok=True)
+            digest = hashlib.md5(os.path.abspath(obj).encode()).hexdigest()[:8]
+            out = os.path.join(folder, f"{digest}-{os.path.basename(obj)}")
+            args = [self.tool("objcopy")]
+            for section in renames:
+                args.append(f"--rename-section={section}=.iram1.literal.{section[len('.literal.'):]}")
+            self.run(args + [obj, out])
+
+        with self._libs_lock:
+            self.__dict__["_iram_literal_cache"][stamp] = out
+        return out
+
+    def library_flags(self):
+        """the ROM's address table (esp_rom esp32.rom.ld: PROVIDE only, a symbol is defined when a module calls it): the
+        BT controller in ROM (ke_*, llc*, r_*, nvds_*, _data_start_btdm ...) the head never calls, so its ELF has none"""
+        package = self.env.PioPlatform().get_package_dir("framework-espidf")
+        rom = os.path.join(package, "components", "esp_rom", "esp32", "ld", "esp32.rom.ld") if package else ""
+        return [rom.replace(chr(92), "/")] if rom and os.path.isfile(rom) else []
+
     def check(self, name, syms):
-        if syms["__mod_iram_start"] - IROM_A != syms["__mod_iram_load"] - DROM_A:
+        if syms["__mod_text_start"] - IROM_A != syms["__mod_text_lma"] - DROM_A:
             raise RuntimeError(f"module {name}: the code is not at the same offset in both views")
 
     def image_detail(self, syms):
-        return f" (rodata {syms['__mod_iram_load'] - DROM_A}, code {syms['__mod_iram_end'] - syms['__mod_iram_start']})"
-
-    def report(self, name, mapfile):
-        """IRAM_ATTR functions that came with the module: they run from flash here"""
-        iram = []
-        with open(mapfile, errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith(".iram1") and len(line.split()) >= 3:
-                    iram.append(line.split()[0])
-        if iram:
-            print(f"  {name}: WARNING {len(iram)} IRAM_ATTR functions run from flash: {' '.join(iram[:12])}")
+        return f" (rodata {syms['__mod_text_lma'] - DROM_A}, code {syms['__mod_text_end'] - syms['__mod_text_start']})"
 
     def initial(self, ctx, container, on):
         """espurna-esp32.bin: the merged image (esp32_merge.py, run after firmware.bin), the modules on by default at
@@ -167,8 +222,8 @@ class Esp32Linker(module_link.Linker):
         return [write(merged, image)]
 
     def ota_heads(self, ctx):
-        """the head of the install image: the head alone (the application image, the safeboot writes it to app0), as on
-        every chip; the modules, webui among them, come from the same install image by the Apply"""
+        """the head of the install image: the head alone (the application image), as on every chip; the modules, webui
+        among them, come from the same install image by the Apply"""
         return [("esp32", ctx["head_bin"])]
 
 

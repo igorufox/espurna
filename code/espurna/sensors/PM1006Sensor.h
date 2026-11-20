@@ -14,7 +14,7 @@ class PM1006Sensor : public BaseSensor {
 
     public:
 
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -40,8 +40,8 @@ class PM1006Sensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("PM1006");
+        espurna::string description() const override {
+            return "PM1006";
         }
 
         // Type for slot # index
@@ -109,7 +109,7 @@ class PM1006Sensor : public BaseSensor {
                         memset(_buffer, 0, sizeof(_buffer));
                     }
                 }
-                yield();
+                espurna::time::yield();
 
             }
 
@@ -121,7 +121,7 @@ class PM1006Sensor : public BaseSensor {
         unsigned char _position = 0;
 
         double _pm25 = 0;
-        Stream* _serial { nullptr };
+        ::espurna::ByteStream* _serial { nullptr };
 
 };
 

@@ -9,14 +9,13 @@ Copyright (C) 2020-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <functional>
 #include <utility>
 #include <vector>
 #include <type_traits>
 
-#include <ArduinoJson.h>
+#include "text_types.h"
 
 #include "storage_eeprom.h"
 
@@ -96,7 +95,7 @@ kvs_type& kvs_instance();
 namespace traits {
 
 template<typename T>
-using is_arduino_string = std::is_same<String, typename std::decay<T>::type>;
+using is_arduino_string = std::is_same<espurna::string, typename std::decay<T>::type>;
 
 template<typename T>
 using enable_if_arduino_string = std::enable_if<is_arduino_string<T>::value>;
@@ -110,12 +109,12 @@ using enable_if_not_arduino_string = std::enable_if<!is_arduino_string<T>::value
 // does not work right now because embedis api only works on things with char access
 // (won't work on our flash strings, since those can only be accessed via aligned reads)
 
-ValueResult get(const String& key);
-bool set(const String& key, const String& value);
-bool del(const String& key);
-bool has(const String& key);
+ValueResult get(const espurna::string& key);
+bool set(const espurna::string& key, const espurna::string& value);
+bool del(const espurna::string& key);
+bool has(const espurna::string& key);
 
-using Keys = std::vector<String>;
+using Keys = std::vector<espurna::string>;
 Keys keys();
 
 size_t available();
@@ -127,7 +126,7 @@ void foreach(KeyValueResultCallback&&);
 using KeyValueResultWithTokenCallback = std::function<void(settings::kvs_type::KeyValueResult&&, settings::kvs_type::StopToken)>;
 void foreach(KeyValueResultWithTokenCallback&&);
 
-using PrefixResultCallback = std::function<void(StringView prefix, String key, const kvs_type::ReadResult& value)>;
+using PrefixResultCallback = std::function<void(StringView prefix, espurna::string key, const kvs_type::ReadResult& value)>;
 void foreach_prefix(PrefixResultCallback&&, settings::query::StringViewIterator);
 
 // --------------------------------------------------------------------------
@@ -151,21 +150,25 @@ espurna::settings::query::Result settingsQuery(espurna::StringView key);
 
 // --------------------------------------------------------------------------
 
-bool moveSetting(const String& from, const String& to, size_t index);
-bool moveSetting(const String& from, const String& to);
+bool moveSetting(const espurna::string& from, const espurna::string& to, size_t index);
+bool moveSetting(const espurna::string& from, const espurna::string& to);
 
-bool moveSettings(const String& from, const String& to);
+bool moveSettings(const espurna::string& from, const espurna::string& to);
 
-String getSetting(const char* key);
-String getSetting(const String& key);
-String getSetting(const __FlashStringHelper* key);
+espurna::string getSetting(const char* key);
+espurna::string getSettingString(const espurna::string& key);
 
-String getSetting(const espurna::settings::Key& key);
-String getSetting(const espurna::settings::Key& key, const char* defaultValue);
-String getSetting(const espurna::settings::Key& key, const __FlashStringHelper* defaultValue);
-String getSetting(const espurna::settings::Key& key, const String& defaultValue);
-String getSetting(const espurna::settings::Key& key, String&& defaultValue);
-String getSetting(const espurna::settings::Key& key, espurna::StringView defaultValue);
+// exactly a espurna::string (a braced {key, index} goes to the Key overloads, it does not deduce this)
+template <typename T, typename = typename std::enable_if<std::is_same<T, espurna::string>::value>::type>
+espurna::string getSetting(const T& key) {
+    return getSettingString(key);
+}
+
+espurna::string getSetting(const espurna::settings::Key& key);
+espurna::string getSetting(const espurna::settings::Key& key, const char* defaultValue);
+espurna::string getSetting(const espurna::settings::Key& key, const espurna::string& defaultValue);
+espurna::string getSetting(const espurna::settings::Key& key, espurna::string&& defaultValue);
+espurna::string getSetting(const espurna::settings::Key& key, espurna::StringView defaultValue);
 
 template <typename T, typename = typename espurna::settings::traits::enable_if_not_arduino_string<T>::type>
 T getSetting(const espurna::settings::Key& key, T defaultValue) {
@@ -182,34 +185,42 @@ inline bool setSetting(const espurna::settings::Key& key, T&& value) {
 }
 
 template <>
-inline bool setSetting(const espurna::settings::Key& key, const String& value) {
+inline bool setSetting(const espurna::settings::Key& key, const espurna::string& value) {
     return espurna::settings::set(key.value(), value);
 }
 
 template <>
-inline bool setSetting(const espurna::settings::Key& key, String& value) {
+inline bool setSetting(const espurna::settings::Key& key, espurna::string& value) {
     return espurna::settings::set(key.value(), std::cref(value).get());
 }
 
-inline bool setSetting(const espurna::settings::Key& key, String value) {
+inline bool setSetting(const espurna::settings::Key& key, espurna::string value) {
     return espurna::settings::set(key.value(), std::cref(value).get());
 }
 
 template <size_t Size>
 inline bool setSetting(const espurna::settings::Key& key, const char (&value)[Size]) {
-    return setSetting(key, String(value));
+    return setSetting(key, espurna::string(value));
 }
 
 bool delSetting(const char* key);
-bool delSetting(const String& key);
-bool delSetting(const __FlashStringHelper* key);
+bool delSettingString(const espurna::string& key);
+
+template <typename T, typename = typename std::enable_if<std::is_same<T, espurna::string>::value>::type>
+bool delSetting(const T& key) {
+    return delSettingString(key);
+}
 bool delSetting(const espurna::settings::Key& key);
 
 void delSettingPrefix(espurna::settings::query::StringViewIterator);
 
 bool hasSetting(const char* key);
-bool hasSetting(const String& key);
-bool hasSetting(const __FlashStringHelper* key);
+bool hasSettingString(const espurna::string& key);
+
+template <typename T, typename = typename std::enable_if<std::is_same<T, espurna::string>::value>::type>
+bool hasSetting(const T& key) {
+    return hasSettingString(key);
+}
 bool hasSetting(const espurna::settings::Key& key);
 
 void settingsDump(const espurna::terminal::CommandContext&,
@@ -230,9 +241,18 @@ void settingsDump(const espurna::terminal::CommandContext& ctx, const T& setting
     settingsDump(ctx, std::begin(settings), std::end(settings), index);
 }
 
-void settingsGetJson(JsonObject& data);
-bool settingsRestoreJson(char* json_string, size_t json_buffer_size = 1024);
-bool settingsRestoreJson(JsonObject& data);
+// {"app": ..., "version": ..., "backup": "1", "<key>": "<value>", ...}: the backup file (head)
+void settingsPrintJson(espurna::Output&, bool pretty = false);
+
+// the restore of that file (the ws module, settings_json.cpp)
+namespace espurna {
+namespace json {
+class Value;
+} // namespace json
+} // namespace espurna
+
+bool settingsRestoreJson(espurna::json::Value data);
+void settingsJsonSetup();
 
 size_t settingsKeyCount();
 espurna::settings::Keys settingsKeys();
@@ -256,39 +276,39 @@ void migrate();
 // -----------------------------------------------------------------------------
 
 template<typename T>
-String getSetting(const String& key, unsigned char index, T defaultValue)
+espurna::string getSetting(const espurna::string& key, unsigned char index, T defaultValue)
 __attribute__((deprecated("getSetting({key, index}, default) should be used instead")));
 
 template<typename T>
-bool setSetting(const String& key, unsigned char index, T value)
+bool setSetting(const espurna::string& key, unsigned char index, T value)
 __attribute__((deprecated("setSetting({key, index}, value) should be used instead")));
 
 template<typename T>
-bool hasSetting(const String& key, unsigned char index)
+bool hasSetting(const espurna::string& key, unsigned char index)
 __attribute__((deprecated("hasSetting({key, index}) should be used instead")));
 
 template<typename T>
-bool delSetting(const String& key, unsigned char index)
+bool delSetting(const espurna::string& key, unsigned char index)
 __attribute__((deprecated("delSetting({key, index}) should be used instead")));
 
 // --------------------------------------------------------------------------
 
 template<typename T>
-String getSetting(const String& key, unsigned char index, T defaultValue) {
+espurna::string getSetting(const espurna::string& key, unsigned char index, T defaultValue) {
     return getSetting({key, index}, defaultValue);
 }
 
 template<typename T>
-bool setSetting(const String& key, unsigned char index, T value) {
+bool setSetting(const espurna::string& key, unsigned char index, T value) {
     return setSetting({key, index}, value);
 }
 
 template<typename T>
-bool hasSetting(const String& key, unsigned char index) {
+bool hasSetting(const espurna::string& key, unsigned char index) {
     return hasSetting({key, index});
 }
 
 template<typename T>
-bool delSetting(const String& key, unsigned char index) {
+bool delSetting(const espurna::string& key, unsigned char index) {
     return delSetting({key, index});
 }

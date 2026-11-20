@@ -22,14 +22,13 @@
 
   Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
-  Modified to include generic INPUT / OUTPUT pin support through a custom interface.
+  Modified to include generic espurna::pins::Input / espurna::pins::Output pin support through a custom interface.
   Definitions are incompatible with DebounceEvent, you should not include it's headers.
 
 */
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <functional>
 #include <memory>

@@ -9,12 +9,12 @@ Copyright (C) 2019-2023 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstdint>
 #include <type_traits>
 
 #include "settings_helpers.h"
+#include "text_types.h"
 
 namespace espurna {
 namespace settings {
@@ -26,110 +26,112 @@ using OtherUnsigned = std::conditional<std::is_same<uint32_t, unsigned int>::val
 using OtherSigned = std::conditional<std::is_same<int32_t, int>::value, long, int>::type;
 
 template <typename T>
-T convert(const String& value);
+T convert(const espurna::string& value);
 
 template <>
-float convert(const String& value);
+float convert(const espurna::string& value);
 
 template <>
-double convert(const String& value);
+double convert(const espurna::string& value);
 
 template <>
-signed char convert(const String& value);
+signed char convert(const espurna::string& value);
 
 template <>
-short convert(const String& value);
+short convert(const espurna::string& value);
 
 template <>
-int convert(const String& value);
+int convert(const espurna::string& value);
 
 template <>
-long convert(const String& value);
+long convert(const espurna::string& value);
 
 template <>
-bool convert(const String& value);
+bool convert(const espurna::string& value);
 
 template <>
-unsigned long convert(const String& value);
+unsigned long convert(const espurna::string& value);
 
 template <>
-unsigned int convert(const String& value);
+unsigned int convert(const espurna::string& value);
 
 template <>
-unsigned short convert(const String& value);
+unsigned short convert(const espurna::string& value);
 
 template <>
-unsigned char convert(const String& value);
+unsigned char convert(const espurna::string& value);
 
 template <>
-duration::Microseconds convert(const String&);
+duration::Microseconds convert(const espurna::string&);
 
 template <>
-duration::Milliseconds convert(const String&);
+duration::Milliseconds convert(const espurna::string&);
 
 template <>
-duration::Seconds convert(const String&);
+duration::Seconds convert(const espurna::string&);
 
 template <>
-duration::Minutes convert(const String&);
+duration::Minutes convert(const espurna::string&);
 
 template <>
-duration::Hours convert(const String&);
+duration::Hours convert(const espurna::string&);
 
-inline String serialize(uint8_t value, int base = 10) {
-    return String(value, base);
+inline espurna::string serialize(uint8_t value, int base = 10) {
+    return espurna::string(value, base);
 }
 
-inline String serialize(uint16_t value, int base = 10) {
-    return String(value, base);
+inline espurna::string serialize(uint16_t value, int base = 10) {
+    return espurna::string(value, base);
 }
 
-String serialize(uint32_t value, int base = 10);
+espurna::string serialize(uint32_t value, int base = 10);
 
-inline String serialize(OtherUnsigned value, int base = 10) {
+inline espurna::string serialize(OtherUnsigned value, int base = 10) {
     return serialize(static_cast<uint32_t>(value), base);
 }
 
-inline String serialize(OtherSigned value, int base = 10) {
-    return String(value, base);
+inline espurna::string serialize(OtherSigned value, int base = 10) {
+    return espurna::string(value, base);
 }
 
-inline String serialize(int16_t value, int base = 10) {
-    return String(value, base);
+inline espurna::string serialize(int16_t value, int base = 10) {
+    return espurna::string(value, base);
 }
 
-inline String serialize(int32_t value, int base = 10) {
-    return String(value, base);
+inline espurna::string serialize(int32_t value, int base = 10) {
+    return espurna::string(value, base);
 }
 
-inline String serialize(int8_t value, int base = 10) {
+inline espurna::string serialize(int8_t value, int base = 10) {
     return serialize(static_cast<int32_t>(value), base);
 }
 
-inline String serialize(bool value) {
+inline espurna::string serialize(bool value) {
     return value ? PSTR("true") : PSTR("false");
 }
 
-inline String serialize(float value) {
-    return String(value, 3);
+inline espurna::string serialize(double value) {
+    char buffer[24];
+    formatDecimal(value, 3, buffer, sizeof(buffer));
+    return espurna::string(buffer);
 }
 
-inline String serialize(double value) {
-    return String(value, 3);
+inline espurna::string serialize(float value) {
+    return serialize(static_cast<double>(value));
 }
 
-String serialize(duration::Microseconds);
+espurna::string serialize(duration::Microseconds);
 
-String serialize(duration::Milliseconds);
+espurna::string serialize(duration::Milliseconds);
 
-String serialize(duration::Seconds);
+espurna::string serialize(duration::Seconds);
 
-String serialize(duration::Minutes);
+espurna::string serialize(duration::Minutes);
 
-String serialize(duration::Hours);
+espurna::string serialize(duration::Hours);
 
 template <typename Container, typename T>
-T convert(const Container& options, const String& value, T defaultValue) {
+T convert(const Container& options, const espurna::string& value, T defaultValue) {
     if (value.length()) {
         using espurna::settings::options::Enumeration;
         using UnderlyingType = typename Enumeration<T>::UnderlyingType;
@@ -149,8 +151,8 @@ T convert(const Container& options, const String& value, T defaultValue) {
 }
 
 template <typename Container, typename T>
-String serialize(const Container& options, T value) {
-    String out;
+espurna::string serialize(const Container& options, T value) {
+    espurna::string out;
 
     for (auto it = std::begin(options); it != std::end(options); ++it) {
         if ((*it).value() == value) {

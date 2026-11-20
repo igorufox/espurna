@@ -1,12 +1,13 @@
 /*
 
 NET - the implementations of the one network stack of everything ESPurna builds, included by exactly ONE .cpp of an
-image: ESPurna's net.cpp (the head of every chip), code/migration-app's and code/safeboot-app's main.cpp.
+image: ESPurna's net.cpp (the head of every chip) and code/migration-app's main.cpp.
 - libs/tcp.h            the TCP connection and listener on lwIP's raw API
+- libs/udp.h            the UDP socket on lwIP's raw API
 - libs/tls.h            the byte stream over TCP, plain or TLS (BearSSL); under the HTTP and the MQTT client
 - libs/http_server.h    the HTTP server
 The HTTP client (libs/http_client.h) is not part of it: its implementation, libs/http_client_impl.h, is included after
-this file by ESPurna's http module (http.cpp) and by the main.cpp of code/migration-app and code/safeboot-app
+this file by ESPurna's http module (http.cpp) and by the main.cpp of code/migration-app
 (the WebSocket server, libs/websocket.h, is not part of it: the ws module of the head has it, ws_server.cpp)
 
 What that .cpp defines before the include is only how the image logs and locks, never what the stack does:
@@ -20,7 +21,7 @@ What that .cpp defines before the include is only how the image logs and locks, 
 
 // The lwIP version of code/libraries.ini (passed by every config as -DESPURNA_LWIP): lwIP comes built into the
 // platform of the chip, so the build stops here when a platform brought another one. Two versions on purpose
-// (owner 2026-11-12): 2.2.0 on ESP32 / Beken / safeboot (their SDKs), 2.1.3 on ESP8266 / migration image (the NONOS core has it
+// (owner 2026-11-12): 2.2.0 on ESP32 / Beken (their SDKs), 2.1.3 on ESP8266 / migration image (the NONOS core has it
 // built in, no 2.2 port of its link layer exists; ESPurna uses only the raw TCP API, DNS and tcpip_api_call(), the
 // same in both). The reasons in full: code/libraries.ini, `lwip`
 #include <lwip/init.h>
@@ -43,12 +44,13 @@ constexpr bool same(const char* lhs, const char* rhs) {
 }
 
 static_assert(same(LWIP_VERSION_STRING, ESPURNA_LWIP),
-    "the lwIP of this platform is not the version of code/libraries.ini (lwip / lwip_esp8266)");
+    "the lwIP of this platform is not the version of code/libraries.ini (lwip / lwip_migration)");
 
 } // namespace lwip_version
 } // namespace net
 } // namespace espurna
 
 #include "tcp_impl.h"
+#include "udp_impl.h"
 #include "tls_impl.h"
 #include "http_server_impl.h"

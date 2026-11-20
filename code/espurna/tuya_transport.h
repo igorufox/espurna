@@ -8,8 +8,8 @@ Copyright (C) 2019 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Print.h>
-#include <StreamString.h>
+#include "byte_stream.h"
+
 
 #include <iterator>
 #include <vector>
@@ -18,24 +18,24 @@ namespace tuya {
 
     class PrintRaw {
     public:
-        static void write(Print& printer, uint8_t data) {
-            printer.write(data);
+        static void write(::espurna::Output& printer, uint8_t data) {
+            printer.write(static_cast<char>(data));
         }
 
-        static void write(Print& printer, const uint8_t* data, size_t size) {
+        static void write(::espurna::Output& printer, const uint8_t* data, size_t size) {
             printer.write(data, size);
         }
     };
 
     class PrintHex {
     public:
-        static void write(Print& printer, uint8_t data) {
+        static void write(::espurna::Output& printer, uint8_t data) {
             char buffer[3] = {0};
             snprintf(buffer, sizeof(buffer), "%02x", data);
             printer.write(buffer, 2);
         }
 
-        static void write(Print& printer, const uint8_t* data, size_t size) {
+        static void write(::espurna::Output& printer, const uint8_t* data, size_t size) {
             for (size_t n = 0; n < size; ++n) {
                 write(printer, data[n]);
             }
@@ -45,10 +45,10 @@ namespace tuya {
 
     class StreamWrapper {
     protected:
-        Stream& _stream;
+        ::espurna::ByteStream& _stream;
 
     public:
-        StreamWrapper(Stream& stream) :
+        StreamWrapper(::espurna::ByteStream& stream) :
             _stream(stream)
         {}
 
@@ -61,17 +61,12 @@ namespace tuya {
         }
     };
 
-    class Output : public virtual StreamWrapper {
+    // frames out: to the port, or as hex text to any output (the debug log)
+    class Output {
     public:
-        Output(Stream& stream) :
-            StreamWrapper(stream)
+        explicit Output(::espurna::Output& out) :
+            _out(out)
         {}
-
-        Output(StreamString& stream, size_t length) :
-            Output(stream)
-        {
-            stream.reserve((length * 2) + 1);
-        }
 
         template <typename T, typename PrintType>
         void _write(const T& data) {
@@ -79,14 +74,14 @@ namespace tuya {
             const uint8_t header[2] = {0x55, 0xaa};
             uint8_t checksum = 0xff;
 
-            PrintType::write(_stream, header, 2);
+            PrintType::write(_out, header, 2);
 
             for (auto it = data.cbegin(); it != data.cend(); ++it) {
                 checksum += *it;
-                PrintType::write(_stream, *it);
+                PrintType::write(_out, *it);
             }
 
-            PrintType::write(_stream, checksum);
+            PrintType::write(_out, checksum);
 
         }
 
@@ -100,6 +95,8 @@ namespace tuya {
             _write<T, PrintHex>(data);
         }
 
+    private:
+        ::espurna::Output& _out;
 
     };
 
@@ -114,7 +111,7 @@ namespace tuya {
     public:
         using const_iterator = std::vector<uint8_t>::const_iterator;
 
-        Input(Stream& stream) :
+        Input(::espurna::ByteStream& stream) :
             StreamWrapper(stream)
         {
             _buffer.reserve(LIMIT);
@@ -142,14 +139,14 @@ namespace tuya {
             if (_done) return;
             if (full()) return;
 
-            if (_last && (millis() - _last > TIME_LIMIT)) reset();
-            _last = millis();
+            if (_last && (espurna::time::ms() - _last > TIME_LIMIT)) reset();
+            _last = espurna::time::ms();
 
             int byte = _stream.read();
             if (byte < 0) return;
 
             //DEBUG_MSG("i=%u byte=%u chk=%u:%u\n",
-            //  _index, byte, _checksum, uint8_t(_checksum + byte));
+            //  _index, byte, _checksum, byte(_checksum + byte));
 
             // check that header value is 0x55aa
             if (0 == _index) {
@@ -206,9 +203,9 @@ namespace tuya {
         unsigned long _last = 0;
     };
 
-    class Transport : public Input, public Output, public virtual StreamWrapper {
+    class Transport : public virtual StreamWrapper, public Input, public Output {
     public:
-        Transport(Stream& stream) :
+        Transport(::espurna::ByteStream& stream) :
             StreamWrapper(stream), Input(stream), Output(stream)
         {}
     };

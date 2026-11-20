@@ -9,7 +9,6 @@ Heavily inspired by the Embedis design:
 
 */
 
-#include <Arduino.h>
 
 #include "terminal_parsing.h"
 #include "terminal_commands.h"
@@ -38,7 +37,7 @@ Buffer parsed_to_buffer(ParsedLine& parsed) {
         auto buffered = std::find_if(
             parsed.buffer.begin(),
             parsed.buffer.end(),
-            [&](const String& other) {
+            [&](const espurna::string& other) {
                 return token.data() == other.begin();
             });
 
@@ -56,8 +55,8 @@ Buffer parsed_to_buffer(ParsedLine& parsed) {
     return out;
 }
 
-String prepare_error(parser::Error error) {
-    String out;
+espurna::string prepare_error(parser::Error error) {
+    espurna::string out;
     out += STRING_VIEW("TERMINAL: ");
     out += parser::error(error);
 
@@ -110,26 +109,26 @@ const Command* find(StringView name) {
     return nullptr;
 }
 
-void ok(Print& out) {
-    out.print(F("+OK\n"));
+void ok(::espurna::Output& out) {
+    out.print("+OK\n");
 }
 
 void ok(const espurna::terminal::CommandContext& ctx) {
     ok(ctx.output);
 }
 
-void error(Print& print, const String& message) {
+void error(::espurna::Output& print, const espurna::string& message) {
     print.printf_P(PSTR("-ERROR: %s\n"),
         message.length()
             ? message.c_str()
             : PSTR("UNKNOWN"));
 }
 
-void error(const espurna::terminal::CommandContext& ctx, const String& message) {
+void error(const espurna::terminal::CommandContext& ctx, const espurna::string& message) {
     error(ctx.error, message);
 }
 
-bool find_and_call(ParsedLine parsed, Print& output, Print& error_output) {
+bool find_and_call(ParsedLine parsed, ::espurna::Output& output, ::espurna::Output& error_output) {
     if (!parsed.tokens.size()) {
         return false;
     }
@@ -146,15 +145,15 @@ bool find_and_call(ParsedLine parsed, Print& output, Print& error_output) {
         return true;
     }
 
-    error(error_output, F("Command not found"));
+    error(error_output, "Command not found");
     return false;
 }
 
-bool find_and_call(ParsedLine parsed, Print& output) {
+bool find_and_call(ParsedLine parsed, ::espurna::Output& output) {
     return find_and_call(std::move(parsed), output, output);
 }
 
-bool find_and_call(StringView cmd, Print& output, Print& error_output) {
+bool find_and_call(StringView cmd, ::espurna::Output& output, ::espurna::Output& error_output) {
     auto result = parse_terminated(cmd);
     if (result.error != parser::Error::Ok) {
         error(error_output, internal::prepare_error(result.error));
@@ -168,11 +167,11 @@ bool find_and_call(StringView cmd, Print& output, Print& error_output) {
     return find_and_call(std::move(result), output, error_output);
 }
 
-bool find_and_call(StringView cmd, Print& output) {
+bool find_and_call(StringView cmd, ::espurna::Output& output) {
     return find_and_call(cmd, output, output);
 }
 
-bool api_find_and_call(StringView cmd, Print& output, Print& error_output) {
+bool api_find_and_call(StringView cmd, ::espurna::Output& output, ::espurna::Output& error_output) {
     bool out { false };
     auto input = cmd;
 
@@ -202,7 +201,7 @@ bool api_find_and_call(StringView cmd, Print& output, Print& error_output) {
     return out;
 }
 
-bool api_find_and_call(StringView cmd, Print& output) {
+bool api_find_and_call(StringView cmd, ::espurna::Output& output) {
     return api_find_and_call(cmd, output, output);
 }
 

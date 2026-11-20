@@ -6,8 +6,6 @@ Chip part, the FreeRTOS chips part is in arch/rtos/system_rtos.cpp, common part 
 
 */
 
-#include <Arduino.h>
-
 #include "../../espurna_tasks.h"
 
 #include <esp_system.h>
@@ -28,12 +26,12 @@ Chip part, the FreeRTOS chips part is in arch/rtos/system_rtos.cpp, common part 
 #include <memory>
 #include <new>
 
-#include "espurna.h"
-#include "rtcmem.h"
-#include "crash.h"
+#include "../../espurna.h"
+#include "../../rtcmem.h"
+#include "../../crash.h"
 
-// Arduino core main.cpp, whether the loop task is watched by the task WDT
-extern bool loopTaskWDTEnabled;
+// enableLoopWDT(), loopTaskWDTEnabled: whether the loop task is watched by the task WDT (core_esp32.cpp)
+#include "core_esp32.h"
 
 #if TERMINAL_SUPPORT
 void coredumpSetup();
@@ -51,11 +49,12 @@ size_t systemHeapMinimum() {
     return esp_get_minimum_free_heap_size();
 }
 
-HeapStats systemHeapStats() {
+// byte addressable heap (systemHeapStats(), arch/rtos/system_rtos.cpp)
+void espurna::system::chip::sdk::heap(uint32_t& free, uint32_t& block) {
     multi_heap_info_t info;
     heap_caps_get_info(&info, MALLOC_CAP_8BIT);
-    uint8_t frag = info.total_free_bytes ? (100 - (info.largest_free_block * 100 / info.total_free_bytes)) : 0;
-    return {(uint32_t)info.total_free_bytes, (uint32_t)info.largest_free_block, frag};
+    free = info.total_free_bytes;
+    block = info.largest_free_block;
 }
 
 uint32_t espurna::system::RandomDevice::operator()() const {
@@ -76,75 +75,83 @@ bool eraseSDKConfig() {
 
 namespace espurna {
 namespace system {
+
+// Two cores: a spinlock keeps the other one out (and masks the interrupts of this one). Nests
 namespace {
 
-// The task WDT does not see a loop() that waits forever in something calling delay() (which feeds it): a task
-// of its own counts the loop passes and aborts when they stop. The panic reboots the chip and writes the core
-// dump (every task); RTC memory keeps which loop callback it stood in, for `info` after the reboot.
+portMUX_TYPE critical_spinlock = portMUX_INITIALIZER_UNLOCKED;
+
+} // namespace
+
+uint32_t criticalEnter() {
+    portENTER_CRITICAL(&critical_spinlock);
+    return 0;
+}
+
+void criticalExit(uint32_t) {
+    portEXIT_CRITICAL(&critical_spinlock);
+}
+
+// The loop stall watcher is common (arch/rtos/system_rtos.cpp, ref. system_chip.h). Here what it leaves for after the
+// reset: the task WDT panics (CONFIG_ESP_TASK_WDT_PANIC) and the core dump has every task, RTC memory keeps which loop
+// callback the loop task stood in, for `info` after the reboot
 namespace stall {
+namespace {
 
-#ifndef SYSTEM_LOOP_STALL
-#define SYSTEM_LOOP_STALL 60    // seconds without a loop() pass before the reboot, 0 = off
-#endif
-
-constexpr uint32_t Seconds { SYSTEM_LOOP_STALL };
 constexpr uint32_t Magic { 0x4C4F4F50 }; // LOOP
 
 struct Record {
     uint32_t magic;
-    uint32_t callback;
-    uint32_t seconds;
-    uint32_t uptime;
+    Report report;
 };
 
 RTC_NOINIT_ATTR Record record;
 
-espurna::system::Shared<uint32_t> passes { 0 };
-String last;
-
-void task(void*) {
-    uint32_t seen = passes.load();
-    uint32_t same = 0;
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        const auto now = passes.load();
-        if (now != seen) {
-            seen = now;
-            same = 0;
-            continue;
-        }
-
-        if (++same >= Seconds) {
-            record = Record{Magic, static_cast<uint32_t>(espurnaLoopCurrent()), same,
-                static_cast<uint32_t>(esp_timer_get_time() / 1000000)};
-            abort();
-        }
-    }
-}
+espurna::string last;
 
 // a stall from the previous boot, once: what loop() stood in (`addr2line` it on the build's .elf)
 void setup() {
-    if ((record.magic == Magic) && (esp_reset_reason() == ESP_RST_PANIC)) {
-        char buf[96];
-        snprintf_P(buf, sizeof(buf), PSTR("loop() stalled %u s in 0x%08X at uptime %u s"),
-            record.seconds, record.callback, record.uptime);
-        last = buf;
+    if (record.magic == Magic) {
+        switch (esp_reset_reason()) {
+        case ESP_RST_PANIC:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_INT_WDT:
+        case ESP_RST_WDT: {
+            char buf[112];
+            snprintf_P(buf, sizeof(buf), PSTR("loop() stalled %u ms (watchdog %u ms) in 0x%08X at uptime %u s"),
+                record.report.since, record.report.period, record.report.callback, record.report.uptime / 1000);
+            last = buf;
+            break;
+        }
+        default:
+            break;
+        }
     }
-    record.magic = 0;
 
-    if (Seconds) {
-        xTaskCreatePinnedToCore(task, "loopstall", 2048, nullptr, 1, nullptr, 0);
-    }
+    record.magic = 0;
 }
 
-} // namespace stall
 } // namespace
 
 namespace chip {
 
-void sdk::loop() {
-    stall::passes.fetch_add(1);
+void record(const Report& report) {
+    ::espurna::system::stall::record = Record{Magic, report};
 }
+
+void cancel() {
+    ::espurna::system::stall::record.magic = 0;
+}
+
+[[noreturn]] void reset(const Report& report) {
+    record(report);
+    abort();
+}
+
+} // namespace chip
+} // namespace stall
+
+namespace chip {
 
 // Same as esp8266 delay(), the loop task itself only feeds it between loop() calls
 void sdk::feed_loop_wdt() {
@@ -250,6 +257,7 @@ void sdk::setup() {
 // task WDT, CONFIG_ESP_TASK_WDT_TIMEOUT_S (5s)
 void sdk::enable_loop_wdt() {
     enableLoopWDT();
+    stall::period(CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000);
 }
 
 } // namespace chip
@@ -260,8 +268,7 @@ void pre_setup() {
     // The TCP servers (libs/tcp.h: web, telnet) are started before WiFi is, make sure the TCP/IP stack is up
     esp_netif_init();
 
-    // Same range as esp8266 ADC (0...1023), analog buttons and sensors expect it
-    analogReadResolution(10);
+    // analogRead() is 0...1023 already, the range of the esp8266 ADC (core_esp32.cpp)
 }
 
 // Same values as esp8266, common code (e.g. the stability check) relies on them
@@ -302,13 +309,13 @@ namespace debug {
 namespace crash {
 namespace chip {
 
-bool dump(Print&, bool) {
+bool dump(::espurna::Output&, bool) {
     return false;
 }
 
-bool dump_empty(Print& print) {
+bool dump_empty(::espurna::Output& print) {
     print.printf_P(PSTR("Reason of restart: %s\nCrash details (if any) are in the core dump, see COREDUMP\n"),
-        ESP.getResetReason().c_str());
+        ESP_COMPAT.getResetReason().c_str());
     return true;
 }
 
@@ -342,7 +349,7 @@ void setup() {
 } // namespace debug
 } // namespace espurna
 
-// compat_esp32.cpp, ESP.getResetInfo()
-String systemStallInfo() {
+// compat_esp32.cpp, ESP_COMPAT.getResetInfo()
+espurna::string systemStallInfo() {
     return espurna::system::stall::last;
 }

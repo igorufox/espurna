@@ -110,7 +110,7 @@ void setup() {
 
     if (full != internal::duty_limit) {
         DEBUG_MSG_P(PSTR("[PWM] Duty limit %u (%s%%)\n"),
-            internal::duty_limit, String(limit, 3).c_str());
+            internal::duty_limit, formatDecimalString(limit, 3).c_str());
     }
 }
 
@@ -200,14 +200,14 @@ void pwm_write(::terminal::CommandContext&& ctx) {
         const auto convert_channel = espurna::settings::internal::convert<uint32_t>;
         const auto channel = convert_channel(ctx.argv[1]);
         if (channel >= channels()) {
-            terminalError(ctx, F("Invalid channel ID"));
+            terminalError(ctx, "Invalid channel ID");
             return;
         }
 
         const auto convert_duty = espurna::settings::internal::convert<float>;
         const auto value = std::clamp(convert_duty(ctx.argv[2]), 0.f, 100.f);
         ctx.output.printf("PWM channel %u duty %s\n",
-                channel, String(value, 3).c_str());
+                channel, formatDecimalString(value, 3).c_str());
 
         duty(channel, value);
         update();
@@ -216,7 +216,7 @@ void pwm_write(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    terminalError(ctx, F("PWM.WRITE <CHANNEL> <DUTY>"));
+    terminalError(ctx, "PWM.WRITE <CHANNEL> <DUTY>");
 }
 
 static constexpr ::terminal::Command Commands[] PROGMEM {

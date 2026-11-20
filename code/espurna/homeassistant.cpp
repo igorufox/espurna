@@ -11,6 +11,7 @@ Copyright (C) 2019-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 */
 
 #include "espurna.h"
+#include "libs/PrintString.h"
 
 #if HOMEASSISTANT_SUPPORT
 
@@ -22,7 +23,7 @@ Copyright (C) 2019-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "web.h"
 #include "ws.h"
 
-#include <ArduinoJson.h>
+#include "json.h"
 
 #include <forward_list>
 #include <memory>
@@ -82,7 +83,7 @@ bool enabled() {
     return getSetting(keys::Enabled, build::enabled());
 }
 
-String prefix() {
+espurna::string prefix() {
     return getSetting(keys::Prefix, build::prefix());
 }
 
@@ -90,11 +91,11 @@ bool retain() {
     return getSetting(keys::Retain, build::retain());
 }
 
-String birthTopic() {
+espurna::string birthTopic() {
     return getSetting(keys::BirthTopic, build::birthTopic());
 }
 
-String birthPayload() {
+espurna::string birthPayload() {
     return getSetting(keys::BirthPayload, build::birthPayload());
 }
 
@@ -102,7 +103,7 @@ namespace query {
 namespace internal {
 
 #define EXACT_VALUE(NAME, FUNC)\
-String NAME () {\
+espurna::string NAME () {\
     return espurna::settings::internal::serialize(FUNC());\
 }
 
@@ -142,7 +143,7 @@ void setup() {
 // Output is supposed to be used as both part of the MQTT config topic and the `uniq_id` field
 // TODO: manage UTF8 strings? in case we somehow receive `desc`, like it was done originally
 
-String normalize_ascii(String value, bool lower) {
+espurna::string normalize_ascii(espurna::string value, bool lower) {
     for (auto ptr = value.begin(); ptr != value.end(); ++ptr) {
         switch (*ptr) {
         case '\0':
@@ -165,8 +166,8 @@ done:
     return value;
 }
 
-String normalize_ascii(StringView value, bool lower) {
-    return normalize_ascii(String(value), lower);
+espurna::string normalize_ascii(StringView value, bool lower) {
+    return normalize_ascii(espurna::string(value), lower);
 }
 
 // Common data used across the discovery payloads.
@@ -174,9 +175,9 @@ String normalize_ascii(StringView value, bool lower) {
 
 // 'runtime' strings, may be changed in settings
 struct ConfigStrings {
-    String name;
-    String identifier;
-    String prefix;
+    espurna::string name;
+    espurna::string identifier;
+    espurna::string prefix;
 };
 
 using ConfigStringsPtr = std::unique_ptr<ConfigStrings>;
@@ -192,9 +193,9 @@ ConfigStringsPtr make_config_strings() {
 
 // 'build-time' strings, always the same for current build
 struct BuildStrings {
-    String version;
-    String manufacturer;
-    String device;
+    espurna::string version;
+    espurna::string manufacturer;
+    espurna::string device;
 };
 
 using BuildStringsPtr = std::unique_ptr<BuildStrings>;
@@ -209,20 +210,9 @@ BuildStringsPtr make_build_strings() {
         });
 }
 
+// the "dev" object of every discovery message, written once: {"name": .., "ids": [..], "sw": .., "mf": .., "mdl": ..}
 class Device {
 public:
-    // XXX: take care when adding / removing keys and values below
-    // - `const char*` is copied by pointer value, persistent pointers make sure
-    //   it is valid for the duration of this objects lifetime
-    // - `F(...)` aka `__FlashStringHelpe` **will take more space**
-    //   it is **copied inside of the buffer**, and will take `strlen()` bytes
-    // - allocating more objects **will silently corrupt** buffer region
-    //   while there are *some* checks, current version is going to break
-    static constexpr size_t BufferSize { JSON_ARRAY_SIZE(1) + JSON_OBJECT_SIZE(6) };
-
-    using Buffer = StaticJsonBuffer<BufferSize>;
-    using BufferPtr = std::unique_ptr<Buffer>;
-
     Device() = delete;
 
     Device(const Device&) = delete;
@@ -232,47 +222,47 @@ public:
     Device& operator=(Device&&) = delete;
 
     Device(ConfigStringsPtr config, BuildStringsPtr build) :
-        _config(std::move(config)),
-        _build(std::move(build)),
-        _buffer(std::make_unique<Buffer>()),
-        _root(_buffer->createObject())
+        _config(std::move(config))
     {
-        _root["name"] = _config->name.c_str();
-
-        auto& ids = _root.createNestedArray("ids");
-        ids.add(_config->identifier.c_str());
-
-        _root["sw"] = _build->version.c_str();
-        _root["mf"] = _build->manufacturer.c_str();
-        _root["mdl"] = _build->device.c_str();
+        StringPrint out;
+        {
+            espurna::json::StreamWriter root(out);
+            root.beginObject();
+            root.field("name", _config->name);
+            root.array("ids");
+            root.value(_config->identifier);
+            root.end();
+            root.field("sw", build->version);
+            root.field("mf", build->manufacturer);
+            root.field("mdl", build->device);
+            root.end();
+        }
+        _json = std::move(static_cast<espurna::string&>(out));
     }
 
-    const String& name() const {
+    const espurna::string& name() const {
         return _config->name;
     }
 
-    const String& prefix() const {
+    const espurna::string& prefix() const {
         return _config->prefix;
     }
 
-    const String& identifier() const {
+    const espurna::string& identifier() const {
         return _config->identifier;
     }
 
-    JsonObject& root() {
-        return _root;
+    // the object as JSON text
+    StringView json() const {
+        return espurna::StringView(_json);
     }
 
 private:
     ConfigStringsPtr _config;
-    BuildStringsPtr _build;
-
-    BufferPtr _buffer;
-    JsonObject& _root;
+    espurna::string _json;
 };
 
 using DevicePtr = std::unique_ptr<Device>;
-using JsonBufferPtr = std::unique_ptr<DynamicJsonBuffer>;
 
 class Context {
 public:
@@ -282,55 +272,34 @@ public:
         _capacity(capacity)
     {}
 
-    const String& name() const {
+    const espurna::string& name() const {
         return _device->name();
     }
 
-    const String& prefix() const {
+    const espurna::string& prefix() const {
         return _device->prefix();
     }
 
-    const String& identifier() const {
+    const espurna::string& identifier() const {
         return _device->identifier();
     }
 
-    JsonObject& device() {
-        return _device->root();
+    StringView device() const {
+        return _device->json();
     }
 
+    // the messages are written as they are asked for, nothing is kept between them
     void reset() {
-        _json = std::make_unique<DynamicJsonBuffer>(_capacity);
-    }
-
-    size_t capacity() const {
-        return _capacity;
-    }
-
-    size_t size() {
-        if (_json) {
-            return _json->size();
-        }
-
-        return 0;
-    }
-
-    JsonObject& makeObject() {
-        if (!_json) {
-            reset();
-        }
-
-        return _json->createObject();
     }
 
 private:
-    String _prefix;
+    espurna::string _prefix;
     DevicePtr _device;
 
-    JsonBufferPtr _json { nullptr };
     size_t _capacity { 0ul };
 };
 
-String quote(String&& value) {
+espurna::string quote(espurna::string&& value) {
     if (value.equalsIgnoreCase("y")
         || value.equalsIgnoreCase("n")
         || value.equalsIgnoreCase("yes")
@@ -340,7 +309,7 @@ String quote(String&& value) {
         || value.equalsIgnoreCase("on")
         || value.equalsIgnoreCase("off"))
     {
-        String result;
+        espurna::string result;
         result.reserve(value.length() + 2);
         result += '"';
         result += value;
@@ -366,8 +335,8 @@ public:
 
     virtual bool ok() const = 0;
 
-    virtual const String& topic() = 0;
-    virtual const String& message() = 0;
+    virtual const espurna::string& topic() = 0;
+    virtual const espurna::string& message() = 0;
 
     virtual bool prepare();
     virtual bool ready() const;
@@ -392,14 +361,6 @@ public:
         _ctx(ctx)
     {}
 
-    JsonObject& root() {
-        if (!_root) {
-            _root = &_ctx.makeObject();
-        }
-
-        return *_root;
-    }
-
     bool ready() const override {
         return _ready;
     }
@@ -410,39 +371,43 @@ public:
             && (_index < _count);
     }
 
-    const String& uniqueId() {
+    const espurna::string& uniqueId() {
         if (!_unique_id.length()) {
-            _unique_id = _ctx.identifier() + '_' + F("relay") + '_' + String(_index, 10);
+            _unique_id = _ctx.identifier() + '_' + "relay" + '_' + espurna::string(_index, 10);
         }
 
         return _unique_id;
     }
 
-    const String& topic() override {
+    const espurna::string& topic() override {
         if (!_topic.length()) {
             _topic = _ctx.prefix();
-            _topic += F("/switch/");
+            _topic += "/switch/";
             _topic += uniqueId();
-            _topic += F("/config");
+            _topic += "/config";
         }
 
         return _topic;
     }
 
-    const String& message() override {
+    const espurna::string& message() override {
         if (!_message.length()) {
-            auto& json = root();
-            json[F("dev")] = _ctx.device();
-            json[F("avty_t")] = _info->availability.c_str();
-            json[F("pl_avail")] = _info->payload_available.c_str();
-            json[F("pl_not_avail")] = _info->payload_not_available.c_str();
-            json[F("pl_on")] = _info->payload_on.c_str();
-            json[F("pl_off")] = _info->payload_off.c_str();
-            json[F("uniq_id")] = uniqueId();
-            json[F("name")] = _ctx.name() + ' ' + String(_index, 10);
-            json[F("stat_t")] = mqttTopic(MQTT_TOPIC_RELAY, _index);
-            json[F("cmd_t")] = mqttTopicSetter(MQTT_TOPIC_RELAY, _index);
-            json.printTo(_message);
+            StringPrint out;
+            espurna::json::StreamWriter json(out);
+            json.beginObject();
+            json.key("dev");
+            json.raw(_ctx.device());
+            json.field("avty_t", _info->availability.c_str());
+            json.field("pl_avail", _info->payload_available.c_str());
+            json.field("pl_not_avail", _info->payload_not_available.c_str());
+            json.field("pl_on", _info->payload_on.c_str());
+            json.field("pl_off", _info->payload_off.c_str());
+            json.field("uniq_id", uniqueId());
+            json.field("name", _ctx.name() + ' ' + espurna::string(_index, 10));
+            json.field("stat_t", mqttTopic(MQTT_TOPIC_RELAY, _index));
+            json.field("cmd_t", mqttTopicSetter(MQTT_TOPIC_RELAY, _index));
+            json.end();
+            _message = std::move(static_cast<espurna::string&>(out));
         }
 
         return _message;
@@ -476,18 +441,17 @@ public:
 
 private:
     struct Info {
-        String availability;
-        String payload_available;
-        String payload_not_available;
-        String payload_on;
-        String payload_off;
+        espurna::string availability;
+        espurna::string payload_available;
+        espurna::string payload_not_available;
+        espurna::string payload_on;
+        espurna::string payload_off;
     };
 
     using InfoPtr = std::unique_ptr<Info>;
     InfoPtr _makeInfo();
 
     Context& _ctx;
-    JsonObject* _root { nullptr };
 
     InfoPtr _info;
     size_t _index;
@@ -495,9 +459,9 @@ private:
 
     bool _ready { false };
 
-    String _unique_id;
-    String _topic;
-    String _message;
+    espurna::string _unique_id;
+    espurna::string _topic;
+    espurna::string _message;
 };
 
 RelayDiscovery::InfoPtr RelayDiscovery::_makeInfo() {
@@ -539,14 +503,6 @@ public:
         _ctx(ctx)
     {}
 
-    JsonObject& root() {
-        if (!_root) {
-            _root = &_ctx.makeObject();
-        }
-
-        return *_root;
-    }
-
     bool ready() const override {
         return _ready;
     }
@@ -568,41 +524,38 @@ public:
         return false;
     }
 
-    const String& uniqueId() {
+    const espurna::string& uniqueId() {
         if (!_unique_id.length()) {
-            _unique_id = _ctx.identifier() + '_' + F("light");
+            _unique_id = _ctx.identifier() + '_' + "light";
         }
 
         return _unique_id;
     }
 
-    const String& topic() override {
+    const espurna::string& topic() override {
         if (!_topic.length()) {
             _topic = _ctx.prefix();
-            _topic += F("/light/");
+            _topic += "/light/";
             _topic += uniqueId();
-            _topic += F("/config");
+            _topic += "/config";
         }
 
         return _topic;
     }
 
-    const String& message() override {
+    const espurna::string& message() override {
         if (!_message.length()) {
-            auto& json = root();
-
-            json[F("schema")] = "json";
-            json[F("uniq_id")] = uniqueId();
-
-            json[F("name")] = _ctx.name() + ' ' + F("Light");
-
-            json[F("stat_t")] = mqttTopic(Topic);
-            json[F("cmd_t")] = mqttTopicSetter(Topic);
-
-            json[F("avty_t")] = mqttTopic(MQTT_TOPIC_STATUS);
-            json[F("pl_avail")] = quote(mqttPayloadStatus(true));
-            json[F("pl_not_avail")] = quote(mqttPayloadStatus(false));
-
+            StringPrint out;
+            espurna::json::StreamWriter json(out);
+            json.beginObject();
+            json.field("schema", "json");
+            json.field("uniq_id", uniqueId());
+            json.field("name", _ctx.name() + ' ' + "Light");
+            json.field("stat_t", mqttTopic(Topic));
+            json.field("cmd_t", mqttTopicSetter(Topic));
+            json.field("avty_t", mqttTopic(MQTT_TOPIC_STATUS));
+            json.field("pl_avail", quote(mqttPayloadStatus(true)));
+            json.field("pl_not_avail", quote(mqttPayloadStatus(false)));
             // Note that since we send back the values immediately, HS mode sliders
             // *will jump*, as calculations of input do not always match the output.
             // (especially, when gamma table is used, as we modify the results)
@@ -619,36 +572,45 @@ public:
             //   'rgbw' - we receive and map to 'w' to our 'warm'
             //   'rgbww' - we receive and map 'c' to our 'cold' and 'w' to our 'warm'
             //   'cw' / 'ww' without 'rgb' are not supported; see 'brightness' or 'color_temp'
-            json["brightness"] = true;
-            JsonArray& modes = json.createNestedArray("supported_color_modes");
-
-            if (lightHasColor()) {
-                modes.add("hs");
-                modes.add("rgb");
-                if (lightHasWarmWhite() && lightHasColdWhite()) {
-                    modes.add("rgbww");
-                } else if (lightHasWarmWhite()) {
-                    modes.add("rgbw");
-                }
-            }
+            json.field("brightness", true);
 
             // Mired is only an input, we never send this value back
             // (...besides the internally pinned value, ref. MQTT_TOPIC_MIRED. not used here though)
             // - in RGB mode, we convert the temperature into a specific color
             // - in CCT mode, white channels are used
-            if (lightHasColor() || lightHasWhite()) {
+            const bool temperature = lightHasColor() || lightHasWhite();
+            if (temperature) {
                 const auto range = lightMiredsRange();
-                json["min_mirs"] = range.cold();
-                json["max_mirs"] = range.warm();
-                modes.add("color_temp");
-                modes.add("white");
+                json.field("min_mirs", range.cold());
+                json.field("max_mirs", range.warm());
             }
 
-            if (!modes.size()) {
-                modes.add("brightness");
+            json.array("supported_color_modes");
+            size_t modes { 0 };
+            if (lightHasColor()) {
+                json.value("hs");
+                json.value("rgb");
+                modes += 2;
+                if (lightHasWarmWhite() && lightHasColdWhite()) {
+                    json.value("rgbww");
+                } else if (lightHasWarmWhite()) {
+                    json.value("rgbw");
+                }
             }
 
-            json.printTo(_message);
+            if (temperature) {
+                json.value("color_temp");
+                json.value("white");
+                modes += 2;
+            }
+
+            if (!modes) {
+                json.value("brightness");
+            }
+            json.end();
+
+            json.end();
+            _message = std::move(static_cast<espurna::string&>(out));
         }
 
         return _message;
@@ -656,69 +618,71 @@ public:
 
 private:
     Context& _ctx;
-    JsonObject* _root { nullptr };
 
     bool _ready { false };
     size_t _count;
 
-    String _unique_id;
-    String _topic;
-    String _message;
+    espurna::string _unique_id;
+    espurna::string _topic;
+    espurna::string _message;
 };
 
-void heartbeat_rgb(JsonObject& root, JsonObject& color) {
+// "color": {...} first (the members of the object are open), then "color_mode" outside of it
+const char* heartbeat_rgb(espurna::json::Writer& root) {
     const auto rgb = lightRgb();
 
-    color["r"] = rgb.red();
-    color["g"] = rgb.green();
-    color["b"] = rgb.blue();
+    root.field("r", rgb.red());
+    root.field("g", rgb.green());
+    root.field("b", rgb.blue());
 
     if (lightHasWarmWhite() && lightHasColdWhite()) {
-        root["color_mode"] = "rgbww";
-        color["c"] = lightColdWhite();
-        color["w"] = lightWarmWhite();
-    } else if (lightHasWarmWhite()) {
-        root["color_mode"] = "rgbw";
-        color["w"] = lightWarmWhite();
-    } else {
-        root["color_mode"] = "rgb";
+        root.field("c", lightColdWhite());
+        root.field("w", lightWarmWhite());
+        return "rgbww";
     }
+
+    if (lightHasWarmWhite()) {
+        root.field("w", lightWarmWhite());
+        return "rgbw";
+    }
+
+    return "rgb";
 }
 
-void heartbeat_hsv(JsonObject& root, JsonObject& color) {
-    root["color_mode"] = "hs";
-
+const char* heartbeat_hsv(espurna::json::Writer& root) {
     const auto hsv = lightHsv();
-    color["h"] = hsv.hue();
-    color["s"] = hsv.saturation();
+    root.field("h", hsv.hue());
+    root.field("s", hsv.saturation());
+    return "hs";
 }
 
 bool heartbeat(heartbeat::Mask mask) {
     // TODO: mask json payload specifically?
     // or, find a way to detach masking from the system setting / don't use heartbeat timer
     if (mask & heartbeat::Report::Light) {
-        DynamicJsonBuffer buffer(512);
-        JsonObject& root = buffer.createObject();
+        StringPrint message;
+        {
+            espurna::json::StreamWriter root(message);
+            root.beginObject();
 
-        const auto state = lightState();
-        root["state"] = state ? "ON" : "OFF";
-
-        if (state) {
-            root["brightness"] = lightBrightness();
-            if (lightHasColor() && lightColor()) {
-                auto& color = root.createNestedObject("color");
-                if (lightUseRGB()) {
-                    heartbeat_rgb(root, color);
-                } else {
-                    heartbeat_hsv(root, color);
+            const auto state = lightState();
+            root.field("state", state ? "ON" : "OFF");
+            if (state) {
+                root.field("brightness", lightBrightness());
+                if (lightHasColor() && lightColor()) {
+                    root.object("color");
+                    const char* mode = lightUseRGB()
+                        ? heartbeat_rgb(root)
+                        : heartbeat_hsv(root);
+                    root.end();
+                    root.field("color_mode", mode);
                 }
             }
+
+            root.end();
         }
 
-        String message;
-        root.printTo(message);
-
-        static const auto topic = StringView(Topic).toString();
+        static const auto topic = espurna::StringView(Topic).toString();
         mqttSendRaw(
             mqttTopic(topic).c_str(),
             message.c_str(), false);
@@ -732,70 +696,69 @@ void publishLightJson() {
 }
 
 void receiveLightJson(StringView payload) {
-    DynamicJsonBuffer buffer(1024);
-    JsonObject& root = buffer.parseObject(payload.begin());
-    if (!root.success()) {
+    const auto root = espurna::json::parse(espurna::StringView(payload));
+    if (!root.isObject()) {
         return;
     }
 
-    if (!root.containsKey("state")) {
+    if (!root.has("state")) {
         return;
     }
 
-    const auto state = root["state"].as<String>();
+    const auto state = espurna::string(root["state"].asString().c_str());
 
-    if (StringView("ON") == state) {
+    if (espurna::StringView("ON") == state) {
         lightState(true);
-    } else if (StringView("OFF") == state) {
+    } else if (espurna::StringView("OFF") == state) {
         lightState(false);
     } else {
         return;
     }
 
     auto transition = lightTransitionTime();
-    if (root.containsKey("transition")) {
+    if (root.has("transition")) {
         using LocalUnit = decltype(lightTransitionTime());
         using RemoteUnit = std::chrono::duration<float>;
-        auto seconds = RemoteUnit(root["transition"].as<float>());
+        auto seconds = RemoteUnit(root["transition"].asDouble());
 
         if (seconds.count() > 0.0f) {
             transition = std::chrono::duration_cast<LocalUnit>(seconds);
         }
     }
 
-    if (root.containsKey("color_temp")) {
-        const auto mireds = root["color_temp"].as<long>();
+    if (root.has("color_temp")) {
+        const auto mireds = root["color_temp"].asLong();
         lightTemperature(light::Mireds{ .value = mireds });
     }
 
-    if (root.containsKey("brightness")) {
-        lightBrightness(root["brightness"].as<long>());
+    if (root.has("brightness")) {
+        lightBrightness(root["brightness"].asLong());
     }
 
-    if (lightHasColor() && root.containsKey("color")) {
-        JsonObject& color = root["color"];
-        if (color.containsKey("h")
-         && color.containsKey("s"))
+    if (lightHasColor() && root.has("color")) {
+        const auto color = root["color"];
+        if (color.has("h")
+         && color.has("s"))
         {
             lightHs(
-                color["h"].as<long>(),
-                color["s"].as<long>());
-        } else if (color.containsKey("r")
-                && color.containsKey("g")
-                && color.containsKey("b"))
+                color["h"].asLong(),
+                color["s"].asLong());
+        } else if (color.has("r")
+                && color.has("g")
+                && color.has("b"))
         {
             lightRgb({
-                color["r"].as<long>(),
-                color["g"].as<long>(),
-                color["b"].as<long>()});
+                color["r"].asLong(),
+                color["g"].asLong(),
+                color["b"].asLong()});
         }
 
-        if (color.containsKey("w")) {
-            lightWarmWhite(color["w"].as<long>());
+        if (color.has("w")) {
+            lightWarmWhite(color["w"].asLong());
         }
 
-        if (color.containsKey("c")) {
-            lightColdWhite(color["c"].as<long>());
+        if (color.has("c")) {
+            lightColdWhite(color["c"].asLong());
         }
     }
 
@@ -812,14 +775,6 @@ public:
         _ctx(ctx)
     {}
 
-    JsonObject& root() {
-        if (!_root) {
-            _root = &_ctx.makeObject();
-        }
-
-        return *_root;
-    }
-
     bool ready() const override {
         return _ready;
     }
@@ -830,34 +785,36 @@ public:
             && (_index < _count);
     }
 
-    const String& topic() override {
+    const espurna::string& topic() override {
         if (!_topic.length()) {
             _topic = _ctx.prefix();
-            _topic += F("/sensor/");
+            _topic += "/sensor/";
             _topic += uniqueId();
-            _topic += F("/config");
+            _topic += "/config";
         }
 
         return _topic;
     }
 
-    const String& message() override {
+    const espurna::string& message() override {
         if (!_message.length()) {
-            auto& json = root();
-            json[F("dev")] = _ctx.device();
-            json[F("uniq_id")] = uniqueId();
-
-            json[F("name")] = _ctx.name() + ' ' + name() + ' ' + localId();
-            json[F("stat_t")] = mqttTopic(_info.topic);
-            json[F("unit_of_meas")] = magnitudeUnitsName(_info.units);
-
-            json.printTo(_message);
+            StringPrint out;
+            espurna::json::StreamWriter json(out);
+            json.beginObject();
+            json.key("dev");
+            json.raw(_ctx.device());
+            json.field("uniq_id", uniqueId());
+            json.field("name", _ctx.name() + ' ' + name() + ' ' + localId());
+            json.field("stat_t", mqttTopic(_info.topic));
+            json.field("unit_of_meas", magnitudeUnitsName(_info.units));
+            json.end();
+            _message = std::move(static_cast<espurna::string&>(out));
         }
 
         return _message;
     }
 
-    const String& name() {
+    const espurna::string& name() {
         if (!_name.length()) {
             _name = magnitudeTypeTopic(_info.type);
         }
@@ -865,11 +822,11 @@ public:
         return _name;
     }
 
-    String localId() const {
-        return String(_info.index, 10);
+    espurna::string localId() const {
+        return espurna::string(_info.index, 10);
     }
 
-    const String& uniqueId() {
+    const espurna::string& uniqueId() {
         if (!_unique_id.length()) {
             _unique_id = _ctx.identifier() + '_' + name() + '_' + localId();
         }
@@ -914,17 +871,16 @@ public:
 
 private:
     Context& _ctx;
-    JsonObject* _root { nullptr };
 
     sensor::Info _info;
     size_t _count;
     size_t _index;
     bool _ready { false };
 
-    String _unique_id;
-    String _name;
-    String _topic;
-    String _message;
+    espurna::string _unique_id;
+    espurna::string _name;
+    espurna::string _topic;
+    espurna::string _message;
 };
 
 #endif
@@ -1228,7 +1184,7 @@ namespace internal {
 bool enabled { build::enabled() };
 bool retain { build::retain() };
 
-String birthTopic;
+espurna::string birthTopic;
 
 timer::SystemTimer task;
 
@@ -1442,29 +1398,29 @@ namespace web {
 
 #if WEB_SUPPORT
 
-void onAction(uint32_t, const char* action, JsonObject& data) {
+void onAction(uint32_t, const char* action, espurna::json::Value data) {
     STRING_VIEW_INLINE(Publish, "ha-publish");
     STRING_VIEW_INLINE(State, "state");
 
-    if ((Publish == action) && data.containsKey(State)) {
-        publishDiscoveryForState(data[State].as<bool>());
+    if ((Publish == action) && data.has(State)) {
+        publishDiscoveryForState(data[State].asBool());
         return;
     }
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, settings::query::Prefix);
 }
 
-void onConnected(JsonObject& root) {
-    root[settings::keys::Enabled] = settings::enabled();
-    root[settings::keys::Prefix] = settings::prefix();
-    root[settings::keys::Retain] = settings::retain();
-    root[settings::keys::BirthTopic] = settings::birthTopic();
-    root[settings::keys::BirthPayload] = settings::birthPayload();
+void onConnected(espurna::json::Writer& root) {
+    root.field(settings::keys::Enabled, settings::enabled());
+    root.field(settings::keys::Prefix, settings::prefix());
+    root.field(settings::keys::Retain, settings::retain());
+    root.field(settings::keys::BirthTopic, settings::birthTopic());
+    root.field(settings::keys::BirthPayload, settings::birthPayload());
 }
 
-bool onKeyCheck(StringView key, const JsonVariant&) {
+bool onKeyCheck(StringView key, espurna::json::Value) {
     return settings::query::checkSamePrefix(key);
 }
 

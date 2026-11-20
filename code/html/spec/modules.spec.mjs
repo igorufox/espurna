@@ -312,11 +312,11 @@ test('the head id of the modules file and the head of an install image for the b
 test('every head of an install image has its route, the chips differ only in that data', () => {
     expect(['esp8266', 'esp32', 'beken-tuya', 'beken-quectel', 'esp32-matter'].map(headName))
         .toEqual(['esp8266', 'esp32', 'beken', 'beken', 'esp32']);
-    for (const name of ['esp8266', 'esp32', 'beken']) {
+    for (const name of ['esp8266', 'beken']) {
         expect(HEAD_ROUTES[name]).toBeDefined();
     }
-    // the ESP32 runs from its only application slot: its safeboot writes the head, the file as the body
-    expect(HEAD_ROUTES.esp32).toEqual({restart: 'safeboot/switch', away: 404, upload: 'upload', field: ''});
+    // the ESP32 head is not replaced over the network (no safeboot)
+    expect(HEAD_ROUTES.esp32).toBeUndefined();
     expect(HEAD_ROUTES.beken).toEqual(HEAD_ROUTES.esp8266);
 });
 
@@ -327,20 +327,13 @@ describe('one install for every chip', () => {
     });
 
     /**
-     * the board: /modules answers 200, or 404 while in the ESP32 safeboot; every request is logged
+     * the board: /modules answers 200; every request is logged
      * @param {string[]} log
      */
     function board(log) {
-        let safeboot = false;
         vi.stubGlobal('fetch', async (url, options = {}) => {
             const path = new URL(url).pathname.slice(1);
             log.push(`${options.method ?? 'GET'} ${path}`);
-            if (path === 'safeboot/switch') {
-                safeboot = true;
-            }
-            if ((path === 'modules') && safeboot) {
-                return new Response('', {status: 404});
-            }
             return new Response((path === 'modules') ? '{"modules":[]}' : 'OK', {status: 200});
         });
         vi.stubGlobal('XMLHttpRequest', class {
@@ -356,9 +349,6 @@ describe('one install for every chip', () => {
                 this.handlers[name] = handler;
             }
             send(body) {
-                if (this.path === 'upload') {
-                    safeboot = false;
-                }
                 log.push((body instanceof FormData) ? `form ${[...body.keys()].join(',')}` : 'body');
                 this.status = 200;
                 this.responseText = 'OK';
@@ -416,9 +406,15 @@ describe('one install for every chip', () => {
         expect(await run('beken-quectel', 'beken', 'ff')).toEqual([...head, ...APPLY]);
     });
 
-    test('ESP32: the head through the safeboot, then the same Apply', async () => {
-        expect(await run('esp32', 'esp32', 'ff')).toEqual([
-            'POST safeboot/switch', 'GET modules', 'POST upload', 'body', 'GET modules', ...APPLY]);
+    test('ESP32: another head is refused, the head is not replaced over the network', async () => {
+        vi.useFakeTimers();
+        const log = [];
+        board(log);
+        const done = installImage(new URL('http://board/'), image('esp32'), {image: 'esp32', md5: 'ff'}, ['webui'], () => {});
+        const outcome = expect(done).rejects.toThrow('the ESP32 head is not replaced over the network');
+        await vi.runAllTimersAsync();
+        await outcome;
+        expect(log).toEqual([]);
     });
 
     test('the board runs the head of the image: the Apply alone', async () => {

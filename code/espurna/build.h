@@ -6,7 +6,6 @@ BUILD INFO
 
 #pragma once
 
-#include <Arduino.h>
 
 #include "types.h"
 

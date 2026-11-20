@@ -28,6 +28,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "build.h"
 #include "types.h"
+#include "text_types.h"
+#include "byte_stream.h"
+#include "pins.h"
 #include "debug.h"
 #include "gpio.h"
 #include "storage_eeprom.h"

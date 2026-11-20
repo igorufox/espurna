@@ -10,7 +10,7 @@ Copyright (C) 2019 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <ArduinoJson.h>
+#include "json.h"
 
 #include <functional>
 #include <vector>
@@ -36,9 +36,11 @@ namespace espurna {
 namespace web {
 namespace ws {
 
-using OnSend = std::function<void(JsonObject& root)>;
-using OnAction = std::function<void(uint32_t client_id, const char* action, JsonObject& data)>;
-using OnKeyCheck = std::function<bool(espurna::StringView key, const JsonVariant& value)>;
+// the writer is inside the message object: a callback adds its members (json.h, the tools module)
+using OnSend = std::function<void(json::Writer& root)>;
+// `data`: the "data" member of the message (an object, or invalid when there is none)
+using OnAction = std::function<void(uint32_t client_id, const char* action, json::Value data)>;
+using OnKeyCheck = std::function<bool(espurna::StringView key, json::Value value)>;
 
 struct Callbacks {
     struct Prepend {
@@ -47,7 +49,7 @@ struct Callbacks {
     struct Append {
     };
 
-    using OnSend = void(*)(JsonObject&);
+    using OnSend = void(*)(json::Writer&);
 
     Callbacks& onVisible(OnSend, Append);
     Callbacks& onVisible(OnSend, Prepend);
@@ -67,7 +69,7 @@ struct Callbacks {
         return onData(f, Append{});
     }
 
-    using OnAction = void(*)(uint32_t, const char*, JsonObject&);
+    using OnAction = void(*)(uint32_t, const char*, json::Value);
 
     Callbacks& onAction(OnAction, Append);
     Callbacks& onAction(OnAction, Prepend);
@@ -75,7 +77,7 @@ struct Callbacks {
         return onAction(f, Append{});
     }
 
-    using OnKeyCheck = bool(*)(espurna::StringView, const JsonVariant&);
+    using OnKeyCheck = bool(*)(espurna::StringView, json::Value);
 
     Callbacks& onKeyCheck(OnKeyCheck, Append);
     Callbacks& onKeyCheck(OnKeyCheck, Prepend);
@@ -108,8 +110,8 @@ bool wsDebugSend(const DebugPrefix&, const char*, size_t);
 // Queued item is removed on client disconnection *or* when internal timeout occurs
 
 // There are two policies set on how to send the data:
-// - All will use the same JsonObject for each callback
-// - Sequence will use a different JsonObject for each callback
+// - All writes every callback into the same message
+// - Sequence sends a message of its own for each callback
 // - Manual works only with a single callback object
 //   However, it is up to the user to call `wsSend()`
 //
@@ -149,14 +151,11 @@ void wsPostSequence(espurna::web::ws::Callbacks::OnSendContainer&& cbs);
 void wsPostSequence(uint32_t client_id, const espurna::web::ws::Callbacks::OnSendContainer& cbs);
 void wsPostSequence(const espurna::web::ws::Callbacks::OnSendContainer& cbs);
 
-// Immmediatly try to serialize and send JsonObject&
+// Right now: the callback writes the message, it goes to every client (or `client_id`) at once.
 // May silently fail when network is busy sending previous requests, or there's not enough RAM
 
-void wsSend(JsonObject& root);
-void wsSend(uint32_t client_id, JsonObject& root);
-
-void wsSend(JsonObject& root);
 void wsSend(espurna::web::ws::OnSend callback);
+void wsSend(uint32_t client_id, espurna::web::ws::OnSend callback);
 void wsSend(const char* data);
 
 // Check if any or specific client_id is connected
@@ -174,8 +173,12 @@ void wsPause(bool);
 bool wsConnected(uint32_t client_id);
 
 // Append module's name that webui can make it's widgets visible
-// (for the payload in `on_send` callback(s))
-void wsPayloadModule(JsonObject&, espurna::StringView);
+// (for the payload in `on_send` callback(s)): kept until the message ends, then one "modulesVisible" list (tools)
+void wsPayloadModule(espurna::json::Writer&, espurna::StringView);
+// the names collected by wsPayloadModule() since the last call (the head keeps them, no JSON there)
+std::vector<espurna::StringView> wsPayloadModulesTake();
+// the ws module (tools), at the end of a message: "modulesVisible": [<the names taken>]
+void wsPayloadModulesFlush(espurna::json::Writer&);
 
 // Access to our module-specific lifetime callbacks.
 // Expected usage is through the on() methods. Kept by the head, the ws module sends them (modules_ws.h)
@@ -184,4 +187,6 @@ espurna::web::ws::Callbacks& wsRegister();
 
 // the ws module's start (ws_server.cpp, from module_ws.cpp)
 void wsSetup();
+// the WebUI parts of the head that read JSON, the ws module's (ws_head.cpp)
+void wsHeadSetup();
 

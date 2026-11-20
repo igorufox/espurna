@@ -1,7 +1,0 @@
-{
-    "name": "Wire",
-    "version": "1.0.0",
-    "description": "Software I2C master with the Arduino TwoWire API, for the BK7231N (ESPurna's i2c module)",
-    "frameworks": "arduino",
-    "platforms": "libretiny"
-}

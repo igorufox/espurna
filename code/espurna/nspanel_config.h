@@ -9,14 +9,13 @@ of it is copied into RAM (a chip whose data cannot be read as plain memory gets 
 what changes: the entity states and the few settings of the on-panel tiles. GET /nspanel.json is written back from the
 tree, unknown keys are dropped at the upload with a warning.
 
-Depends on Arduino String and ArduinoJson only, so the host tests build it as it is (code/test/unit/src/nspanel)
+Depends on Arduino espurna::string and json.h (ESPurna's JSON) only, so the host tests build it as it is (code/test/unit/src/nspanel)
 
 */
 
 #pragma once
 
-#include <Arduino.h>
-#include <ArduinoJson.h>
+#include "json.h"
 
 #include <cmath>
 #include <cstddef>
@@ -55,16 +54,16 @@ constexpr size_t ForecastMax { 10 };
 // Text helpers
 // -----------------------------------------------------------------------------
 
-String utf8(uint16_t code);
+espurna::string utf8(uint16_t code);
 
 // cut at 'max' bytes without splitting a multi-byte sequence
-void utf8Truncate(String& value, size_t max);
+void utf8Truncate(espurna::string& value, size_t max);
 
 // first 'chars' UTF-8 characters
-String utf8Prefix(const String& value, size_t chars);
+espurna::string utf8Prefix(const espurna::string& value, size_t chars);
 
 // '~' separates fields of ESP->TFT commands
-String sanitize(const char* value, size_t max);
+espurna::string sanitize(const char* value, size_t max);
 
 // Sakamoto, 0 = Sunday; -1 for a month outside 1..12
 int weekday(int y, int m, int d);
@@ -94,8 +93,8 @@ struct Text {
         return strlen(ptr);
     }
 
-    operator String() const {
-        return String(ptr);
+    operator espurna::string() const {
+        return espurna::string(ptr);
     }
 
     bool operator==(const char* other) const {
@@ -106,11 +105,11 @@ struct Text {
         return !(*this == other);
     }
 
-    bool operator==(const String& other) const {
+    bool operator==(const espurna::string& other) const {
         return *this == other.c_str();
     }
 
-    bool operator!=(const String& other) const {
+    bool operator!=(const espurna::string& other) const {
         return !(*this == other.c_str());
     }
 };
@@ -134,8 +133,8 @@ struct Str {
         return strlen(c_str());
     }
 
-    operator String() const {
-        return String(c_str());
+    operator espurna::string() const {
+        return espurna::string(c_str());
     }
 
     bool operator==(const char* other) const {
@@ -146,11 +145,11 @@ struct Str {
         return !(*this == other);
     }
 
-    bool operator==(const String& other) const {
+    bool operator==(const espurna::string& other) const {
         return *this == other.c_str();
     }
 
-    bool operator!=(const String& other) const {
+    bool operator!=(const espurna::string& other) const {
         return !(*this == other.c_str());
     }
 
@@ -293,7 +292,7 @@ inline bool samePath(const Span<Str>& a, const Span<Str>& b) {
 
 // the entity now, in RAM
 struct EntityLive {
-    String value;
+    espurna::string value;
     float number { NAN }; // value as a number, NAN when it is not one
     int8_t state { -1 };  // -1 unknown, 0 off, 1 on
 };
@@ -546,12 +545,12 @@ struct Config {
 };
 
 // the MQTT command topic of the entity: its "command", else the state topic + mqtt.set; empty - none
-inline String entityCommand(const Config& config, const Entity& entity) {
+inline espurna::string entityCommand(const Config& config, const Entity& entity) {
     if (entity.command.length()) {
-        return String(entity.command.c_str());
+        return espurna::string(entity.command.c_str());
     }
 
-    String out;
+    espurna::string out;
     if (entity.topic.length()) {
         out = entity.topic.c_str();
         out += config.set.c_str();
@@ -584,9 +583,9 @@ enum class ParseResult {
 // bytes in order (write(), pieces of any size), then end(). A false stops the compile, 'error' says why (an "out of
 // memory" one is ParseResult::LowMemory)
 struct ImageSink {
-    virtual bool begin(size_t size, String& error) = 0;
+    virtual bool begin(size_t size, espurna::string& error) = 0;
     virtual bool write(const uint8_t* data, size_t length) = 0;
-    virtual bool end(String& error) = 0;
+    virtual bool end(espurna::string& error) = 0;
 
 protected:
     ~ImageSink() = default;
@@ -598,9 +597,9 @@ struct ImageBlock : public ImageSink {
     std::unique_ptr<uint8_t[]> data;
     size_t size { 0 };
 
-    bool begin(size_t length, String& error) override;
+    bool begin(size_t length, espurna::string& error) override;
     bool write(const uint8_t* bytes, size_t length) override;
-    bool end(String& error) override;
+    bool end(espurna::string& error) override;
 
 private:
     size_t filled { 0 };
@@ -613,7 +612,7 @@ size_t jsonBufferSize(const char* text, size_t length);
 // 'text' is NUL terminated and destroyed by the in-place parse; 'out' gets the image only once the draft is complete,
 // nothing of it unless the result is Ok or WriteFailed. No heap block above build::CompileBlock (but a longer single
 // text). No exception leaves here (-fexceptions build: std::deque / std::vector throw bad_alloc)
-ParseResult compile(char* text, const Limits& limits, ImageSink& out, String& error, String& warnings);
+ParseResult compile(char* text, const Limits& limits, ImageSink& out, espurna::string& error, espurna::string& warnings);
 
 // the image is of an older layout: its tree can still be written back as JSON (and compiled again)
 bool treeReadable(const uint8_t* data, size_t size);

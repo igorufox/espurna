@@ -4,16 +4,15 @@ AC FREQUENCY DETECTION SWITCH MODULE
 
 Mains wall-switch input, usually wired through an optocoupler. While the switch
 is ON the GPIO sees a train of mains-frequency edges, while it is OFF the line stays
-idle. Edges are counted in the CHANGE interrupt and evaluated in fixed windows.
+idle. Edges are counted in the espurna::pins::Change interrupt and evaluated in fixed windows.
 
-digitalRead() returns LOW while AC is present and HIGH while it is not, so the
-input is expected to be used as a switch with HIGH default (idle) value.
+espurna::pins::read() returns false while AC is present and true while it is not, so the
+input is expected to be used as a switch with true default (idle) value.
 
 */
 
 #pragma once
 
-#include <Arduino.h>
 #include "espurna_isr.h"
 #include "libs/BasePin.h"
 
@@ -26,7 +25,7 @@ public:
         unsigned long timeout_ms;
         // minimum number of pulses within the window for the ON state
         unsigned long min_pulses;
-        // minimum percentage of the window spent in the active (LOW) level for the ON state, 0 to disable.
+        // minimum percentage of the window spent in the active (false) level for the ON state, 0 to disable.
         // Long switch wires pick up mains capacitively, the optocoupler then sees narrow pulses
         // at the same frequency even while the switch is OFF. A closed switch keeps it on for most of the cycle
         unsigned long min_duty;
@@ -39,7 +38,7 @@ public:
         bool debug;
     };
 
-    // Only on-chip GPIO capable of CHANGE interrupts, which are not already used by another AcSwitch
+    // Only on-chip GPIO capable of espurna::pins::Change interrupts, which are not already used by another AcSwitch
     static bool available(unsigned char pin);
 
     // Takes ownership of the (already locked) GPIO pin, which is still used for pinMode / digitalWrite.
@@ -81,7 +80,7 @@ private:
 
     struct Window {
         unsigned long pulses;
-        // percentage of the window spent in the active (LOW) level
+        // percentage of the window spent in the active (false) level
         unsigned long duty;
     };
 
@@ -124,8 +123,8 @@ private:
     volatile unsigned char _edges { 0 };
     volatile unsigned long _last_counted { 0 };
 
-    // Time spent in the active (LOW) level since the window started (us). ISR adds every LOW segment
-    // that ended within the window, the one still going on at the end of the window is added by digitalRead()
+    // Time spent in the active (false) level since the window started (us). ISR adds every false segment
+    // that ended within the window, the one still going on at the end of the window is added by espurna::pins::read()
     volatile unsigned long _window_start { 0 };
     volatile unsigned long _low_us { 0 };
 

@@ -2,10 +2,10 @@
 
 HTTP CLIENT
 
-The one http:// and https:// client of everything ESPurna runs: the head of every chip (ESP8266, ESP32, Beken), the
-ESP32 safeboot (code/safeboot-app, plain ESP-IDF) and code/migration-app. One build of it, no variants, no Arduino:
+The one http:// and https:// client of everything ESPurna runs: the head of every chip (ESP8266, ESP32, Beken) and
+code/migration-app. One build of it, no variants, no Arduino:
 - ESPurna: the http module (http.cpp, module_http.cpp); the modules that use it need it (head.h) and link against it
-- code/migration-app, code/safeboot-app: their main.cpp includes the same implementation (libs/http_client_impl.h)
+- code/migration-app: its main.cpp includes the same implementation (libs/http_client_impl.h)
 
 Users: the migration image (its download of the full image), the NSPanel (weather, the URL requests of its screens, the TFT upload), ThingSpeak and InfluxDB (POST).
 
@@ -15,17 +15,9 @@ Users: the migration image (its download of the full image), the NSPanel (weathe
   tcpip_api_call()
 - the loop drives everything else in small steps (`loop()`): TLS, the request, the response head, the body into the
   sink. A step never waits
-- TLS is BearSSL everywhere, its engine has no I/O of its own (bytes in, bytes out): the ESP8266 core has it, the others
-  take the same sources as a library (igorufox/bearssl-esp8266). The certificate chain is not validated: a download is
-  checked against its SHA-256 instead (from the release list, which the browser took over validated https).
-  The base suites: TLS 1.2, static RSA + AES-128-GCM (GitHub Pages offers it, the least code), the server's RSA key
-  taken from its certificate
-- ESPurna's tls module (module_tls.cpp) adds the rest for any server: ECDHE with RSA and ECDSA certificates,
-  ChaCha20-Poly1305, the X.509 decoder of BearSSL for the server key. Installed (Apply + reboot as every module), every
-  connection of the head's client offers its suites. The TLS itself is libs/tls.h (shared with MQTT), the hooks
-  are espurna::tls::extend() and espurna::tls::key() there
-- what differs per chip is only what the chip forces: the entropy for TLS, and on the ESP8266 the second stack for
-  the RSA, EC and record crypto steps (its loop stack is 4 KB, RSA i15 alone takes ~4.5 KB)
+- TLS is libs/tls.h (shared with MQTT): mbedtls of the chip's SDK in the tls module (module_tls.cpp); without the
+  module an https request fails, http works. The certificate chain is not validated for a download: it is checked
+  against its SHA-256 instead (from the release list, which the browser took over validated https)
 
 Request: GET or POST (with its body and Content-Type), Range from a byte. Response: the status, Content-Length or
 chunked or until the server closes, redirects (up to 4, absolute or a path; a POST is not repeated), the SHA-256 of the

@@ -8,6 +8,8 @@ Copyright (C) 2017 by Dmitry Blinov <dblinov76 at gmail dot com>
 
 #include "espurna.h"
 
+#include <wifi_sdk.h>
+
 #if THERMOSTAT_SUPPORT
 
 #include "mqtt.h"
@@ -18,7 +20,7 @@ Copyright (C) 2017 by Dmitry Blinov <dblinov76 at gmail dot com>
 #include "thermostat.h"
 #include "ws.h"
 
-#include <ArduinoJson.h>
+#include "json.h"
 
 #if THERMOSTAT_DISPLAY_SUPPORT
 // alias for `#include "SSD1306Wire.h"`
@@ -66,7 +68,7 @@ enum temperature_source_t {temp_none, temp_local, temp_remote};
 struct thermostat_t {
   unsigned long last_update = 0;
   unsigned long last_switch = 0;
-  String remote_sensor_name;
+  espurna::string remote_sensor_name;
   unsigned int temperature_source = temp_none;
 };
 
@@ -79,7 +81,7 @@ thermostat_t _thermostat;
 
 enum thermostat_cycle_type {cooling, heating};
 unsigned int _thermostat_cycle = _thermostat_mode_cooler ? heating : cooling;
-String thermostat_remote_sensor_topic;
+espurna::string thermostat_remote_sensor_topic;
 
 //------------------------------------------------------------------------------
 const temp_t& thermostatRemoteTemp() {
@@ -121,16 +123,16 @@ void thermostatRegister(thermostat_callback_f callback) {
 //------------------------------------------------------------------------------
 void updateRemoteTemp(bool remote_temp_actual) {
   #if WEB_SUPPORT
-      String out("?");
+      espurna::string out("?");
 
       if (remote_temp_actual) {
         char tmp[33] {0};
-        dtostrf(_remote_temp.temp, 1, 1, tmp);
+        espurna::formatDecimal(_remote_temp.temp, 1, tmp, sizeof(tmp));
         out = tmp;
       }
 
-      wsPost([out](JsonObject& root) {
-        root["remoteTmp"] = out;
+      wsPost([out](espurna::json::Writer& root) {
+        root.field("remoteTmp", out);
       });
   #endif
 }
@@ -138,19 +140,19 @@ void updateRemoteTemp(bool remote_temp_actual) {
 //------------------------------------------------------------------------------
 void updateOperationMode() {
   #if WEB_SUPPORT
-    String message;
+    espurna::string message;
     if (_thermostat.temperature_source == temp_remote) {
-      message = F("remote temperature");
+      message = "remote temperature";
       updateRemoteTemp(true);
     } else if (_thermostat.temperature_source == temp_local) {
-      message = F("local temperature");
+      message = "local temperature";
       updateRemoteTemp(false);
     } else {
-      message = F("autonomous");
+      message = "autonomous";
       updateRemoteTemp(false);
     }
-    wsPost([message](JsonObject& root) {
-      root[NAME_OPERATION_MODE] = message;
+    wsPost([message](espurna::json::Writer& root) {
+      root.field(NAME_OPERATION_MODE, message);
     });
   #endif
 }
@@ -162,14 +164,14 @@ void updateOperationMode() {
 bool _thermostatMqttHeartbeat(espurna::heartbeat::Mask mask) {
     if (mask & espurna::heartbeat::Report::Range) {
         const auto& range = thermostatRange();
-        mqttSend(MQTT_TOPIC_HOLD_TEMP "_" MQTT_TOPIC_HOLD_TEMP_MIN, String(range.min).c_str());
-        mqttSend(MQTT_TOPIC_HOLD_TEMP "_" MQTT_TOPIC_HOLD_TEMP_MAX, String(range.max).c_str());
+        mqttSend(MQTT_TOPIC_HOLD_TEMP "_" MQTT_TOPIC_HOLD_TEMP_MIN, espurna::string(range.min).c_str());
+        mqttSend(MQTT_TOPIC_HOLD_TEMP "_" MQTT_TOPIC_HOLD_TEMP_MAX, espurna::string(range.max).c_str());
     }
 
     if (mask & espurna::heartbeat::Report::RemoteTemp) {
         const auto& remote_temp = thermostatRemoteTemp();
         char buffer[16];
-        dtostrf(remote_temp.temp, 1, 1, buffer);
+        espurna::formatDecimal(remote_temp.temp, 1, buffer, sizeof(buffer));
         mqttSend(MQTT_TOPIC_REMOTE_TEMP, buffer);
     }
 
@@ -191,9 +193,8 @@ void thermostatMqttCallback(unsigned int type, espurna::StringView topic, espurn
            return;
         }
 
-        DynamicJsonBuffer jsonBuffer;
-        JsonObject& root = jsonBuffer.parseObject(payload.begin());
-        if (!root.success()) {
+        const auto root = espurna::json::parse(payload);
+        if (!root.isObject()) {
             DEBUG_MSG_P(PSTR("[THERMOSTAT] Error parsing data\n"));
             return;
         }
@@ -201,10 +202,11 @@ void thermostatMqttCallback(unsigned int type, espurna::StringView topic, espurn
         // Check remote sensor temperature
         if (topic == thermostat_remote_sensor_topic) {
             const auto key = magnitudeTypeTopic(MAGNITUDE_TEMPERATURE);
-            if (root.containsKey(key)) {
-                String remote_temp = root[key];
+            if (root.has(key)) {
+                const auto text = root[key].asString();
+                espurna::string remote_temp(text.c_str());
                 _remote_temp.temp = remote_temp.toFloat();
-                _remote_temp.last_update = millis();
+                _remote_temp.last_update = espurna::time::ms();
                 _remote_temp.need_display_update = true;
                 DEBUG_MSG_P(PSTR("[THERMOSTAT] Remote sensor temperature: %s\n"), remote_temp.c_str());
                 updateRemoteTemp(true);
@@ -213,30 +215,30 @@ void thermostatMqttCallback(unsigned int type, espurna::StringView topic, espurn
 
         // Check temperature range change
         if (t.equals(MQTT_TOPIC_HOLD_TEMP)) {
-            if (root.containsKey(MQTT_TOPIC_HOLD_TEMP_MIN)) {
-                int t_min = root[MQTT_TOPIC_HOLD_TEMP_MIN];
-                int t_max = root[MQTT_TOPIC_HOLD_TEMP_MAX];
+            if (root.has(MQTT_TOPIC_HOLD_TEMP_MIN)) {
+                int t_min = root[MQTT_TOPIC_HOLD_TEMP_MIN].asLong();
+                int t_max = root[MQTT_TOPIC_HOLD_TEMP_MAX].asLong();
                 if (t_min < THERMOSTAT_TEMP_RANGE_MIN_MIN || t_min > THERMOSTAT_TEMP_RANGE_MIN_MAX ||
                     t_max < THERMOSTAT_TEMP_RANGE_MAX_MIN || t_max > THERMOSTAT_TEMP_RANGE_MAX_MAX) {
                     DEBUG_MSG_P(PSTR("[THERMOSTAT] Hold temperature range error\n"));
                     return;
                 }
-                _temp_range.min = root[MQTT_TOPIC_HOLD_TEMP_MIN];
-                _temp_range.max = root[MQTT_TOPIC_HOLD_TEMP_MAX];
+                _temp_range.min = t_min;
+                _temp_range.max = t_max;
                 setSetting(NAME_TEMP_RANGE_MIN, _temp_range.min);
                 setSetting(NAME_TEMP_RANGE_MAX, _temp_range.max);
                 saveSettings();
                 _temp_range.ask_interval = ASK_TEMP_RANGE_INTERVAL_REGULAR;
-                _temp_range.last_update = millis();
+                _temp_range.last_update = espurna::time::ms();
                 _temp_range.need_display_update = true;
 
                 DEBUG_MSG_P(PSTR("[THERMOSTAT] Hold temperature range: (%d - %d)\n"), _temp_range.min, _temp_range.max);
                 // Update websocket clients
 #if WEB_SUPPORT
                 auto range = _temp_range;
-                wsPost([range](JsonObject& root) {
-                    root["tempRangeMin"] = range.min;
-                    root["tempRangeMax"] = range.max;
+                wsPost([range](espurna::json::Writer& root) {
+                    root.field("tempRangeMin", range.min);
+                    root.field("tempRangeMax", range.max);
                 });
 #endif
             } else {
@@ -271,7 +273,7 @@ void commonSetup() {
   DEBUG_MSG_P(PSTR("[THERMOSTAT] _temp_range.max = %d\n"), _temp_range.max);
 
   _thermostat.remote_sensor_name = getSetting(NAME_REMOTE_SENSOR_NAME, THERMOSTAT_REMOTE_SENSOR_NAME);
-  thermostat_remote_sensor_topic = _thermostat.remote_sensor_name + String("/") + String(MQTT_TOPIC_JSON);
+  thermostat_remote_sensor_topic = _thermostat.remote_sensor_name + espurna::string("/") + espurna::string(MQTT_TOPIC_JSON);
 
   _thermostat_remote_temp_max_wait = getSetting(NAME_REMOTE_TEMP_MAX_WAIT, THERMOSTAT_REMOTE_TEMP_MAX_WAIT) * MILLIS_IN_SEC;
   _thermostat_alone_on_time   = getSetting(NAME_ALONE_ON_TIME,  THERMOSTAT_ALONE_ON_TIME)  * MILLIS_IN_MIN;
@@ -303,7 +305,7 @@ void sendTempRangeRequest() {
 void setThermostatState(bool state) {
   DEBUG_MSG_P(PSTR("[THERMOSTAT] setThermostatState: %s\n"), state ? "ON" : "OFF");
   relayStatus(THERMOSTAT_RELAY, state);
-  _thermostat.last_switch = millis();
+  _thermostat.last_switch = espurna::time::ms();
   // Send thermostat change state event to subscribers
   for (unsigned char i = 0; i < _thermostat_callbacks.size(); i++) {
       (_thermostat_callbacks[i])(state);
@@ -314,12 +316,12 @@ void setThermostatState(bool state) {
 void debugPrintSwitch(bool state, const char* tmp_str, const char* reason) {
   DEBUG_MSG_P(PSTR("[THERMOSTAT] switch %s, temp: %s, min: %d, max: %d, mode: %s, relay: %s, last switch %d, reason: %s\n"),
    state ? "ON" : "OFF", tmp_str, _temp_range.min, _temp_range.max, _thermostat_mode_cooler ? "COOLER" : "HEATER",
-   relayStatus(THERMOSTAT_RELAY) == RelayStatus::On ? "ON" : "OFF", millis() - _thermostat.last_switch, reason);
+   relayStatus(THERMOSTAT_RELAY) == RelayStatus::On ? "ON" : "OFF", espurna::time::ms() - _thermostat.last_switch, reason);
 }
 
 //------------------------------------------------------------------------------
 inline bool lastSwitchEarlierThan(unsigned int comparing_time) {
-  return millis() - _thermostat.last_switch > comparing_time;
+  return espurna::time::ms() - _thermostat.last_switch > comparing_time;
 }
 
 //------------------------------------------------------------------------------
@@ -333,7 +335,7 @@ inline void switchThermostat(bool state, const char* tmp_str, const char* reason
 //------------------------------------------------------------------------------
 void checkTempAndAdjustRelay(double temp) {
   char tmp_str[16];
-  dtostrf(temp, 1, 1, tmp_str);
+  espurna::formatDecimal(temp, 1, tmp_str, sizeof(tmp_str));
   // if t < min - start heating cycle
   if (_thermostat_cycle == cooling && temp < _temp_range.min) {
     DEBUG_MSG_P(PSTR("[THERMOSTAT] starting HEATING cycle because the temperature %s dropped below minimum %d\n"), tmp_str, _temp_range.min);
@@ -352,7 +354,7 @@ void checkTempAndAdjustRelay(double temp) {
         if (_thermostat.last_switch == 0 || lastSwitchEarlierThan(_thermostat_min_off_time)) {
           switchThermostat(true, tmp_str, _thermostat_mode_cooler ? "start/continue cooling" : "start/continue heating");
         } else {
-          int rest_mins_left = (_thermostat_min_off_time - (millis() - _thermostat.last_switch))/MILLIS_IN_MIN + 1;
+          int rest_mins_left = (_thermostat_min_off_time - (espurna::time::ms() - _thermostat.last_switch))/MILLIS_IN_MIN + 1;
           DEBUG_MSG_P(PSTR("[THERMOSTAT] thermostat is in rest state for %d min\n"), rest_mins_left);
         }
       // if thermostat works more than max_on_time it need rest
@@ -414,7 +416,7 @@ double _getLocalValue(const char* description, unsigned char type) {
     return espurna::sensor::Value::Unknown;
 }
 
-String _getLocalUnit(unsigned char type) {
+espurna::string _getLocalUnit(unsigned char type) {
 #if SENSOR_SUPPORT
     for (unsigned char index = 0; index < magnitudeCount(); ++index) {
         const auto info = magnitudeInfo(index);
@@ -423,7 +425,7 @@ String _getLocalUnit(unsigned char type) {
         }
     }
 #endif
-    return F("none");
+    return "none";
 }
 
 double getLocalTemperature() {
@@ -444,18 +446,18 @@ void thermostatLoop(void) {
 
   // Update temperature range
   if (mqttConnected()) {
-    if (millis() - _temp_range.ask_time > _temp_range.ask_interval) {
-      _temp_range.ask_time = millis();
+    if (espurna::time::ms() - _temp_range.ask_time > _temp_range.ask_interval) {
+      _temp_range.ask_time = espurna::time::ms();
       sendTempRangeRequest();
     }
   }
 
   // Update thermostat state
-  if (millis() - _thermostat.last_update > THERMOSTAT_STATE_UPDATE_INTERVAL) {
-    _thermostat.last_update = millis();
+  if (espurna::time::ms() - _thermostat.last_update > THERMOSTAT_STATE_UPDATE_INTERVAL) {
+    _thermostat.last_update = espurna::time::ms();
     updateCounters();
     unsigned int last_temp_src = _thermostat.temperature_source;
-    if (_remote_temp.last_update != 0 && millis() - _remote_temp.last_update < _thermostat_remote_temp_max_wait) {
+    if (_remote_temp.last_update != 0 && espurna::time::ms() - _remote_temp.last_update < _thermostat_remote_temp_max_wait) {
       // we have remote temp
       _thermostat.temperature_source = temp_remote;
       DEBUG_MSG_P(PSTR("[THERMOSTAT] setup thermostat by remote temperature\n"));
@@ -470,7 +472,7 @@ void thermostatLoop(void) {
       // we don't have any temp - switch thermostat on for N minutes every hour
       _thermostat.temperature_source = temp_none;
       DEBUG_MSG_P(PSTR("[THERMOSTAT] setup thermostat by timeout\n"));
-      const auto now = millis();
+      const auto now = espurna::time::ms();
       switch (relayStatus(THERMOSTAT_RELAY)) {
       case RelayStatus::On:
         if (now - _thermostat.last_switch > _thermostat_alone_on_time) {
@@ -493,14 +495,14 @@ void thermostatLoop(void) {
 }
 
 //------------------------------------------------------------------------------
-String getBurnTimeStr(unsigned int burn_time) {
+espurna::string getBurnTimeStr(unsigned int burn_time) {
   char burnTimeStr[24] = { 0 };
   if (burn_time < 60) {
     sprintf(burnTimeStr, "%d мин.", burn_time);
   } else {
     sprintf(burnTimeStr, "%d ч. %d мин.", (int)floor(burn_time / 60), (int)(burn_time % 60));
   }
-  return String(burnTimeStr);
+  return espurna::string(burnTimeStr);
 }
 
 //------------------------------------------------------------------------------
@@ -564,7 +566,7 @@ SSD1306  display(0x3c, 1, 3);
 unsigned long _local_temp_last_update = 0xFFFF;
 unsigned long _local_hum_last_update = 0xFFFF;
 unsigned long _thermostat_display_off_interval = THERMOSTAT_DISPLAY_OFF_INTERVAL * MILLIS_IN_SEC;
-unsigned long _thermostat_display_on_time = millis();
+unsigned long _thermostat_display_on_time = espurna::time::ms();
 bool _thermostat_display_is_on = true;
 bool _display_wifi_status   = true;
 bool _display_mqtt_status   = true;
@@ -611,8 +613,8 @@ void display_temp_range() {
   display.setColor(WHITE);
   display.setTextAlignment(TEXT_ALIGN_RIGHT);
   display.setFont(ArialMT_Plain_16);
-  String temp_range = String(_temp_range.min) + "°- " + String(_temp_range.max) + "°";
-  display.drawString(128, 0, temp_range);
+  espurna::string temp_range = espurna::string(_temp_range.min) + "°- " + espurna::string(_temp_range.max) + "°";
+  display.drawString(128, 0, ::String(temp_range.c_str()));
   _display_need_refresh = true;
 }
 
@@ -624,11 +626,11 @@ void display_remote_temp() {
   display.setColor(WHITE);
   display.setFont(ArialMT_Plain_16);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
-  String temp_range_title = String("Remote  t");
-  display.drawString(0, 16, temp_range_title);
+  espurna::string temp_range_title = espurna::string("Remote  t");
+  display.drawString(0, 16, ::String(temp_range_title.c_str()));
 
-  String temp_range_vol = String("= ") + (_display_remote_temp_status ? String(_remote_temp.temp, 1) : String("?")) + "°";
-  display.drawString(75, 16, temp_range_vol);
+  espurna::string temp_range_vol = espurna::string("= ") + (_display_remote_temp_status ? espurna::string(_remote_temp.temp, 1) : espurna::string("?")) + "°";
+  display.drawString(75, 16, ::String(temp_range_vol.c_str()));
 
   _display_need_refresh = true;
 }
@@ -641,11 +643,11 @@ void display_local_temp() {
   display.setFont(ArialMT_Plain_16);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
 
-  String local_temp_title = String("Local      t");
-  display.drawString(0, 32, local_temp_title);
+  espurna::string local_temp_title = espurna::string("Local      t");
+  display.drawString(0, 32, ::String(local_temp_title.c_str()));
 
-  String local_temp_vol = String("= ") + (!std::isnan(getLocalTemperature()) ? String(getLocalTemperature(), 1) : String("?")) + "°";
-  display.drawString(75, 32, local_temp_vol);
+  espurna::string local_temp_vol = espurna::string("= ") + (!std::isnan(getLocalTemperature()) ? espurna::string(getLocalTemperature(), 1) : espurna::string("?")) + "°";
+  display.drawString(75, 32, ::String(local_temp_vol.c_str()));
 
   _display_need_refresh = true;
 }
@@ -658,11 +660,11 @@ void display_local_humidity() {
   display.setFont(ArialMT_Plain_16);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
 
-  String local_hum_title = String("Local      h ");
-  display.drawString(0, 48, local_hum_title);
+  espurna::string local_hum_title = espurna::string("Local      h ");
+  display.drawString(0, 48, ::String(local_hum_title.c_str()));
 
-  String local_hum_vol = String("= ") + (!std::isnan(getLocalHumidity()) ? String(getLocalHumidity(), 0) : String("?")) + "%";
-  display.drawString(75, 48, local_hum_vol);
+  espurna::string local_hum_vol = espurna::string("= ") + (!std::isnan(getLocalHumidity()) ? espurna::string(getLocalHumidity(), 0) : espurna::string("?")) + "%";
+  display.drawString(75, 48, ::String(local_hum_vol.c_str()));
 
   _display_need_refresh = true;
 }
@@ -670,7 +672,7 @@ void display_local_humidity() {
 //------------------------------------------------------------------------------
 void displayOn() {
   DEBUG_MSG_P(PSTR("[THERMOSTAT] Display is On.\n"));
-  _thermostat_display_on_time = millis();
+  _thermostat_display_on_time = espurna::time::ms();
   _thermostat_display_is_on = true;
   _display_need_refresh = true;
   display_wifi_status(_display_wifi_status);
@@ -697,7 +699,7 @@ void displaySetup() {
 
 //------------------------------------------------------------------------------
 void displayLoop() {
-  if (THERMOSTAT_DISPLAY_OFF_INTERVAL > 0 && millis() - _thermostat_display_on_time > _thermostat_display_off_interval) {
+  if (THERMOSTAT_DISPLAY_OFF_INTERVAL > 0 && espurna::time::ms() - _thermostat_display_on_time > _thermostat_display_off_interval) {
     if (_thermostat_display_is_on) {
       DEBUG_MSG_P(PSTR("[THERMOSTAT] Display Off by timeout\n"));
       _thermostat_display_is_on = false;
@@ -710,9 +712,9 @@ void displayLoop() {
   // Indicators
   //------------------------------------------------------------------------------
   if (!_display_wifi_status) {
-    if (wifiConnected() && WiFi.getMode() != WIFI_AP)
+    if (wifiConnected() && (::espurna::core::chip::wifi_get_mode() != WIFI_MODE_AP))
       display_wifi_status(true);
-  } else if (!wifiConnected() || WiFi.getMode() == WIFI_AP) {
+  } else if (!wifiConnected() || (::espurna::core::chip::wifi_get_mode() == WIFI_MODE_AP)) {
     display_wifi_status(false);
   }
 
@@ -723,14 +725,14 @@ void displayLoop() {
     display_mqtt_status(false);
   }
 
-  if (_temp_range.last_update != 0 && millis() - _temp_range.last_update < THERMOSTAT_SERVER_LOST_INTERVAL) {
+  if (_temp_range.last_update != 0 && espurna::time::ms() - _temp_range.last_update < THERMOSTAT_SERVER_LOST_INTERVAL) {
     if (!_display_server_status)
       display_server_status(true);
   } else if (_display_server_status) {
     display_server_status(false);
   }
 
-  if (_remote_temp.last_update != 0 && millis() - _remote_temp.last_update < _thermostat_remote_temp_max_wait) {
+  if (_remote_temp.last_update != 0 && espurna::time::ms() - _remote_temp.last_update < _thermostat_remote_temp_max_wait) {
     if (!_display_remote_temp_status)
       display_remote_temp_status(true);
   } else if (_display_remote_temp_status) {
@@ -755,16 +757,16 @@ void displayLoop() {
   //------------------------------------------------------------------------------
   // Local temp
   //------------------------------------------------------------------------------
-  if (millis() - _local_temp_last_update > LOCAL_TEMP_UPDATE_INTERVAL) {
-      _local_temp_last_update = millis();
+  if (espurna::time::ms() - _local_temp_last_update > LOCAL_TEMP_UPDATE_INTERVAL) {
+      _local_temp_last_update = espurna::time::ms();
       display_local_temp();
   }
 
   //------------------------------------------------------------------------------
   // Local temp
   //------------------------------------------------------------------------------
-  if (millis() - _local_hum_last_update > LOCAL_HUM_UPDATE_INTERVAL) {
-      _local_hum_last_update = millis();
+  if (espurna::time::ms() - _local_hum_last_update > LOCAL_HUM_UPDATE_INTERVAL) {
+      _local_hum_last_update = espurna::time::ms();
       display_local_humidity();
   }
 
@@ -772,7 +774,7 @@ void displayLoop() {
   // Display update
   //------------------------------------------------------------------------------
   if (_display_need_refresh) {
-    yield();
+    espurna::time::yield();
     display.display();
     _display_need_refresh = false;
   }
@@ -782,41 +784,41 @@ void displayLoop() {
 
 #if WEB_SUPPORT
 //------------------------------------------------------------------------------
-void _thermostatWebSocketOnVisible(JsonObject& root) {
+void _thermostatWebSocketOnVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, STRING_VIEW("thermostat"));
 }
 
-void _thermostatWebSocketOnConnected(JsonObject& root) {
-  root["thermostatEnabled"] = thermostatEnabled();
-  root["thermostatMode"] = thermostatModeCooler();
-  root["thermostatTmpUnits"] = _getLocalUnit(MAGNITUDE_TEMPERATURE);
-  root[NAME_TEMP_RANGE_MIN] = _temp_range.min;
-  root[NAME_TEMP_RANGE_MAX] = _temp_range.max;
-  root[NAME_REMOTE_SENSOR_NAME] = _thermostat.remote_sensor_name;
-  root[NAME_REMOTE_TEMP_MAX_WAIT]    = _thermostat_remote_temp_max_wait / MILLIS_IN_SEC;
-  root[NAME_MAX_ON_TIME]     = _thermostat_max_on_time    / MILLIS_IN_MIN;
-  root[NAME_MIN_OFF_TIME]    = _thermostat_min_off_time   / MILLIS_IN_MIN;
-  root[NAME_ALONE_ON_TIME]   = _thermostat_alone_on_time  / MILLIS_IN_MIN;
-  root[NAME_ALONE_OFF_TIME]  = _thermostat_alone_off_time / MILLIS_IN_MIN;
-  root[NAME_BURN_TODAY]      = _thermostat_burn_today;
-  root[NAME_BURN_YESTERDAY]  = _thermostat_burn_yesterday;
-  root[NAME_BURN_THIS_MONTH] = _thermostat_burn_this_month;
-  root[NAME_BURN_PREV_MONTH] = _thermostat_burn_prev_month;
-  root[NAME_BURN_TOTAL]      = _thermostat_burn_total;
+void _thermostatWebSocketOnConnected(espurna::json::Writer& root) {
+  root.field("thermostatEnabled", thermostatEnabled());
+  root.field("thermostatMode", thermostatModeCooler());
+  root.field("thermostatTmpUnits", _getLocalUnit(MAGNITUDE_TEMPERATURE));
+  root.field(NAME_TEMP_RANGE_MIN, _temp_range.min);
+  root.field(NAME_TEMP_RANGE_MAX, _temp_range.max);
+  root.field(NAME_REMOTE_SENSOR_NAME, _thermostat.remote_sensor_name);
+  root.field(NAME_REMOTE_TEMP_MAX_WAIT, _thermostat_remote_temp_max_wait / MILLIS_IN_SEC);
+  root.field(NAME_MAX_ON_TIME, _thermostat_max_on_time    / MILLIS_IN_MIN);
+  root.field(NAME_MIN_OFF_TIME, _thermostat_min_off_time   / MILLIS_IN_MIN);
+  root.field(NAME_ALONE_ON_TIME, _thermostat_alone_on_time  / MILLIS_IN_MIN);
+  root.field(NAME_ALONE_OFF_TIME, _thermostat_alone_off_time / MILLIS_IN_MIN);
+  root.field(NAME_BURN_TODAY, _thermostat_burn_today);
+  root.field(NAME_BURN_YESTERDAY, _thermostat_burn_yesterday);
+  root.field(NAME_BURN_THIS_MONTH, _thermostat_burn_this_month);
+  root.field(NAME_BURN_PREV_MONTH, _thermostat_burn_prev_month);
+  root.field(NAME_BURN_TOTAL, _thermostat_burn_total);
   if (_thermostat.temperature_source == temp_remote) {
-    root[NAME_OPERATION_MODE] = "remote temperature";
-    root["remoteTmp"]     = _remote_temp.temp;
+    root.field(NAME_OPERATION_MODE, "remote temperature");
+    root.field("remoteTmp", _remote_temp.temp);
   } else if (_thermostat.temperature_source == temp_local) {
-    root[NAME_OPERATION_MODE] = "local temperature";
-    root["remoteTmp"]     = "?";
+    root.field(NAME_OPERATION_MODE, "local temperature");
+    root.field("remoteTmp", "?");
   } else {
-    root[NAME_OPERATION_MODE] = "autonomous";
-    root["remoteTmp"]     = "?";
+    root.field(NAME_OPERATION_MODE, "autonomous");
+    root.field("remoteTmp", "?");
   }
 }
 
 //------------------------------------------------------------------------------
-bool _thermostatWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool _thermostatWebSocketOnKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key == NAME_THERMOSTAT_ENABLED
         || key == NAME_THERMOSTAT_ENABLED
         || key == NAME_THERMOSTAT_MODE
@@ -831,7 +833,7 @@ bool _thermostatWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant&)
 }
 
 //------------------------------------------------------------------------------
-void _thermostatWebSocketOnAction(uint32_t client_id, const char * action, JsonObject& data) {
+void _thermostatWebSocketOnAction(uint32_t client_id, const char * action, espurna::json::Value data) {
     if (strcmp(action, "thermostat_reset_counters") == 0) resetBurnCounters();
 }
 #endif

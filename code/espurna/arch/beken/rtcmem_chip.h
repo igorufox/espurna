@@ -37,12 +37,12 @@ RtcmemCrash rtcmemCrash();
 // Registers and stack of the last crash, kept in the flash (ref. rtcmem_beken.cpp). Setup reports a new one once,
 // in the log and on MQTT, dump prints the whole record (CRASH command)
 void rtcmemCrashSetup();
-void rtcmemCrashDump(Print&);
+void rtcmemCrashDump(::espurna::Output&);
 
 // the flash record in short for the modules page (crashCause(), crash.h): text empty when there is none
 struct CrashCause;
 void rtcmemCrashCause(CrashCause&);
 
-// the module guard found the loop stalled (modules.cpp): the context of every task into the flash record, the same
-// as the stall watcher before the watchdog (CRASH prints it)
+// the module guard found the loop stalled (modules.cpp): the stall record of the common watcher (arch/rtos/
+// system_rtos.cpp), here the context of every task in the flash record (CRASH prints it)
 void rtcmemStallSnapshot();

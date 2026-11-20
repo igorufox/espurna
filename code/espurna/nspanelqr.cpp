@@ -243,7 +243,7 @@ int show() {
 }
 
 void loop() {
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (now - last_check < CheckMs) {
         return;
     }
@@ -283,9 +283,9 @@ void pair() {
         return;
     }
 
-    requested = millis() | 1;
+    requested = espurna::time::ms() | 1;
     dismissed = false;
-    last_check = millis() - CheckMs;
+    last_check = espurna::time::ms() - CheckMs;
     DEBUG_MSG_P(PSTR("[NSPANEL] Matter pairing window asked for by the tile\n"));
 }
 
@@ -293,7 +293,7 @@ void pair() {
 
 // nspanel.qr [off]
 void terminalQr(espurna::terminal::CommandContext&& ctx) {
-    if ((ctx.argv.size() == 2) && (ctx.argv[1] == F("off"))) {
+    if ((ctx.argv.size() == 2) && (ctx.argv[1] == "off")) {
         manual = false;
         dismissed = true;
         requested = 0;
@@ -303,7 +303,7 @@ void terminalQr(espurna::terminal::CommandContext&& ctx) {
     }
 
     if (ctx.argv.size() != 1) {
-        terminalError(ctx, F("nspanel.qr [off]"));
+        terminalError(ctx, "nspanel.qr [off]");
         return;
     }
 
@@ -313,7 +313,7 @@ void terminalQr(espurna::terminal::CommandContext&& ctx) {
     std::memset(payload, 0, sizeof(payload));
     std::memset(code, 0, sizeof(code));
     if (!codes) {
-        terminalError(ctx, F("Matter is not started"));
+        terminalError(ctx, "Matter is not started");
         return;
     }
 
@@ -324,10 +324,10 @@ void terminalQr(espurna::terminal::CommandContext&& ctx) {
         terminalOK(ctx);
         break;
     case 2:
-        terminalError(ctx, F("the QR screen is OHpanel only for now"));
+        terminalError(ctx, "the QR screen is OHpanel only for now");
         break;
     default:
-        terminalError(ctx, F("display not ready"));
+        terminalError(ctx, "display not ready");
         break;
     }
 }

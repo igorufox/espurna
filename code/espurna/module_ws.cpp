@@ -30,8 +30,8 @@ const WsModuleApi Table {
     .postSequence = static_cast<void(*)(uint32_t, Container&&)>(wsPostSequence),
     .postSequenceRef = static_cast<void(*)(uint32_t, const Container&)>(wsPostSequence),
 
-    .sendAll = static_cast<void(*)(JsonObject&)>(wsSend),
-    .sendTo = static_cast<void(*)(uint32_t, JsonObject&)>(wsSend),
+    .sendAll = static_cast<void(*)(espurna::web::ws::OnSend)>(wsSend),
+    .sendTo = static_cast<void(*)(uint32_t, espurna::web::ws::OnSend)>(wsSend),
     .sendText = static_cast<void(*)(const char*)>(wsSend),
 
     .clientInfo = wsClientInfo,

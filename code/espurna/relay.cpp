@@ -36,7 +36,7 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "terminal.h"
 #include "utils.h"
 
-#include <ArduinoJson.h>
+#include "json.h"
 
 #include <bitset>
 #include <cstring>
@@ -172,7 +172,7 @@ struct RelayMaskHelper {
         return value.to_ulong();
     }
 
-    String toString() const {
+    espurna::string toString() const {
         return formatUnsigned(toUnsigned(), 2);
     }
 
@@ -925,11 +925,11 @@ struct RelayTristateHelper {
          {T::On, TristateOn}}
     };
 
-    static T convert(const String& value) {
+    static T convert(const espurna::string& value) {
         return espurna::settings::internal::convert(Options, value, T::None);
     }
 
-    static String serialize(T value) {
+    static espurna::string serialize(T value) {
         return espurna::settings::internal::serialize(Options, value);
     }
 };
@@ -1050,81 +1050,81 @@ using relay::settings::options::RelaySyncOptions;
 } // namespace
 
 template <>
-PayloadStatus convert(const String& value) {
+PayloadStatus convert(const espurna::string& value) {
     return convert(PayloadStatusOptions, value, PayloadStatus::Unknown);
 }
 
-String serialize(PayloadStatus value) {
+espurna::string serialize(PayloadStatus value) {
     return serialize(PayloadStatusOptions, value);
 }
 
 template <>
-RelayMqttTopicMode convert(const String& value) {
+RelayMqttTopicMode convert(const espurna::string& value) {
     return convert(RelayMqttTopicModeOptions, value, RelayMqttTopicMode::Normal);
 }
 
-String serialize(RelayMqttTopicMode value) {
+espurna::string serialize(RelayMqttTopicMode value) {
     return serialize(RelayMqttTopicModeOptions, value);
 }
 
 template <>
-espurna::relay::pulse::Mode convert(const String& value) {
+espurna::relay::pulse::Mode convert(const espurna::string& value) {
     return RelayTristateHelper<espurna::relay::pulse::Mode>::convert(value);
 }
 
-String serialize(espurna::relay::pulse::Mode value) {
+espurna::string serialize(espurna::relay::pulse::Mode value) {
     return RelayTristateHelper<espurna::relay::pulse::Mode>::serialize(value);
 }
 
 template <>
-RelayBoot convert(const String& value) {
+RelayBoot convert(const espurna::string& value) {
     return convert(RelayBootOptions, value, RelayBoot::Off);
 }
 
-String serialize(RelayBoot value) {
+espurna::string serialize(RelayBoot value) {
     return serialize(RelayBootOptions, value);
 }
 
 template <>
-RelayLock convert(const String& value) {
+RelayLock convert(const espurna::string& value) {
     return RelayTristateHelper<RelayLock>::convert(value);
 }
 
 template <>
-RelayProvider convert(const String& value) {
+RelayProvider convert(const espurna::string& value) {
     return convert(RelayProviderOptions, value, RelayProvider::None);
 }
 
-String serialize(RelayProvider value) {
+espurna::string serialize(RelayProvider value) {
     return serialize(RelayProviderOptions, value);
 }
 
 template <>
-RelayType convert(const String& value) {
+RelayType convert(const espurna::string& value) {
     return convert(RelayTypeOptions, value, RelayType::Normal);
 }
 
-String serialize(RelayType value) {
+espurna::string serialize(RelayType value) {
     return serialize(RelayTypeOptions, value);
 }
 
 template<>
-RelayMaskHelper convert(const String& value) {
+RelayMaskHelper convert(const espurna::string& value) {
     RelayMaskHelper out;
     out.value = convert<RelayMaskHelper::unsigned_type>(value);
     return out;
 }
 
-String serialize(RelayMaskHelper mask) {
+espurna::string serialize(RelayMaskHelper mask) {
     return mask.toString();
 }
 
 template <>
-RelaySync convert(const String& value) {
+RelaySync convert(const espurna::string& value) {
     return convert(RelaySyncOptions, value, RelaySync::None);
 }
 
-String serialize(RelaySync value) {
+espurna::string serialize(RelaySync value) {
     return serialize(RelaySyncOptions, value);
 }
 
@@ -1177,7 +1177,7 @@ size_t dummyCount() {
 }
 
 [[gnu::unused]]
-String name(size_t index) {
+espurna::string name(size_t index) {
     return getSetting(espurna::settings::Key{keys::Name, index});
 }
 
@@ -1213,7 +1213,7 @@ RelayMaskHelper bootMask() {
     return getSetting(keys::BootMask, RelayMaskHelper{});
 }
 
-void bootMask(const String& mask) {
+void bootMask(const espurna::string& mask) {
     setSetting(keys::BootMask, mask);
 }
 
@@ -1250,25 +1250,25 @@ RelaySync syncMode() {
 }
 
 #if MQTT_SUPPORT || API_SUPPORT
-String payloadOn() {
-    return getSetting(keys::PayloadOn, StringView(build::PayloadOn));
+espurna::string payloadOn() {
+    return getSetting(keys::PayloadOn, espurna::StringView(build::PayloadOn));
 }
 
-String payloadOff() {
-    return getSetting(keys::PayloadOff, StringView(build::PayloadOff));
+espurna::string payloadOff() {
+    return getSetting(keys::PayloadOff, espurna::StringView(build::PayloadOff));
 }
 
-String payloadToggle() {
-    return getSetting(keys::PayloadToggle, StringView(build::PayloadToggle));
+espurna::string payloadToggle() {
+    return getSetting(keys::PayloadToggle, espurna::StringView(build::PayloadToggle));
 }
 #endif
 
 #if MQTT_SUPPORT
-String mqttTopicSub(size_t index) {
+espurna::string mqttTopicSub(size_t index) {
     return getSetting({keys::TopicSub, index}, build::mqttTopicSub(index));
 }
 
-String mqttTopicPub(size_t index) {
+espurna::string mqttTopicPub(size_t index) {
     return getSetting({keys::TopicPub, index}, build::mqttTopicPub(index));
 }
 
@@ -1292,12 +1292,12 @@ namespace query {
 namespace {
 
 #define EXACT_VALUE(NAME, FUNC)\
-String NAME () {\
+espurna::string NAME () {\
     return espurna::settings::internal::serialize(FUNC());\
 }
 
 #define ID_VALUE(NAME, FUNC)\
-String NAME (size_t id) {\
+espurna::string NAME (size_t id) {\
     return espurna::settings::internal::serialize(FUNC(id));\
 }
 
@@ -1313,7 +1313,7 @@ EXACT_VALUE(delayOff, settings::delayOff)
 
 // Relays added through relayDummy have no relayProv key, the default for their index is gpio.
 // Report the provider that actually runs, so the WebUI does not show them as GPIO relays
-String provider(size_t id) {
+espurna::string provider(size_t id) {
     const auto running = _relayProviderId(id);
     if (running.length()) {
         return running.toString();
@@ -1332,7 +1332,7 @@ ID_VALUE(delayOn, settings::delayOn)
 ID_VALUE(delayOff, settings::delayOff)
 
 ID_VALUE(pulseMode, pulse::settings::mode)
-String pulseTime(size_t index) {
+espurna::string pulseTime(size_t index) {
     const auto result = pulse::settings::time(index);
     const auto as_seconds =
         std::chrono::duration_cast<timer::Seconds>(result);
@@ -1690,9 +1690,9 @@ void _relayScheduleWebSocketReport() {
 
 #if MQTT_SUPPORT || API_SUPPORT
 
-String _relay_payload_on;
-String _relay_payload_off;
-String _relay_payload_toggle;
+espurna::string _relay_payload_on;
+espurna::string _relay_payload_off;
+espurna::string _relay_payload_toggle;
 
 #endif // MQTT_SUPPORT || API_SUPPORT
 
@@ -1754,9 +1754,9 @@ struct GpioProvider : public RelayProviderBase {
             return false;
         }
 
-        _pin->pinMode(OUTPUT);
+        _pin->pinMode(espurna::pins::Output);
         if (_reset_pin) {
-            _reset_pin->pinMode(OUTPUT);
+            _reset_pin->pinMode(espurna::pins::Output);
         }
 
         return true;
@@ -1772,7 +1772,7 @@ struct GpioProvider : public RelayProviderBase {
             break;
         case RelayType::Latched:
         case RelayType::LatchedInverse: {
-            bool pulse = (_type == RelayType::Latched) ? HIGH : LOW;
+            bool pulse = (_type == RelayType::Latched) ? true : false;
             _pin->digitalWrite(!pulse);
             if (_reset_pin) {
                 _reset_pin->digitalWrite(!pulse);
@@ -1850,7 +1850,7 @@ public:
         }
 #if UART_DRIVERS_CLAIM_PORT
         // generic images: serial log and terminal let go of the port
-        if (!uartClaim(RELAY_PROVIDER_DUAL_PORT - 1, F("Sonoff Dual"))) {
+        if (!uartClaim(RELAY_PROVIDER_DUAL_PORT - 1, "Sonoff Dual")) {
             return true;
         }
 #endif
@@ -1954,12 +1954,12 @@ private:
     size_t _id;
 
     static std::vector<DualProvider*> _instances;
-    static Stream* _port;
+    static ::espurna::ByteStream* _port;
     static espurna::timer::SystemTimer _retry;
 };
 
 std::vector<DualProvider*> DualProvider::_instances;
-Stream* DualProvider::_port = nullptr;
+::espurna::ByteStream* DualProvider::_port = nullptr;
 espurna::timer::SystemTimer DualProvider::_retry;
 
 #endif // RELAY_PROVIDER_DUAL_SUPPORT
@@ -2003,7 +2003,7 @@ public:
         }
 #if UART_DRIVERS_CLAIM_PORT
         // generic images: serial log and terminal let go of the port
-        if (!uartClaim(RELAY_PROVIDER_STM_PORT - 1, F("STM relay"))) {
+        if (!uartClaim(RELAY_PROVIDER_STM_PORT - 1, "STM relay")) {
             return true;
         }
 #endif
@@ -2021,7 +2021,7 @@ public:
             _port->write(0xA1 + status + _id);
 
             // TODO: is this really solved via interlock delay, so we don't have to switch contexts here?
-            //delay(100);
+            //espurna::time::sleep(100);
 
             _port->flush();
         }
@@ -2029,11 +2029,11 @@ public:
 
 private:
     size_t _id;
-    static Stream* _port;
+    static ::espurna::ByteStream* _port;
     static espurna::timer::SystemTimer _retry;
 };
 
-Stream* StmProvider::_port = nullptr;
+::espurna::ByteStream* StmProvider::_port = nullptr;
 espurna::timer::SystemTimer StmProvider::_retry;
 
 #endif // RELAY_PROVIDER_STM_SUPPORT
@@ -2220,12 +2220,12 @@ PayloadStatus _relayPayloadStatus(size_t id) {
 }
 
 template <typename T>
-T _relayTristateFromPayload(const String& value) {
+T _relayTristateFromPayload(const espurna::string& value) {
     return espurna::settings::internal::RelayTristateHelper<T>::convert(value);
 }
 
 template <typename T>
-String _relayTristateToPayload(T value) {
+espurna::string _relayTristateToPayload(T value) {
     return espurna::settings::internal::RelayTristateHelper<T>::serialize(value);
 }
 
@@ -2891,7 +2891,7 @@ void _relaySettingsMigrate(int version) {
                 break;
             }
 
-            auto syncKey = espurna::settings::Key(F("mqttGroupSync"), index);
+            auto syncKey = espurna::settings::Key("mqttGroupSync", index);
             auto sync = getSetting(syncKey);
 
             setSetting({keys::TopicSub, index}, group);
@@ -3077,38 +3077,37 @@ namespace {
 
 STRING_VIEW_INLINE(MultiRelay, "multirelay");
 
-bool _relayWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool _relayWebSocketOnKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(espurna::relay::settings::Prefix);
 }
 
-void _relayWebSocketUpdate(JsonObject& root) {
+void _relayWebSocketUpdate(espurna::json::Writer& root) {
     espurna::web::ws::EnumerablePayload payload{root, STRING_VIEW("relayState")};
     payload(STRING_VIEW("values"), _relays.size(), {
-        {STRING_VIEW("status"), [](JsonArray& out, size_t index) {
-            out.add(_relays[index].target_status ? 1 : 0);
+        {STRING_VIEW("status"), [](espurna::json::Writer& out, size_t index) {
+            out.value(_relays[index].target_status ? 1 : 0);
         }},
-        {STRING_VIEW("lock"), [](JsonArray& out, size_t index) {
-            out.add(static_cast<uint8_t>(_relays[index].lock));
+        {STRING_VIEW("lock"), [](espurna::json::Writer& out, size_t index) {
+            out.value(static_cast<uint8_t>(_relays[index].lock));
         }},
     });
 }
 
-void _relayWebSocketSendRelays(JsonObject& root) {
+void _relayWebSocketSendRelays(espurna::json::Writer& root) {
     if (!_relays.size()) {
         return;
     }
 
     espurna::web::ws::EnumerableConfig config{root, STRING_VIEW("relayConfig")};
 
-    auto& container = config.root();
-    container[F("size")] = _relays.size();
-    container[F("start")] = 0;
+    config.root().field(STRING_VIEW("size"), _relays.size());
+    config.root().field(STRING_VIEW("start"), 0);
 
     config(STRING_VIEW("values"), _relays.size(),
         espurna::relay::settings::query::IndexedSettings);
 }
 
-void _relayWebSocketOnVisible(JsonObject& root) {
+void _relayWebSocketOnVisible(espurna::json::Writer& root) {
     const auto relays = _relays.size();
     if (!relays) {
         return;
@@ -3116,28 +3115,33 @@ void _relayWebSocketOnVisible(JsonObject& root) {
 
     if (relays > 1) {
         wsPayloadModule(root, MultiRelay);
-        root[FPSTR(espurna::relay::settings::keys::Sync)] =
-            espurna::settings::internal::serialize(espurna::relay::settings::syncMode());
-        root[FPSTR(espurna::relay::settings::keys::Interlock)] =
-            espurna::relay::settings::interlockDelay().count();
+        root.field(espurna::relay::settings::keys::Sync, espurna::settings::internal::serialize(espurna::relay::settings::syncMode()));
+        root.field(espurna::relay::settings::keys::Interlock, espurna::relay::settings::interlockDelay().count());
     }
 
     wsPayloadModule(root, espurna::relay::settings::Prefix);
 }
 
-void _relayWebSocketOnConnected(JsonObject& root) {
+void _relayWebSocketOnConnected(espurna::json::Writer& root) {
     _relayWebSocketSendRelays(root);
 }
 
-void _relayWebSocketOnAction(uint32_t, const char* action, JsonObject& data) {
+void _relayWebSocketOnAction(uint32_t, const char* action, espurna::json::Value data) {
     if (strncmp_P(action, PSTR("relay"), 5) == 0) {
-        if (!data.is<size_t>(F("id")) || !data.is<String>(F("status"))) {
+        const auto id_value = data["id"];
+        const auto status_value = data["status"];
+        if (!id_value.isNumber() || !status_value.valid()) {
             return;
         }
 
-        const auto id = data[F("id")].as<size_t>();
-        const auto status = data[F("status")].as<String>();
-        _relayHandlePayload(id, status);
+        // a relay this board has (11-18: a WebUI client sent id 0..3 to a board without relays, LoadProhibited)
+        const auto id = static_cast<size_t>(id_value.asULong());
+        if (id >= _relays.size()) {
+            return;
+        }
+
+        const auto status = status_value.asString();
+        _relayHandlePayload(id, espurna::StringView(status));
     }
 }
 
@@ -3220,17 +3224,18 @@ bool _relayApiTimerGet(ApiRequest& request, size_t id) {
     using namespace espurna::relay::timer;
     const auto duration = _relayApiFindDuration(id);
     const auto seconds = std::chrono::duration_cast<Seconds>(duration);
-    request.send(String(seconds.count(), 10));
+    request.send(formatDecimalString(seconds.count(), 3));
     return true;
 }
 
 void _relaySetupApi() {
     apiRegister(RelayTopicRelay.toString(),
-        [](ApiRequest&, JsonObject& root) {
-            JsonArray& out = root.createNestedArray("relayStatus");
+        [](ApiRequest&, espurna::json::Writer& root) {
+            root.array(STRING_VIEW("relayStatus"));
             for (auto& relay : _relays) {
-                out.add(relay.target_status ? 1 : 0);
+                root.value(relay.target_status ? 1 : 0);
             }
+            root.end();
             return true;
         },
         nullptr
@@ -3239,13 +3244,13 @@ void _relaySetupApi() {
     apiRegister(RelayTopicRelaySub.toString(),
         [](ApiRequest& request) {
             return _relayApiTryHandle(request, [&](size_t id) {
-                request.send(String(_relays[id].target_status ? 1 : 0));
+                request.send(espurna::string(_relays[id].target_status ? 1 : 0));
                 return true;
             });
         },
         [](ApiRequest& request) {
             return _relayApiTryHandle(request, [&](size_t id) {
-                return _relayHandlePayload(id, request.param(F("value")));
+                return _relayHandlePayload(id, request.param("value"));
             });
         }
     );
@@ -3258,7 +3263,7 @@ void _relaySetupApi() {
         },
         [](ApiRequest& request) {
             return _relayApiTryHandle(request, [&](size_t id) {
-                return _relayHandlePulsePayload(id, request.param(F("value")));
+                return _relayHandlePulsePayload(id, request.param("value"));
             });
         }
     );
@@ -3271,7 +3276,7 @@ void _relaySetupApi() {
         },
         [](ApiRequest& request) {
             return _relayApiTryHandle(request, [&](size_t id) {
-                return _relayHandleTimerPayload(id, request.param(F("value")));
+                return _relayHandleTimerPayload(id, request.param("value"));
             });
         }
     );
@@ -3287,7 +3292,7 @@ void _relaySetupApi() {
         [](ApiRequest& request) {
             return _relayApiTryHandle(request,
                 [&](size_t id) {
-                    return _relayHandleLockPayload(id, request.param(F("value")));
+                    return _relayHandleLockPayload(id, request.param("value"));
                 });
         }
     );
@@ -3354,7 +3359,7 @@ struct RelayCustomTopic {
         _mode(other._mode)
     {}
 
-    RelayCustomTopic(size_t id, String topic, Mode mode) :
+    RelayCustomTopic(size_t id, espurna::string topic, Mode mode) :
         _id(id),
         _topic(std::move(topic)),
         _parts(_topic),
@@ -3369,7 +3374,7 @@ struct RelayCustomTopic {
         return _topic.c_str();
     }
 
-    const String& topic() const {
+    const espurna::string& topic() const {
         return _topic;
     }
 
@@ -3381,7 +3386,7 @@ struct RelayCustomTopic {
         return _mode;
     }
 
-    bool match(const String& other) const {
+    bool match(const espurna::string& other) const {
         PathParts parts(other);
         return _parts.match(parts);
     }
@@ -3392,7 +3397,7 @@ struct RelayCustomTopic {
 
 private:
     size_t _id;
-    String _topic;
+    espurna::string _topic;
     PathParts _parts;
     RelayMqttTopicMode _mode;
 };
@@ -3661,8 +3666,8 @@ STRING_VIEW_INLINE(ErrTerminalRelayInvalidStatus, "Invalid status");
 STRING_VIEW_INLINE(ErrTerminalRelayInvalidTime, "Invalid time");
 STRING_VIEW_INLINE(ErrTerminalRelayNoTimers, "No active timers");
 
-String _relayErrorCommand(::terminal::CommandContext& ctx, espurna::StringView params) {
-    String name = std::move(ctx.argv[0]);
+espurna::string _relayErrorCommand(::terminal::CommandContext& ctx, espurna::StringView params) {
+    espurna::string name = std::move(ctx.argv[0]);
 
     name.toUpperCase();
     name += ' ';
@@ -3671,7 +3676,7 @@ String _relayErrorCommand(::terminal::CommandContext& ctx, espurna::StringView p
     return name;
 }
 
-String _relayLockPayload(const Relay& relay) {
+espurna::string _relayLockPayload(const Relay& relay) {
     return _relayTristateToPayload(relay.lock);
 }
 
@@ -3685,7 +3690,7 @@ constexpr char _relayFlagTag(uint8_t flag) {
         '.';
 }
 
-String _relayFlagsPayload(uint8_t flags) {
+espurna::string _relayFlagsPayload(uint8_t flags) {
     char tmp[8];
 
     for (size_t index = 0; index < std::size(tmp); ++index) {
@@ -3695,13 +3700,13 @@ String _relayFlagsPayload(uint8_t flags) {
         flags &= ~mask;
     }
 
-    String out;
+    espurna::string out;
     out.concat(std::begin(tmp), std::size(tmp));
 
     return out;
 }
 
-void _relayPrint(Print& out, const Relay& relay, size_t index) {
+void _relayPrint(::espurna::Output& out, const Relay& relay, size_t index) {
     const auto provider = relay.provider->id();
 
     const auto current_status = _relayStatus(index);
@@ -3717,7 +3722,7 @@ void _relayPrint(Print& out, const Relay& relay, size_t index) {
 
     const auto lock = _relayLockPayload(relay);
 
-    String flags;
+    espurna::string flags;
     if (current_status != target_status) {
         const auto target_flags = _relayTargetFlags(index);
         flags = _relayFlagsPayload(target_flags);
@@ -3731,7 +3736,7 @@ void _relayPrint(Print& out, const Relay& relay, size_t index) {
         flags.length(), flags.begin());
 }
 
-void _relayPrint(Print& out, size_t start, size_t stop) {
+void _relayPrint(::espurna::Output& out, size_t start, size_t stop) {
     for (size_t index = start; index < stop; ++index) {
         _relayPrint(out, _relays[index], index);
     }

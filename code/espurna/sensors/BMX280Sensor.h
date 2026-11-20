@@ -91,16 +91,16 @@ class BMX280Sensor : public I2CSensor<> {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[32];
             snprintf_P(buffer, sizeof(buffer), PSTR("%s @ I2C (0x%02X)"),
                 (_chip == BMX280_CHIP_BME280) ? PSTR("BME280") :
                 (_chip == BMX280_CHIP_BMP280) ? PSTR("BMP280") :
                 PSTR("BMX280"), lockedAddress());
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
-        String description(unsigned char) const override {
+        espurna::string description(unsigned char) const override {
             return description();
         }
 

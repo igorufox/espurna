@@ -21,7 +21,6 @@ every function is inline (uart.cpp is also a part of the sensors module, ref. cu
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstdint>
 
@@ -47,7 +46,7 @@ struct Config {
 namespace hardware {
 
 struct Opened {
-    Stream* stream;
+    ByteStream* stream;
 
     // Uart0 is the UART of the serial console
     Type type;

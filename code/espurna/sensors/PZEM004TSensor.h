@@ -102,7 +102,7 @@ struct PZEMCommand {
 class PZEM004T {
 public:
     PZEM004T() = delete;
-    explicit PZEM004T(Stream *port) :
+    explicit PZEM004T(::espurna::ByteStream*port) :
         _serial(port)
     {}
 
@@ -112,25 +112,25 @@ public:
 
     unsigned long readTimeout() {return _readTimeOut;}
 
-    float voltage(const IPAddress &addr);
-    float current(const IPAddress &addr);
-    float power(const IPAddress &addr);
-    float energy(const IPAddress &addr);
+    float voltage(const espurna::Ip4 &addr);
+    float current(const espurna::Ip4 &addr);
+    float power(const espurna::Ip4 &addr);
+    float energy(const espurna::Ip4 &addr);
 
-    bool setAddress(const IPAddress &newAddr);
-    bool setPowerAlarm(const IPAddress &addr, uint8_t threshold);
+    bool setAddress(const espurna::Ip4 &newAddr);
+    bool setPowerAlarm(const espurna::Ip4 &addr, uint8_t threshold);
 
 private:
-    Stream* _serial;
+    ::espurna::ByteStream* _serial;
     unsigned long _readTimeOut = PZEM_DEFAULT_READ_TIMEOUT;
 
-    void send(const IPAddress &addr, uint8_t cmd, uint8_t data = 0);
+    void send(const espurna::Ip4 &addr, uint8_t cmd, uint8_t data = 0);
     bool receive(uint8_t resp, uint8_t *data = 0);
 
     uint8_t crc(uint8_t *data, uint8_t sz);
 };
 
-float PZEM004T::voltage(const IPAddress &addr)
+float PZEM004T::voltage(const espurna::Ip4 &addr)
 {
     uint8_t data[RESPONSE_DATA_SIZE];
 
@@ -141,7 +141,7 @@ float PZEM004T::voltage(const IPAddress &addr)
     return (data[0] << 8) + data[1] + (data[2] / 10.0);
 }
 
-float PZEM004T::current(const IPAddress &addr)
+float PZEM004T::current(const espurna::Ip4 &addr)
 {
     uint8_t data[RESPONSE_DATA_SIZE];
 
@@ -152,7 +152,7 @@ float PZEM004T::current(const IPAddress &addr)
     return (data[0] << 8) + data[1] + (data[2] / 100.0);
 }
 
-float PZEM004T::power(const IPAddress &addr)
+float PZEM004T::power(const espurna::Ip4 &addr)
 {
     uint8_t data[RESPONSE_DATA_SIZE];
 
@@ -163,7 +163,7 @@ float PZEM004T::power(const IPAddress &addr)
     return (data[0] << 8) + data[1];
 }
 
-float PZEM004T::energy(const IPAddress &addr)
+float PZEM004T::energy(const espurna::Ip4 &addr)
 {
     uint8_t data[RESPONSE_DATA_SIZE];
 
@@ -174,19 +174,19 @@ float PZEM004T::energy(const IPAddress &addr)
     return ((uint32_t)data[0] << 16) + ((uint16_t)data[1] << 8) + data[2];
 }
 
-bool PZEM004T::setAddress(const IPAddress &newAddr)
+bool PZEM004T::setAddress(const espurna::Ip4 &newAddr)
 {
     send(newAddr, PZEM_SET_ADDRESS);
     return receive(RESP_SET_ADDRESS);
 }
 
-bool PZEM004T::setPowerAlarm(const IPAddress &addr, uint8_t threshold)
+bool PZEM004T::setPowerAlarm(const espurna::Ip4 &addr, uint8_t threshold)
 {
     send(addr, PZEM_POWER_ALARM, threshold);
     return receive(RESP_POWER_ALARM);
 }
 
-void PZEM004T::send(const IPAddress &addr, uint8_t cmd, uint8_t data)
+void PZEM004T::send(const espurna::Ip4 &addr, uint8_t cmd, uint8_t data)
 {
     PZEMCommand pzem;
 
@@ -209,9 +209,9 @@ bool PZEM004T::receive(uint8_t resp, uint8_t *data)
 {
     uint8_t buffer[RESPONSE_SIZE];
 
-    unsigned long startTime = millis();
+    unsigned long startTime = espurna::time::ms();
     uint8_t len = 0;
-    while((len < RESPONSE_SIZE) && (millis() - startTime < _readTimeOut))
+    while((len < RESPONSE_SIZE) && (espurna::time::ms() - startTime < _readTimeOut))
     {
         if (_serial->available() > 0)
         {
@@ -220,7 +220,7 @@ bool PZEM004T::receive(uint8_t resp, uint8_t *data)
                 continue; // skip 0 at startup
             buffer[len++] = c;
         }
-        yield();	// do background netw tasks while blocked for IO (prevents ESP watchdog trigger)
+        espurna::time::yield();	// do background netw tasks while blocked for IO (prevents ESP watchdog trigger)
     }
 
     if(len != RESPONSE_SIZE)
@@ -286,7 +286,7 @@ public:
     static constexpr TimeSource::duration ReadInterval { PZEM004T_READ_INTERVAL };
     static constexpr size_t DevicesMax { PZEM004T_DEVICES_MAX };
 
-    static IPAddress defaultAddress(size_t device) {
+    static espurna::Ip4 defaultAddress(size_t device) {
         static const espurna::StringView addresses[] PROGMEM {
 #define PZEM004T_MAKE_ADDRESS(X)\
         (__extension__({\
@@ -301,11 +301,11 @@ public:
 #undef PZEM004T_MAKE_ADDRESS
         };
 
-        IPAddress out;
+        espurna::Ip4 out;
         if (device < std::size(addresses)) {
-            out.fromString(addresses[device].toString());
+            out.fromString(addresses[device].toString().c_str());
         } else {
-            out.fromString(nullptr);
+            out = espurna::Ip4();
         }
 
         return out;
@@ -320,11 +320,11 @@ public:
             _pzem(std::move(pzem))
         {}
 
-        explicit SerialPort(Stream* stream) :
+        explicit SerialPort(::espurna::ByteStream* stream) :
             _pzem(std::make_unique<PZEM004T>(stream))
         {}
 
-        float read(const IPAddress& address, unsigned char magnitude) {
+        float read(const espurna::Ip4& address, unsigned char magnitude) {
             switch (magnitude) {
             case MAGNITUDE_CURRENT:
                 return _pzem->current(address);
@@ -339,7 +339,7 @@ public:
             return ErrorValue;
         }
 
-        bool read(Reading& reading, const IPAddress& address, unsigned char magnitude) {
+        bool read(Reading& reading, const espurna::Ip4& address, unsigned char magnitude) {
             if (_busy) {
                 return false;
             }
@@ -368,7 +368,7 @@ public:
         }
 
         template <typename T>
-        bool read(Reading& reading, const IPAddress& address, T begin, T end) {
+        bool read(Reading& reading, const espurna::Ip4& address, T begin, T end) {
             for (auto it = begin; it != end; ++it) {
                 if (!read(reading, address, *it)) {
                     return false;
@@ -378,7 +378,7 @@ public:
             return true;
         }
 
-        bool address(const IPAddress& address) {
+        bool address(const espurna::Ip4& address) {
             return _pzem->setAddress(address);
         }
 
@@ -390,7 +390,7 @@ public:
     using PortPtr = std::shared_ptr<SerialPort>;
 
 private:
-    PZEM004TSensor(PortPtr port, IPAddress address) :
+    PZEM004TSensor(PortPtr port, espurna::Ip4 address) :
         BaseEmonSensor(Magnitudes),
         _port(port),
         _address(address)
@@ -409,7 +409,7 @@ public:
 
     PZEM004TSensor() = delete;
 
-    static PZEM004TSensor* make(PortPtr port, IPAddress address) {
+    static PZEM004TSensor* make(PortPtr port, espurna::Ip4 address) {
         size_t devices { 0 };
 
         auto* prev = _head_instance;
@@ -455,28 +455,28 @@ public:
     // ---------------------------------------------------------------------
 
     // Set the devices physical addresses managed by this sensor
-    void setAddress(const IPAddress& address) {
+    void setAddress(const espurna::Ip4& address) {
         _address = address;
         _reading = Reading{};
         _dirty = true;
     }
 
     void setAddress(const char* address) {
-        IPAddress ip;
+        espurna::Ip4 ip;
         if (!ip.fromString(address)) {
             setAddress(ip);
         }
     }
 
-    void setAddress(const String& address) {
+    void setAddress(const espurna::string& address) {
         setAddress(address.c_str());
     }
 
-    const IPAddress& getAddress() const {
+    const espurna::Ip4& getAddress() const {
         return _address;
     }
 
-    bool setDeviceAddress(const IPAddress& addr) {
+    bool setDeviceAddress(const espurna::Ip4& addr) {
         return _port->address(addr);
     }
 
@@ -491,24 +491,24 @@ public:
     }
 
     // Descriptive name of the sensor
-    String description() const override {
-        return F("PZEM004T");
+    espurna::string description() const override {
+        return "PZEM004T";
     }
 
     // Descriptive name of the slot # index
-    String description(unsigned char) const override {
-        String out;
+    espurna::string description(unsigned char) const override {
+        espurna::string out;
         out.reserve(48);
 
         out += description();
-        out += F(" @ ");
+        out += " @ ";
         out += ipToString(_address);
 
         return out;
     }
 
     // Address of the sensor (it could be the GPIO or I2C address)
-    String address(unsigned char) const override {
+    espurna::string address(unsigned char) const override {
         return ipToString(_address);
     }
 
@@ -572,7 +572,7 @@ public:
                 _error = SENSOR_ERROR_TIMEOUT;
                 break;
             }
-            yield();
+            espurna::time::yield();
         }
 
         _last_read = TimeSource::now();
@@ -592,7 +592,7 @@ private:
     using Ports = std::vector<PortWeakPtr>;
     static Ports _ports;
 
-    IPAddress _address;
+    espurna::Ip4 _address;
     Reading _reading;
 };
 
@@ -604,7 +604,7 @@ constexpr BaseEmonSensor::Magnitude PZEM004TSensor::Magnitudes[];
 PROGMEM_STRING(PzemDevices, "PZ.DEVICES");
 
 void PZEM004TSensor::command_devices(::terminal::CommandContext&& ctx) {
-    foreach([&](const PZEM004TSensor&, const IPAddress& address) {
+    foreach([&](const PZEM004TSensor&, const espurna::Ip4& address) {
         ctx.output.printf("%s\n", ipToString(address).c_str());
     });
     terminalOK(ctx);
@@ -619,7 +619,7 @@ void PZEM004TSensor::command_ports(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() == 2) {
         auto offset = espurna::settings::internal::convert<size_t>(ctx.argv[1]);
         if (offset >= _ports.size()) {
-            terminalError(ctx, F("Invalid port ID"));
+            terminalError(ctx, "Invalid port ID");
             return;
         }
 
@@ -629,7 +629,7 @@ void PZEM004TSensor::command_ports(::terminal::CommandContext&& ctx) {
         }
 
         if (it == end) {
-            terminalError(ctx, F("Invalid port ID"));
+            terminalError(ctx, "Invalid port ID");
             return;
         }
 
@@ -642,7 +642,7 @@ void PZEM004TSensor::command_ports(::terminal::CommandContext&& ctx) {
             ctx.output.printf_P(PSTR("%u -> (%p)\n"),
                 index, port.get());
         } else {
-            ctx.output.print(F("%u -> (not configured)\n"));
+            ctx.output.print("%u -> (not configured)\n");
         }
     };
 
@@ -662,32 +662,32 @@ PROGMEM_STRING(PzemAddress, "PZ.ADDRESS");
 // (ref. comment at the top, shouldn't do this when multiple devices are connected)
 void PZEM004TSensor::command_address(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() != 3) {
-        terminalError(ctx, F("PZ.ADDRESS <PORT> <ADDRESS>"));
+        terminalError(ctx, "PZ.ADDRESS <PORT> <ADDRESS>");
         return;
     }
 
     auto id = espurna::settings::internal::convert<size_t>(ctx.argv[1]);
     if (id >= _ports.size()) {
-        terminalError(ctx, F("Invalid port ID"));
+        terminalError(ctx, "Invalid port ID");
         return;
     }
 
     auto port = _ports[id].lock();
     if (!port) {
-        terminalError(ctx, F("Port not configured"));
+        terminalError(ctx, "Port not configured");
         return;
     }
 
-    IPAddress addr;
-    addr.fromString(ctx.argv[2]);
+    espurna::Ip4 addr;
+    addr.fromString(ctx.argv[2].c_str());
 
     if (!espurna::chip::address_set(addr)) {
-        terminalError(ctx, F("Invalid address"));
+        terminalError(ctx, "Invalid address");
         return;
     }
 
     if (!port->address(addr)) {
-        terminalError(ctx, F("Failed to set the address"));
+        terminalError(ctx, "Failed to set the address");
         return;
     }
 

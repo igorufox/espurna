@@ -11,7 +11,7 @@ Used by libs/tcp_impl.h and the mDNS responder (libs/mdns_responder_impl.h)
 
 #include <lwip/opt.h>
 #if !NO_SYS
-// FreeRTOS itself: the ESP32 safeboot is plain ESP-IDF, no Arduino
+// FreeRTOS itself, no Arduino
 #if defined(ESP_PLATFORM)
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -61,8 +61,10 @@ inline sys_sem_t* lwipCallSemaphore() {
     // while the scheduler is suspended (its taskENTER_CRITICAL() needs the SDK's own declarations)
 #if defined(ESP32)
     static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-#define LWIP_CALL_ENTER() taskENTER_CRITICAL(&mux)
-#define LWIP_CALL_EXIT() taskEXIT_CRITICAL(&mux)
+// portENTER_CRITICAL(&mux): the spinlock form both kernels of ESP-IDF take (FreeRTOS 11 SMP's taskENTER_CRITICAL()
+// takes no argument)
+#define LWIP_CALL_ENTER() portENTER_CRITICAL(&mux)
+#define LWIP_CALL_EXIT() portEXIT_CRITICAL(&mux)
 #else
 #define LWIP_CALL_ENTER() vTaskSuspendAll()
 #define LWIP_CALL_EXIT() xTaskResumeAll()

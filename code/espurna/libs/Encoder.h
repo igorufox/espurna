@@ -40,6 +40,7 @@
 
 // the pin reads of the interrupt: the chip's fast read (arch/<chip>/isr_chip.h)
 #include <isr_chip.h>
+#include "../pins.h"
 
 //                           _______         _______
 //               Pin1 ______|       |_______|       |______ Pin1
@@ -139,6 +140,7 @@ namespace EncoderLibrary {
     private:
 
         encoder_values_t values;
+        espurna::isr::Lock _lock;
 
     public:
 
@@ -147,15 +149,15 @@ namespace EncoderLibrary {
             values.pin1 = pin1;
             values.pin2 = pin2;
 
-            pinMode(values.pin1, INPUT_PULLUP);
-            pinMode(values.pin2, INPUT_PULLUP);
+            espurna::pins::mode(values.pin1, espurna::pins::InputPullup);
+            espurna::pins::mode(values.pin2, espurna::pins::InputPullup);
 
             values.position = 0;
 
             // allow time for a passive R-C filter to charge
             // through the pullup resistors, before reading
             // the initial state
-            delayMicroseconds(2000);
+            espurna::time::sleep_us(2000);
 
             uint8_t current = 0;
             if (espurna::isr::read(values.pin1)) {
@@ -185,19 +187,14 @@ namespace EncoderLibrary {
         }
 
         int32_t read() {
-            noInterrupts();
-
+            espurna::isr::Lock::Guard guard(_lock);
             update(&values);
-            int32_t ret = values.position;
-
-            interrupts();
-            return ret;
+            return values.position;
         }
 
         void write(int32_t position) {
-            noInterrupts();
+            espurna::isr::Lock::Guard guard(_lock);
             values.position = position;
-            interrupts();
         }
 
         bool attach() {
@@ -206,21 +203,19 @@ namespace EncoderLibrary {
 
             EncoderValues[index] = &values;
 
-            attachInterrupt(values.pin1, _isr_funcs[index], CHANGE);
-            attachInterrupt(values.pin2, _isr_funcs[index], CHANGE);
+            espurna::pins::attach(values.pin1, _isr_funcs[index], espurna::pins::Change);
+            espurna::pins::attach(values.pin2, _isr_funcs[index], espurna::pins::Change);
 
             return true;
         }
 
         void detach() {
-            noInterrupts();
+            espurna::isr::Lock::Guard guard(_lock);
 
             _encoderCleanStorage(values.pin1, values.pin2);
 
-            detachInterrupt(values.pin1);
-            detachInterrupt(values.pin2);
-
-            interrupts();
+            espurna::pins::detach(values.pin1);
+            espurna::pins::detach(values.pin2);
         }
 
 

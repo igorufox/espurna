@@ -1,6 +1,6 @@
 /*
 
-WIFI MODULE, BEKEN (LibreTiny) part: what only the BDK knows (ref. wifi_driver_rtos.h). The driver itself (events,
+WIFI MODULE, BEKEN (BDK) part: what only the BDK knows (ref. wifi_driver_rtos.h). The driver itself (events,
 link state, connection, scan, AP settings) is the shared one, wifi_driver_rtos.cpp
 
 BDK specifics: no 802.11 reason of the AP (synthetic reasons), a supplicant that associates again by itself unless it
@@ -13,7 +13,9 @@ station channel), AP stations only from the supplicant. The watch on the IP stac
 
 #include "../rtos/wifi_driver_rtos.h"
 
-#include <WiFi.h>
+#include "../rtos/wifi_sdk.h"
+
+#include <cmath>
 #include <lwip/etharp.h>
 #include <lwip/netif.h>
 #include <lwip/stats.h>
@@ -29,7 +31,7 @@ int rw_msg_set_power(uint8_t vif_idx, uint8_t power);
 // (bk_wlan_connection_loss) and lets the supplicant associate again by itself, this one stops it
 extern "C" int wlan_sta_disconnect(void);
 
-// LibreTiny softAPgetStationNum() is always 0 on Beken, ask the AP part of the supplicant instead
+// chip::wifi_ap_stations() is always 0 on Beken (the BDK does not count them), ask the AP part of the supplicant instead
 extern "C" int wlan_ap_sta_num(int* num);
 
 // AP channel when softAP() gets channel 0 and the station is not associated (wlan_ui.c). With channel 0
@@ -41,7 +43,7 @@ extern "C" uint8_t bk_wlan_ap_get_channel_config(void);
 // "The station has its IP" of the BDK (lwIP port net.c) is a flag the supplicant sets at WPA_COMPLETED and clears at
 // WPA_DISCONNECTED. This driver stops the supplicant once associated (wlan_sta_disconnect() above, it would
 // associate again by itself otherwise): the flag went down with the link and the address still up, and every
-// getter behind it answered nothing - LibreTiny WiFi.localIP() / BSSID() / channel() / RSSI() (WiFiPrivate.h), the
+// getter behind it answered nothing - chip::wifi_sta_address() / wifi_sta_info() of core_beken.cpp, the
 // SDK's bk_wlan_get_link_status(): IP 0.0.0.0, BSSID 00:..., channel 0, 0 dBm in the WebUI and MQTT, the Matter
 // network diagnostics empty (10.0.5.139 2026-11-15). Linked with --wrap (platformio_beken.ini): the station is up
 // when the SDK says so or its netif has the link and an IPv4 address
@@ -88,7 +90,7 @@ using rtos::expired;
 // SDK only has DTIM sleep (on / off), which needs the driver to be started
 void apply_sleep(uint8_t mode) {
     if (mode != OpmodeNull) {
-        WiFi.setSleep(rtos::state().sleep != NONE_SLEEP_T);
+        ::espurna::core::chip::wifi_sleep(rtos::state().sleep != NONE_SLEEP_T);
     }
 }
 
@@ -109,12 +111,20 @@ void init() {
 }
 
 void opmode(uint8_t mode) {
-    WiFi.mode(static_cast<WiFiMode>(mode));
+    ::espurna::core::chip::wifi_mode(static_cast<wifi_mode_t>(mode));
     apply_sleep(mode);
 }
 
 void apply_sleep() {
     apply_sleep(rtos::state().mode);
+}
+
+// the SDK has no getter: what was applied (WIFI.DEBUG)
+const char* sleep_name() {
+    if (rtos::state().mode == OpmodeNull) {
+        return "-";
+    }
+    return (rtos::state().sleep != NONE_SLEEP_T) ? "dtim" : "none";
 }
 
 // MAC keeps a TX power limit per interface (MM_SET_POWER_REQ, in dBm), its own calibration
@@ -127,7 +137,8 @@ void apply_tx_power() {
     }
 
     uint8_t mac[6];
-    const auto index = rwm_mgmt_vif_mac2idx(WiFi.macAddress(mac));
+    ::espurna::core::chip::wifi_mac(false, mac);
+    const auto index = rwm_mgmt_vif_mac2idx(mac);
     if (index == 0xff) {
         return;
     }
@@ -191,7 +202,16 @@ Attempt attempt_event(const AttemptDisconnect& disconnect, Mac& bssid) {
     return Attempt::Failed;
 }
 
-// LibreTiny WiFiClass has no disconnectReasonName(), only the ones seen in practice
+// the BDK names no reasons (chip::wifi_reason_name()), only the ones seen in practice
+// the negotiated security is not read out on the BK7231N yet (regress-todo.md 40)
+const char* sta_security() {
+    return "";
+}
+
+const char* auth_name(int mode) {
+    return (mode == WIFI_AUTH_WAPI_PSK) ? "WAPI-PSK" : nullptr;
+}
+
 const char* reason_name(int reason) {
     switch (reason) {
     case WIFI_REASON_AUTH_EXPIRE:
@@ -229,12 +249,13 @@ const char* reason_name(int reason) {
 // there are no results (the supplicant gets none, reports 'no AP found' on its own and tries again)
 constexpr uint32_t ScanTimeoutLinked { 5000 };
 
-// LibreTiny reports 'scan done' for every scan results event of the supplicant, including the
+// The BDK calls the scan callback (core_beken.cpp scan_handler(): 'scan done') for every scan results event of the
+// supplicant, including the
 // ones of its own scans and of the scan that was still running when ours was requested (2 APs
 // 108 ms after the start, while a real scan of every channel takes more than a second)
 constexpr uint32_t ScanTimeMin { 500 };
 
-// The end of the scan is our own 'scan done' event: LibreTiny keeps updating the results with every scan results event,
+// The end of the scan is our own 'scan done' event: the results are updated with every scan results event,
 // an earlier one may come from a different scan (ref. ScanTimeMin)
 bool scan_finished(rtos::Scan& scan, int16_t& count) {
     const auto timeout = scan.linked
@@ -258,14 +279,14 @@ bool scan_finished(rtos::Scan& scan, int16_t& count) {
     }
 
     // While associated, what the core has without the 'done' event is not from this scan
-    count = WiFi.scanComplete();
+    count = ::espurna::core::chip::wifi_scan_count();
     if (scan.linked && !scan.done_ok) {
         DEBUG_MSG_P(PSTR("[WIFI] Scan while connected got no results in %u ms\n"),
-            static_cast<unsigned>(millis() - scan.at));
+            static_cast<unsigned>(espurna::time::ms() - scan.at));
         count = -1;
     } else {
         DEBUG_MSG_P(PSTR("[WIFI] Scan done in %u ms, %d network(s)\n"),
-            static_cast<unsigned>(millis() - scan.at), static_cast<int>(count));
+            static_cast<unsigned>(espurna::time::ms() - scan.at), static_cast<int>(count));
     }
 
     return true;
@@ -296,27 +317,28 @@ uint8_t ap_prepare(uint8_t channel) {
     // A connected station keeps the radio on its channel: the AP goes there, not to the configured one. WIFI.AP while
     // connected to tiger (ch 1) started the AP on ch 13, the station dropped and every later attempt failed until a
     // reset (10.0.5.139, 2026-11-09)
-    if (rtos::state().linked && WiFi.channel()) {
-        channel = static_cast<uint8_t>(WiFi.channel());
+    const auto linked = ::espurna::core::chip::wifi_channel();
+    if (rtos::state().linked && linked) {
+        channel = linked;
     }
 
     bk_wlan_ap_set_default_channel(channel);
 
     internal::ap_changed = true;
-    internal::ap_changed_at = millis();
+    internal::ap_changed_at = espurna::time::ms();
 
     return 0;
 }
 
 // AP start takes a few seconds, quiet time counts from the end of it
 void ap_started() {
-    internal::ap_changed_at = millis();
+    internal::ap_changed_at = espurna::time::ms();
     internal::ap_started = true;
 }
 
 void ap_stop() {
     internal::ap_changed = true;
-    internal::ap_changed_at = millis();
+    internal::ap_changed_at = espurna::time::ms();
     internal::ap_started = false;
 }
 
@@ -326,7 +348,7 @@ size_t ap_stations() {
     return static_cast<size_t>(ap_station_count());
 }
 
-size_t print_stations(Print& out) {
+size_t print_stations(::espurna::Output& out) {
     const size_t count = static_cast<size_t>(ap_station_count());
     if (count) {
         out.printf_P(PSTR("%u station(s) connected\n"), count);

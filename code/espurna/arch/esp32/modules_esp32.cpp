@@ -9,19 +9,24 @@ image, kind 1), and the maps stay. When they come out elsewhere at a boot the co
 
 */
 
-#include "espurna.h"
-#include "modules.h"
+#include "../../espurna.h"
+#include "../../modules.h"
 
 #if MODULES_SUPPORT
 
-#include "modules_core.h"
+#include "../../modules_core.h"
 
 #include <esp_flash.h>
 #include <esp_heap_caps.h>
+#include <esp_heap_caps_init.h>
 #include <esp_image_format.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <spi_flash_mmap.h>
+
+// arch/esp32/modules_pool_esp32.c: the IRAM pool of the modules (package version 7: their pool code)
+extern "C" uint32_t modulesPoolBase();
+extern "C" uint32_t modulesPoolEnd();
 
 // esp_private/cache_utils.h: drops the cached lines of the mapped pages of a flash range (a module relocated in place)
 extern "C" bool spi_flash_check_and_flush_cache(size_t start_addr, size_t length);
@@ -218,24 +223,27 @@ void imageDone(uint32_t slot, uint32_t size) {
     spi_flash_check_and_flush_cache(slot, size);
 }
 
-// heap only: RTC FAST is reachable from the PRO CPU alone (the loop runs on the APP CPU), the IRAM tail takes 32-bit
-// access only and holds no IRAM_ATTR code of modules here
+// the statics in the heap block (RTC FAST is reachable from the PRO CPU alone, the loop runs on the APP CPU); the fixed
+// pool: the IRAM behind the head's code (modules_pool_esp32.c), the pool code of the modules only (Header::iram_*:
+// IRAM_ATTR, the BT controller's ISR), copied there with 32-bit stores at their start. No statics there: the IRAM
+// takes no byte access at all
 void pools(Pools& out) {
     const uint32_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     out.heap = heapBlockSize() + ((largest > MODULES_HEAP_KEEP) ? (largest - MODULES_HEAP_KEEP) : 0);
-    out.fixed = 0;
-    out.fixed_base = 0;
-    out.fixed_words = false;
-    out.code_in_fixed = false;
+    out.fixed_base = modulesPoolBase();
+    out.fixed = modulesPoolEnd() - out.fixed_base;
+    out.fixed_words = true;
+    out.code_in_fixed = true;
+    out.code_only = true;
     out.words = false;
-    out.name = nullptr;
+    out.name = PSTR("IRAM");
 }
 
-void statusJson(String& out) {
-    jsonField(out, F("chip"), ESP.getFlashChipSize());
+void statusJson(espurna::string& out) {
+    jsonField(out, "chip", ::espurna::core::chip::flash_size());
 }
 
-void listHead(Print& out) {
+void listHead(::espurna::Output& out) {
     out.printf_P(PSTR("esp32: %s 0x%06x, maps: irom %08x, drom %08x%s\n"),
         region.part ? region.part->label : "-", region.part ? region.part->address : 0,
         region.irom, region.drom, region.mapped ? "" : " (not mapped)");
@@ -244,5 +252,33 @@ void listHead(Print& out) {
 } // namespace arch
 } // namespace modules
 } // namespace espurna
+
+// app_main(), before the heap is busy: the IRAM pool past the pool code of the installed modules goes to the heap
+// (MALLOC_CAP_EXEC | 32BIT, as ESP-IDF has it without the pool); the Apply plans the whole pool, its restart keeps
+// what it placed
+void modulesPoolSetup() {
+    using namespace espurna::modules;
+    const uint32_t base = modulesPoolBase();
+    const uint32_t end = modulesPoolEnd();
+    uint32_t used = base;
+
+    auto dir = boxed<Directory>();
+    if (dir && readDirectory(*dir)) {
+        for (size_t index = 0; index < dir->count; ++index) {
+            const auto& entry = dir->entries[index];
+            if (entry.pool_base && entry.code_size && ((entry.pool_base + entry.code_size) > used)) {
+                used = entry.pool_base + entry.code_size;
+            }
+        }
+    }
+
+    used = roundUp(used, 4);
+    if (used < end) {
+        const auto err = heap_caps_add_region(used, end);
+        if ((err != ESP_OK) && (err != ESP_ERR_INVALID_SIZE)) {
+            DEBUG_MSG_P(PSTR("[MODULES] IRAM pool: heap_caps_add_region %d\n"), err);
+        }
+    }
+}
 
 #endif // MODULES_SUPPORT && ESP32

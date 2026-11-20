@@ -71,30 +71,30 @@ PROGMEM_STRING(Magnitude, "tspkMagnitude");
 namespace {
 
 bool enabled() {
-    return getSetting(FPSTR(keys::Enabled), build::enabled());
+    return getSetting(keys::Enabled, build::enabled());
 }
 
 bool clearCache() {
-    return getSetting(FPSTR(keys::ClearCache), build::clearCache());
+    return getSetting(keys::ClearCache, build::clearCache());
 }
 
-String apiKey() {
-    return getSetting(FPSTR(keys::ApiKey), FPSTR(build::ApiKey));
+espurna::string apiKey() {
+    return getSetting(keys::ApiKey, build::ApiKey);
 }
 
-String address() {
-    return getSetting(FPSTR(keys::Address), FPSTR(build::Address));
+espurna::string address() {
+    return getSetting(keys::Address, build::Address);
 }
 
 #if RELAY_SUPPORT
 size_t relay(size_t index) {
-    return getSetting({FPSTR(keys::Relay), index}, build::Unset);
+    return getSetting({keys::Relay, index}, build::Unset);
 }
 #endif
 
 #if SENSOR_SUPPORT
 size_t magnitude(size_t index) {
-    return getSetting({FPSTR(keys::Magnitude), index}, build::Unset);
+    return getSetting({keys::Magnitude, index}, build::Unset);
 }
 #endif
 
@@ -110,13 +110,13 @@ namespace {
 bool enabled = false;
 bool clear = false;
 
-String fields[build::Fields];
+espurna::string fields[build::Fields];
 
 TimeSource::time_point last_flush;
 size_t retries = 0;
 bool flush = false;
 
-String data;
+espurna::string data;
 
 } // namespace
 } // namespace internal
@@ -125,7 +125,7 @@ void schedule_flush() {
     internal::flush = true;
 }
 
-void enqueue(size_t index, const String& payload) {
+void enqueue(size_t index, const espurna::string& payload) {
     if ((index > 0) && (index <= std::size(internal::fields))) {
         internal::fields[--index] = payload;
         return;
@@ -133,11 +133,11 @@ void enqueue(size_t index, const String& payload) {
 }
 
 void value(size_t index, double status) {
-    enqueue(index, String(status, 3));
+    enqueue(index, espurna::string(status, 3));
 }
 
 #if RELAY_SUPPORT
-bool enqueueRelay(size_t index, const String& value) {
+bool enqueueRelay(size_t index, const espurna::string& value) {
     if (internal::enabled) {
         auto relayIndex = settings::relay(index);
         if (relayIndex) {
@@ -151,11 +151,11 @@ bool enqueueRelay(size_t index, const String& value) {
 }
 
 bool enqueueRelay(size_t index, RelayStatus status) {
-    return enqueueRelay(index, String(static_cast<int>(status), 10));
+    return enqueueRelay(index, espurna::string(static_cast<int>(status), 10));
 }
 
 bool enqueueRelay(size_t index, bool status) {
-    return enqueueRelay(index, String(static_cast<int>(status), 10));
+    return enqueueRelay(index, espurna::string(static_cast<int>(status), 10));
 }
 
 void onRelayStatus(size_t index, bool status) {
@@ -164,7 +164,7 @@ void onRelayStatus(size_t index, bool status) {
 #endif
 
 #if SENSOR_SUPPORT
-bool enqueueMagnitude(size_t index, const String& value) {
+bool enqueueMagnitude(size_t index, const espurna::string& value) {
     if (internal::enabled) {
         auto magnitudeIndex = settings::magnitude(index);
         if (magnitudeIndex) {
@@ -178,10 +178,10 @@ bool enqueueMagnitude(size_t index, const String& value) {
 }
 #endif
 
-void maybe_retry(const String& body) {
+void maybe_retry(const espurna::string& body) {
     DEBUG_MSG_P(PSTR("[THINGSPEAK] Response: %s\n"), body.c_str());
 
-    if ((!body.length() || body.equals(F("0"))) && (internal::retries < build::Retries)) {
+    if ((!body.length() || body.equals("0")) && (internal::retries < build::Retries)) {
         DEBUG_MSG_P(PSTR("[THINGSPEAK] Re-scheduling flush, attempt %u / %u\n"),
             ++internal::retries, build::Retries);
         schedule_flush();
@@ -204,7 +204,7 @@ namespace {
 // the response: the id of the entry ("0" - not taken), a few bytes
 struct Body : public ::espurna::http::Sink {
     const char* begin(const ::espurna::http::Head& head) override {
-        text = String();
+        text = espurna::string();
         if (head.status != 200) {
             DEBUG_MSG_P(PSTR("[THINGSPEAK] ERROR: HTTP %d\n"), head.status);
         }
@@ -222,7 +222,7 @@ struct Body : public ::espurna::http::Sink {
         return nullptr;
     }
 
-    String text;
+    espurna::string text;
 };
 
 ::espurna::http::Client client;
@@ -233,7 +233,7 @@ void done(const ::espurna::http::Result& result) {
         DEBUG_MSG_P(PSTR("[THINGSPEAK] ERROR: %s\n"), result.message);
     }
 
-    maybe_retry((result.ok && (result.status == 200)) ? body.text : String());
+    maybe_retry((result.ok && (result.status == 200)) ? body.text : espurna::string());
 }
 
 } // namespace
@@ -243,7 +243,7 @@ bool ready() {
     return !post::client.busy();
 }
 
-void send(const String& address, const String& data) {
+void send(const espurna::string& address, const espurna::string& data) {
     DEBUG_MSG_P(PSTR("[THINGSPEAK] POST %s?%s\n"), address.c_str(), data.c_str());
 
     ::espurna::http::Request request;
@@ -295,7 +295,7 @@ void flush() {
 
     // POST data if any
     if (internal::data.length()) {
-        internal::data.concat(F("&api_key="));
+        internal::data.concat("&api_key=");
         internal::data.concat(settings::apiKey());
         send(settings::address(), internal::data);
     }
@@ -309,7 +309,7 @@ void configure() {
     const auto key = settings::apiKey();
     if (internal::enabled && !key.length()) {
         internal::enabled = false;
-        setSetting(FPSTR(settings::keys::Enabled), "0");
+        setSetting(settings::keys::Enabled, "0");
     }
 
     internal::clear = settings::clearCache();
@@ -335,11 +335,11 @@ namespace {
 
 STRING_VIEW_INLINE(Prefix, "tspk");
 
-bool onKeyCheck(StringView key, const JsonVariant&) {
+bool onKeyCheck(StringView key, espurna::json::Value) {
     return key.startsWith(Prefix);
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     bool module { false };
 #if RELAY_SUPPORT
     module = module || (relayCount() > 0);
@@ -352,22 +352,22 @@ void onVisible(JsonObject& root) {
     }
 }
 
-void onConnected(JsonObject& root) {
-    root[FPSTR(settings::keys::Enabled)] = settings::enabled();
-    root[FPSTR(settings::keys::ApiKey)] = settings::apiKey();
-    root[FPSTR(settings::keys::ClearCache)] = settings::clearCache();
-    root[FPSTR(settings::keys::Address)] = settings::address();
-
+void onConnected(espurna::json::Writer& root) {
+    root.field(settings::keys::Enabled, settings::enabled());
+    root.field(settings::keys::ApiKey, settings::apiKey());
+    root.field(settings::keys::ClearCache, settings::clearCache());
+    root.field(settings::keys::Address, settings::address());
 #if RELAY_SUPPORT
-    JsonArray& relays = root.createNestedArray(F("tspkRelays"));
+    root.array(STRING_VIEW("tspkRelays"));
     for (size_t i = 0; i < relayCount(); ++i) {
-        relays.add(settings::relay(i));
+        root.value(settings::relay(i));
     }
+    root.end();
 #endif
 
 #if SENSOR_SUPPORT
-    sensorWebSocketMagnitudes(root, Prefix, [](JsonArray& out, size_t index) {
-        out.add(settings::magnitude(index));
+    sensorWebSocketMagnitudes(root, Prefix, [](espurna::json::Writer& out, size_t index) {
+        out.value(settings::magnitude(index));
     });
 #endif
 }
@@ -405,13 +405,13 @@ void setup() {
 // -----------------------------------------------------------------------------
 
 #if RELAY_SUPPORT
-bool tspkEnqueueRelay(size_t index, const String& value) {
+bool tspkEnqueueRelay(size_t index, const espurna::string& value) {
     return ::espurna::thingspeak::client::enqueueRelay(index, value);
 }
 #endif
 
 #if SENSOR_SUPPORT
-bool tspkEnqueueMagnitude(unsigned char index, const String& value) {
+bool tspkEnqueueMagnitude(unsigned char index, const espurna::string& value) {
     return ::espurna::thingspeak::client::enqueueMagnitude(index, value);
 }
 #endif

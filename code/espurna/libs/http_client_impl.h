@@ -1,7 +1,7 @@
 /*
 
 HTTP CLIENT - the implementation (libs/http_client.h), included by exactly one .cpp of an image, after
-libs/net_impl.h: ESPurna's http module (http.cpp), code/migration-app's and code/safeboot-app's main.cpp. No Arduino here: lwIP, BearSSL and the C
+libs/net_impl.h: ESPurna's http module (http.cpp), code/migration-app's main.cpp. No Arduino here: lwIP, BearSSL and the C
 library, the same on every chip. What that .cpp defines before the include is only how the image logs and locks,
 never what the client does (libs/net_impl.h lists them). The connection is libs/tcp.h
 
@@ -13,6 +13,7 @@ never what the client does (libs/net_impl.h lists them). The connection is libs/
 #include "tcp.h"
 #include "tls.h"
 #include "url_parse.h"
+#include "hash.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -23,10 +24,6 @@ never what the client does (libs/net_impl.h lists them). The connection is libs/
 
 // system.h: a Matter controller commissioning holds back what needs a lot of heap (W81)
 bool systemHoldActive();
-
-#if defined(ESP8266)
-#include <pgmspace.h>
-#endif
 
 // the flash string calls of the ESP8266; plain ones elsewhere (ESP32 and Beken Arduino define them already)
 #ifndef PROGMEM
@@ -229,7 +226,7 @@ private:
         _chunk_state = ChunkState::Size;
         _body_done = 0;
         _head = Head{};
-        br_sha256_init(&_sha);
+        _sha.reset(new (std::nothrow) hash::Sha256());
 
         NET_LOG("%s %s", _method, _url);
 
@@ -263,7 +260,7 @@ private:
         case tls::Failure::Fingerprint:
         case tls::Failure::Untrusted:
         case tls::Failure::NoCa:
-            finishf(false, PSTR("TLS handshake failed, BearSSL error %d"), _stream.tlsError());
+            finishf(false, PSTR("TLS handshake failed, error -0x%04x"), static_cast<unsigned>(-_stream.tlsError()));
             break;
         case tls::Failure::NoTls:
             finish(false, PSTR("https needs the tls module"));
@@ -405,7 +402,7 @@ private:
                     // knows it now (full records for this host), the same request once more (raw.githubusercontent.com,
                     // every first request after a boot failed with "no HTTP response", 2026-11-17)
                     if (_target.https && !_again && !_head.status && !_head_len
-                        && (_stream.tlsError() == BR_ERR_TOO_LARGE))
+                        && tls::recordTooLarge(_stream.tlsError()))
                     {
                         _again = true;
                         NET_LOG("%s: its records are bigger than asked, connecting again", _target.host);
@@ -533,7 +530,9 @@ private:
                 return;
             }
 
-            br_sha256_update(&_sha, buffer, got);
+            if (_sha) {
+                _sha->update(buffer, got);
+            }
             _body_done += got;
             if (_head.chunked) {
                 _chunk_left -= got;
@@ -612,8 +611,10 @@ private:
 
     void bodyEnd() {
         if (_sha256[0]) {
-            uint8_t digest[br_sha256_SIZE];
-            br_sha256_out(&_sha, digest);
+            uint8_t digest[hash::Sha256::Size] {};
+            if (_sha) {
+                _sha->finish(digest);
+            }
             char text[sizeof(digest) * 2 + 1];
             hex(digest, sizeof(digest), text);
             if (strcasecmp(text, _sha256) != 0) {
@@ -703,7 +704,7 @@ private:
     ChunkState _chunk_state { ChunkState::Size };
     size_t _chunk_left { 0 };
     size_t _body_done { 0 };
-    br_sha256_context _sha;
+    std::unique_ptr<hash::Sha256> _sha;
 };
 
 // the state (~1.5 KB) only once a request was made: the client objects of the modules cost nothing until then

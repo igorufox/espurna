@@ -9,13 +9,13 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstring>
 #include <iterator>
 #include <vector>
 
 #include "types.h"
+#include "text_types.h"
 
 namespace espurna {
 namespace terminal {
@@ -31,24 +31,24 @@ enum class Error {
     Ok,                // success
 };
 
-String error(Error);
+espurna::string error(Error);
 
 } // namespace parser
 
 // Type wrapper that flushes output on finding '\n'.
-// Inherit from `String` to reuse its buffer for every line.
-// (and also seamlessly behave like a usual `String`, we import most of its methods)
+// Inherit from `espurna::string` to reuse its buffer for every line.
+// (and also seamlessly behave like a usual `espurna::string`, we import most of its methods)
 template <typename T>
-class PrintLine final : public Print, public String {
+class PrintLine final : public ::espurna::Output, public espurna::string {
 private:
     static_assert(!std::is_reference<T>::value, "");
 
 public:
-    using String::begin;
-    using String::end;
-    using String::reserve;
-    using String::c_str;
-    using String::length;
+    using espurna::string::begin;
+    using espurna::string::end;
+    using espurna::string::reserve;
+    using espurna::string::c_str;
+    using espurna::string::length;
 
     PrintLine() = default;
     ~PrintLine() {
@@ -72,21 +72,15 @@ public:
         }
     }
 
-    size_t write(const uint8_t* data, size_t size) override {
+    using ::espurna::Output::write;
+
+    void write(const char* data, size_t size) override {
         if (!_lock && size && data && *data != '\0') {
             ReentryLock lock(_lock);
 
-            concat(reinterpret_cast<const char*>(data), size);
+            concat(data, size);
             flush();
-
-            return size;
         }
-
-        return 0;
-    }
-
-    size_t write(uint8_t ch) override {
-        return write(&ch, 1);
     }
 
 private:
@@ -99,7 +93,7 @@ private:
 };
 
 using Tokens = std::vector<StringView>;
-using Buffer = std::vector<String>;
+using Buffer = std::vector<espurna::string>;
 
 // Values of every token from the input on success (Error::Ok)
 // Remaining part of the string (when terminated early)

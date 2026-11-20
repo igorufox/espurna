@@ -1,153 +1,41 @@
 /*
 
-TLS - the implementation (libs/tls.h), part of libs/net_impl.h. No Arduino: lwIP (libs/tcp.h), BearSSL and the C
-library, the same on every chip
+TLS - the stream (libs/tls.h), part of libs/net_impl.h: the TCP connection and the plain stream in the head; a secure
+one gets its session from the tls module (tls::open(), mbedtls: libs/tls_mbedtls.h). No crypto here, no Arduino.
 
 */
 
 #pragma once
 
 #include "tls.h"
-#include "tls_engine.h"
 #include "tcp.h"
 
-#include <algorithm>
-#include <cstdlib>
 #include <cstring>
 #include <new>
 
-#if defined(ESP8266)
-#include <pgmspace.h>
-#include <StackThunk.h>
-#elif defined(ESP32) || defined(ESP_PLATFORM)
+#if defined(ESP_PLATFORM) || defined(ESP8266)
+// esp_fill_random(): ESP-IDF esp_random.h, ESP8266_RTOS_SDK esp_system.h
+#if __has_include(<esp_random.h>)
 #include <esp_random.h>
-#endif
-
-#ifndef PROGMEM
-#define PROGMEM
-#endif
-#ifndef memcpy_P
-#define memcpy_P memcpy
-#endif
-
-#if defined(LIBRETINY)
-extern "C" void lt_rand_bytes(uint8_t* buf, size_t len);
-#endif
-
-// --- what the chip forces --------------------------------------------------------------------------------------------
-
-namespace espurna {
-namespace tls {
-namespace chip {
-
-// entropy for the TLS engine
-inline void random(uint8_t* out, size_t len) {
-#if defined(ESP8266)
-    // the hardware random number register (what ESP.random() reads)
-    while (len) {
-        const uint32_t value = *reinterpret_cast<volatile uint32_t*>(0x3FF20E44);
-        const size_t take = std::min<size_t>(len, sizeof(value));
-        memcpy(out, &value, take);
-        out += take;
-        len -= take;
-    }
-#elif defined(ESP32) || defined(ESP_PLATFORM)
-    esp_fill_random(out, len);
-#elif defined(LIBRETINY)
-    lt_rand_bytes(out, len);
-#endif
-}
-
-} // namespace chip
-} // namespace tls
-} // namespace espurna
-
-#if defined(ESP8266)
-
-// The engine steps that run the handshake and the record crypto go to the second stack of the core (StackThunk, 6 KB
-// on the heap while a connection is open). Own thunks: the ones of BearSSLHelpers.cpp would link its RSA and EC
-// verifiers
-extern "C" {
-
-void espurna_tls_sendrec_ack(br_ssl_engine_context* cc, size_t len) {
-    br_ssl_engine_sendrec_ack(cc, len);
-}
-
-void espurna_tls_recvrec_ack(br_ssl_engine_context* cc, size_t len) {
-    br_ssl_engine_recvrec_ack(cc, len);
-}
-
-void espurna_tls_sendapp_ack(br_ssl_engine_context* cc, size_t len) {
-    br_ssl_engine_sendapp_ack(cc, len);
-}
-
-void espurna_tls_recvapp_ack(br_ssl_engine_context* cc, size_t len) {
-    br_ssl_engine_recvapp_ack(cc, len);
-}
-
-void espurna_tls_flush(br_ssl_engine_context* cc, int force) {
-    br_ssl_engine_flush(cc, force);
-}
-
-// The long RSA / EC math of the BearSSL fork (src/inner.h, ec_prime_i15/i31.c, rsa_i15/i31_priv.c) calls this between
-// its steps; the core of a newer Arduino ESP8266 defines it in StackThunk.cpp, core 3.1.2 does not (its own libbearssl.a
-// called optimistic_yield(10000) at the same places). The same here: yields when the 10 ms of the loop are up. The tls
-// module links against the head's one
-void stack_thunk_yield() {
-    optimistic_yield(10000);
-}
-
-void thunk_espurna_tls_sendrec_ack(br_ssl_engine_context*, size_t);
-void thunk_espurna_tls_recvrec_ack(br_ssl_engine_context*, size_t);
-void thunk_espurna_tls_sendapp_ack(br_ssl_engine_context*, size_t);
-void thunk_espurna_tls_recvapp_ack(br_ssl_engine_context*, size_t);
-void thunk_espurna_tls_flush(br_ssl_engine_context*, int);
-
-} // extern "C"
-
-make_stack_thunk(espurna_tls_sendrec_ack);
-make_stack_thunk(espurna_tls_recvrec_ack);
-make_stack_thunk(espurna_tls_sendapp_ack);
-make_stack_thunk(espurna_tls_recvapp_ack);
-make_stack_thunk(espurna_tls_flush);
-
-#define ESPURNA_TLS_STEP(name) thunk_espurna_tls_##name
-
 #else
-
-// the loop task has the stack for it
-#define ESPURNA_TLS_STEP(name) br_ssl_engine_##name
-
+#include <esp_system.h>
+#endif
+#elif defined(BK72XX)
+#include "../arch/beken/beken_api.h"
 #endif
 
 namespace espurna {
 namespace tls {
 namespace {
 
-// a record: the fragment plus its header, MAC and padding (BR_SSL_BUFSIZE_INPUT holds a 16384 one)
-constexpr size_t RecordOverhead { BR_SSL_BUFSIZE_INPUT - 16384 };
-constexpr size_t OutputSize { 512 + RecordOverhead };
-
-size_t inputSize(size_t fragment) {
-    switch (fragment) {
-    case 512:
-    case 1024:
-    case 2048:
-    case 4096:
-        return fragment + RecordOverhead;
-    }
-
-    return BR_SSL_BUFSIZE_INPUT;
-}
-
 // --- the record size per server (Options::fragment 0: auto) ----------------------------------------------------------
 //
 // Every TLS connection asks for small records (max_fragment_length) by itself (owner 2026-11-17: «его надо постоянно
-// пытаться включать при tls»; the NSPanel's weather session took the heap down to ~120 B with a 16.7 KB input buffer).
+// пытаться включать при tls»; the NSPanel's weather session took the heap down to ~120 B with a 16 KB input buffer).
 // The first connection to a host is the probe: 512, then 4096 if the server refused it, then full records; what
-// worked is kept per host + port until the reboot, so the next connections go straight to it. A refusal: the server
-// sent a bigger record (BR_ERR_TOO_LARGE), echoed another size (BR_ERR_BAD_FRAGLEN), answered with an alert or closed
-// during the handshake. A server that sends a bigger record later on is marked «full» and the caller's retry gets it
+// worked is kept per host + port until the reboot, so the next connections go straight to it. A refusal: the
+// handshake failed or the server closed during it. A server that sends a bigger record later on is marked «full»
+// and the caller's retry gets it
 
 constexpr size_t AutoSizes[] { 512, 4096, 0 };
 constexpr size_t AutoSteps { sizeof(AutoSizes) / sizeof(AutoSizes[0]) };
@@ -215,30 +103,21 @@ void autoStore(const char* host, uint16_t port, uint8_t step) {
     }
 }
 
-// the handshake failed the way a server that does not take this record size fails it
-bool autoRefused(int error) {
-    return (error == BR_ERR_OK)             // closed during the handshake
-        || (error == BR_ERR_TOO_LARGE)
-        || (error == BR_ERR_BAD_FRAGLEN)
-        || ((error >= BR_ERR_RECV_FATAL_ALERT) && (error < BR_ERR_SEND_FATAL_ALERT));
-}
-
 int hexDigit(char c) {
     return ((c >= '0') && (c <= '9')) ? (c - '0') :
         ((c >= 'a') && (c <= 'f')) ? (c - 'a' + 10) :
         ((c >= 'A') && (c <= 'F')) ? (c - 'A' + 10) : -1;
 }
 
-void thunkRelease(bool& thunk) {
-#if defined(ESP8266)
-    if (thunk) {
-        stack_thunk_del_ref();
-    }
-#endif
-    thunk = false;
-}
-
 } // namespace
+
+void random(uint8_t* out, size_t len) {
+#if defined(ESP_PLATFORM) || defined(ESP8266)
+    esp_fill_random(out, len);
+#elif defined(BK72XX)
+    ::espurna::beken::rand_bytes(out, len);
+#endif
+}
 
 bool parseFingerprint(const char* text, uint8_t (&out)[FingerprintSize]) {
     size_t index = 0;
@@ -259,6 +138,11 @@ bool parseFingerprint(const char* text, uint8_t (&out)[FingerprintSize]) {
     }
 
     return index == FingerprintSize;
+}
+
+// mbedtls: MBEDTLS_ERR_SSL_INVALID_RECORD (a record over the input buffer), MBEDTLS_ERR_SSL_BAD_INPUT_DATA
+bool recordTooLarge(int error) {
+    return (error == -0x7200) || (error == -0x7100);
 }
 
 // --- the stream ------------------------------------------------------------------------------------------------------
@@ -314,25 +198,25 @@ public:
             return 0;
         }
 
-        if (_engine) {
-            auto* eng = &_engine->sc.eng;
-            pump();
-            if (!(br_ssl_engine_current_state(eng) & BR_SSL_RECVAPP)) {
-                return 0;
+        if (_session) {
+            const auto got = _session->read(out, len);
+            if (got > 0) {
+                _last = tcp::now();
+                return static_cast<size_t>(got);
             }
 
-            size_t avail;
-            auto* buf = br_ssl_engine_recvapp_buf(eng, &avail);
-            const size_t size = std::min(avail, len);
-            memcpy(out, buf, size);
-            ESPURNA_TLS_STEP(recvapp_ack)(eng, size);
-            return size;
+            if (got < 0) {
+                ended(got);
+            }
+
+            return 0;
         }
 
         const auto got = _conn->read(out, len);
         if (got) {
             _last = tcp::now();
         }
+
         return got;
     }
 
@@ -341,26 +225,25 @@ public:
             return 0;
         }
 
-        if (_engine) {
-            auto* eng = &_engine->sc.eng;
-            if (!pump() || !(br_ssl_engine_current_state(eng) & BR_SSL_SENDAPP)) {
-                return 0;
+        if (_session) {
+            const auto sent = _session->write(data, len);
+            if (sent > 0) {
+                _last = tcp::now();
+                return static_cast<size_t>(sent);
             }
 
-            size_t avail;
-            auto* buf = br_ssl_engine_sendapp_buf(eng, &avail);
-            const size_t size = std::min(avail, len);
-            memcpy(buf, data, size);
-            ESPURNA_TLS_STEP(sendapp_ack)(eng, size);
-            ESPURNA_TLS_STEP(flush)(eng, 0);
-            pump();
-            return size;
+            if (sent < 0) {
+                ended(sent);
+            }
+
+            return 0;
         }
 
         const auto out = _conn->write(data, len);
         if (out) {
             _last = tcp::now();
         }
+
         return out;
     }
 
@@ -369,14 +252,8 @@ public:
             return true;
         }
 
-        if (_engine) {
-            const bool open = pump();
-            const auto state = br_ssl_engine_current_state(&_engine->sc.eng);
-            if (!open) {
-                return !(state & BR_SSL_RECVAPP);
-            }
-
-            return _conn->closed() && !_conn->available() && !(state & BR_SSL_RECVAPP);
+        if (_session) {
+            return _closed || (_conn->closed() && !_conn->available());
         }
 
         return _conn->closed() && !_conn->available();
@@ -395,6 +272,10 @@ public:
     }
 
     void close() {
+        if (_session) {
+            _session->close();
+        }
+
         release();
         _state = State::Idle;
     }
@@ -409,20 +290,31 @@ private:
     };
 
     void release() {
+        delete _session;
+        _session = nullptr;
         _conn.reset();
-        _engine.reset();
-        _buffers.reset();
-        thunkRelease(_thunk);
+        _closed = false;
     }
 
     void fail(Failure failure) {
-        if (_engine) {
-            _tls_error = br_ssl_engine_last_error(&_engine->sc.eng);
-        }
-
         _failure = failure;
         _state = State::Failed;
         release();
+    }
+
+    // the session closed after the handshake: the peer said so, or an error
+    void ended(int error) {
+        _closed = true;
+        if (error != -0x7880) {
+            _tls_error = error;
+        }
+
+        // the handshake went with small records, the data then came in a bigger one: the server takes none, the
+        // next connection (the caller's retry) gets full records
+        if (_auto && AutoSizes[_step] && recordTooLarge(error)) {
+            _step = AutoSteps - 1;
+            autoStore(_host, _port, _step);
+        }
     }
 
     void step() {
@@ -455,27 +347,19 @@ private:
         }
     }
 
+    // the session of the tls module, Failure::NoTls without it
     bool setup() {
-        _input_size = inputSize(_auto ? AutoSizes[_step] : _options.fragment);
-        _engine.reset(new (std::nothrow) Engine());
-        _buffers.reset(new (std::nothrow) unsigned char[_input_size + OutputSize]);
-        if (!_engine || !_buffers) {
-            fail(Failure::Memory);
-            return false;
+        auto options = _options;
+        if (_auto) {
+            options.fragment = AutoSizes[_step];
         }
 
-#if defined(ESP8266)
-        stack_thunk_add_ref();
-        _thunk = true;
-#endif
-
-        // the TLS of this connection: the tls module's (ESPurna's head has only the records), Failure::NoTls without it
-        uint8_t seed[32];
-        chip::random(seed, sizeof(seed));
-        const auto failure = tls::start(*_engine, _host, _options, seed, sizeof(seed),
-            _buffers.get(), _input_size, _buffers.get() + _input_size, OutputSize);
-        if (failure != Failure::None) {
-            fail(failure);
+        Failure failure { Failure::None };
+        int error { 0 };
+        _session = tls::open(*_conn, _host, options, failure, error);
+        if (!_session) {
+            _tls_error = error;
+            fail((failure != Failure::None) ? failure : Failure::Tls);
             return false;
         }
 
@@ -483,34 +367,32 @@ private:
     }
 
     void handshake() {
-        if (!pump()) {
-            const int error = _engine ? br_ssl_engine_last_error(&_engine->sc.eng) : 0;
-            if (refused(error)) {
-                return;
-            }
-
-            const bool x509 = (error >= BR_ERR_X509_OK) && (error < BR_ERR_RECV_FATAL_ALERT);
-            fail(!x509 ? Failure::Tls
-                : _options.ca ? Failure::Untrusted
-                : (error == BR_ERR_X509_NOT_TRUSTED) ? Failure::Fingerprint
-                : Failure::Tls);
-            return;
-        }
-
-        if (br_ssl_engine_current_state(&_engine->sc.eng) & BR_SSL_SENDAPP) {
+        const auto result = _session->handshake();
+        if (result > 0) {
             _state = State::Ready;
+            _last = tcp::now();
             if (_auto) {
                 autoStore(_host, _port, _step);
             }
             return;
         }
 
-        if (_conn->closed() && !_conn->available()) {
-            if (refused(br_ssl_engine_last_error(&_engine->sc.eng))) {
-                return;
-            }
-            fail(Failure::Tls);
+        if (result == 0) {
+            return;
         }
+
+        _tls_error = result;
+        const auto verified = _session->verify();
+        if (verified != Failure::None) {
+            fail(verified);
+            return;
+        }
+
+        if (refused()) {
+            return;
+        }
+
+        fail(Failure::Tls);
     }
 
     // the TCP connection, then (step()) the handshake
@@ -532,9 +414,9 @@ private:
     }
 
     // auto record size: the server did not take this one, a new connection asks for the next (512, 4096, full).
-    // false - not that kind of failure, or nothing bigger is left
-    bool refused(int error) {
-        if (!_auto || ((static_cast<size_t>(_step) + 1) >= AutoSteps) || !autoRefused(error)) {
+    // false - nothing bigger is left
+    bool refused() {
+        if (!_auto || ((static_cast<size_t>(_step) + 1) >= AutoSteps)) {
             return false;
         }
 
@@ -542,54 +424,6 @@ private:
         ++_step;
         open();
         return true;
-    }
-
-    // records out and in, as far as it goes without waiting. false - the engine closed (error or not)
-    bool pump() {
-        auto* eng = &_engine->sc.eng;
-        for (;;) {
-            const auto state = br_ssl_engine_current_state(eng);
-            if (state & BR_SSL_CLOSED) {
-                // why it closed, for the caller (the HTTP client asks once more after BR_ERR_TOO_LARGE)
-                _tls_error = br_ssl_engine_last_error(eng);
-                // the handshake went with small records, the data then came in a bigger one: the server takes none,
-                // the next connection (the caller's retry) gets full records
-                if (_auto && (_state == State::Ready) && AutoSizes[_step]
-                    && (br_ssl_engine_last_error(eng) == BR_ERR_TOO_LARGE))
-                {
-                    _step = AutoSteps - 1;
-                    autoStore(_host, _port, _step);
-                }
-                return false;
-            }
-
-            bool moved { false };
-            if (state & BR_SSL_SENDREC) {
-                size_t len;
-                auto* buf = br_ssl_engine_sendrec_buf(eng, &len);
-                const auto sent = _conn->write(buf, len);
-                if (sent) {
-                    ESPURNA_TLS_STEP(sendrec_ack)(eng, sent);
-                    _last = tcp::now();
-                    moved = true;
-                }
-            }
-
-            if ((state & BR_SSL_RECVREC) && _conn->available()) {
-                size_t len;
-                auto* buf = br_ssl_engine_recvrec_buf(eng, &len);
-                const auto got = _conn->read(buf, len);
-                if (got) {
-                    ESPURNA_TLS_STEP(recvrec_ack)(eng, got);
-                    _last = tcp::now();
-                    moved = true;
-                }
-            }
-
-            if (!moved) {
-                return true;
-            }
-        }
     }
 
     State _state { State::Idle };
@@ -601,12 +435,10 @@ private:
     bool _auto { false };   // Options::fragment 0: the record size of the table (AutoSizes[_step])
     uint8_t _step { 0 };
     uint32_t _last { 0 };
+    bool _closed { false };
 
     std::unique_ptr<tcp::Connection> _conn;
-    std::unique_ptr<Engine> _engine;
-    std::unique_ptr<unsigned char[]> _buffers;
-    size_t _input_size { 0 };
-    bool _thunk { false };
+    Session* _session { nullptr };
 };
 
 // the state only once a connection was made

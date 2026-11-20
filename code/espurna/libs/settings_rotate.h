@@ -1,7 +1,7 @@
 /*
 
 THE ON-FLASH FORMAT OF THE SETTINGS, one for every chip and every image that reads them (ESPurna storage_eeprom.cpp,
-the ESP32 safeboot, the ESP8266 migration image)
+the ESP8266 migration image)
 
 The format of EEPROM_Rotate 0.9.2, which the ESP8266 boards always had (the boards in use keep their settings as they
 are): a pool of 4 KiB sectors, `base`, `base - 1`, ... `base - (pool - 1)`; each a whole copy of the settings. At 11..13

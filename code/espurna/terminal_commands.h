@@ -8,7 +8,8 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Arduino.h>
+#include "text_types.h"
+
 
 #include "terminal_parsing.h"
 
@@ -23,8 +24,8 @@ namespace terminal {
 // Like Embedis implementation, we only pass things that we actually use instead of complete obj instance
 struct CommandContext {
     Buffer argv;
-    Print& output;
-    Print& error;
+    ::espurna::Output& output;
+    ::espurna::Output& error;
 };
 
 using CommandFunc = void(*)(CommandContext&&);
@@ -62,30 +63,30 @@ CommandNames names();
 const Command* find(StringView name);
 
 // try to parse and call command line string
-bool find_and_call(StringView, Print& output);
+bool find_and_call(StringView, ::espurna::Output& output);
 
 // try to parse and call command line string
-bool find_and_call(StringView, Print& output, Print& error);
+bool find_and_call(StringView, ::espurna::Output& output, ::espurna::Output& error);
 
 // try and call an already parsed command line
-bool find_and_call(ParsedLine, Print& output);
+bool find_and_call(ParsedLine, ::espurna::Output& output);
 
 // try and call an already parsed command line
-bool find_and_call(ParsedLine, Print& output, Print& error);
+bool find_and_call(ParsedLine, ::espurna::Output& output, ::espurna::Output& error);
 
 // search the given string for valid commands and call them in sequence
-bool api_find_and_call(StringView, Print& output);
+bool api_find_and_call(StringView, ::espurna::Output& output);
 
 // search the given string for valid commands and call them in sequence
-bool api_find_and_call(StringView, Print& output, Print& error);
+bool api_find_and_call(StringView, ::espurna::Output& output, ::espurna::Output& error);
 
 // helper functions for most common success output
-void ok(Print&);
+void ok(::espurna::Output&);
 void ok(const espurna::terminal::CommandContext&);
 
 // helper functions for when the function fails
-void error(Print&, const String&);
-void error(const espurna::terminal::CommandContext&, const String&);
+void error(::espurna::Output&, const espurna::string&);
+void error(const espurna::terminal::CommandContext&, const espurna::string&);
 
 
 } // namespace terminal

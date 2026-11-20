@@ -36,7 +36,7 @@ ESPURNA_MODULE(light, "light", 10) {
     modulesProvide(Api::LightChannelSet, static_cast<void(*)(size_t, long)>(&lightChannel));
     modulesProvide(Api::LightChannels, static_cast<size_t(*)()>(&lightChannels));
     modulesProvide(Api::LightOnReport, static_cast<void(*)(LightReportListener)>(&lightOnReport));
-    modulesProvide(Api::LightColor, static_cast<String(*)()>(&lightColor));
+    modulesProvide(Api::LightColor, static_cast<espurna::string(*)()>(&lightColor));
     modulesProvide(Api::LightUseRgb, static_cast<bool(*)()>(&lightUseRGB));
     modulesProvide(Api::LightHasColor, static_cast<bool(*)()>(&lightHasColor));
     modulesProvide(Api::LightHasWhite, static_cast<bool(*)()>(&lightHasWhite));

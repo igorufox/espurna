@@ -8,7 +8,6 @@ NSPANEL MODULE - config compiler
 */
 
 #if HOST_MOCK
-#include <Arduino.h>
 #define NSPANEL_CONFIG_BUILD 1
 #else
 #include "espurna.h"
@@ -34,8 +33,8 @@ namespace nspanel {
 // Text helpers
 // -----------------------------------------------------------------------------
 
-String utf8(uint16_t code) {
-    String out;
+espurna::string utf8(uint16_t code) {
+    espurna::string out;
     if (!code) {
         return out;
     }
@@ -60,7 +59,7 @@ String utf8(uint16_t code) {
 }
 
 // cut at 'max' bytes without splitting a multi-byte sequence
-void utf8Truncate(String& value, size_t max) {
+void utf8Truncate(espurna::string& value, size_t max) {
     if (value.length() <= max) {
         return;
     }
@@ -74,7 +73,7 @@ void utf8Truncate(String& value, size_t max) {
 }
 
 // first 'chars' UTF-8 characters
-String utf8Prefix(const String& value, size_t chars) {
+espurna::string utf8Prefix(const espurna::string& value, size_t chars) {
     size_t pos = 0;
     size_t count = 0;
     while (pos < value.length()) {
@@ -91,8 +90,8 @@ String utf8Prefix(const String& value, size_t chars) {
 }
 
 // '~' separates fields of ESP->TFT commands
-String sanitize(const char* value, size_t max) {
-    String out(value ? value : "");
+espurna::string sanitize(const char* value, size_t max) {
+    espurna::string out(value ? value : "");
     out.replace("~", "-");
     out.replace("\r", "");
     out.replace("\n", " ");
@@ -200,7 +199,7 @@ struct Strings {
         return out;
     }
 
-    Off add(const String& text) {
+    Off add(const espurna::string& text) {
         return add(text.c_str());
     }
 
@@ -430,10 +429,49 @@ int16_t addPath(Draft& out, std::vector<Off>&& keys) {
 }
 
 // ["a", "b", 0] or "a" -> the keys "a", "b", "0"
-bool parsePath(Draft& out, const JsonVariant& value, int16_t& path) {
+// The texts of the JSON as C strings for the parsers below: copies, kept until the compile ends (CstrArena). A string
+// without its quotes and escapes, a number or true / false as written; nullptr for null, an object or an array (the
+// ArduinoJson 5 as<const char*>() these parsers were written for)
+std::vector<espurna::string>* cstr_arena { nullptr };
+
+struct CstrArena {
+    CstrArena() {
+        cstr_arena = &texts;
+    }
+
+    ~CstrArena() {
+        cstr_arena = nullptr;
+    }
+
+    std::vector<espurna::string> texts;
+};
+
+const char* cstr(espurna::string&& text) {
+    if (!cstr_arena) {
+        return nullptr;
+    }
+
+    cstr_arena->push_back(std::move(text));
+    const char* out = cstr_arena->back().c_str();
+    return out ? out : "";
+}
+
+const char* cstr(espurna::json::Value value) {
+    if (!value.isString() && !value.isNumber() && !value.isBool()) {
+        return nullptr;
+    }
+
+    return cstr(value.asString());
+}
+
+const char* cstr(espurna::StringView text) {
+    return cstr(espurna::string(text));
+}
+
+bool parsePath(Draft& out, espurna::json::Value value, int16_t& path) {
     std::vector<Off> keys;
-    if (value.is<const char*>()) {
-        const char* text = value.as<const char*>();  // NULL for a JSON null
+    if (value.isString()) {
+        const char* text = cstr(value);  // NULL for a JSON null
         if (!text || !strlen(text)) {
             return false;
         }
@@ -442,17 +480,17 @@ bool parsePath(Draft& out, const JsonVariant& value, int16_t& path) {
         return true;
     }
 
-    JsonArray& array = value.as<JsonArray>();
-    if (!array.success() || !array.size()) {
+    const auto array = value;
+    if (!array.valid() || !array.size()) {
         return false;
     }
 
     keys.reserve(array.size());
     for (auto key : array) {
-        if (key.is<const char*>() && key.as<const char*>()) {
-            keys.push_back(out.strings.add(key.as<const char*>()));
-        } else if (key.is<long>()) {
-            keys.push_back(out.strings.add(String(key.as<long>())));
+        if (key.isString() && cstr(key)) {
+            keys.push_back(out.strings.add(cstr(key)));
+        } else if (key.isNumber()) {
+            keys.push_back(out.strings.add(espurna::string(key.asLong())));
         } else {
             return false;
         }
@@ -463,7 +501,7 @@ bool parsePath(Draft& out, const JsonVariant& value, int16_t& path) {
 }
 
 // [room, key]
-int16_t roomPath(Draft& out, const String& room, const char* key) {
+int16_t roomPath(Draft& out, const espurna::string& room, const char* key) {
     std::vector<Off> keys;
     keys.push_back(out.strings.add(room));
     keys.push_back(out.strings.add(key));
@@ -523,14 +561,14 @@ bool parseHex(const char* value, uint16_t& out) {
     return true;
 }
 
-String resolveIcon(const char* value, uint16_t fallback, String& warnings) {
+espurna::string resolveIcon(const char* value, uint16_t fallback, espurna::string& warnings) {
     if (!value || !strlen(value)) {
         return utf8(fallback);
     }
 
     // literal glyph or short text
     if (static_cast<uint8_t>(value[0]) >= 0x80) {
-        String out(value);
+        espurna::string out(value);
         utf8Truncate(out, 9);
         return out;
     }
@@ -551,36 +589,36 @@ String resolveIcon(const char* value, uint16_t fallback, String& warnings) {
         return utf8(code);
     }
 
-    warnings += F("unknown icon '");
+    warnings += "unknown icon '";
     warnings += value;
-    warnings += F("'; ");
+    warnings += "'; ";
 
     return utf8(icons::AlertCircleOutline);
 }
 
 // "x" -> x, 12 -> "12", true -> "true", missing -> ""
-String jsonText(const JsonVariant& value) {
-    if (value.is<const char*>()) {
-        const char* text = value.as<const char*>();  // NULL for a JSON null
-        return text ? String(text) : String();
+espurna::string jsonText(espurna::json::Value value) {
+    if (value.isString()) {
+        const char* text = cstr(value);  // NULL for a JSON null
+        return text ? espurna::string(text) : espurna::string();
     }
-    if (value.is<bool>()) {
-        return value.as<bool>() ? F("true") : F("false");
+    if (value.isBool()) {
+        return value.asBool() ? "true" : "false";
     }
-    if (value.is<long>()) {
-        return String(value.as<long>());
+    if (value.isNumber()) {
+        return espurna::string(value.asLong());
     }
-    if (value.is<double>()) {
+    if (value.isNumber()) {
         char buf[24];
-        snprintf(buf, sizeof(buf), "%g", value.as<double>());
+        snprintf(buf, sizeof(buf), "%g", value.asDouble());
         return buf;
     }
-    return String();
+    return espurna::string();
 }
 
 // "url" (both), "on_url", "off_url": plain http:// or https:// (no certificate check), empty when not set
-bool parseUrls(JsonObject& obj, String& on, String& off, String& error) {
-    const String url = jsonText(obj["url"]);
+bool parseUrls(espurna::json::Value obj, espurna::string& on, espurna::string& off, espurna::string& error) {
+    const espurna::string url = jsonText(obj["url"]);
     on = jsonText(obj["on_url"]);
     off = jsonText(obj["off_url"]);
     if (!on.length()) {
@@ -591,10 +629,10 @@ bool parseUrls(JsonObject& obj, String& on, String& off, String& error) {
     }
 
     for (const auto* value : {&on, &off}) {
-        if (value->length() && (!(value->startsWith(F("http://")) || value->startsWith(F("https://")))
+        if (value->length() && (!(value->startsWith("http://") || value->startsWith("https://"))
             || (value->length() > 256)))
         {
-            error = F("\"url\" must start with http:// or https://, at most 256 characters");
+            error = "\"url\" must start with http:// or https://, at most 256 characters";
             return false;
         }
     }
@@ -603,46 +641,46 @@ bool parseUrls(JsonObject& obj, String& on, String& off, String& error) {
 }
 
 // 'module_action': the item's "action" is the name of another module's action (parseItem()), not toggle / on / off
-bool parseTarget(JsonObject& obj, Draft& out, Target& target, String& error, bool module_action = false) {
-    if (!module_action && !parseAction(obj["action"].as<const char*>(), target.action)) {
-        error = F("unknown action '");
-        error += obj["action"].as<const char*>();
+bool parseTarget(espurna::json::Value obj, Draft& out, Target& target, espurna::string& error, bool module_action = false) {
+    if (!module_action && !parseAction(cstr(obj["action"]), target.action)) {
+        error = "unknown action '";
+        error += cstr(obj["action"]);
         error += '\'';
         return false;
     }
 
-    String url_on;
-    String url_off;
+    espurna::string url_on;
+    espurna::string url_off;
     if (!parseUrls(obj, url_on, url_off, error)) {
         return false;
     }
     const bool urls = url_on.length() || url_off.length();
 
-    if (urls && obj.containsKey("relay")) {
-        error = F("\"url\" and \"relay\" do not go together");
+    if (urls && obj.has("relay")) {
+        error = "\"url\" and \"relay\" do not go together";
         return false;
     }
 
-    if (obj.containsKey("relay")) {
-        const int relay = obj["relay"].as<int>();
+    if (obj.has("relay")) {
+        const int relay = static_cast<int>(obj["relay"].asLong());
         if ((relay < 0) || (static_cast<size_t>(relay) >= limits.relays)) {
-            error = F("no such relay ");
+            error = "no such relay ";
             error += relay;
             return false;
         }
         target.entity = findOrAddRelay(out, relay);
-    } else if (obj.containsKey("topic")) {
-        const char* topic = obj["topic"].as<const char*>();
+    } else if (obj.has("topic")) {
+        const char* topic = cstr(obj["topic"]);
         if (!topic || !strlen(topic) || strchr(topic, '#') || strchr(topic, '+')) {
-            error = F("invalid topic");
+            error = "invalid topic";
             return false;
         }
 
         DraftEntity entity;
         entity.topic = out.strings.add(topic);
         entity.command = out.strings.add(jsonText(obj["command"]));
-        if (obj.containsKey("path") && !parsePath(out, obj["path"], entity.path)) {
-            error = F("bad \"path\" (array of keys)");
+        if (obj.has("path") && !parsePath(out, obj["path"], entity.path)) {
+            error = "bad \"path\" (array of keys)";
             return false;
         }
         entity.on = out.strings.add(jsonText(obj["on"]));
@@ -660,8 +698,8 @@ bool parseTarget(JsonObject& obj, Draft& out, Target& target, String& error, boo
         target.entity = out.entities.size() - 1;
     }
 
-    if (obj.containsKey("group")) {
-        const char* name = obj["group"].as<const char*>();
+    if (obj.has("group")) {
+        const char* name = cstr(obj["group"]);
         for (size_t index = 0; index < out.groups.size(); ++index) {
             if (name && !strcmp(out.strings.at(out.groups[index].name), name)) {
                 target.group = index;
@@ -670,7 +708,7 @@ bool parseTarget(JsonObject& obj, Draft& out, Target& target, String& error, boo
         }
 
         if (target.group < 0) {
-            error = F("unknown group '");
+            error = "unknown group '";
             error += name ? name : "";
             error += '\'';
             return false;
@@ -678,8 +716,8 @@ bool parseTarget(JsonObject& obj, Draft& out, Target& target, String& error, boo
     }
 
     // a page index (hardware buttons); an item's "page" object is a nested page (parsePage())
-    if (obj["page"].is<int>()) {
-        target.page = obj["page"].as<int>();
+    if (obj["page"].isNumber()) {
+        target.page = static_cast<int>(obj["page"].asLong());
     }
 
     target.valid = (target.entity >= 0) || (target.group >= 0) || (target.page >= 0);
@@ -693,9 +731,9 @@ T clampValue(long value, long min, long max) {
 
 
 // "#rrggbb" / "rrggbb" (RGB) or a number (RGB565 decimal)
-bool parseColor(const JsonVariant& value, int32_t& out) {
-    if (value.is<const char*>()) {
-        const char* text = value.as<const char*>();
+bool parseColor(espurna::json::Value value, int32_t& out) {
+    if (value.isString()) {
+        const char* text = cstr(value);
         if (!text) {
             return false;
         }
@@ -714,8 +752,8 @@ bool parseColor(const JsonVariant& value, int32_t& out) {
         return true;
     }
 
-    if (value.is<long>()) {
-        const long number = value.as<long>();
+    if (value.isNumber()) {
+        const long number = value.asLong();
         if ((number >= 0) && (number <= 65535)) {
             out = number;
             return true;
@@ -728,23 +766,23 @@ bool parseColor(const JsonVariant& value, int32_t& out) {
 // "open" references are resolved after all pages are known
 struct PendingOpen {
     size_t item;
-    String ref;
+    espurna::string ref;
 };
 
 // a JSON value entity of the thermostat: explicit path, or [room, key]; -1 when neither is given
-bool thermostatEntity(JsonObject& obj, const char* field, Off topic, const String& room,
-        const char* key, int16_t& out_index, Draft& out, String& error)
+bool thermostatEntity(espurna::json::Value obj, const char* field, Off topic, const espurna::string& room,
+        const char* key, int16_t& out_index, Draft& out, espurna::string& error)
 {
     DraftEntity entity;
     entity.topic = topic;
-    if (obj[field].is<double>() || obj[field].is<long>()) {
+    if (obj[field].isNumber() || obj[field].isNumber()) {
         out_index = -1; // a fixed number (min / max)
         return true;
     }
 
-    if (obj.containsKey(field)) {
+    if (obj.has(field)) {
         if (!parsePath(out, obj[field], entity.path)) {
-            error = String(F("bad \"")) + field + F("\" path");
+            error = espurna::string("bad \"") + field + "\" path";
             return false;
         }
     } else if (room.length()) {
@@ -760,15 +798,15 @@ bool thermostatEntity(JsonObject& obj, const char* field, Off topic, const Strin
 
 // {"type": "thermostat", "topic": "istabai/out", "room": "Гостиная", "command": "istabai/in/Гостиная", "step": 0.5}
 // or explicit paths: "current", "setpoint", "humidity", "active", "min", "max" (min / max may be numbers)
-bool parseThermostat(JsonObject& obj, Draft& out, DraftItem& item, String& error) {
-    const char* topic = obj["topic"].as<const char*>();
+bool parseThermostat(espurna::json::Value obj, Draft& out, DraftItem& item, espurna::string& error) {
+    const char* topic = cstr(obj["topic"]);
     if (!topic || !strlen(topic) || strchr(topic, '#') || strchr(topic, '+')) {
-        error = F("thermostat needs a state \"topic\"");
+        error = "thermostat needs a state \"topic\"";
         return false;
     }
 
     const Off state_topic = out.strings.add(topic);
-    const String room = jsonText(obj["room"]);
+    const espurna::string room = jsonText(obj["room"]);
 
     DraftThermostat thermostat;
     if (!thermostatEntity(obj, "current", state_topic, room, "temperature", thermostat.current, out, error)
@@ -784,15 +822,15 @@ bool parseThermostat(JsonObject& obj, Draft& out, DraftItem& item, String& error
     {
         DraftEntity entity;
         entity.topic = state_topic;
-        if (obj.containsKey("setpoint")) {
+        if (obj.has("setpoint")) {
             if (!parsePath(out, obj["setpoint"], entity.path)) {
-                error = F("bad \"setpoint\" path");
+                error = "bad \"setpoint\" path";
                 return false;
             }
         } else if (room.length()) {
             entity.path = roomPath(out, room, "set_temperature");
         } else {
-            error = F("thermostat needs \"room\" or a \"setpoint\" path");
+            error = "thermostat needs \"room\" or a \"setpoint\" path";
             return false;
         }
         entity.command = out.strings.add(jsonText(obj["command"]));
@@ -800,14 +838,14 @@ bool parseThermostat(JsonObject& obj, Draft& out, DraftItem& item, String& error
         thermostat.setpoint = findOrAddEntity(out, entity);
     }
 
-    if (obj["min"].is<double>() || obj["min"].is<long>()) {
-        thermostat.min_value = obj["min"].as<float>();
+    if (obj["min"].isNumber() || obj["min"].isNumber()) {
+        thermostat.min_value = obj["min"].asDouble();
     }
-    if (obj["max"].is<double>() || obj["max"].is<long>()) {
-        thermostat.max_value = obj["max"].as<float>();
+    if (obj["max"].isNumber() || obj["max"].isNumber()) {
+        thermostat.max_value = obj["max"].asDouble();
     }
-    if (obj.containsKey("step")) {
-        thermostat.step = obj["step"].as<float>();
+    if (obj.has("step")) {
+        thermostat.step = obj["step"].asDouble();
     }
     if (!(thermostat.step > 0.0f) || (thermostat.step > 10.0f)) {
         thermostat.step = 0.5f;
@@ -816,10 +854,10 @@ bool parseThermostat(JsonObject& obj, Draft& out, DraftItem& item, String& error
         thermostat.max_value = thermostat.min_value + thermostat.step;
     }
 
-    const char* history = obj["history"].as<const char*>();
+    const char* history = cstr(obj["history"]);
     if (history && strlen(history)) {
         if (strchr(history, '#') || strchr(history, '+')) {
-            error = F("\"history\" must be a plain topic");
+            error = "\"history\" must be a plain topic";
             return false;
         }
         thermostat.history = out.strings.add(history);
@@ -833,7 +871,7 @@ bool parseThermostat(JsonObject& obj, Draft& out, DraftItem& item, String& error
 }
 
 // a printf format with exactly one float conversion (%f %e %g, flags/width/precision) and %%
-bool validFormat(const String& format) {
+bool validFormat(const espurna::string& format) {
     size_t conversions = 0;
     for (size_t pos = 0; pos < format.length(); ++pos) {
         if (format[pos] != '%') {
@@ -864,19 +902,19 @@ bool validFormat(const String& format) {
     return (conversions == 1) && (format.length() <= 24);
 }
 
-bool parseItem(JsonObject& item_obj, Draft& out, DraftItem& item, std::vector<PendingOpen>& pending,
-        const String& where, String& error, String& warnings)
+bool parseItem(espurna::json::Value item_obj, Draft& out, DraftItem& item, std::vector<PendingOpen>& pending,
+        const espurna::string& where, espurna::string& error, espurna::string& warnings)
 {
-    const String name = sanitize(item_obj["name"].as<const char*>(), build::NameMax);
+    const espurna::string name = sanitize(cstr(item_obj["name"]), build::NameMax);
     item.name = out.strings.add(name);
 
-    const char* item_type = item_obj["type"].as<const char*>();
-    const bool open = item_obj.containsKey("open") || item_obj.containsKey("page");
+    const char* item_type = cstr(item_obj["type"]);
+    const bool open = item_obj.has("open") || item_obj.has("page");
 
     // "action" other than toggle / on / off: the action of another module (nspanelAction(), nspanel.h, e.g.
     // "matter-pair" of nspanelqr.cpp), a button of its own. Registered or not is known only at the tap: the module may be
     // installed later
-    const char* action_name = item_obj["action"].as<const char*>();
+    const char* action_name = cstr(item_obj["action"]);
     Action plain_action;
     const bool module_action = action_name && strlen(action_name) && !parseAction(action_name, plain_action);
     if (module_action) {
@@ -886,11 +924,11 @@ bool parseItem(JsonObject& item_obj, Draft& out, DraftItem& item, std::vector<Pe
                 || (*p == '.');
         }
         if (!valid) {
-            error = where + F(" '") + name + F("': unknown action '") + action_name + '\'';
+            error = where + " '" + name + "': unknown action '" + action_name + '\'';
             return false;
         }
         if (open || (item_type && strcmp(item_type, "button"))) {
-            error = where + F(" '") + name + F("': the action '") + action_name + F("' goes on a button");
+            error = where + " '" + name + "': the action '" + action_name + "' goes on a button";
             return false;
         }
         item.action = out.strings.add(action_name);
@@ -918,35 +956,35 @@ bool parseItem(JsonObject& item_obj, Draft& out, DraftItem& item, std::vector<Pe
         item.type = ItemType::Thermostat;
         fallback = icons::Thermometer;
     } else {
-        error = where + F(": unknown item type '") + item_type + '\'';
+        error = where + ": unknown item type '" + item_type + '\'';
         return false;
     }
 
     if (item.type == ItemType::Thermostat) {
         if (!parseThermostat(item_obj, out, item, error)) {
-            error = where + F(" '") + name + F("': ") + error;
+            error = where + " '" + name + "': " + error;
             return false;
         }
     } else if (!parseTarget(item_obj, out, item.target, error, module_action)) {
-        error = where + F(" '") + name + F("': ") + error;
+        error = where + " '" + name + "': " + error;
         return false;
     }
 
     // "page": a nested page, target.page is set once it is parsed (parsePage())
-    if ((item.type == ItemType::Link) && item_obj.containsKey("page")) {
-        if (!item_obj["page"].is<JsonObject&>()) {
-            error = where + F(" '") + name + F("': \"page\" must be an object");
+    if ((item.type == ItemType::Link) && item_obj.has("page")) {
+        if (!item_obj["page"].isObject()) {
+            error = where + " '" + name + "': \"page\" must be an object";
             return false;
         }
     } else if (item.type == ItemType::Link) {
         const auto& value = item_obj["open"];
-        if (value.is<int>()) {
-            item.target.page = value.as<int>();
+        if (value.isNumber()) {
+            item.target.page = static_cast<int>(value.asLong());
             if ((item.target.page < 0) && (item.target.page != PageNone)) {
                 item.target.page = PageNone;
             }
         } else {
-            const char* ref = value.as<const char*>();
+            const char* ref = cstr(value);
             if (ref && !strcmp(ref, "home")) {
                 item.target.page = PageHome;
             } else if (ref && !strcmp(ref, "weather")) {
@@ -954,39 +992,39 @@ bool parseItem(JsonObject& item_obj, Draft& out, DraftItem& item, std::vector<Pe
             } else if (ref && !strcmp(ref, "settings")) {
                 item.target.page = PageSettings;
             } else {
-                pending.push_back(PendingOpen{out.items.size(), String(ref ? ref : "")});
+                pending.push_back(PendingOpen{out.items.size(), espurna::string(ref ? ref : "")});
             }
         }
     } else if ((item.type != ItemType::Thermostat) && !module_action) {
         const bool need_group = (item.type == ItemType::Scene);
         if (need_group ? (item.target.group < 0) : (item.target.entity < 0)) {
-            error = where + F(" '") + name
-                + (need_group ? F("': scene needs \"group\"") : F("': needs \"topic\", \"relay\" or \"url\""));
+            error = where + " '" + name
+                + (need_group ? "': scene needs \"group\"" : "': needs \"topic\", \"relay\" or \"url\"");
             return false;
         }
     }
 
-    const char* history = item_obj["history"].as<const char*>();
+    const char* history = cstr(item_obj["history"]);
     if ((item.type != ItemType::Thermostat) && history && strlen(history)) {
         if (strchr(history, '#') || strchr(history, '+')) {
-            error = where + F(" '") + name + F("': \"history\" must be a plain topic");
+            error = where + " '" + name + "': \"history\" must be a plain topic";
             return false;
         }
         item.history = out.strings.add(history);
     }
 
-    item.icon = out.strings.add(resolveIcon(item_obj["icon"].as<const char*>(), fallback, warnings));
+    item.icon = out.strings.add(resolveIcon(cstr(item_obj["icon"]), fallback, warnings));
 
-    if (item_obj.containsKey("color") && !parseColor(item_obj["color"], item.color)) {
-        warnings += where + F(" '") + name + F("': bad color ignored; ");
+    if (item_obj.has("color") && !parseColor(item_obj["color"], item.color)) {
+        warnings += where + " '" + name + "': bad color ignored; ";
     }
 
     // same names as AppDaemon's grid 'font' option (pages.py), or the TFT font id 0..9
-    if (item_obj.containsKey("font")) {
+    if (item_obj.has("font")) {
         const auto& font = item_obj["font"];
-        const char* font_name = font.as<const char*>();
-        if (font.is<int>() && (font.as<int>() >= 0) && (font.as<int>() <= 9)) {
-            item.font = font.as<int>();
+        const char* font_name = cstr(font);
+        if (font.isNumber() && (static_cast<int>(font.asLong()) >= 0) && (static_cast<int>(font.asLong()) <= 9)) {
+            item.font = static_cast<int>(font.asLong());
         } else if (font_name && !strcmp(font_name, "small")) {
             item.font = 0;
         } else if (font_name && !strcmp(font_name, "medium-icon")) {
@@ -996,9 +1034,9 @@ bool parseItem(JsonObject& item_obj, Draft& out, DraftItem& item, std::vector<Pe
         } else if (font_name && !strcmp(font_name, "large")) {
             item.font = 3;
         } else {
-            warnings += F("item '");
+            warnings += "item '";
             warnings += name;
-            warnings += F("': unknown font ignored; ");
+            warnings += "': unknown font ignored; ";
         }
     }
 
@@ -1007,54 +1045,54 @@ bool parseItem(JsonObject& item_obj, Draft& out, DraftItem& item, std::vector<Pe
 
 // an item's "page", parsed after all top-level pages (their indices stay those of "pages")
 struct PendingPage {
-    JsonObject* obj;
+    espurna::json::Value obj;
     size_t item;
 };
 
-bool parsePage(JsonObject& page_obj, Draft& out, std::vector<PendingOpen>& pending,
-        std::vector<PendingPage>& nested, size_t page_index, const String& fallback_title,
-        String& error, String& warnings)
+bool parsePage(espurna::json::Value page_obj, Draft& out, std::vector<PendingOpen>& pending,
+        std::vector<PendingPage>& nested, size_t page_index, const espurna::string& fallback_title,
+        espurna::string& error, espurna::string& warnings)
 {
-    const char* type = page_obj["type"].as<const char*>();
+    const char* type = cstr(page_obj["type"]);
     DraftPage page;
     if (type && !strcmp(type, "settings")) {
         page.settings = true;
     } else if (type && !strcmp(type, "list")) {
         page.list = true;
     } else if (type && strcmp(type, "grid")) {
-        warnings += F("page type '");
+        warnings += "page type '";
         warnings += type;
-        warnings += F("' shown as grid; ");
+        warnings += "' shown as grid; ";
     }
 
-    const char* id = page_obj["id"].as<const char*>();
-    String page_id(id ? id : "");
+    const char* id = cstr(page_obj["id"]);
+    espurna::string page_id(id ? id : "");
     if (!page_id.length()) {
-        page_id = String('p');
-        page_id += String(static_cast<unsigned>(page_index));
+        page_id = espurna::string('p');
+        page_id += espurna::string(static_cast<unsigned>(page_index));
     }
     page.id = out.strings.add(page_id);
 
-    String title = sanitize(page_obj["title"].as<const char*>(), build::HeadingMax);
+    espurna::string title = sanitize(cstr(page_obj["title"]), build::HeadingMax);
     if (!title.length()) {
         title = sanitize(fallback_title.c_str(), build::HeadingMax);
     }
     page.title = out.strings.add(title);
 
-    if (page_obj.containsKey("columns")) {
-        const int columns = page_obj["columns"].as<int>();
+    if (page_obj.has("columns")) {
+        const int columns = static_cast<int>(page_obj["columns"].asLong());
         if ((columns == 3) || (columns == 4)) {
             page.grid = (columns == 3) ? Grid::G3x2 : Grid::G4x2;
         } else {
-            warnings += F("page ");
+            warnings += "page ";
             warnings += page_index;
-            warnings += F(": columns must be 3 or 4; ");
+            warnings += ": columns must be 3 or 4; ";
         }
     }
 
     // "layout" wins over "columns"
-    if (page_obj.containsKey("layout")) {
-        const char* layout = page_obj["layout"].as<const char*>();
+    if (page_obj.has("layout")) {
+        const char* layout = cstr(page_obj["layout"]);
         bool found = false;
         for (size_t index = 0; index < (sizeof(GridNames) / sizeof(GridNames[0])); ++index) {
             if (layout && !strcmp(layout, GridNames[index])) {
@@ -1063,37 +1101,37 @@ bool parsePage(JsonObject& page_obj, Draft& out, std::vector<PendingOpen>& pendi
             }
         }
         if (!found) {
-            warnings += F("page ");
+            warnings += "page ";
             warnings += page_index;
-            warnings += F(": layout must be 4x2, 3x3, 3x2, 2x2 or 1x2; ");
+            warnings += ": layout must be 4x2, 3x3, 3x2, 2x2 or 1x2; ";
         }
     }
 
-    if (page_obj.containsKey("per_screen")) {
-        const int per_screen = page_obj["per_screen"].as<int>();
+    if (page_obj.has("per_screen")) {
+        const int per_screen = static_cast<int>(page_obj["per_screen"].asLong());
         if ((per_screen >= 1) && (per_screen <= static_cast<int>(TilesMax))) {
             page.per_screen = per_screen;
         } else {
-            warnings += F("page ");
+            warnings += "page ";
             warnings += page_index;
-            warnings += F(": per_screen must be 1..9; ");
+            warnings += ": per_screen must be 1..9; ";
         }
     }
 
-    if (page_obj.containsKey("draw")) {
-        page.draw = page_obj["draw"].as<bool>();
+    if (page_obj.has("draw")) {
+        page.draw = page_obj["draw"].asBool();
     }
 
-    JsonArray& items = page_obj["items"];
-    if (page.settings && items.success() && items.size()) {
-        warnings += F("settings page: items ignored; ");
-    } else if (items.success()) {
+    const auto items = page_obj["items"];
+    if (page.settings && items.valid() && items.size()) {
+        warnings += "settings page: items ignored; ";
+    } else if (items.valid()) {
         page.items.reserve(items.size());
-        const String where = String(F("page ")) + page_index + F(" item");
+        const espurna::string where = espurna::string("page ") + page_index + " item";
         for (auto item_variant : items) {
-            JsonObject& item_obj = item_variant.as<JsonObject>();
-            if (!item_obj.success()) {
-                error = F("item is not an object");
+            const auto item_obj = item_variant;
+            if (!item_obj.valid()) {
+                error = "item is not an object";
                 return false;
             }
 
@@ -1105,12 +1143,12 @@ bool parsePage(JsonObject& page_obj, Draft& out, std::vector<PendingOpen>& pendi
             out.items.push_back(item);
             page.items.push_back(out.items.size() - 1);
 
-            JsonObject& sub = item_obj["page"];
-            if (sub.success() && (out.items.back().type == ItemType::Link)) {
-                nested.push_back(PendingPage{&sub, out.items.size() - 1});
-            } else if (sub.success()) {
-                warnings += where + F(" '") + out.strings.at(out.items.back().name)
-                    + F("': \"page\" needs no \"type\", ignored; ");
+            const auto sub = item_obj["page"];
+            if (sub.valid() && (out.items.back().type == ItemType::Link)) {
+                nested.push_back(PendingPage{sub, out.items.size() - 1});
+            } else if (sub.valid()) {
+                warnings += where + " '" + out.strings.at(out.items.back().name)
+                    + "': \"page\" needs no \"type\", ignored; ";
             }
         }
     }
@@ -1119,34 +1157,34 @@ bool parsePage(JsonObject& page_obj, Draft& out, std::vector<PendingOpen>& pendi
     return true;
 }
 
-bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
-    JsonObject& mqtt = root["mqtt"];
-    if (mqtt.success()) {
-        if (mqtt.containsKey("on")) out.on = out.strings.add(mqtt["on"].as<const char*>());
-        if (mqtt.containsKey("off")) out.off = out.strings.add(mqtt["off"].as<const char*>());
-        if (mqtt.containsKey("toggle")) out.toggle = out.strings.add(mqtt["toggle"].as<const char*>());
-        if (mqtt.containsKey("set")) out.set = out.strings.add(mqtt["set"].as<const char*>());
+bool parseRoot(espurna::json::Value root, Draft& out, espurna::string& error, espurna::string& warnings) {
+    const auto mqtt = root["mqtt"];
+    if (mqtt.valid()) {
+        if (mqtt.has("on")) out.on = out.strings.add(cstr(mqtt["on"]));
+        if (mqtt.has("off")) out.off = out.strings.add(cstr(mqtt["off"]));
+        if (mqtt.has("toggle")) out.toggle = out.strings.add(cstr(mqtt["toggle"]));
+        if (mqtt.has("set")) out.set = out.strings.add(cstr(mqtt["set"]));
     }
 
-    JsonObject& screensaver = root["screensaver"];
-    if (screensaver.success()) {
-        if (screensaver.containsKey("timeout")) {
-            out.timeout = clampValue<uint16_t>(screensaver["timeout"].as<long>(), 0, 3600);
+    const auto screensaver = root["screensaver"];
+    if (screensaver.valid()) {
+        if (screensaver.has("timeout")) {
+            out.timeout = clampValue<uint16_t>(screensaver["timeout"].asLong(), 0, 3600);
         }
-        if (screensaver.containsKey("brightness")) {
-            out.brightness = clampValue<uint8_t>(screensaver["brightness"].as<long>(), 1, 100);
+        if (screensaver.has("brightness")) {
+            out.brightness = clampValue<uint8_t>(screensaver["brightness"].asLong(), 1, 100);
         }
-        if (screensaver.containsKey("dim")) {
-            out.dim = clampValue<uint8_t>(screensaver["dim"].as<long>(), 0, 100);
+        if (screensaver.has("dim")) {
+            out.dim = clampValue<uint8_t>(screensaver["dim"].asLong(), 0, 100);
         }
 
-        JsonObject& weather = screensaver["weather"];
-        if (weather.success() && weather.containsKey("lat") && weather.containsKey("lon")) {
-            out.weather = weather["enabled"] | true;
-            out.lat = weather["lat"].as<float>();
-            out.lon = weather["lon"].as<float>();
-            if (weather.containsKey("refresh")) {
-                out.refresh = clampValue<uint32_t>(weather["refresh"].as<long>(), 60, 86400);
+        const auto weather = screensaver["weather"];
+        if (weather.valid() && weather.has("lat") && weather.has("lon")) {
+            out.weather = weather["enabled"].asBool(true);
+            out.lat = weather["lat"].asDouble();
+            out.lon = weather["lon"].asDouble();
+            if (weather.has("refresh")) {
+                out.refresh = clampValue<uint32_t>(weather["refresh"].asLong(), 60, 86400);
             }
         }
     }
@@ -1156,50 +1194,50 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
         out.dim = out.brightness - 1;
     }
 
-    JsonObject& temperature = root["temperature"];
-    if (temperature.success()) {
-        out.temperature = temperature["enabled"] | true;
-        out.temperature_show = temperature["show"] | true;
+    const auto temperature = root["temperature"];
+    if (temperature.valid()) {
+        out.temperature = temperature["enabled"].asBool(true);
+        out.temperature_show = temperature["show"].asBool(true);
         // the NTC is an ESPurna sensor: its correction and MQTT interval are the sensor settings
-        if (temperature.containsKey("offset") || temperature.containsKey("publish")) {
-            warnings += F("temperature: offset and publish are ignored, use the Sensors settings of the web UI; ");
+        if (temperature.has("offset") || temperature.has("publish")) {
+            warnings += "temperature: offset and publish are ignored, use the Sensors settings of the web UI; ";
         }
     }
 
-    JsonObject& colors = root["colors"];
-    if (colors.success()) {
-        if (colors.containsKey("on")) out.color_on = colors["on"].as<unsigned int>();
-        if (colors.containsKey("off")) out.color_off = colors["off"].as<unsigned int>();
-        if (colors.containsKey("unknown")) out.color_unknown = colors["unknown"].as<unsigned int>();
+    const auto colors = root["colors"];
+    if (colors.valid()) {
+        if (colors.has("on")) out.color_on = static_cast<unsigned int>(colors["on"].asULong());
+        if (colors.has("off")) out.color_off = static_cast<unsigned int>(colors["off"].asULong());
+        if (colors.has("unknown")) out.color_unknown = static_cast<unsigned int>(colors["unknown"].asULong());
     }
 
-    out.beep = root["beep"] | false;
-    out.debug = root["debug"] | false;
+    out.beep = root["beep"].asBool(false);
+    out.debug = root["debug"].asBool(false);
 
-    if (root.containsKey("display")) {
-        const char* display = root["display"].as<const char*>();
+    if (root.has("display")) {
+        const char* display = cstr(root["display"]);
         if (display && !strcmp(display, "ohpanel")) {
             out.display = DriverPref::Ohpanel;
         } else if (display && !strcmp(display, "lovelace")) {
             out.display = DriverPref::Lovelace;
         } else if (!display || strcmp(display, "auto")) {
-            warnings += F("display: auto, ohpanel or lovelace (using auto); ");
+            warnings += "display: auto, ohpanel or lovelace (using auto); ";
         }
     }
 
-    if (root.containsKey("language")) {
-        const char* language = root["language"].as<const char*>();
+    if (root.has("language")) {
+        const char* language = cstr(root["language"]);
         if (language && !strcmp(language, "ru")) {
             out.language = lang::Language::Russian;
         } else if (!language || strcmp(language, "en")) {
-            warnings += F("language: en or ru (using en); ");
+            warnings += "language: en or ru (using en); ";
         }
     }
 
-    JsonObject& ohpanel = root["ohpanel"];
-    if (ohpanel.success()) {
-        if (ohpanel.containsKey("background")) {
-            const char* name = ohpanel["background"].as<const char*>();
+    const auto ohpanel = root["ohpanel"];
+    if (ohpanel.valid()) {
+        if (ohpanel.has("background")) {
+            const char* name = cstr(ohpanel["background"]);
             bool found = false;
             for (size_t index = 0; index < (sizeof(BackgroundNames) / sizeof(BackgroundNames[0])); ++index) {
                 if (name && !strcmp(name, BackgroundNames[index])) {
@@ -1208,100 +1246,100 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
                 }
             }
             if (!found) {
-                warnings += F("ohpanel.background: aurora, black, candy, dunes or forest; ");
+                warnings += "ohpanel.background: aurora, black, candy, dunes or forest; ";
             }
         }
 
-        if (ohpanel.containsKey("accent") && !parseColor(ohpanel["accent"], out.accent)) {
-            warnings += F("ohpanel.accent: bad colour; ");
+        if (ohpanel.has("accent") && !parseColor(ohpanel["accent"], out.accent)) {
+            warnings += "ohpanel.accent: bad colour; ";
         }
-        if (ohpanel.containsKey("text") && !parseColor(ohpanel["text"], out.text_color)) {
-            warnings += F("ohpanel.text: bad colour; ");
+        if (ohpanel.has("text") && !parseColor(ohpanel["text"], out.text_color)) {
+            warnings += "ohpanel.text: bad colour; ";
         }
-        if (ohpanel.containsKey("dim") && !parseColor(ohpanel["dim"], out.dim_color)) {
-            warnings += F("ohpanel.dim: bad colour; ");
+        if (ohpanel.has("dim") && !parseColor(ohpanel["dim"], out.dim_color)) {
+            warnings += "ohpanel.dim: bad colour; ";
         }
-        if (ohpanel.containsKey("weather_days")) {
-            out.weather_days = clampValue<uint8_t>(ohpanel["weather_days"].as<long>(), 0, 7);
+        if (ohpanel.has("weather_days")) {
+            out.weather_days = clampValue<uint8_t>(ohpanel["weather_days"].asLong(), 0, 7);
         }
 
-        if (ohpanel.containsKey("layout")) {
-            const char* layout = ohpanel["layout"].as<const char*>();
+        if (ohpanel.has("layout")) {
+            const char* layout = cstr(ohpanel["layout"]);
             if (layout && !strcmp(layout, "corner")) {
                 out.layout = Layout::Corner;
             } else if (layout && !strcmp(layout, "center")) {
                 out.layout = Layout::Center;
             } else {
-                warnings += F("ohpanel.layout: center or corner; ");
+                warnings += "ohpanel.layout: center or corner; ";
             }
         }
 
-        if (ohpanel.containsKey("theme")) {
-            const char* theme = ohpanel["theme"].as<const char*>();
+        if (ohpanel.has("theme")) {
+            const char* theme = cstr(ohpanel["theme"]);
             if (theme && !strcmp(theme, "light")) {
                 out.theme = Theme::Light;
             } else if (theme && !strcmp(theme, "dark")) {
                 out.theme = Theme::Dark;
             } else {
-                warnings += F("ohpanel.theme: dark or light; ");
+                warnings += "ohpanel.theme: dark or light; ";
             }
         }
 
-        JsonArray& relays = ohpanel["relays"];
-        if (relays.success()) {
+        const auto relays = ohpanel["relays"];
+        if (relays.valid()) {
             for (size_t index = 0; (index < 2) && (index < relays.size()); ++index) {
-                out.relay_labels[index] = out.strings.add(sanitize(relays[index].as<const char*>(), 26));
+                out.relay_labels[index] = out.strings.add(sanitize(cstr(relays[index]), 26));
             }
         }
     }
 
-    JsonObject& groups = root["groups"];
-    if (groups.success()) {
+    const auto groups = root["groups"];
+    if (groups.valid()) {
         for (auto kv : groups) {
-            JsonArray& members = kv.value.as<JsonArray>();
-            if (!members.success()) {
-                error = F("group '");
-                error += kv.key;
-                error += F("' is not an array");
+            const auto members = kv.value;
+            if (!members.valid()) {
+                error = "group '";
+                error += cstr(kv.key);
+                error += "' is not an array";
                 return false;
             }
 
             DraftGroup group;
             group.members.reserve(members.size());
             for (auto member : members) {
-                if (member.is<const char*>()) {
-                    const char* topic = member.as<const char*>();
+                if (member.isString()) {
+                    const char* topic = cstr(member);
                     if (!topic || !strlen(topic)) {
                         continue;
                     }
                     group.members.push_back(findOrAddTopic(out, out.strings.add(topic)));
-                } else if (member.is<int>()) {
-                    const int relay = member.as<int>();
+                } else if (member.isNumber()) {
+                    const int relay = static_cast<int>(member.asLong());
                     if ((relay >= 0) && (static_cast<size_t>(relay) < limits.relays)) {
                         group.members.push_back(findOrAddRelay(out, relay));
                         continue;
                     }
-                    error = F("no such relay in group '");
-                    error += kv.key;
+                    error = "no such relay in group '";
+                    error += cstr(kv.key);
                     error += '\'';
                     return false;
                 }
             }
 
-            group.name = out.strings.add(kv.key);
+            group.name = out.strings.add(cstr(kv.key));
             out.groups.push_back(std::move(group));
         }
     }
 
-    JsonArray& pages = root["pages"];
-    if (!pages.success()) {
-        error = F("'pages' must be an array");
+    const auto pages = root["pages"];
+    if (!pages.valid()) {
+        error = "'pages' must be an array";
         return false;
     }
 
     // the record lists are deques (no doubling, no big block); the few shortcuts are one small vector
     {
-        JsonArray& shortcuts = screensaver["shortcuts"];
+        const auto shortcuts = screensaver["shortcuts"];
         out.shortcuts.reserve(std::min<size_t>(7, shortcuts.size()));
     }
 
@@ -1310,12 +1348,12 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
     std::vector<PendingPage> nested;
     size_t page_index = 0;
     for (auto page_variant : pages) {
-        JsonObject& page_obj = page_variant.as<JsonObject>();
-        if (!page_obj.success()) {
-            error = F("page is not an object");
+        const auto page_obj = page_variant;
+        if (!page_obj.valid()) {
+            error = "page is not an object";
             return false;
         }
-        if (!parsePage(page_obj, out, pending, nested, page_index, String(), error, warnings)) {
+        if (!parsePage(page_obj, out, pending, nested, page_index, espurna::string(), error, warnings)) {
             return false;
         }
         ++page_index;
@@ -1324,8 +1362,8 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
     // nested pages after the swipe row, breadth first (a sub-page may hold further sub-pages)
     for (size_t index = 0; index < nested.size(); ++index) {
         const auto job = nested[index];
-        const String fallback(out.strings.at(out.items[job.item].name));
-        if (!parsePage(*job.obj, out, pending, nested, out.pages.size(), fallback, error, warnings)) {
+        const espurna::string fallback(out.strings.at(out.items[job.item].name));
+        if (!parsePage(job.obj, out, pending, nested, out.pages.size(), fallback, error, warnings)) {
             return false;
         }
         out.pages.back().nested = true;
@@ -1333,17 +1371,17 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
     }
 
     // home shortcuts (OHpanel, up to 7): an item name, {"ref": "<item name>"} or a full item
-    JsonArray& shortcuts = screensaver["shortcuts"];
-    if (shortcuts.success()) {
+    const auto shortcuts = screensaver["shortcuts"];
+    if (shortcuts.valid()) {
         for (auto shortcut : shortcuts) {
             if (out.shortcuts.size() >= 7) {
-                warnings += F("more than 7 shortcuts, rest ignored; ");
+                warnings += "more than 7 shortcuts, rest ignored; ";
                 break;
             }
 
-            JsonObject& obj = shortcut.as<JsonObject>();
-            const char* ref = shortcut.is<const char*>() ? shortcut.as<const char*>()
-                : (obj.success() ? obj["ref"].as<const char*>() : nullptr);
+            const auto obj = shortcut;
+            const char* ref = shortcut.isString() ? cstr(shortcut)
+                : (obj.valid() ? cstr(obj["ref"]) : nullptr);
             if (ref) {
                 bool found = false;
                 for (size_t index = 0; index < out.items.size(); ++index) {
@@ -1354,20 +1392,20 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
                     }
                 }
                 if (!found) {
-                    warnings += F("shortcut '");
+                    warnings += "shortcut '";
                     warnings += ref;
-                    warnings += F("': no such item; ");
+                    warnings += "': no such item; ";
                 }
                 continue;
             }
 
-            if (!obj.success()) {
-                error = F("shortcut is not an object or an item name");
+            if (!obj.valid()) {
+                error = "shortcut is not an object or an item name";
                 return false;
             }
 
             DraftItem item;
-            if (!parseItem(obj, out, item, pending, String(F("shortcut")), error, warnings)) {
+            if (!parseItem(obj, out, item, pending, espurna::string("shortcut"), error, warnings)) {
                 return false;
             }
             out.items.push_back(item);
@@ -1376,51 +1414,51 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
     }
 
     // home info lines (OHpanel info1 / info2): icon, text, a value from a topic (+ an extra value)
-    JsonArray& info = screensaver["info"];
-    if (info.success()) {
+    const auto info = screensaver["info"];
+    if (info.valid()) {
         for (auto line_variant : info) {
             if (out.info_count >= InfoLinesMax) {
-                warnings += F("more than 2 info lines, rest ignored; ");
+                warnings += "more than 2 info lines, rest ignored; ";
                 break;
             }
 
-            JsonObject& obj = line_variant.as<JsonObject>();
-            if (!obj.success()) {
-                error = F("info line is not an object");
+            const auto obj = line_variant;
+            if (!obj.valid()) {
+                error = "info line is not an object";
                 return false;
             }
 
             auto& line = out.info[out.info_count];
-            const String where = String(F("info ")) + (out.info_count + 1);
-            const char* icon = obj["icon"].as<const char*>();
+            const espurna::string where = espurna::string("info ") + (out.info_count + 1);
+            const char* icon = cstr(obj["icon"]);
             line.icon = (icon && strlen(icon)) ? out.strings.add(resolveIcon(icon, 0, warnings)) : 0;
-            line.text = out.strings.add(sanitize(obj["text"].as<const char*>(), 31));
+            line.text = out.strings.add(sanitize(cstr(obj["text"]), 31));
 
-            String format;
-            String extra_format;
-            const char* topic = obj["topic"].as<const char*>();
+            espurna::string format;
+            espurna::string extra_format;
+            const char* topic = cstr(obj["topic"]);
             if (topic && strlen(topic)) {
                 if (strchr(topic, '#') || strchr(topic, '+')) {
-                    error = where + F(": invalid topic");
+                    error = where + ": invalid topic";
                     return false;
                 }
 
                 DraftEntity entity;
                 entity.topic = out.strings.add(topic);
-                if (obj.containsKey("path") && !parsePath(out, obj["path"], entity.path)) {
-                    error = where + F(": bad \"path\"");
+                if (obj.has("path") && !parsePath(out, obj["path"], entity.path)) {
+                    error = where + ": bad \"path\"";
                     return false;
                 }
                 line.entity = findOrAddEntity(out, entity);
                 format = jsonText(obj["format"]);
 
-                JsonObject& extra = obj["extra"];
-                if (extra.success()) {
+                const auto extra = obj["extra"];
+                if (extra.valid()) {
                     DraftEntity second;
-                    const char* extra_topic = extra["topic"].as<const char*>();
+                    const char* extra_topic = cstr(extra["topic"]);
                     second.topic = out.strings.add((extra_topic && strlen(extra_topic)) ? extra_topic : topic);
-                    if (extra.containsKey("path") && !parsePath(out, extra["path"], second.path)) {
-                        error = where + F(": bad extra \"path\"");
+                    if (extra.has("path") && !parsePath(out, extra["path"], second.path)) {
+                        error = where + ": bad extra \"path\"";
                         return false;
                     }
                     line.extra = findOrAddEntity(out, second);
@@ -1429,12 +1467,12 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
             }
 
             if (format.length() && !validFormat(format)) {
-                warnings += where + F(": format needs one %f / %g conversion, ignored; ");
-                format = String();
+                warnings += where + ": format needs one %f / %g conversion, ignored; ";
+                format = espurna::string();
             }
             if (extra_format.length() && !validFormat(extra_format)) {
-                warnings += where + F(": extra format needs one %f / %g conversion, ignored; ");
-                extra_format = String();
+                warnings += where + ": extra format needs one %f / %g conversion, ignored; ";
+                extra_format = espurna::string();
             }
             line.format = out.strings.add(format);
             line.extra_format = out.strings.add(extra_format);
@@ -1452,7 +1490,7 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
             }
         }
         if (target.page == PageNone) {
-            error = String(F("item '")) + out.strings.at(out.items[open.item].name) + F("': unknown page '")
+            error = espurna::string("item '") + out.strings.at(out.items[open.item].name) + "': unknown page '"
                 + open.ref + '\'';
             return false;
         }
@@ -1460,7 +1498,7 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
 
     for (auto& item : out.items) {
         if ((item.type == ItemType::Link) && (item.target.page >= static_cast<int>(out.pages.size()))) {
-            error = String(F("item '")) + out.strings.at(item.name) + F("': no page ") + item.target.page;
+            error = espurna::string("item '") + out.strings.at(item.name) + "': no page " + item.target.page;
             return false;
         }
         // an "open" tile without "name" shows the title of its page
@@ -1468,14 +1506,14 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
             item.name = out.strings.add(sanitize(out.strings.at(out.pages[item.target.page].title), build::NameMax));
         }
     }
-    JsonArray& buttons = root["buttons"];
-    if (buttons.success()) {
+    const auto buttons = root["buttons"];
+    if (buttons.valid()) {
         out.buttons.reserve(buttons.size());
         for (auto button_variant : buttons) {
             Target target;
-            JsonObject& button_obj = button_variant.as<JsonObject>();
-            if (button_obj.success() && !parseTarget(button_obj, out, target, error)) {
-                error = String(F("button ")) + out.buttons.size() + F(": ") + error;
+            const auto button_obj = button_variant;
+            if (button_obj.valid() && !parseTarget(button_obj, out, target, error)) {
+                error = espurna::string("button ") + out.buttons.size() + ": " + error;
                 return false;
             }
             out.buttons.push_back(target);
@@ -1485,9 +1523,9 @@ bool parseRoot(JsonObject& root, Draft& out, String& error, String& warnings) {
     // mqtt.cpp drops MQTT_MESSAGE_EVENT payloads of MQTT_BUFFER_MAX_SIZE bytes and more
     // (Istabai istabai/out with 9 rooms is ~1.3 KB)
     if (limits.mqtt_buffer && !out.thermostats.empty() && (limits.mqtt_buffer < 2048)) {
-        warnings += F("mqttBuffer is ");
-        warnings += String(static_cast<unsigned>(limits.mqtt_buffer));
-        warnings += F(": longer state payloads are dropped by the MQTT module (set mqttBuffer 2048); ");
+        warnings += "mqttBuffer is ";
+        warnings += espurna::string(static_cast<unsigned>(limits.mqtt_buffer));
+        warnings += ": longer state payloads are dropped by the MQTT module (set mqttBuffer 2048); ";
     }
 
     return true;
@@ -1687,30 +1725,30 @@ struct TreeValue {
 
 // the value of 'value' (an object or an array as a node, its children first); false - the tree is full or out of
 // memory (draft.tree.failed, draft.strings.failed)
-bool treeValue(Draft& draft, const JsonVariant& value, Kind kind, TreeValue& out, String& warnings, int depth) {
+bool treeValue(Draft& draft, espurna::json::Value value, Kind kind, TreeValue& out, espurna::string& warnings, int depth) {
     auto& tree = draft.tree;
 
-    if (value.is<JsonObject>() && (depth < build::ConfigNestingLimit)) {
-        JsonObject& obj = value.as<JsonObject>();
+    if (value.isObject() && (depth < build::ConfigNestingLimit)) {
+        const auto obj = value;
         std::vector<uint16_t> keys;
         std::vector<TreeValue> values;
         keys.reserve(obj.size());
         values.reserve(obj.size());
         for (auto kv : obj) {
             Kind child;
-            if (!known(kind, kv.key, child)) {
-                warnings += F("unknown key '");
-                warnings += kv.key;
-                warnings += F("' in ");
+            if (!known(kind, cstr(kv.key), child)) {
+                warnings += "unknown key '";
+                warnings += cstr(kv.key);
+                warnings += "' in ";
                 warnings += kindName(kind);
-                warnings += F(" dropped; ");
+                warnings += " dropped; ";
                 continue;
             }
             TreeValue entry;
             if (!treeValue(draft, kv.value, child, entry, warnings, depth + 1)) {
                 return false;
             }
-            keys.push_back(draft.strings.add(kv.key));
+            keys.push_back(draft.strings.add(cstr(kv.key)));
             values.push_back(entry);
         }
 
@@ -1721,8 +1759,8 @@ bool treeValue(Draft& draft, const JsonVariant& value, Kind kind, TreeValue& out
             tree.push_back(values[index].tag);
             put16(tree, values[index].at);
         }
-    } else if (value.is<JsonArray>() && (depth < build::ConfigNestingLimit)) {
-        JsonArray& array = value.as<JsonArray>();
+    } else if (value.isArray() && (depth < build::ConfigNestingLimit)) {
+        const auto array = value;
         std::vector<TreeValue> values;
         values.reserve(array.size());
         for (auto element : array) {
@@ -1740,10 +1778,9 @@ bool treeValue(Draft& draft, const JsonVariant& value, Kind kind, TreeValue& out
             put16(tree, entry.at);
         }
     } else {
-        // ArduinoJson 5: a quoted string is a string, a JSON null a "string" of NULL, numbers and true / false
-        // stay their text (as<const char*>() gives it)
-        const char* text = value.as<const char*>();
-        const bool string = value.is<const char*>() && text;
+        // a quoted string is a string, numbers and true / false stay their text, null is "null"
+        const char* text = cstr(value);
+        const bool string = value.isString() && text;
         out = TreeValue{static_cast<uint8_t>(string ? 's' : 'r'), draft.strings.add(text ? text : "null")};
     }
 
@@ -1828,7 +1865,7 @@ struct Record {
 };
 
 // the draft laid out into 'sink': sizes and offsets first, then the bytes in order
-ParseResult layout(Draft& draft, ImageSink& sink, String& error) {
+ParseResult layout(Draft& draft, ImageSink& sink, espurna::string& error) {
     // distinct state topics, in the order of the entities
     std::vector<Off> topics;
     for (const auto& entity : draft.entities) {
@@ -1879,16 +1916,16 @@ ParseResult layout(Draft& draft, ImageSink& sink, String& error) {
     const size_t tree_at = place(draft.tree.size());
 
     if (draft.strings.overflow || (size > build::ConfigMax)) {
-        error = F("config too large for the flash data of the module (compiled ");
-        error += String(static_cast<unsigned>(size));
-        error += F(" bytes, at most ");
-        error += String(static_cast<unsigned>(build::ConfigMax));
+        error = "config too large for the flash data of the module (compiled ";
+        error += espurna::string(static_cast<unsigned>(size));
+        error += " bytes, at most ";
+        error += espurna::string(static_cast<unsigned>(build::ConfigMax));
         error += ')';
         return ParseResult::Invalid;
     }
 
     if (!sink.begin(size, error)) {
-        return error.startsWith(F("out of memory")) ? ParseResult::LowMemory : ParseResult::WriteFailed;
+        return error.startsWith("out of memory") ? ParseResult::LowMemory : ParseResult::WriteFailed;
     }
 
     Emit emit(sink);
@@ -2103,68 +2140,13 @@ ParseResult layout(Draft& draft, ImageSink& sink, String& error) {
     emit.to(size);
     if (!emit.ok || !sink.end(error)) {
         if (!error.length()) {
-            error = F("cannot write the compiled config");
+            error = "cannot write the compiled config";
         }
         return ParseResult::WriteFailed;
     }
 
     return ParseResult::Ok;
 }
-
-// ArduinoJson 5 parses a mutable char* in place (strings stay in the text, nothing is copied), the nodes go into blocks
-// of build::CompileBlock (one block of all of them, 11.5 KB for NSPANEL1, needed a big free block; DynamicJsonBuffer
-// doubles its blocks)
-class BlockJsonBuffer : public ArduinoJson::Internals::JsonBufferBase<BlockJsonBuffer> {
-public:
-    BlockJsonBuffer() = default;
-    BlockJsonBuffer(const BlockJsonBuffer&) = delete;
-    BlockJsonBuffer& operator=(const BlockJsonBuffer&) = delete;
-
-    ~BlockJsonBuffer() {
-        while (_head) {
-            auto* next = _head->next;
-            delete[] reinterpret_cast<uint8_t*>(_head);
-            _head = next;
-        }
-    }
-
-    void* alloc(size_t bytes) override {
-        bytes = round_size_up(bytes);
-        if (!_head || ((_head->used + bytes) > _head->capacity)) {
-            const size_t capacity = std::max(bytes, build::CompileBlock);
-            auto* raw = new (std::nothrow) uint8_t[sizeof(Block) + capacity];
-            if (!raw) {
-                _failed = true;
-                return nullptr;
-            }
-            auto* block = reinterpret_cast<Block*>(raw);
-            block->next = _head;
-            block->used = 0;
-            block->capacity = capacity;
-            _head = block;
-        }
-
-        void* out = reinterpret_cast<uint8_t*>(_head + 1) + _head->used;
-        _head->used += bytes;
-        return out;
-    }
-
-    // a node could not be allocated: out of memory
-    bool failed() const {
-        return _failed;
-    }
-
-private:
-    struct Block {
-        Block* next;
-        size_t used;
-        size_t capacity;
-        size_t reserved;   // the nodes after it stay 8 byte aligned
-    };
-
-    Block* _head { nullptr };
-    bool _failed { false };
-};
 
 // -----------------------------------------------------------------------------
 // The tree written back as JSON
@@ -2291,108 +2273,18 @@ void writeValue(const uint8_t* tree, const char* strings, const uint8_t* value, 
 
 } // namespace
 
-// Exact node storage of an in-place parse: every object, pair, array and array element.
-// Unknown syntax (comments) falls back to counting every comma as an array element
-size_t jsonBufferSize(const char* text, size_t length) {
-    size_t objects = 0;
-    size_t arrays = 0;
-    size_t pairs = 0;
-    size_t elements = 0;
-    size_t commas = 0;
-    bool exact = true;
-
-    uint32_t is_array = 0; // per nesting level
-    size_t depth = 0;
-    bool first = false;    // right after '[': the next token is the first element
-    char quote = '\0';
-    bool escape = false;
-
-    for (size_t pos = 0; pos < length; ++pos) {
-        const char c = text[pos];
-        if (quote) {
-            if (escape) {
-                escape = false;
-            } else if (c == '\\') {
-                escape = true;
-            } else if (c == quote) {
-                quote = '\0';
-            }
-            continue;
-        }
-
-        if ((c == ' ') || (c == '\t') || (c == '\r') || (c == '\n')) {
-            continue;
-        }
-
-        if (first) {
-            first = false;
-            if (c != ']') {
-                ++elements;
-            }
-        }
-
-        switch (c) {
-        case '"':
-        case '\'':
-            quote = c;
-            break;
-        case '{':
-        case '[':
-            if (depth >= 31) {
-                exact = false;
-                break;
-            }
-            ++depth;
-            if (c == '[') {
-                ++arrays;
-                is_array |= (1u << depth);
-                first = true;
-            } else {
-                ++objects;
-                is_array &= ~(1u << depth);
-            }
-            break;
-        case '}':
-        case ']':
-            if (depth) {
-                --depth;
-            }
-            break;
-        case ':':
-            ++pairs;
-            break;
-        case ',':
-            ++commas;
-            if (is_array & (1u << depth)) {
-                ++elements;
-            }
-            break;
-        case '/':
-            exact = false;
-            break;
-        default:
-            break;
-        }
-    }
-
-    if (!exact) {
-        elements = commas + arrays;
-    }
-
-    // JSON_*_SIZE() are multiples of the 4 byte alignment the buffer rounds every allocation to
-    return (objects * JSON_OBJECT_SIZE(0))
-        + (pairs * (JSON_OBJECT_SIZE(1) - JSON_OBJECT_SIZE(0)))
-        + (arrays * JSON_ARRAY_SIZE(0))
-        + (elements * (JSON_ARRAY_SIZE(1) - JSON_ARRAY_SIZE(0)))
-        + 64;
+// The heap the parse of the text takes: the JSON is read where it is (json.h), only the strings the parsers ask
+// for are copied (cstr(), freed after the compile): never more than the text itself
+size_t jsonBufferSize(const char*, size_t length) {
+    return length + 64;
 }
 
-bool ImageBlock::begin(size_t length, String& error) {
+bool ImageBlock::begin(size_t length, espurna::string& error) {
     data.reset(new (std::nothrow) uint8_t[length]);
     size = data ? length : 0;
     filled = 0;
     if (!data) {
-        error = F("out of memory (image), retry");
+        error = "out of memory (image), retry";
         return false;
     }
     return true;
@@ -2407,9 +2299,9 @@ bool ImageBlock::write(const uint8_t* bytes, size_t length) {
     return true;
 }
 
-bool ImageBlock::end(String& error) {
+bool ImageBlock::end(espurna::string& error) {
     if (!data || (filled != size)) {
-        error = F("the image is incomplete");
+        error = "the image is incomplete";
         return false;
     }
     return true;
@@ -2417,26 +2309,22 @@ bool ImageBlock::end(String& error) {
 
 // 'text' is NUL terminated and destroyed by the in-place parse; nothing reaches 'out' before the whole draft is made.
 // No exception leaves here (-fexceptions build: std::deque / std::vector throw bad_alloc)
-ParseResult compile(char* text, const Limits& with, ImageSink& out, String& error, String& warnings) {
+ParseResult compile(char* text, const Limits& with, ImageSink& out, espurna::string& error, espurna::string& warnings) {
     limits = with;
 
     ESPURNA_TRY {
         Draft draft;
         {
-            BlockJsonBuffer buffer;
-            JsonObject& root = buffer.parseObject(text, build::ConfigNestingLimit);
-            if (buffer.failed()) {
-                error = F("out of memory (JSON), retry");
-                return ParseResult::LowMemory;
-            }
-            if (!root.success()) {
-                error = F("invalid JSON");
+            CstrArena arena;
+            const auto root = espurna::json::parse(espurna::StringView(text));
+            if (!root.isObject()) {
+                error = "invalid JSON";
                 return ParseResult::Invalid;
             }
 
             const bool parsed = parseRoot(root, draft, error, warnings);
             if (draft.strings.failed) {
-                error = F("out of memory (draft), retry");
+                error = "out of memory (draft), retry";
                 return ParseResult::LowMemory;
             }
             if (!parsed) {
@@ -2450,18 +2338,18 @@ ParseResult compile(char* text, const Limits& with, ImageSink& out, String& erro
             TreeValue value;
             if (!treeValue(draft, root, Kind::Root, value, warnings, 0)) {
                 if (draft.tree.failed || draft.strings.failed) {
-                    error = F("out of memory (draft), retry");
+                    error = "out of memory (draft), retry";
                     return ParseResult::LowMemory;
                 }
-                error = F("config too large for the flash data of the module");
+                error = "config too large for the flash data of the module";
                 return ParseResult::Invalid;
             }
             draft.tree_root = value.at;
-        } // the JSON nodes are freed before the image is laid out
+        } // the copied strings are freed before the image is laid out
 
         return layout(draft, out, error);
     } ESPURNA_CATCH_BAD_ALLOC {
-        error = F("out of memory, retry");
+        error = "out of memory, retry";
     }
 
     return ParseResult::LowMemory;

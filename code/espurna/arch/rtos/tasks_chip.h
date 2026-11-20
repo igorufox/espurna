@@ -10,7 +10,6 @@ TASKS: what the network callbacks share with loop() (espurna_tasks.h): the part 
 // other core; what they have for loop() goes through runInLoop() / EventQueue. The loop task holds the loop lock for
 // the whole iteration (ref. LoopGuard) and lets it go only while sleeping (delay_unlocked()).
 
-#include <Arduino.h>
 
 #include <algorithm>
 

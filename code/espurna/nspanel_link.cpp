@@ -8,6 +8,7 @@ that picks the Driver: OHpanel (nspanel_ohpanel.cpp) or Lovelace (nspanel_lovela
 */
 
 #include "espurna.h"
+#include "libs/PrintString.h"
 
 #if NSPANEL_SUPPORT
 
@@ -18,7 +19,7 @@ that picks the Driver: OHpanel (nspanel_ohpanel.cpp) or Lovelace (nspanel_lovela
 #include "mqtt.h"
 #endif
 
-#include <ArduinoJson.h>
+#include "json.h"
 
 namespace espurna {
 namespace nspanel {
@@ -37,7 +38,7 @@ constexpr size_t PortsMax { 4 };
 constexpr size_t RxBuffer { 2048 };
 
 size_t index { 0 };
-Stream* stream { nullptr };
+::espurna::ByteStream* stream { nullptr };
 uint32_t current { 0 };
 
 // the port of the older pin keys: the one with these pins, else the first without pins
@@ -76,7 +77,7 @@ size_t migrate() {
 
 } // namespace
 
-Stream& port() {
+::espurna::ByteStream& port() {
     return *stream;
 }
 
@@ -88,7 +89,7 @@ bool begin() {
     }
 
     auto opened = uartOpen(index);
-    if (!opened || !opened->tx || !opened->rx || !uartClaim(index, F("NSPanel"))) {
+    if (!opened || !opened->tx || !opened->rx || !uartClaim(index, "NSPanel")) {
         return false;
     }
 
@@ -135,13 +136,13 @@ void writeRaw(const char* command) {
 namespace {
 
 struct Panel {
-    std::deque<String> events;
-    String info; // last driver announcement, republished on MQTT connect
+    std::deque<espurna::string> events;
+    espurna::string info; // last driver announcement, republished on MQTT connect
 };
 
 Panel panel;
 
-void recordEvent(const String& message) {
+void recordEvent(const espurna::string& message) {
     if (panel.events.size() >= build::EventsMax) {
         panel.events.pop_front();
     }
@@ -151,7 +152,7 @@ void recordEvent(const String& message) {
 } // namespace
 
 // every TFT event: kept for nspanel.info and published to <root>/nspanel
-void publishEvent(const String& message) {
+void publishEvent(const espurna::string& message) {
     recordEvent(message);
 #if MQTT_SUPPORT
     if (mqttConnected()) {
@@ -161,23 +162,25 @@ void publishEvent(const String& message) {
 }
 
 // {"driver":"ohpanel","version":"bc629e1e","model":"..."} to <root>/nspanel
-void announceDriver(const Driver& driver, const String& version, const String& model) {
-    DynamicJsonBuffer buffer(256);
-    JsonObject& root = buffer.createObject();
-    root["driver"] = driver.name();
-    root["version"] = version.c_str();
-    root["model"] = model.c_str();
-
-    panel.info = String();
-    root.printTo(panel.info);
+void announceDriver(const Driver& driver, const espurna::string& version, const espurna::string& model) {
+    StringPrint out;
+    {
+        espurna::json::StreamWriter root(out);
+        root.beginObject();
+        root.field(STRING_VIEW("driver"), driver.name());
+        root.field(STRING_VIEW("version"), version);
+        root.field(STRING_VIEW("model"), model);
+        root.end();
+    }
+    panel.info = std::move(static_cast<espurna::string&>(out));
     publishEvent(panel.info);
 }
 
-const String& panelInfo() {
+const espurna::string& panelInfo() {
     return panel.info;
 }
 
-const std::deque<String>& panelEvents() {
+const std::deque<espurna::string>& panelEvents() {
     return panel.events;
 }
 
@@ -187,7 +190,7 @@ const std::deque<String>& panelEvents() {
 // auto: OHpanel at 921600 (FF FF FF sendme + get design_ver, expects 66 / 71) for 600 ms, then
 // Lovelace at 115200 (raw recmod=1, pageType~pageStartup, expects event,startup) for 2 s, repeated
 // until one answers. Forced: only that driver, retried. No answer for 30 s: the display is
-// power-cycled once (GPIO4 HIGH 800 ms, 1.5 s boot).
+// power-cycled once (GPIO4 true 800 ms, 1.5 s boot).
 // Detection runs again at boot, after every TFT upload, when "display" changes, on
 // `nspanel.detect`, and when the active driver reports the TFT lost.
 // The end of a TFT upload does what an ESP restart does (W78): the display gets FlashSettleMs to
@@ -216,7 +219,7 @@ bool power_cycled { false };
 Power power { Power::None };
 uint32_t power_at { 0 };
 uint32_t probes { 0 };
-String reason { "boot" };
+espurna::string reason { "boot" };
 
 const char* nameOf(const Driver* driver) {
     return driver ? driver->name() : "none";
@@ -255,7 +258,7 @@ uint32_t window(const Driver* driver) {
 
 void start(Driver& driver) {
     current = &driver;
-    window_start = millis();
+    window_start = espurna::time::ms();
     ++probes;
     driver.begin();
 }
@@ -282,10 +285,10 @@ void probe(const char* why) {
     DEBUG_MSG_P(PSTR("[NSPANEL] Detecting the display (%s, display: %s)\n"), why, driverPrefName(config().display));
     reason = why;
     is_probing = true;
-    episode_start = millis();
+    episode_start = espurna::time::ms();
     power_cycled = false;
     power = Power::None;
-    build::powerWrite(LOW);
+    build::powerWrite(false);
     start(first());
 }
 
@@ -297,22 +300,22 @@ void afterFlash(bool done) {
         reason.c_str(), driverPrefName(config().display));
     current = nullptr;
     is_probing = true;
-    episode_start = millis();
+    episode_start = espurna::time::ms();
     power_cycled = false;
     uart::setBaud(build::LovelaceBaud);
-    build::powerWrite(LOW);
+    build::powerWrite(false);
     power = Power::Settle;
-    power_at = millis();
+    power_at = espurna::time::ms();
 }
 
 void loop() {
-    const auto now = millis();
+    const auto now = espurna::time::ms();
 
     switch (power) {
     case Power::Settle:
         if (now - power_at >= build::FlashSettleMs) {
             DEBUG_MSG_P(PSTR("[NSPANEL] Power-cycling the display after the TFT upload\n"));
-            build::powerWrite(HIGH);
+            build::powerWrite(true);
             power = Power::Off;
             power_at = now;
         }
@@ -320,7 +323,7 @@ void loop() {
 
     case Power::Off:
         if (now - power_at >= build::PowerOffMs) {
-            build::powerWrite(LOW);
+            build::powerWrite(false);
             power = Power::Boot;
             power_at = now;
         }
@@ -370,14 +373,14 @@ void loop() {
         power_cycled = true;
         power = Power::Off;
         power_at = now;
-        build::powerWrite(HIGH);
+        build::powerWrite(true);
         return;
     }
 
     start(next(current));
 }
 
-void info(Print& out) {
+void info(::espurna::Output& out) {
     out.printf_P(PSTR("Display: driver %s (setting \"%s\"), %s, version '%s', model '%s'\n"),
         nameOf(current), driverPrefName(config().display),
         flash::busy() ? "TFT upload running"
@@ -386,7 +389,7 @@ void info(Print& out) {
         driver::version(), driver::model());
     out.printf_P(PSTR("Detect: last '%s', %u probes, %u s ago, last found %s\n"),
         reason.c_str(), probes,
-        static_cast<unsigned>((millis() - episode_start) / 1000), nameOf(detected));
+        static_cast<unsigned>((espurna::time::ms() - episode_start) / 1000), nameOf(detected));
     if (current) {
         current->info(out);
     }
@@ -430,7 +433,7 @@ void showPage(int page) {
     }
 }
 
-void send(String payload) {
+void send(espurna::string payload) {
     if (auto* active = link::active()) {
         active->send(std::move(payload));
     }
@@ -445,8 +448,8 @@ const char* model() {
 }
 
 // OHpanel: the design's name and what it has (grid layouts, backgrounds)
-String design() {
-    return link::connected() ? link::active()->design() : String();
+espurna::string design() {
+    return link::connected() ? link::active()->design() : espurna::string();
 }
 
 } // namespace driver

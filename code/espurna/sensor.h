@@ -9,7 +9,6 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <chrono>
 #include <cstddef>
@@ -17,7 +16,7 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #include <memory>
 #include <ratio>
 
-#include <ArduinoJson.h>
+#include "json.h"
 
 #include "types.h"
 
@@ -200,7 +199,7 @@ struct Energy {
     double asDouble() const;
 
     // API representation as `<kWh>+<Ws>`
-    String asString() const;
+    espurna::string asString() const;
 
     // represent internal value as watt seconds / joules
     // **will rollover** when exceeding WattSeconds::Type capacity
@@ -230,14 +229,14 @@ struct Value {
     unsigned char type;
     unsigned char index;
 
-    String slot;
+    espurna::string slot;
 
     Unit units;
     unsigned char decimals;
-    String topic;
+    espurna::string topic;
 
     double value;
-    String repr;
+    espurna::string repr;
 
     explicit operator bool() const;
 };
@@ -249,8 +248,8 @@ struct Info {
     Unit units;
     unsigned char decimals;
 
-    String topic;
-    String description;
+    espurna::string topic;
+    espurna::string description;
 };
 
 using NotifyCallback = bool (*)(const BaseSensor*);
@@ -283,7 +282,7 @@ struct PreInit {
     virtual ~PreInit() = default;
 
     virtual Result find_sensors() = 0;
-    virtual String description() const = 0;
+    virtual espurna::string description() const = 0;
 };
 
 bool ready();
@@ -320,8 +319,8 @@ inline void add_preinit(PreInitPtr ptr) {
 
 //--------------------------------------------------------------------------------
 
-String magnitudeTypeTopic(unsigned char type);
-String magnitudeUnitsName(espurna::sensor::Unit);
+espurna::string magnitudeTypeTopic(unsigned char type);
+espurna::string magnitudeUnitsName(espurna::sensor::Unit);
 
 using MagnitudeReadHandler = void(*)(const espurna::sensor::Value&);
 
@@ -345,7 +344,7 @@ unsigned char magnitudeType(unsigned char index);
 // returns global index of magnitudes of the same type
 unsigned char magnitudeIndex(unsigned char index);
 
-String magnitudeTopic(unsigned char index);
+espurna::string magnitudeTopic(unsigned char index);
 
 // Get either last or reported reading; repends on the real-time setting
 espurna::sensor::Value magnitudeValue(unsigned char index);
@@ -356,13 +355,13 @@ espurna::sensor::Value magnitudeReadValue(unsigned char index);
 // Retrieves last reported value of the magnitude at index
 espurna::sensor::Value magnitudeReportValue(unsigned char index);
 
-using SensorWebSocketMagnitudesCallback = void(*)(JsonArray&, size_t);
-void sensorWebSocketMagnitudes(JsonObject& root, espurna::StringView prefix, SensorWebSocketMagnitudesCallback);
+using SensorWebSocketMagnitudesCallback = void(*)(espurna::json::Writer&, size_t);
+void sensorWebSocketMagnitudes(espurna::json::Writer& root, espurna::StringView prefix, SensorWebSocketMagnitudesCallback);
 
 bool sensorReady();
 
 // the names of the registered drivers
-String sensorList();
+espurna::string sensorList();
 void sensorSetup();
 
 // --- the energy counter, inline: the energy meter drivers are modules of their own, apart from the sensors module
@@ -453,14 +452,14 @@ inline double Energy::asDouble() const {
         / static_cast<double>(WattSecondsMax);
 }
 
-inline String Energy::asString() const {
-    String out;
+inline espurna::string Energy::asString() const {
+    espurna::string out;
 
     // Value without `+` is treated as just `<kWh>`
-    out += String(_kwh.value, 10);
+    out += espurna::string(_kwh.value, 10);
     if (_ws.value) {
         out += '+';
-        out += String(_ws.value, 10);
+        out += espurna::string(_ws.value, 10);
     }
 
     return out;

@@ -39,7 +39,7 @@ constexpr size_t port() {
 
 namespace internal {
 
-Stream* port { nullptr };
+::espurna::ByteStream* port { nullptr };
 
 } // namespace internal
 
@@ -146,11 +146,11 @@ namespace web {
 
 STRING_VIEW_INLINE(Module, "lightfox");
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, Module);
 }
 
-void onAction(uint32_t client_id, const char* action, JsonObject& data) {
+void onAction(uint32_t client_id, const char* action, espurna::json::Value data) {
     STRING_VIEW_INLINE(Learn, "lightfoxLearn");
     if (Learn == action) {
         learn();
@@ -213,8 +213,8 @@ public:
         _readings.push_back(Reading{});
     }
 
-    String description() const override {
-        String out;
+    espurna::string description() const override {
+        espurna::string out;
 
         out += STRING_VIEW("lightfox id:");
         out += _index;
@@ -266,7 +266,7 @@ public:
         return "LightfoxPin";
     }
 
-    // Simulate LOW level when the range matches and HIGH when it does not
+    // Simulate false level when the range matches and true when it does not
     int digitalRead() override {
         return _readings[_index].status;
     }
@@ -312,7 +312,7 @@ bool begin() {
 
 #if UART_DRIVERS_CLAIM_PORT
         // serial log and terminal let go of the port (board builds have them compiled out)
-        if (!uartClaim(build::port(), F("Lightfox"))) {
+        if (!uartClaim(build::port(), "Lightfox")) {
             return false;
         }
 #endif

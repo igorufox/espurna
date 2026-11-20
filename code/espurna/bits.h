@@ -133,7 +133,7 @@ struct Range {
         return _mask.to_ullong();
     }
 
-    String toString() const;
+    espurna::string toString() const;
 
 private:
     void _fill_inverse(uint8_t begin, uint8_t end, uint8_t repeat);

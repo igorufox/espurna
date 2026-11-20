@@ -134,7 +134,7 @@ void clear() {
 
 // Print out crash information that has been previusly saved in EEPROM
 // Optionally, check whether the timestamp is erased / EEPROM contains no data.
-void dump(Print& print, bool check) {
+void dump(::espurna::Output& print, bool check) {
     if (chip::dump(print, check)) {
         return;
     }
@@ -249,7 +249,7 @@ void dump(Print& print, bool check) {
     print.print(buffer);
 }
 
-void forceDump(Print& print) {
+void forceDump(::espurna::Output& print) {
     dump(print, false);
 }
 
@@ -293,7 +293,7 @@ bool cause(CrashCause& out) {
     return true;
 }
 
-void dump(Print& print) {
+void dump(::espurna::Output& print) {
     dump(print, true);
 }
 
@@ -362,7 +362,7 @@ extern "C" void custom_crash_callback(struct rst_info * rst_info, uint32_t stack
     auto& instance = eepromInstance();
 
     // We will use this later as a marker that there was a crash
-    uint32_t crash_time = millis();
+    uint32_t crash_time = espurna::time::ms();
     storage_put(instance, EepromCrashBegin + SAVE_CRASH_CRASH_TIME, crash_time);
 
     // XXX rst_info::reason and ::exccause are uint32_t, but are holding small values
@@ -403,11 +403,11 @@ extern "C" void custom_crash_callback(struct rst_info * rst_info, uint32_t stack
     eepromForceCommit(instance);
 }
 
-void crashForceDump(Print& print) {
+void crashForceDump(::espurna::Output& print) {
     espurna::debug::crash::forceDump(print);
 }
 
-void crashDump(Print& print) {
+void crashDump(::espurna::Output& print) {
     espurna::debug::crash::dump(print);
 }
 
@@ -420,15 +420,15 @@ bool crashCause(CrashCause& out) {
     return espurna::debug::crash::cause(out);
 }
 
-void crashResetReason(Print& print) {
+void crashResetReason(::espurna::Output& print) {
     const auto reason = customResetReason();
     bool custom { CustomResetReason::None != reason };
     print.printf_P(PSTR("last reset reason: %s\n"), custom
         ? customResetReasonToPayload(reason).c_str()
-        : ESP.getResetReason().c_str());
+        : ESP_COMPAT.getResetReason().c_str());
 
     if (!custom) {
-        print.printf_P(PSTR("extra info: %s\n"), ESP.getResetInfo().c_str());
+        print.printf_P(PSTR("extra info: %s\n"), ESP_COMPAT.getResetInfo().c_str());
     }
 
     crashDump(print);

@@ -46,17 +46,17 @@ public:
     unsigned long getAvgPixlTime() { return pixl_num > 0 ? sum_pixl_time / pixl_num : 0; }
     unsigned long getAvgShowTime() { return show_num > 0 ? sum_show_time / show_num : 0; }
     int getNumShows() { return numShows; }
-    byte getBrightness() { return brightness; }
-    byte getSpeed() { return speed; }
-    float getCycleFactor(byte speed) { return (float)(GARLAND_SCENE_SPEED_MAX - speed) / GARLAND_SCENE_SPEED_FACTOR; }
+    uint8_t getBrightness() { return brightness; }
+    uint8_t getSpeed() { return speed; }
+    float getCycleFactor(uint8_t speed) { return (float)(GARLAND_SCENE_SPEED_MAX - speed) / GARLAND_SCENE_SPEED_FACTOR; }
     Palette* getPalette() const { return _palette; }
     Anim* getAnim() const { return _anim; }
 
     void setAnim(Anim* anim) { _anim = anim; }
     void setPalette(Palette* palette);
     void setPals(Palette* palettes, size_t palsNum) { _pals = palettes; _palsNum = palsNum; }
-    void setBrightness(byte value);
-    void setSpeed(byte speed);
+    void setBrightness(uint8_t value);
+    void setSpeed(uint8_t speed);
     void setDefault();
     void run();
     void setup();
@@ -73,7 +73,7 @@ private:
 
     //auxiliary colors array for mutual usage of anims
     std::vector<Color> _ledstmp;
-    std::vector<byte>  _seq;
+    std::vector<uint8_t>  _seq;
 
     Palette*           _palette = nullptr;
     Palette*           _pals = nullptr;
@@ -82,7 +82,7 @@ private:
     // millis to transition end
     unsigned long      transms;
 
-    byte               brightness = 0;
+    uint8_t               brightness = 0;
 
     // cycleFactor is actually number of cycles to calculate and draw one animation step
     // if cycleFactor is 2 or more, than calculation and drawing made in different cycles
@@ -94,7 +94,7 @@ private:
     // Correspondence:
     //   speed=60, cycleFactor=1
     //   speed=30, cycleFactor=4
-    byte               speed = GARLAND_SCENE_DEFAULT_SPEED;
+    uint8_t               speed = GARLAND_SCENE_DEFAULT_SPEED;
     float              cycleTail = 0;
     int                cyclesRemain = 0;
 
@@ -117,7 +117,7 @@ private:
     unsigned int show_num = 0;
     unsigned int pixl_num = 0;
 
-    std::array<byte, 256> bri_lvl = {{0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+    std::array<uint8_t, 256> bri_lvl = {{0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
                                       4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 9, 9, 9, 9, 10,
                                       10, 10, 10, 10, 11, 11, 11, 11, 12, 12, 12, 13, 13, 13, 13, 14, 14, 14, 15, 15, 15, 15, 16, 16, 16, 17, 17,
                                       17, 18, 18, 19, 19, 19, 20, 20, 20, 21, 21, 22, 22, 22, 23, 23, 24, 24, 25, 25, 26, 26, 27, 27, 28, 28, 29,

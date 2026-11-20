@@ -206,9 +206,9 @@ void lightUpdateSequence(LightTransition);
 void lightParseHsv(espurna::StringView);
 void lightParseRgb(espurna::StringView);
 
-String lightRgbPayload();
-String lightHsvPayload();
-String lightColor();
+espurna::string lightRgbPayload();
+espurna::string lightHsvPayload();
+espurna::string lightColor();
 
 bool lightSave();
 void lightSave(bool save);

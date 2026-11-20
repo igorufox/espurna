@@ -36,14 +36,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "espurna_matter.h"
 #endif
 
-#if SAFEBOOT_SUPPORT
-#include "safeboot_esp32.h"
-// the step of the boot reached last, for the safeboot page after a rollback (no serial log on most boards)
-#define SETUP_TRACE(NAME) safebootTrace(NAME)
-#else
-#define SETUP_TRACE(NAME)
-#endif
-
 // -----------------------------------------------------------------------------
 // GENERAL CALLBACKS
 // -----------------------------------------------------------------------------
@@ -54,7 +46,7 @@ namespace {
 namespace main {
 namespace build {
 
-// XXX: some SYS tasks require more time than yield(), as they won't
+// XXX: some SYS tasks require more time than espurna::time::yield(), as they won't
 //      be scheduled if user task is always doing something
 //      no particular need to delay too much though, besides attempting to reduce
 //      the power consuption of the board
@@ -154,13 +146,6 @@ void push_once_unique(Callback::Type callback) {
 }
 
 void loop() {
-#if SAFEBOOT_SUPPORT
-    static bool traced { false };
-    if (!traced) {
-        traced = true;
-        SETUP_TRACE("loop");
-    }
-#endif
     {
         // network callbacks (ESP32) are handled while we are in delay()
         system::LoopGuard guard;
@@ -238,7 +223,7 @@ static constexpr espurna::terminal::Command Commands[] PROGMEM {
 
 void add(const char* name) {
     if (count < (sizeof(probes) / sizeof(probes[0]))) {
-        probes[count++] = Probe{name, ESP.getFreeHeap()};
+        probes[count++] = Probe{name, espurna::core::chip::heap_free()};
     }
 }
 
@@ -247,13 +232,12 @@ void setup() {
 }
 
 } // namespace heap_probe
-#define SETUP_HEAP_PROBE(NAME) do { heap_probe::add(NAME); SETUP_TRACE(NAME); } while (0)
+#define SETUP_HEAP_PROBE(NAME) heap_probe::add(NAME)
 #else
-#define SETUP_HEAP_PROBE(NAME) SETUP_TRACE(NAME)
+#define SETUP_HEAP_PROBE(NAME)
 #endif
 
 void setup() {
-    SETUP_TRACE("setup");
     system::LoopGuard guard;
 
     // -------------------------------------------------------------------------
@@ -277,11 +261,6 @@ void setup() {
     // Init RTCMEM
     rtcmemSetup();
     SETUP_HEAP_PROBE("rtcmem");
-
-    // the safeboot's crash-loop guard before anything that may crash at every boot (settings, modules, Wi-Fi)
-    #if SAFEBOOT_SUPPORT
-        safebootGuard();
-    #endif
 
     // Init EEPROM
     eepromSetup();
@@ -347,12 +326,6 @@ void setup() {
         SETUP_HEAP_PROBE("nspanelBoot");
     #endif
 
-    // Asymmetric (safeboot) flash layout: crash-loop guard and `safeboot`, also in the unstable mode
-    #if SAFEBOOT_SUPPORT
-        safebootSetup();
-        SETUP_HEAP_PROBE("safeboot");
-    #endif
-
     // -------------------------------------------------------------------------
     // Check if system is stable
     // -------------------------------------------------------------------------
@@ -386,10 +359,6 @@ void setup() {
         #if OTA_WEB_SUPPORT
             otaWebSetup();
             SETUP_HEAP_PROBE("otaWeb");
-        #endif
-        #if SAFEBOOT_SUPPORT
-            safebootWebSetup();
-            SETUP_HEAP_PROBE("safebootWeb");
         #endif
     #endif
 
@@ -633,3 +602,20 @@ void loop() {
     espurna::main::loop();
 }
 
+
+// setup() once, then loop() for ever: the body of the loop task. The chip's entry (app_main of ESP-IDF and
+// ESP8266_RTOS_SDK, main() of the Beken base) starts the task with its stack and core and calls run(). Here, not in
+// the layer of the Arduino names (lib/espurna-core)
+namespace espurna {
+namespace core {
+
+[[noreturn]] void run() {
+    setup();
+    for (;;) {
+        chip::loop_pass();
+        loop();
+    }
+}
+
+} // namespace core
+} // namespace espurna

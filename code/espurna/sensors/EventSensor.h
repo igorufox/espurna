@@ -35,7 +35,7 @@ class EventSensor : public BaseSensor {
                 (index == 4) ? EVENTS5_PIN_MODE :
                 (index == 5) ? EVENTS6_PIN_MODE :
                 (index == 6) ? EVENTS7_PIN_MODE :
-                (index == 7) ? EVENTS8_PIN_MODE : INPUT;
+                (index == 7) ? EVENTS8_PIN_MODE : espurna::pins::Input;
         }
 
         static constexpr espurna::duration::Milliseconds defaultDebounceTime(unsigned char index) {
@@ -58,7 +58,7 @@ class EventSensor : public BaseSensor {
                 (index == 4) ? EVENTS5_INTERRUPT_MODE :
                 (index == 5) ? EVENTS6_INTERRUPT_MODE :
                 (index == 6) ? EVENTS7_INTERRUPT_MODE :
-                (index == 7) ? EVENTS8_INTERRUPT_MODE : RISING;
+                (index == 7) ? EVENTS8_INTERRUPT_MODE : espurna::pins::Rising;
         }
 
         // ---------------------------------------------------------------------
@@ -112,22 +112,22 @@ class EventSensor : public BaseSensor {
 
         // Initialization method, must be idempotent
         void begin() override {
-            pinMode(_pin.pin(), _pin_mode);
+            espurna::pins::mode(_pin.pin(), _pin_mode);
             _enableInterrupts();
             _ready = true;
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[20];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("INTERRUPT @ GPIO%hhu"), _pin.pin());
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
-            return String(_pin.pin(), 10);
+        espurna::string address(unsigned char) const override {
+            return espurna::string(_pin.pin(), 10);
         }
 
         // Type for slot # index
@@ -212,8 +212,8 @@ class EventSensor : public BaseSensor {
         TimeSource::time_point _interrupt_last;
 
         InterruptablePin _pin{};
-        uint8_t _pin_mode { INPUT };
-        int _interrupt_mode { RISING };
+        uint8_t _pin_mode { espurna::pins::Input };
+        int _interrupt_mode { espurna::pins::Rising };
 
 };
 

@@ -76,15 +76,15 @@ class MAX6675Sensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("MAX6675");
+        espurna::string description() const override {
+            return "MAX6675";
         }
 
-        String address(unsigned char) const override {
+        espurna::string address(unsigned char) const override {
             char buffer[16] {0};
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("%hhu:%hhu:%hhu"), _pin_cs, _pin_so, _pin_sck);
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Type for slot # index

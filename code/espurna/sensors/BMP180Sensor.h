@@ -58,11 +58,11 @@ class BMP180Sensor : public I2CSensor<> {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[20];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("BMP180 @ I2C (0x%02X)"), lockedAddress());
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Type for slot # index

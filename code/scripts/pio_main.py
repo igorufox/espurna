@@ -12,9 +12,8 @@
 # - every chip: APP_VERSION with the git revision (26.11.0-git<sha>, the WebUI release list finds the release the board
 #   runs by it), the ESPURNA_BUILD_* / ESPURNA_BOARD / ESPURNA_FLAGS overrides of the OS environment, warnings of the
 #   project code, the compile_commands.json defines, the CacheDir fix
-# - ESP8266 only, what its platform does not do itself or does differently: the firmware map, no float printf, the
-#   ldscripts of dist/ld, the 1 MB espota size hint, the postmortem switch, the patched elf2bin, the .bin.gz and the
-#   build-and-copy target (build.sh)
+# (the ESP8266 part of the NONOS build - its map, ldscripts, elf2bin, postmortem and float switches - went with NONOS,
+# 2026-11-17: every chip is on its SDK's own link and image tools)
 
 import os
 import itertools
@@ -31,21 +30,11 @@ sys.path.insert(0, os.path.join(env.subst("$PROJECT_DIR"), "scripts"))
 
 from espurna_utils import (  # noqa: E402
     app_add_compiledb_defines,
-    app_add_gzip_file,
-    app_add_target_build_and_copy,
     app_inject_flags,
     app_inject_version,
-    app_patch_elf2bin,
     app_patch_cachedir,
-    check_binsize,
     check_env,
-    disable_postmortem_output,
-    ldscripts_inject_libpath,
-    remove_float_support,
 )
-
-CI = check_env("CI", "false")
-ESP8266 = env.get("PIOPLATFORM") == "espressif8266"
 
 # the parts of the version string, the name and destination of `-t build-and-copy`, the board and flags of ota.py:
 # from the OS environment (build.sh, ota.py, CI)
@@ -73,41 +62,6 @@ app_inject_version(projenv)
 
 # ESPURNA_BOARD and ESPURNA_FLAGS (only -D...), here since projenv is not available in pre-scripts
 app_inject_flags(projenv)
-
-if ESP8266:
-    # See what happens in-between linking .cpp.o + .a into the resulting .elf (the other platforms write their map)
-    env.Append(ESPURNA_BUILD_FIRMWARE_MAP="${BUILD_DIR}/${PROGNAME}.map")
-    env.Append(LINKFLAGS="-Wl,-Map -Wl,$ESPURNA_BUILD_FIRMWARE_MAP -Wl,--cref")
-    env.SideEffect(env["ESPURNA_BUILD_FIRMWARE_MAP"], "${BUILD_DIR}/${PROGNAME}.elf")
-
-    # XXX: note that this will also break %d format with floats and print raw memory contents as int
-    # Cores after 2.3.0 can disable %f in the printf / scanf to reduce .bin size
-    remove_float_support(env)
-    ldscripts_inject_libpath(env)
-
-    # compressed and two-step update hint when using 1MB boards
-    if not CI and env.get("UPLOAD_PROTOCOL") == "espota":
-        env.AddPostAction(
-            "${BUILD_DIR}/${PROGNAME}.bin",
-            env.VerboseAction(check_binsize, "Checking maximum upload size $TARGET"),
-        )
-
-    # BearSSL: one version on every chip, our fork (code/libraries.ini `bearssl`, a lib_deps library): the prebuilt
-    # libbearssl.a of the core leaves the link (nothing of the core that is linked uses it: the TLS is libs/tls.h)
-    env.Replace(LIBS=[lib for lib in env["LIBS"] if str(lib) != "bearssl"])
-
-    # disable postmortem printing to the uart. another one is in eboot, but this is what causes the most harm
-    if "DISABLE_POSTMORTEM_STACKDUMP" in itertools.chain(env["CPPFLAGS"], projenv["CPPFLAGS"]):
-        disable_postmortem_output(env)
-
-    # handle when CI does a tagged build or user explicitly asked to store the firmware.bin
-    app_add_target_build_and_copy(projenv)
-
-    # handle special GzipFile builder
-    app_add_gzip_file(projenv)
-
-    # workaround for Core 2.7.4 python3.12 syntax warnings, merge upstream changes
-    app_patch_elf2bin(env)
 
 # pre-processing single-source only makes sense from projenv
 # (however, this means dependencies are already attached)

@@ -1,6 +1,6 @@
 /*
 
-TEXT - the one escaping and base64 of everything ESPurna builds (the head, code/migration-app, code/safeboot-app). No
+TEXT - the one escaping and base64 of everything ESPurna builds (the head, code/migration-app). No
 Arduino: any string type that takes `+= char` and `+= const char*` (Arduino String, std::string), any byte container
 with push_back().
 

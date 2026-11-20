@@ -16,14 +16,15 @@ branch list of the package). The fixed pool: the data TCM the head leaves free (
 
 */
 
-#include <fal.h>
-#include "espurna.h"
-#include "modules.h"
+
+#include "beken_api.h"
+#include "../../espurna.h"
+#include "../../modules.h"
 
 #if MODULES_SUPPORT
 
-#include "modules_core.h"
-#include "terminal.h"
+#include "../../modules_core.h"
+#include "../../terminal.h"
 
 #include "layout_beken.h"
 
@@ -201,7 +202,7 @@ constexpr Key Keys[] {
 bool findKey() {
     constexpr uint32_t Probe { 0x10000 + 0x2000 };
     uint8_t raw[BlockSize * 2];
-    if (lt_flash_read(physical(Probe), raw, sizeof(raw)) != sizeof(raw)) {
+    if (::espurna::beken::flash_read(physical(Probe), raw, sizeof(raw)) != sizeof(raw)) {
         return false;
     }
 
@@ -258,7 +259,7 @@ bool writeBlocks(uint32_t logical, const uint8_t* plain, size_t blocks) {
         }
 
         const uint32_t size = count * BlockSize;
-        if (lt_flash_write(physical(logical), out, size) != size) {
+        if (::espurna::beken::flash_write(physical(logical), out, size) != size) {
             return false;
         }
 
@@ -289,7 +290,7 @@ bool blocksValid(uint32_t logical, uint32_t size) {
     for (uint32_t done = 0; done < blocks;) {
         const uint32_t count = std::min<uint32_t>(blocks - done, 8);
         const uint32_t length = count * BlockSize;
-        if (lt_flash_read(physical(logical) + done * BlockSize, raw, length) != length) {
+        if (::espurna::beken::flash_read(physical(logical) + done * BlockSize, raw, length) != length) {
             return false;
         }
         for (uint32_t block = 0; block < count; ++block) {
@@ -354,7 +355,7 @@ bool findArea() {
     region.hi = layout.download_offset + layout.download_length - SectorSize;
 
     constexpr uint32_t Origin { 0x10000 };
-    const uint32_t logical = ESP.getSketchSize() + Origin;
+    const uint32_t logical = ::espurna::core::chip::sketch_size() + Origin;
     const uint32_t stored = layout.app_offset + ((logical - Origin + BlockData - 1) / BlockData * BlockSize);
     const uint32_t behind = roundUp(stored, SectorSize) + SectorSize;
     const uint32_t app_end = layout.app_offset + layout.app_length;
@@ -493,10 +494,10 @@ const char* writeChunk(Upload& up, uint32_t offset, uint8_t* chunk, size_t size)
         uint32_t kind = up.branches[index] >> 16;
         uint32_t move = delta;
         if (isLink(kind)) {
-            if ((kind & ~0xfu) != LinkBranch) {
+            if ((kind & ~0x1fu) != LinkBranch) {
                 continue;
             }
-            move = delta - up.provider[(kind >> 2) & 3][1];
+            move = delta - up.provider[(kind >> 2) & 7][1];
             kind &= 3;
         }
 
@@ -556,17 +557,17 @@ int testCallback(int value) {
 // written again with another constant at the same address (stale reads?), called again; the sector erased after
 void commandXipTest(::terminal::CommandContext&& ctx) {
     if (!region.valid) {
-        terminalError(ctx, F("no module area"));
+        terminalError(ctx, "no module area");
         return;
     }
 
     if (!key_found) {
-        terminalError(ctx, F("no flash key found"));
+        terminalError(ctx, "no flash key found");
         return;
     }
 
     if (modulesRunning()) {
-        terminalError(ctx, F("modules are running"));
+        terminalError(ctx, "modules are running");
         return;
     }
 
@@ -577,7 +578,7 @@ void commandXipTest(::terminal::CommandContext&& ctx) {
         for (size_t index = 0; index < dir.count; ++index) {
             const auto& entry = dir.entries[index];
             if ((entry.offset < (sector + SectorSize)) && (sector < (entry.offset + entry.slot))) {
-                terminalError(ctx, F("a module takes the test sector (MODULES.REMOVE it first)"));
+                terminalError(ctx, "a module takes the test sector (MODULES.REMOVE it first)");
                 return;
             }
         }
@@ -593,15 +594,15 @@ void commandXipTest(::terminal::CommandContext&& ctx) {
         std::memcpy(block, TestCode, sizeof(TestCode));
         std::memcpy(&block[16], &constants[round], 4);
 
-        const auto t0 = micros();
+        const auto t0 = espurna::time::us();
         if (!flashErase(sector, SectorSize) || !writeBlocks(address, block, 1)) {
-            terminalError(ctx, F("flash write"));
+            terminalError(ctx, "flash write");
             return;
         }
-        const auto t1 = micros();
+        const auto t1 = espurna::time::us();
 
         if (!blocksValid(address, BlockData)) {
-            terminalError(ctx, F("raw block CRC"));
+            terminalError(ctx, "raw block CRC");
             flashErase(sector, SectorSize);
             return;
         }
@@ -684,7 +685,7 @@ void crashNow() {
 
 // the head's lt_flash_*() reach the whole flash chip (system_beken.cpp, __wrap_lt_flash_*)
 uint32_t flashReach() {
-    return lt_flash_get_size();
+    return ::espurna::beken::flash_size();
 }
 
 // Flash = the OTA partition, its first sector shown as the "head"
@@ -701,12 +702,12 @@ Area area() {
 }
 
 bool rawRead(uint32_t offset, void* data, size_t size) {
-    return lt_flash_read(offset, static_cast<uint8_t*>(data), size) == size;
+    return ::espurna::beken::flash_read(offset, static_cast<uint8_t*>(data), size) == size;
 }
 
 bool rawErase(uint32_t offset, uint32_t size) {
     for (uint32_t done = 0; done < size; done += SectorSize) {
-        if (!lt_flash_erase_block(offset + done)) {
+        if (!::espurna::beken::flash_erase_block(offset + done)) {
             return false;
         }
     }
@@ -715,7 +716,7 @@ bool rawErase(uint32_t offset, uint32_t size) {
 }
 
 bool rawWrite(uint32_t offset, const void* data, size_t size) {
-    return lt_flash_write(offset, static_cast<const uint8_t*>(data), size) == size;
+    return ::espurna::beken::flash_write(offset, static_cast<const uint8_t*>(data), size) == size;
 }
 
 // where the module runs: the logical address of the first block in its slot, its blocks inside the slot
@@ -769,12 +770,12 @@ const char* imageBegin(Upload& up) {
 
     // an OTA image left in the partition: with its header erased the bootloader sees no update to install
     uint8_t probe[16];
-    if (lt_flash_read(region.download, probe, sizeof(probe)) == sizeof(probe)) {
+    if (::espurna::beken::flash_read(region.download, probe, sizeof(probe)) == sizeof(probe)) {
         bool blank = true;
         for (const auto byte : probe) {
             blank = blank && (byte == 0xff);
         }
-        if (!blank && !lt_flash_erase_block(region.download)) {
+        if (!blank && !::espurna::beken::flash_erase_block(region.download)) {
             return PSTR("flash erase");
         }
     }
@@ -802,11 +803,11 @@ void imageDone(uint32_t, uint32_t) {
 
 // the free data TCM is the fixed pool, the rest in the heap block
 void pools(Pools& out) {
-    // the free heap (lt_heap_get_max_alloc() is a stub here, 0; heap_4 keeps its free list to itself). Never probed by
+    // the free heap (::espurna::beken::heap_max_alloc() is a stub here, 0; heap_4 keeps its free list to itself). Never probed by
     // malloc(): every refused malloc() runs the failed hook, which leaves a crash record and restarts the board (the
     // "malloc failed ... async_tcp" records after each Apply, 11-11). The block is taken at the next boot, before the
     // heap is cut up, so the free heap of now is a fair measure of what it can get then
-    const uint32_t free = lt_heap_get_free();
+    const uint32_t free = ::espurna::beken::heap_free();
     out.heap = heapBlockSize() + ((free > MODULES_HEAP_KEEP) ? (free - MODULES_HEAP_KEEP) : 0);
     out.fixed = tcmSize();
     out.fixed_base = tcmStart();
@@ -816,11 +817,11 @@ void pools(Pools& out) {
     out.name = "TCM";
 }
 
-void statusJson(String& out) {
-    jsonField(out, F("chip"), lt_flash_get_size());
+void statusJson(espurna::string& out) {
+    jsonField(out, "chip", ::espurna::beken::flash_size());
 }
 
-void listHead(Print& out) {
+void listHead(::espurna::Output& out) {
     out.printf_P(PSTR("beken: key %s, TCM pool %u bytes at %08x, heap block %u bytes at %08x\n"),
         key_name, tcmSize(), tcmStart(), heapBlockSize(), heapBlockBase());
 }
@@ -829,4 +830,4 @@ void listHead(Print& out) {
 } // namespace modules
 } // namespace espurna
 
-#endif // MODULES_SUPPORT && LIBRETINY
+#endif // MODULES_SUPPORT && BK72XX

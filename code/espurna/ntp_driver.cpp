@@ -5,9 +5,9 @@ lwIP's SNTP client, which differs (not the client itself):
 - esp8266 lwip2 (arch/esp8266/ntp_esp8266.cpp): Core calls settimeofday_cb() for every settimeofday(), SNTP or manual,
   lwip2 glue restarts SNTP by itself every time the netif gets a valid address, and asks for the update interval every
   time (weak functions)
-- ESP-IDF (arch/esp32/ntp_esp32.cpp): esp_sntp.h wraps lwIP, adds a sync notification and its own update interval
-- plain lwIP (arch/beken/ntp_beken.cpp): no notification, no restart on a new address, compile-time interval
-ESP32 and Beken restart the client when the station gets its address (arch/rtos/ntp_rtos.cpp)
+- ESP32 and Beken (arch/rtos/ntp_rtos.cpp): one driver, every SNTP call in the tcpip thread, the sync seen by the
+  clock offset, the client restarted when the station gets its address; the SDK calls in arch/<chip>/ntp_chip.h
+  (ESP-IDF esp_sntp_* with its own update interval, plain lwIP with the compile-time one)
 
 */
 
@@ -39,8 +39,8 @@ const char* server_name() {
     return sntp_getservername(0);
 }
 
-String server_address() {
-    String out;
+espurna::string server_address() {
+    espurna::string out;
 
     const ip_addr_t* addr = sntp_getserver(0);
     if (addr) {

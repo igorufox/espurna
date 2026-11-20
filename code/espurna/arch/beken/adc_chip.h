@@ -1,14 +1,12 @@
 /*
 
-ADC, LibreTiny part (ref. adc_driver.h)
+ADC, BK72xx part (ref. adc_driver.h)
 
-analogRead() of the core, 10 bit, values taken as the esp8266 0..1V range. No supply voltage measurement
+chip::adc_read() (core_beken.cpp, analogRead() of the core), 10 bit, values taken as the esp8266 0..1V range. No supply voltage measurement
 
 */
 
 #pragma once
-
-#include <Arduino.h>
 
 namespace espurna {
 namespace adc {
@@ -25,12 +23,12 @@ inline double millivolts(uint8_t, uint32_t raw) {
     return linear_millivolts(raw, bits());
 }
 
-inline String address(uint8_t) {
-    return F("A0");
+inline espurna::string address(uint8_t) {
+    return "A0";
 }
 
-inline String pad(uint8_t) {
-    return F("TOUT");
+inline espurna::string pad(uint8_t) {
+    return "TOUT";
 }
 
 inline uint16_t vcc() {

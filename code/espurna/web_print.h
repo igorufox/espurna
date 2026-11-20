@@ -4,7 +4,7 @@ Part of WEBSERVER MODULE
 
 Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
-A Print into the response of a request: what the callback prints is kept (up to a limit) and sent once it returns.
+An output into the response of a request: what the callback prints is kept (up to a limit) and sent once it returns.
 The handlers run in the loop (libs/http_server.h), the callback runs right away.
 
 */
@@ -33,21 +33,18 @@ static constexpr Config DefaultConfig {
     16 * 1024,
 };
 
-class RequestPrint : public Print {
+class RequestPrint : public ::espurna::Output {
 public:
     explicit RequestPrint(Config config) :
         _config(config)
     {}
 
-    size_t write(uint8_t c) override {
-        return write(&c, 1);
-    }
+    using ::espurna::Output::write;
 
-    size_t write(const uint8_t* data, size_t size) override {
+    void write(const char* data, size_t size) override {
         const size_t room = (_out.size() < _config.limit) ? (_config.limit - _out.size()) : 0;
         const size_t take = std::min(room, size);
         _out.insert(_out.end(), data, data + take);
-        return size;
     }
 
     // 200 with everything printed
@@ -68,11 +65,11 @@ private:
     std::vector<uint8_t> _out;
 };
 
-// runs `callback(Print&)` and answers the request with what it printed
+// runs `callback(::espurna::Output&)` and answers the request with what it printed
 template <typename T>
 void scheduleFromRequest(Config config, espurna::http::server::Request& request, T&& callback) {
     RequestPrint print(config);
-    callback(static_cast<Print&>(print));
+    callback(static_cast<::espurna::Output&>(print));
     print.send(request);
 }
 

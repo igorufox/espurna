@@ -6,10 +6,10 @@
 
 //------------------------------------------------------------------------------
 class AnimSpread : public Anim {
-    const byte minWidth = 10;
-    const byte maxWidth = 15;
-    const byte numTries = 5;
-    byte fade_ind = 10;
+    const uint8_t minWidth = 10;
+    const uint8_t maxWidth = 15;
+    const uint8_t numTries = 5;
+    uint8_t fade_ind = 10;
 
     int GeneratePos() {
         int pos = -1;
@@ -45,7 +45,7 @@ class AnimSpread : public Anim {
 
         for (auto i = 0; i < numLeds; ++i) {
             if (!ledstmp[i].is_empty()) {
-                byte width = maxWidth - seq[i];
+                uint8_t width = maxWidth - seq[i];
                 for (int j = i - width; j <= (i + width); j++) {
                     Color c = ledstmp[i];
                     if (j >= 0 && j < numLeds) {

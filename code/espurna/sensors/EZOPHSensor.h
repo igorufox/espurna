@@ -14,7 +14,7 @@ class EZOPHSensor : public BaseSensor {
 
     public:
 
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -39,8 +39,8 @@ class EZOPHSensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("EZOPH");
+        espurna::string description() const override {
+            return "EZOPH";
         }
 
         // Type for slot # index
@@ -73,7 +73,7 @@ class EZOPHSensor : public BaseSensor {
 
           _error = SENSOR_ERROR_WARM_UP;
 
-          String data;
+          espurna::string data;
           data.reserve(30);
 
           if (!_sync_requested) {
@@ -86,7 +86,7 @@ class EZOPHSensor : public BaseSensor {
               _sync_requested = true;
           }
 
-          data += _serial->readStringUntil('\r');
+          data += _readLine();
           if (data.startsWith("?C,")) {
               auto interval = TimeSource::duration(
                     data.substring(data.indexOf(",") + 1).toInt() * 1000);
@@ -108,6 +108,14 @@ class EZOPHSensor : public BaseSensor {
           _error = SENSOR_ERROR_OK;
         }
 
+        // a line up to '\r' (not included), within the stream's timeout
+        espurna::string _readLine() {
+            char line[32];
+            const auto size = _serial->readBytesUntil('\r', line, sizeof(line) - 1);
+            line[size] = '\0';
+            return espurna::string(line);
+        }
+
         void _read() {
             if (_error != SENSOR_ERROR_OK) {
               return;
@@ -120,12 +128,12 @@ class EZOPHSensor : public BaseSensor {
 
             _timestamp = now;
 
-            String data;
+            espurna::string data;
             data.reserve(30);
 
-            data += _serial->readStringUntil('\r');
+            data += _readLine();
 
-            if (data == F("*ER")) {
+            if (data == "*ER") {
               _error = SENSOR_ERROR_OTHER;
               return;
             }
@@ -143,7 +151,7 @@ class EZOPHSensor : public BaseSensor {
         TimeSource::time_point _timestamp;
 
         double _ph = 0;
-        Stream* _serial;
+        ::espurna::ByteStream* _serial;
 
 };
 

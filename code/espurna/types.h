@@ -7,8 +7,7 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 */
 #pragma once
 
-#include <Arduino.h>
-#include <pgmspace.h>
+#include "progmem.h"
 
 #include <chrono>
 #include <memory>
@@ -20,6 +19,11 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include <array>
 #include <functional>
 #include <vector>
+#include <utility>
+#include <type_traits>
+
+// StringView and string: the library espurna-base (one string for ESPurna and the libraries of its modules)
+#include <espurna_string.h>
 
 // missing in our original header
 // (esp32 and libretiny provide it as a macro around memcmp)
@@ -28,13 +32,17 @@ extern "C" int memcmp_P(const void*, const void*, size_t);
 #endif
 
 namespace espurna {
+
+// the owning text of ESPurna (text_types.h)
+class string;
+
 namespace duration {
 
 // Only micros are 64bit, millis stored as 32bit to match what is actually returned & used by Core functions
 using Microseconds = std::chrono::duration<uint64_t, std::micro>;
 using Milliseconds = std::chrono::duration<uint32_t, std::milli>;
 
-// Our own helper types, a lot of things are based off of the `millis()`
+// Our own helper types, a lot of things are based off of the `espurna::time::ms()`
 // (and it can be seamlessly used with any Core functions accepting u32 millisecond inputs)
 using rep_type = uint32_t;
 
@@ -256,163 +264,6 @@ private:
     bool& _handle;
 };
 
-struct StringView {
-    constexpr StringView() noexcept :
-        _ptr(nullptr),
-        _len(0)
-    {}
-
-    ~StringView() = default;
-
-    StringView(std::nullptr_t) = delete;
-
-    constexpr StringView(const StringView&) noexcept = default;
-    constexpr StringView(StringView&&) noexcept = default;
-
-#if __cplusplus > 201103L
-    constexpr StringView& operator=(const StringView&) noexcept = default;
-    constexpr StringView& operator=(StringView&&) noexcept = default;
-#else
-    StringView& operator=(const StringView&) noexcept = default;
-    StringView& operator=(StringView&&) noexcept = default;
-#endif
-
-    constexpr StringView(const char* ptr, size_t len) noexcept :
-        _ptr(ptr),
-        _len(len)
-    {}
-
-    template <typename T, typename = typename std::enable_if<std::is_pointer<T>::value>::type>
-    constexpr StringView(T ptr) noexcept :
-        StringView(ptr, __builtin_strlen(ptr))
-    {}
-
-    template <size_t Size>
-    constexpr StringView(const char (&string)[Size]) noexcept :
-        StringView(&string[0], Size - 1)
-    {}
-
-    constexpr StringView(const char* begin, const char* end) noexcept :
-        StringView(begin, end - begin)
-    {}
-
-    explicit StringView(const __FlashStringHelper* ptr) noexcept :
-        _ptr(reinterpret_cast<const char*>(ptr)),
-        _len(strlen_P(_ptr))
-    {}
-
-    StringView(const String& string) noexcept :
-        StringView(string.c_str(), string.length())
-    {}
-
-    StringView& operator=(const String& string) noexcept {
-        _ptr = string.c_str();
-        _len = string.length();
-        return *this;
-    }
-
-    template <size_t Size>
-    constexpr StringView& operator=(const char (&string)[Size]) noexcept {
-        _ptr = &string[0];
-        _len = Size - 1;
-        return *this;
-    }
-
-    constexpr const char* begin() const noexcept {
-        return _ptr;
-    }
-
-    constexpr const char* end() const noexcept {
-        return _ptr + _len;
-    }
-
-    constexpr const char* c_str() const {
-        return _ptr;
-    }
-
-    constexpr const char* data() const {
-        return _ptr;
-    }
-
-    constexpr const char& operator[](size_t offset) const {
-        return *(_ptr + offset);
-    }
-
-    constexpr size_t length() const {
-        return _len;
-    }
-
-    String toString() const {
-        String out;
-        out.concat(_ptr, _len);
-        return out;
-    }
-
-    explicit operator String() const {
-        return toString();
-    }
-
-    bool equals(StringView) const;
-    bool equalsIgnoreCase(StringView) const;
-
-    bool startsWith(StringView) const;
-    bool endsWith(StringView) const;
-
-    StringView slice(size_t index, size_t end) const;
-    StringView slice(size_t index) const;
-
-private:
-#if defined(HOST_MOCK)
-    constexpr static bool inFlash(const char*) {
-        return false;
-    }
-#else
-    static bool inFlash(const char* ptr) {
-        // common comparison would use >=0x40000000
-        // instead, slightly reduce the footprint by
-        // checking *only* for numbers below it
-        static constexpr uintptr_t Mask { 1 << 30 };
-        return (reinterpret_cast<uintptr_t>(ptr) & Mask) > 0;
-    }
-#endif
-
-    const char* _ptr;
-    size_t _len;
-};
-
-inline bool operator==(StringView lhs, StringView rhs) {
-    return lhs.equals(rhs);
-}
-
-inline bool operator!=(StringView lhs, StringView rhs) {
-    return !lhs.equals(rhs);
-}
-
-inline String operator+=(String& lhs, StringView rhs) {
-    lhs.concat(rhs.c_str(), rhs.length());
-    return lhs;
-}
-
-// Only StringView itself is accepted here. String of the esp32 and libretiny cores only has StringSumHelper
-// operator+ overloads, implicit conversions into StringView would make `String + String` or `"..." + String`
-// ambiguous in this namespace
-template <typename T>
-using IfStringView = typename std::enable_if<std::is_same<T, StringView>::value, String>::type;
-
-template <typename T>
-inline IfStringView<T> operator+(String&& lhs, T rhs) {
-    lhs.concat(rhs.c_str(), rhs.length());
-    return lhs;
-}
-
-template <typename T>
-inline IfStringView<T> operator+(T lhs, const String& rhs) {
-    String out;
-    out += lhs.toString();
-    out += rhs;
-    return out;
-}
-
 // PROGMEM_STRING_ATTR and the macros below: the chip may define its own, ref. arch/<chip>/compat_<chip>.h
 #ifndef PROGMEM_STRING
 #define PROGMEM_STRING(NAME, X)\
@@ -579,3 +430,6 @@ T unchecked_parse(StringView view) {
 
 } // namespace duration
 } // namespace espurna
+
+// the owning text (espurna::string) wherever StringView is
+#include "text_types.h"

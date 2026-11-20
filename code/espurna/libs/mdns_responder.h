@@ -22,7 +22,6 @@ The implementation: libs/mdns_responder_impl.h, included by the mdns module (mdn
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -31,7 +30,7 @@ namespace espurna {
 namespace mdns {
 namespace responder {
 
-bool begin(const String& hostname);
+bool begin(const espurna::string& hostname);
 bool running();
 
 // the services of one owner ("espurna", "matter") are replaced as a whole: update(owner), add() each, commit(owner);
@@ -43,7 +42,7 @@ void commit(const char* owner);
 
 // a blocking query from the loop: `callback(address, port)` for every instance of `_<service>._<protocol>.local`
 // found within `timeout` ms, until it returns true
-using QueryCallback = bool(*)(String&& address, uint16_t port);
+using QueryCallback = bool(*)(espurna::string&& address, uint16_t port);
 bool query(const char* service, const char* protocol, uint32_t timeout, QueryCallback callback);
 
 void loop();

@@ -18,7 +18,7 @@ the modules, the OTA state are read and changed there directly: no lock to wait 
 #include <functional>
 #include <memory>
 
-#include <ArduinoJson.h>
+#include "libs/PrintString.h"
 
 #include "ntp.h"
 #include "settings.h"
@@ -71,7 +71,7 @@ bool access_log() {
     return getSetting(keys::AccessLog, build::access_log());
 }
 
-String domain() {
+espurna::string domain() {
     return getSetting(keys::Domain, build::WebRemoteDomain);
 }
 
@@ -130,7 +130,7 @@ bool apModeRequest(WebRequest& request) {
         return false;
     }
 
-    const String value(host);
+    const espurna::string value(host);
     return value.equals(ipToString(wifiApIp())) || value.startsWith(systemHostname() + '.');
 }
 
@@ -154,20 +154,23 @@ void onReset(WebRequest& request) {
     request.send(200, "text/plain", "OK");
 }
 
+// {"hostname": ..., "device": ..., "app": ..., "version": ...}: names without quotes or backslashes in them
 void onDiscover(WebRequest& request) {
-    StaticJsonBuffer<JSON_OBJECT_SIZE(5) + 128> buffer;
-    JsonObject& root = buffer.createObject();
-
-    root["hostname"] = systemHostname();
-    root["device"] = systemDevice();
-
     const auto app = buildApp();
-    root["app"] = app.name;
-    root["version"] = app.version;
 
-    String out;
-    root.printTo(out);
-    request.send(200, "application/json", out.c_str());
+    char out[256];
+    const int len = snprintf_P(out, sizeof(out),
+        PSTR("{%chostname%c:%c%s%c,%cdevice%c:%c%s%c,%capp%c:%c%s%c,%cversion%c:%c%s%c}"),
+        '"', '"', '"', systemHostname().c_str(), '"',
+        '"', '"', '"', systemDevice().c_str(), '"',
+        '"', '"', '"', app.name.c_str(), '"',
+        '"', '"', '"', app.version.c_str(), '"');
+    if (len <= 0) {
+        request.send(500, "text/plain", "");
+        return;
+    }
+
+    request.send(200, "application/json", out);
 }
 
 // the whole settings storage as a JSON file
@@ -177,45 +180,23 @@ void onGetConfig(WebRequest& request) {
         return;
     }
 
-    auto out = std::make_shared<String>();
+    auto out = std::make_shared<StringPrint>();
     out->reserve(1024);
+    settingsPrintJson(*out, true);
 
-    const auto app = buildApp();
-
-    char buffer[256];
-    int prefix_len = snprintf_P(buffer, sizeof(buffer),
-            PSTR("{\n\"app\": \"%s\",\n\"version\": \"%s\",\n\"backup\": \"1\""),
-            app.name.c_str(), app.version.c_str());
-    if (prefix_len <= 0) {
-        request.send(500, "text/plain", "");
-        return;
-    }
-    out->concat(buffer, prefix_len);
-
-    espurna::settings::foreach([&](espurna::settings::kvs_type::KeyValueResult&& kv) {
-        auto key = kv.key.toString();
-        auto value = kv.value.toString();
-
-        int len = snprintf_P(buffer, sizeof(buffer), PSTR("\"%s\": \"%s\""), key.c_str(), value.c_str());
-        if (len > 0) {
-            *out += ",\n";
-            out->concat(buffer, len);
-        }
-    });
-    *out += "\n}";
-
-    auto get_timestamp = []() -> String {
+    auto get_timestamp = []() -> espurna::string {
 #if NTP_SUPPORT
         if (ntpSynced()) {
             return ntpDateTime();
         }
 #endif
-        return String(espurna::time::millis().time_since_epoch().count(), 10);
+        return espurna::string(espurna::time::millis().time_since_epoch().count(), 10);
     };
 
+    char buffer[128];
     int written = snprintf_P(buffer, sizeof(buffer),
-        PSTR("attachment; filename=\"%s %s backup.json\""),
-        systemHostname().c_str(), get_timestamp().c_str());
+        PSTR("attachment; filename=%c%s %s backup.json%c"), '"',
+        systemHostname().c_str(), get_timestamp().c_str(), '"');
     if (written <= 0) {
         request.send(500, "text/plain", "");
         return;
@@ -232,53 +213,6 @@ void onGetConfig(WebRequest& request) {
             }
             return have;
         });
-}
-
-ConfigUpload* configUpload(WebRequest& request) {
-    auto* upload = static_cast<ConfigUpload*>(request.context());
-    if (!upload) {
-        upload = new (std::nothrow) ConfigUpload();
-        request.setContext(upload, [](void* ptr) {
-            delete static_cast<ConfigUpload*>(ptr);
-        });
-    }
-    return upload;
-}
-
-// the restore file, as the raw body or the file part of a form
-void onPostConfigBody(WebRequest& request, const char*, size_t index, const uint8_t* data, size_t len, bool) {
-    auto* upload = configUpload(request);
-    if (!upload || upload->failed) {
-        return;
-    }
-
-    if (!index) {
-        upload->data.clear();
-    }
-
-    if ((upload->data.size() + len) > std::min(ConfigBufferMax, systemFreeHeap() / 2)) {
-        upload->failed = true;
-        upload->data.clear();
-        return;
-    }
-
-    upload->data.insert(upload->data.end(), data, data + len);
-}
-
-void onPostConfig(WebRequest& request) {
-    if (!authenticate(request)) {
-        requestAuthentication(request);
-        return;
-    }
-
-    auto* upload = static_cast<ConfigUpload*>(request.context());
-    bool success = false;
-    if (upload && !upload->failed && !upload->data.empty()) {
-        upload->data.push_back(0);
-        success = settingsRestoreJson(reinterpret_cast<char*>(upload->data.data()));
-    }
-
-    request.send(success ? 200 : 400, "text/plain", success ? "OK" : "Error");
 }
 
 // every request no route took: the subscribers (alexa, prometheus, terminal), else 404
@@ -310,13 +244,13 @@ void onBody(WebRequest& request, const char*, size_t index, const uint8_t* data,
     }
 }
 
-void onVisible(JsonObject& root) {
-    root[settings::keys::Port] = port;
-    root[settings::keys::TemplatesUrl] = getSetting(settings::keys::TemplatesUrl);
-    root[settings::keys::FirmwareUrl] = getSetting(settings::keys::FirmwareUrl);
+void onVisible(espurna::json::Writer& root) {
+    root.field(settings::keys::Port, port);
+    root.field(settings::keys::TemplatesUrl, getSetting(settings::keys::TemplatesUrl));
+    root.field(settings::keys::FirmwareUrl, getSetting(settings::keys::FirmwareUrl));
 }
 
-bool onKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool onKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(settings::keys::Prefix);
 }
 
@@ -352,23 +286,23 @@ void webRequestAuthentication(WebRequest& request) {
     espurna::web::requestAuthentication(request);
 }
 
-String webHeader(WebRequest& request, const char* name) {
+espurna::string webHeader(WebRequest& request, const char* name) {
     const char* value = request.header(name);
-    return value ? String(value) : String();
+    return value ? espurna::string(value) : espurna::string();
 }
 
-String webParam(WebRequest& request, const char* name) {
+espurna::string webParam(WebRequest& request, const char* name) {
     const char* value = request.param(name);
-    return value ? String(value) : String();
+    return value ? espurna::string(value) : espurna::string();
 }
 
-void webSend(WebRequest& request, int code, const char* type, const String& body) {
+void webSend(WebRequest& request, int code, const char* type, const espurna::string& body) {
     request.send(code, type, reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
 }
 
-// a String the caller is done with: the response takes it and sends it a piece at a time, no second copy of the whole
+// a espurna::string the caller is done with: the response takes it and sends it a piece at a time, no second copy of the whole
 // body (the server's send() copies it: an ESP8266 with its modules had no room for both, /modules answered 500, W27)
-void webSend(WebRequest& request, int code, const char* type, String&& body) {
+void webSend(WebRequest& request, int code, const char* type, espurna::string&& body) {
     const auto length = static_cast<long>(body.length());
     request.send(code, type, length,
         [body = std::move(body)](uint8_t* out, size_t max, size_t index) -> size_t {
@@ -403,7 +337,7 @@ void webRequestRegister(web_request_callback_f callback) {
 
 void webLog(WebRequest& request) {
     DEBUG_MSG_P(PSTR("[WEBSERVER] %s - %s %s\n"),
-        ipToString(IPAddress(request.remoteIp())).c_str(),
+        ipToString(espurna::Ip4(request.remoteIp())).c_str(),
         request.methodName(),
         request.url());
 }
@@ -424,7 +358,6 @@ void webSetup() {
 
     srv.on("/reset", WebMethod::Get, onReset);
     srv.on("/config", WebMethod::Get, onGetConfig);
-    srv.on("/config", WebMethod::Post | WebMethod::Put, onPostConfig, onPostConfigBody);
     srv.on("/discover", WebMethod::Get, onDiscover);
 
     // the connectivity check redirects of the captive portal are the captive module's (captive.cpp). Every other

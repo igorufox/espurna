@@ -32,11 +32,11 @@ namespace {
 
 STRING_VIEW_INLINE(Prefix, "ota");
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, Prefix);
 }
 
-void sendResponse(WebRequest& request, int code, const String& payload) {
+void sendResponse(WebRequest& request, int code, const espurna::string& payload) {
     webSecurityHeaders(request);
     webSend(request, code, "text/plain", payload);
 }
@@ -50,7 +50,7 @@ struct Upload {
 
     espurna::image::Receiver receiver;
     int code { 0 };         // the answer of a refused upload, 0 - fine so far
-    String error;
+    espurna::string error;
 };
 
 // An upload went in and the board restarts into it (the reset is requested from the loop a moment later)
@@ -71,7 +71,7 @@ Upload* uploadOf(WebRequest& request) {
     return upload;
 }
 
-void refuse(Upload& upload, int code, const String& error) {
+void refuse(Upload& upload, int code, const espurna::string& error) {
     upload.code = code;
     upload.error = error;
 }
@@ -98,14 +98,14 @@ void onFile(WebRequest& request, const char* filename, size_t index, const uint8
 
         if (!sameOrigin(request)) {
             DEBUG_MSG_P(PSTR("[UPGRADE] Refused, Origin %s is not this board\n"), webHeader(request, "Origin").c_str());
-            refuse(*upload, 403, F("ERROR: Origin"));
+            refuse(*upload, 403, "ERROR: Origin");
             return;
         }
 
 #if MODULES_SUPPORT
         // the update is written where the modules are, while their code runs
         if (modulesRunning()) {
-            refuse(*upload, 409, F("ERROR: modules installed, MODULES.OFF first"));
+            refuse(*upload, 409, "ERROR: modules installed, MODULES.OFF first");
             return;
         }
 #endif
@@ -117,7 +117,7 @@ void onFile(WebRequest& request, const char* filename, size_t index, const uint8
 
     const char* error = upload->receiver.push(data, len);
     if (error) {
-        refuse(*upload, 400, String(F("ERROR: ")) + error);
+        refuse(*upload, 400, espurna::string("ERROR: ") + error);
     }
 }
 
@@ -129,25 +129,25 @@ void onUpgrade(WebRequest& request) {
 
     auto* upload = uploadOf(request);
     if (!upload) {
-        sendResponse(request, 500, F("ERROR: out of memory"));
+        sendResponse(request, 500, "ERROR: out of memory");
         return;
     }
 
     if (upload->code) {
-        sendResponse(request, upload->code, upload->error.length() ? upload->error : String(F("ERROR")));
+        sendResponse(request, upload->code, upload->error.length() ? upload->error : espurna::string("ERROR"));
         return;
     }
 
     const char* error = upload->receiver.finish();
     if (error) {
         DEBUG_MSG_P(PSTR("[UPGRADE] %s\n"), error);
-        sendResponse(request, 400, String(F("ERROR: ")) + error);
+        sendResponse(request, 400, espurna::string("ERROR: ") + error);
         return;
     }
 
     installed = true;
     prepareReset(CustomResetReason::Ota);
-    sendResponse(request, 200, F("OK"));
+    sendResponse(request, 200, "OK");
 }
 
 } // namespace
@@ -155,12 +155,20 @@ void onUpgrade(WebRequest& request) {
 } // namespace ota
 
 bool otaWebUploading() {
-    return Update.isRunning() || ota::web::installed;
+    return otaRunning() || ota::web::installed;
 }
+
+#if defined(ESP8266)
+// /upgrade/bootloader: the SDK's bootloader, explicitly (arch/esp8266/ota_esp8266.cpp)
+void otaBootloaderSetup();
+#endif
 
 void otaWebSetup() {
     auto& server = webServer();
     server.on("/upgrade", WebMethod::Post, ota::web::onUpgrade, ota::web::onFile);
+#if defined(ESP8266)
+    otaBootloaderSetup();
+#endif
     wsRegister()
         .onVisible(ota::web::onVisible);
 }

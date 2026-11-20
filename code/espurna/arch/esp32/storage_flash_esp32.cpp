@@ -2,18 +2,18 @@
 
 SETTINGS STORAGE, the ESP32 flash (the storage itself is storage_eeprom.cpp, one for every chip)
 
-The pool: the top 8 sectors of the data partition "spiffs" (esp32_4mb_safeboot.csv 0x3B0000, 256 KB; min_spiffs.csv of
-a board not moved yet 0x3D0000, 128 KB). No file system uses it any more, nothing else is written there.
+The pool: the top 8 sectors of the data partition "spiffs" (esp32_4mb.csv 0x3B0000, 256 KB; min_spiffs.csv of a
+board on the old layout 0x3D0000, 128 KB). No file system uses it any more, nothing else is written there.
 
 Before: one blob "eeprom" in the NVS namespace "eeprom" (the end of the 4 KiB buffer). Taken over once when the pool
 has no valid copy yet, the blob is erased after the first write here: NVS is 20 KB with Matter's fabrics and the PHY
-calibration in it. The ESP32 safeboot reads the pool and falls back to that blob (safeboot-app)
+calibration in it.
 
 */
 
-#include "espurna.h"
+#include "../../espurna.h"
 
-#include "storage_eeprom.h"
+#include "../../storage_eeprom.h"
 
 #include <esp_partition.h>
 #include <nvs.h>
@@ -85,9 +85,9 @@ bool keep(uint32_t) {
 }
 
 // the blob is the end of the buffer (a longer one is not ours: its end)
-// The settings are loaded on their first use, a static initializer may come first: before initArduino() started NVS.
+// The settings are loaded on their first use, a static initializer may come first: before app_main() started NVS (core_esp32.cpp).
 // Not started, nvs_open() fails and the blob was never taken over: the head booted with empty settings, wrote them into
-// the pool, and safeboot took that copy (10.0.5.66 11-13: AP without Wi-Fi). nvs_flash_init() again later is a no-op
+// the pool (10.0.5.66 11-13: AP without Wi-Fi). nvs_flash_init() again later is a no-op
 bool legacy(uint8_t* data) {
     nvs_handle_t handle;
     auto result = nvs_open(LegacyNamespace, NVS_READONLY, &handle);
@@ -127,7 +127,7 @@ bool legacyErasedWhenDone() {
     return true;
 }
 
-void info(Print& out) {
+void info(::espurna::Output& out) {
     const auto* part = partition();
     if (part) {
         out.printf_P(PSTR("Partition \"%s\" 0x%06X, %u KiB\n"), part->label, part->address, part->size / 1024);

@@ -1,10 +1,10 @@
 /*
 
-SETTINGS STORAGE, the ESP8266 flash (the storage itself is storage_eeprom.cpp, one for every chip)
+SETTINGS STORAGE, the ESP8266 flash on ESP8266_RTOS_SDK 3.4 (the storage itself is storage_eeprom.cpp, one for every chip)
 
-The pool is where EEPROM_Rotate always had it, so the boards keep their settings: the base sector right under the 4
-sectors of the SDK (flash size / 4 KiB - 5) and the copies under it, by the flash size (a 1 MB chip: 251 and 250).
-EEPROM_ROTATE_SECTORS sets the pool size of a build
+The pool is where the NONOS build keeps it (owner 2026-11-17: «250/251»), the 1 MB layout on every chip size: sector 251
+(0xFB000) and its copy 250 (0xFA000), the 'settings' partition of arch/esp8266/partitions.csv. A board moved from
+the NONOS build keeps its settings, the format is the same
 
 */
 
@@ -12,50 +12,32 @@ EEPROM_ROTATE_SECTORS sets the pool size of a build
 
 #include "storage_eeprom.h"
 
+#include <spi_flash.h>
+
 namespace espurna {
 namespace storage {
 namespace flash {
 namespace {
 
-uint8_t pool_size(uint32_t base) {
-#ifdef EEPROM_ROTATE_SECTORS
-    static_assert(EEPROM_ROTATE_SECTORS > 0, "");
-    return EEPROM_ROTATE_SECTORS;
-#else
-    if (base > 4000) { // 16 MB
-        return 32;
-    } else if (base > 2000) { // 8 MB
-        return 16;
-    } else if (base > 1000) { // 4 MB
-        return 8;
-    } else if (base > 500) { // 2 MB
-        return 4;
-    } else if (base > 250) { // 1 MB
-        return 2;
-    }
-
-    return 1;
-#endif
-}
+constexpr uint32_t Base { 251 };
+constexpr uint8_t Sectors { 2 };
 
 } // namespace
 
 Pool pool() {
-    const uint32_t base = (ESP.getFlashChipSize() / SPI_FLASH_SEC_SIZE) - 5;
-    return Pool{ base, pool_size(base) };
+    return Pool{ Base, Sectors };
 }
 
 bool read(uint32_t sector, uint8_t* data) {
-    return ESP.flashRead(sector * SPI_FLASH_SEC_SIZE, reinterpret_cast<uint32_t*>(data), SPI_FLASH_SEC_SIZE);
+    return spi_flash_read(sector * SPI_FLASH_SEC_SIZE, data, SPI_FLASH_SEC_SIZE) == ESP_OK;
 }
 
 bool erase(uint32_t sector) {
-    return ESP.flashEraseSector(sector);
+    return spi_flash_erase_sector(sector) == ESP_OK;
 }
 
 bool write(uint32_t sector, const uint8_t* data) {
-    return ESP.flashWrite(sector * SPI_FLASH_SEC_SIZE,
-        reinterpret_cast<uint32_t*>(const_cast<uint8_t*>(data)), SPI_FLASH_SEC_SIZE);
+    return spi_flash_write(sector * SPI_FLASH_SEC_SIZE, data, SPI_FLASH_SEC_SIZE) == ESP_OK;
 }
 
 bool keep(uint32_t) {
@@ -74,8 +56,9 @@ bool legacyErasedWhenDone() {
     return false;
 }
 
-void info(Print& out) {
-    out.printf_P(PSTR("Flash: %u KiB\n"), ESP.getFlashChipSize() / 1024);
+void info(::espurna::Output& out) {
+    out.printf_P(PSTR("Flash: %u KiB, settings in sectors %u and %u\n"),
+        spi_flash_get_chip_size() / 1024, Base, Base - 1);
 }
 
 } // namespace flash

@@ -47,13 +47,13 @@ void addServices() {
 #if OTA_ARDUINOOTA_SUPPORT
     {
         const auto app = buildApp();
-        const String entries[] {
-            String(F("app_name=")) + String(app.name),
-            String(F("app_version=")) + String(app.version),
-            String(F("build_date=")) + String(app.build_time),
-            String(F("mac=")) + String(systemChipId()),
-            String(F("target_board=")) + String(systemDevice()),
-            String(F("auth_upload=")) + ((systemPassword().length() > 0) ? F("yes") : F("no")),
+        const espurna::string entries[] {
+            espurna::string("app_name=") + espurna::string(app.name),
+            espurna::string("app_version=") + espurna::string(app.version),
+            espurna::string("build_date=") + espurna::string(app.build_time),
+            espurna::string("mac=") + espurna::string(systemChipId()),
+            espurna::string("target_board=") + espurna::string(systemDevice()),
+            espurna::string("auth_upload=") + ((systemPassword().length() > 0) ? "yes" : "no"),
         };
         const char* txt[sizeof(entries) / sizeof(entries[0])];
         for (size_t index = 0; index < (sizeof(entries) / sizeof(entries[0])); ++index) {
@@ -84,7 +84,7 @@ void start() {
 } // namespace espurna
 
 // a blocking query for the first broker (MQTT): the answers of one second
-bool mdnsServiceQuery(const String& service, const String& protocol, MdnsServerQueryCallback callback) {
+bool mdnsServiceQuery(const espurna::string& service, const espurna::string& protocol, MdnsServerQueryCallback callback) {
     return ::espurna::mdns::responder::query(service.c_str(), protocol.c_str(), 1000, callback);
 }
 

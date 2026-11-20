@@ -71,8 +71,8 @@ class NTCSensor : public AnalogSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return String(F("NTC @ ")) + espurna::adc::chip::pad(_pin);
+        espurna::string description() const override {
+            return espurna::string("NTC @ ") + espurna::adc::chip::pad(_pin);
         }
 
         // Type for slot # index
@@ -113,7 +113,7 @@ class NTCSensor : public AnalogSensor {
                 (resistance_down && (voltage > 0.0))
                     ? ((_resistance_down * (_input_voltage - voltage)) / voltage)
                     : (resistance_down)
-                        ? std::numeric_limits<decltype(::analogRead(A0))>::max()
+                        ? std::numeric_limits<decltype(espurna::pins::analog(espurna::pins::Adc0))>::max()
                         : ((_resistance_up * voltage) / (_input_voltage - voltage));
 
             // 1/T = 1/T0 + 1/B * ln(R/R0)

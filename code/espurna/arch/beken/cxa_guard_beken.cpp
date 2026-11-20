@@ -1,10 +1,10 @@
 /*
 
-THREAD-SAFE STATIC LOCALS FOR BEKEN (LibreTiny)
+THREAD-SAFE STATIC LOCALS FOR BEKEN
 
 */
 
-// libstdc++ of the LibreTiny toolchain (arm-none-eabi, newlib) is built without thread support. Its
+// libstdc++ of the arm-none-eabi toolchain (newlib) is built without thread support. Its
 // __cxa_guard_acquire() takes a second caller of a function-local static that is still being constructed
 // for a recursive initialization and runs a trap there (udf #0, "Crash (undefined instruction)").
 // Here the loop task, async_tcp, the Wi-Fi, lwIP and Matter tasks all run our code, so two of them touching
@@ -12,8 +12,6 @@ THREAD-SAFE STATIC LOCALS FOR BEKEN (LibreTiny)
 // use of a rare path days later) killed the chip. These replace the libstdc++ ones at link time (object files
 // come before libstdc++.a, so its guard.o is never pulled in): another task waits for the construction to end,
 // only a real recursion inside one task still traps.
-
-#include <Arduino.h>
 
 #include <FreeRTOS.h>
 #include <task.h>

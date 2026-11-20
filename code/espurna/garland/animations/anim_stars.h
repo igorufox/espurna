@@ -24,7 +24,7 @@ class AnimStars : public Anim {
 
     void Run() override {
         for (auto i = 0; i < numLeds; i++) {
-            byte phi = seq[i];
+            uint8_t phi = seq[i];
             if (phi < 254) {
                 Color col = ledstmp[i];
                 if (phi <= 127) {
@@ -41,7 +41,7 @@ class AnimStars : public Anim {
         }
 
         if (garlandRandom(inc) == 0) {
-            byte pos = garlandRandom(numLeds);
+            uint8_t pos = garlandRandom(numLeds);
             if (seq[pos] > 250) {
                 seq[pos] = 0;
                 ledstmp[pos] = palette->getRndInterpColor();

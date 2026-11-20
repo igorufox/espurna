@@ -49,16 +49,16 @@ class TMP3XSensor : public AnalogSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[14];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("TMP%hhu @ TOUT"), _type);
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char index) const override {
-            return F("A0");
+        espurna::string address(unsigned char index) const override {
+            return "A0";
         }
 
         // Type for slot # index

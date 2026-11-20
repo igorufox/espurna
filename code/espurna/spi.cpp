@@ -23,7 +23,7 @@ namespace {
 SpiPins pins { GPIO_NONE, GPIO_NONE, GPIO_NONE };
 bool ready { false };
 
-uint8_t pin(const __FlashStringHelper* key, uint8_t fallback) {
+uint8_t pin(const char* key, uint8_t fallback) {
     return getSetting(key, fallback);
 }
 
@@ -43,9 +43,9 @@ void spiSetup() {
     using namespace espurna::driver::spi;
 
     const SpiPins pins {
-        espurna::spi::pin(F("spiSCK"), DefaultSck),
-        espurna::spi::pin(F("spiMISO"), DefaultMiso),
-        espurna::spi::pin(F("spiMOSI"), DefaultMosi),
+        espurna::spi::pin("spiSCK", DefaultSck),
+        espurna::spi::pin("spiMISO", DefaultMiso),
+        espurna::spi::pin("spiMOSI", DefaultMosi),
     };
     espurna::spi::pins = pins;
 

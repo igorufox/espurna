@@ -1,7 +1,0 @@
-{
-    "name": "SPI",
-    "version": "1.0.0",
-    "description": "Software SPI master with the Arduino SPIClass API, for the BK7231N (ESPurna's spi module)",
-    "frameworks": "arduino",
-    "platforms": "libretiny"
-}

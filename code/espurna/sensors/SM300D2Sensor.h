@@ -14,7 +14,7 @@ class SM300D2Sensor : public BaseSensor {
 
     public:
 
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -40,8 +40,8 @@ class SM300D2Sensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("SM300D2");
+        espurna::string description() const override {
+            return "SM300D2";
         }
 
         // Type for slot # index
@@ -142,7 +142,7 @@ class SM300D2Sensor : public BaseSensor {
                         _parse();
                     }
                 }
-                yield();
+                espurna::time::yield();
 
             }
 
@@ -161,7 +161,7 @@ class SM300D2Sensor : public BaseSensor {
         double _temperature = 0;
         double _humidity = 0;
 
-        Stream* _serial { nullptr };
+        ::espurna::ByteStream* _serial { nullptr };
 
 };
 

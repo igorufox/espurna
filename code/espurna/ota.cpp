@@ -14,22 +14,66 @@ OTA MODULE COMMON FUNCTIONS
 #include "ws.h"
 #endif
 
-#include "libs/PrintString.h"
-
 #include "ota_driver.h"
+
+// The image into the chip's update slot (chip::ota_* of arch/rtos/chip_sdk.h): begin() erases what it needs, write()
+// takes it in any parts, end() checks it and makes it the next boot. No Update of the layer
+namespace {
+
+struct Writer {
+    bool running { false };
+    size_t progress { 0 };
+    const char* error { nullptr };
+};
+
+Writer writer;
+
+bool writerBegin(size_t size) {
+    writer.error = espurna::core::chip::ota_begin(size);
+    writer.running = (writer.error == nullptr);
+    writer.progress = 0;
+    return writer.running;
+}
+
+bool writerWrite(const uint8_t* data, size_t len) {
+    writer.error = espurna::core::chip::ota_write(data, len);
+    if (writer.error) {
+        return false;
+    }
+
+    writer.progress += len;
+    return true;
+}
+
+bool writerEnd() {
+    writer.running = false;
+    writer.error = espurna::core::chip::ota_end();
+    return writer.error == nullptr;
+}
+
+void writerAbort() {
+    if (writer.running) {
+        espurna::core::chip::ota_abort();
+    }
+    writer.running = false;
+}
+
+} // namespace
+
+bool otaRunning() {
+    return writer.running;
+}
 
 void otaPrintError() {
 #if DEBUG_SUPPORT
-    if (Update.hasError()) {
-        PrintString out(64);
-        Update.printError(out);
-        DEBUG_MSG_P(PSTR("[OTA] %s\n"), out.c_str());
+    if (writer.error) {
+        DEBUG_MSG_P(PSTR("[OTA] %s\n"), writer.error);
     }
 #endif
 }
 
-bool otaFinalize(size_t size, CustomResetReason reason, bool evenIfRemaining) {
-    if (Update.isRunning() && Update.end(evenIfRemaining)) {
+bool otaFinalize(size_t size, CustomResetReason reason, bool) {
+    if (writer.running && writerEnd()) {
         DEBUG_MSG_P(PSTR("[OTA] Success: %7u bytes\n"), size);
         prepareReset(reason);
         return true;
@@ -49,12 +93,8 @@ bool otaFinalize(size_t size, CustomResetReason reason) {
 
 namespace {
 
-String updateError() {
-    PrintString out(64);
-    Update.printError(out);
-    String result(out.c_str());
-    result.trim();
-    return result;
+espurna::string updateError() {
+    return espurna::string(writer.error ? writer.error : "");
 }
 
 namespace driver = espurna::ota::driver;
@@ -67,7 +107,7 @@ namespace driver = espurna::ota::driver;
 class UpdateTarget final : public espurna::image::Target {
 public:
     const char* begin(const uint8_t* data, size_t len, size_t size) override {
-        if (Update.isRunning() || _own) {
+        if (writer.running || _own) {
             return "an update is in progress";
         }
 
@@ -75,7 +115,7 @@ public:
         if (driver::own_image(data, len)) {
             const auto* refused = driver::own_begin(data, len);
             if (refused) {
-                _error = FPSTR(refused);
+                _error = refused;
                 return _error.c_str();
             }
             eepromRotate(false);
@@ -86,7 +126,7 @@ public:
         // the chip's word on this file (Beken: the bootloader it is for), before anything is written
         const auto* refused = driver::upload_check(data, len);
         if (refused) {
-            _error = FPSTR(refused);
+            _error = refused;
             return _error.c_str();
         }
 
@@ -98,9 +138,9 @@ public:
         driver::update_prepare();
 
         // the size of a form part may not be known in advance
-        if (!Update.begin(size ? size : driver::update_size())) {
+        if (!writerBegin(size ? size : driver::update_size())) {
             eepromRotate(true);
-            _error = String(F("the image does not fit: ")) + updateError();
+            _error = espurna::string("the image does not fit: ") + updateError();
             return _error.c_str();
         }
 
@@ -111,18 +151,18 @@ public:
         if (_own) {
             const auto* error = driver::own_write(data, len);
             if (error) {
-                _error = FPSTR(error);
+                _error = error;
                 return _error.c_str();
             }
             return nullptr;
         }
 
-        if (Update.write(const_cast<uint8_t*>(data), len) != len) {
-            _error = String(F("write failed: ")) + updateError();
+        if (!writerWrite(data, len)) {
+            _error = espurna::string("write failed: ") + updateError();
             return _error.c_str();
         }
 
-        otaProgress(Update.progress());
+        otaProgress(writer.progress);
         return nullptr;
     }
 
@@ -132,16 +172,16 @@ public:
             const auto* error = driver::own_end();
             if (error) {
                 eepromRotate(true);
-                _error = FPSTR(error);
+                _error = error;
                 return _error.c_str();
             }
             DEBUG_MSG_P(PSTR("[OTA] Success: %7u bytes\n"), size);
             return nullptr;
         }
 
-        if (!Update.end(true)) {
+        if (!writerEnd()) {
             eepromRotate(true);
-            _error = String(F("image check failed: ")) + updateError();
+            _error = espurna::string("image check failed: ") + updateError();
             return _error.c_str();
         }
 
@@ -155,14 +195,12 @@ public:
             driver::own_abort();
         }
 
-        if (Update.isRunning()) {
-            Update.end(false);
-        }
+        writerAbort();
         eepromRotate(true);
     }
 
 private:
-    String _error;
+    espurna::string _error;
     bool _own { false };
 };
 

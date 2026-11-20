@@ -6,7 +6,6 @@ SPI of the chip (the spi module, spi.cpp). ESP32: the hardware SPI on any pins (
 
 #pragma once
 
-#include <Arduino.h>
 #include <SPI.h>
 
 #include <cstdint>

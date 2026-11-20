@@ -1,31 +1,30 @@
 /*
 
-SYSTEM MODULE FOR BEKEN (LibreTiny)
+SYSTEM MODULE FOR BEKEN (BDK)
 
 Chip part, the FreeRTOS chips part is in arch/rtos/system_rtos.cpp, common part is in system.cpp
 
 */
 
-#include <Arduino.h>
-#include <WiFi.h>
-
 #include <algorithm>
 #include <cstring>
 
-#include <fal.h>
 
-#include "espurna.h"
-#include "rtcmem.h"
-#include "crash.h"
+#include "../../espurna.h"
+#include "../../rtcmem.h"
+#include "../../crash.h"
 #include "layout_beken.h"
+#include "beken_api.h"
 
-// LibreTiny main task runs setup() and loop(), remembered by the first pre_setup() call.
+#include <wifi_sdk.h>
+
+// the loop task (core_beken.cpp app_main()) runs setup() and loop(), remembered by the first pre_setup() call.
 // Same name as the ESP32 Arduino core one, debug.cpp uses it to tell the loop task apart
 TaskHandle_t loopTaskHandle { nullptr };
 
 namespace {
 
-// hardware WDT, fed by LibreTiny yield() after every loop()
+// hardware WDT, fed by chip::loop_pass() after every loop()
 constexpr uint32_t LoopWdtTimeout { 10000 };
 
 } // namespace
@@ -35,15 +34,15 @@ constexpr uint32_t LoopWdtTimeout { 10000 };
 // -----------------------------------------------------------------------------
 
 size_t systemFreeHeap() {
-    return lt_heap_get_free();
+    return ::espurna::beken::heap_free();
 }
 
 size_t systemHeapMinimum() {
-    return lt_heap_get_min_free();
+    return ::espurna::beken::heap_min_free();
 }
 
 // .tcm output section of bk7231n_bsp.ld, which starts at the beginning of the 'tcm' region (0x003F0000,
-// 60 KiB - 512 in the LibreTiny template). Weak: other chips of the family have no such section
+// 60 KiB - 512 in bdk/bk7231n_bsp.ld). Weak: other chips of the family have no such section
 extern "C" uint8_t _tcmbss_end[] __attribute__((weak));
 
 TcmStats systemTcmStats() {
@@ -58,25 +57,18 @@ TcmStats systemTcmStats() {
     return {end - Start, Size};
 }
 
-HeapStats systemHeapStats() {
-    const uint32_t free = lt_heap_get_free();
-
-    // FreeRTOS v9 of the BK72xx SDK does not track the largest free block, LibreTiny reports 0.
-    // Treat the whole free heap as usable instead of showing 100% fragmentation
-    const uint32_t block = lt_heap_get_max_alloc();
-    if (!block) {
-        return {free, free, 0};
-    }
-
-    const uint8_t frag = free ? (100 - (block * 100 / free)) : 0;
-    return {free, block, frag};
+// systemHeapStats(), arch/rtos/system_rtos.cpp. FreeRTOS v9 of the BK72xx SDK does not track the largest free block,
+// heap_max_alloc() is 0 then
+void espurna::system::chip::sdk::heap(uint32_t& free, uint32_t& block) {
+    free = ::espurna::beken::heap_free();
+    block = ::espurna::beken::heap_max_alloc();
 }
 
 // -----------------------------------------------------------------------------
 // MAC
 // -----------------------------------------------------------------------------
 
-// libcal, reads the MAC out of the RF calibration block (LibreTiny 'calibration' partition)
+// libcal, reads the MAC out of the RF calibration block (the 'calibration' partition of the board)
 extern "C" int manual_cal_get_macaddr_from_flash(uint8_t* mac);
 
 namespace {
@@ -134,7 +126,7 @@ Block make_block(const uint8_t* mac) {
 bool sector_holds(const Block* block) {
     uint8_t chunk[256];
     for (uint32_t offset = 0; offset < FLASH_CALIBRATION_LENGTH; offset += sizeof(chunk)) {
-        if (lt_flash_read(FLASH_CALIBRATION_OFFSET + offset, chunk, sizeof(chunk)) != sizeof(chunk)) {
+        if (::espurna::beken::flash_read(FLASH_CALIBRATION_OFFSET + offset, chunk, sizeof(chunk)) != sizeof(chunk)) {
             return false;
         }
 
@@ -157,7 +149,7 @@ bool sector_holds(const Block* block) {
 
 bool write_block(const uint8_t* mac, bool replace) {
     if (replace) {
-        if (!lt_flash_erase(FLASH_CALIBRATION_OFFSET, FLASH_CALIBRATION_LENGTH)) {
+        if (!::espurna::beken::flash_erase(FLASH_CALIBRATION_OFFSET, FLASH_CALIBRATION_LENGTH)) {
             return false;
         }
     } else if (!sector_holds(nullptr)) {
@@ -166,37 +158,22 @@ bool write_block(const uint8_t* mac, bool replace) {
 
     const auto block = make_block(mac);
     const auto* data = reinterpret_cast<const uint8_t*>(&block);
-    if (lt_flash_write(FLASH_CALIBRATION_OFFSET, data, sizeof(block)) != sizeof(block)) {
+    if (::espurna::beken::flash_write(FLASH_CALIBRATION_OFFSET, data, sizeof(block)) != sizeof(block)) {
         return false;
     }
 
     return sector_holds(&block);
 }
 
-// BK7231N TRNG, the registers the SDK irda driver reads for TRNG_CMD_GET (its bk_rand() is not in the LibreTiny build).
-// rand() of the libc is never seeded here and gives every board the same numbers
-constexpr uint32_t TrngCtrl { 0x00802480 };
-constexpr uint32_t TrngData { 0x00802484 };
-constexpr uint32_t TrngEnable { 1 };
-
+// the TRNG of the chip (core_beken.cpp, the entropy of mbedTLS too): rand() of the libc is never seeded otherwise and
+// gives every board the same numbers
 uint32_t hardware_random() {
-    auto* ctrl = reinterpret_cast<volatile uint32_t*>(TrngCtrl);
-    const auto* data = reinterpret_cast<const volatile uint32_t*>(TrngData);
-
-    *ctrl = *ctrl | TrngEnable;
-
     uint32_t out { 0 };
-    for (size_t index = 0; index < 8; ++index) {
-        delayMicroseconds(100);
-        out = (out << 7) ^ (out >> 25) ^ *data;
-    }
-
-    *ctrl = *ctrl & ~TrngEnable;
-
+    ::espurna::beken::trng_bytes(reinterpret_cast<uint8_t*>(&out), sizeof(out));
     return out;
 }
 
-// Tuya Matter firmware keeps the RF calibration block in another sector than the LibreTiny 'calibration' partition
+// Tuya Matter firmware keeps the RF calibration block in another sector than the 'calibration' partition of the board
 // (MOES MS-104B Matter with a CBU module, 2026-11-07: 0x1E3000, 0x1D0000 blank). Without it the SDK runs on its
 // defaults and the radio is too weak for even the softAP to be seen. The block goes where the SDK reads it, on the first
 // boot: our settings pool (storage_flash_beken.cpp, 0x1DB000..0x1EB000) covers that sector and erase it later on
@@ -214,7 +191,7 @@ bool is_ours(const uint8_t* header) {
 // a whole block of the vendor, not only a MAC like ours
 bool is_vendor_block(uint32_t offset) {
     uint32_t header[2];
-    if (lt_flash_read(offset, reinterpret_cast<uint8_t*>(&header), sizeof(header)) != sizeof(header)) {
+    if (::espurna::beken::flash_read(offset, reinterpret_cast<uint8_t*>(&header), sizeof(header)) != sizeof(header)) {
         return false;
     }
 
@@ -224,36 +201,36 @@ bool is_vendor_block(uint32_t offset) {
 }
 
 bool copy_calibration(uint32_t from) {
-    if (!lt_flash_erase(FLASH_CALIBRATION_OFFSET, FLASH_CALIBRATION_LENGTH)) {
+    if (!::espurna::beken::flash_erase(FLASH_CALIBRATION_OFFSET, FLASH_CALIBRATION_LENGTH)) {
         return false;
     }
 
     // the header goes last, a copy cut short by a power loss is not taken for a block and is made again
     uint8_t chunk[256];
     for (uint32_t offset = 0; offset < FLASH_CALIBRATION_LENGTH; offset += sizeof(chunk)) {
-        if (lt_flash_read(from + offset, chunk, sizeof(chunk)) != sizeof(chunk)) {
+        if (::espurna::beken::flash_read(from + offset, chunk, sizeof(chunk)) != sizeof(chunk)) {
             return false;
         }
 
         const size_t skip = (offset == 0) ? 8 : 0;
-        if (lt_flash_write(FLASH_CALIBRATION_OFFSET + offset + skip, chunk + skip, sizeof(chunk) - skip)
+        if (::espurna::beken::flash_write(FLASH_CALIBRATION_OFFSET + offset + skip, chunk + skip, sizeof(chunk) - skip)
                 != (sizeof(chunk) - skip)) {
             return false;
         }
     }
 
-    if (lt_flash_read(from, chunk, 8) != 8) {
+    if (::espurna::beken::flash_read(from, chunk, 8) != 8) {
         return false;
     }
 
-    if (lt_flash_write(FLASH_CALIBRATION_OFFSET, chunk, 8) != 8) {
+    if (::espurna::beken::flash_write(FLASH_CALIBRATION_OFFSET, chunk, 8) != 8) {
         return false;
     }
 
     uint8_t copied[256];
     for (uint32_t offset = 0; offset < FLASH_CALIBRATION_LENGTH; offset += sizeof(chunk)) {
-        if ((lt_flash_read(from + offset, chunk, sizeof(chunk)) != sizeof(chunk))
-            || (lt_flash_read(FLASH_CALIBRATION_OFFSET + offset, copied, sizeof(copied)) != sizeof(copied))
+        if ((::espurna::beken::flash_read(from + offset, chunk, sizeof(chunk)) != sizeof(chunk))
+            || (::espurna::beken::flash_read(FLASH_CALIBRATION_OFFSET + offset, copied, sizeof(copied)) != sizeof(copied))
             || (std::memcmp(chunk, copied, sizeof(chunk)) != 0))
         {
             return false;
@@ -281,7 +258,7 @@ void ensure_calibration() {
     }
 
     uint8_t header[sizeof(Block)];
-    if (lt_flash_read(FLASH_CALIBRATION_OFFSET, header, sizeof(header)) != sizeof(header)) {
+    if (::espurna::beken::flash_read(FLASH_CALIBRATION_OFFSET, header, sizeof(header)) != sizeof(header)) {
         calibration = Calibration::Failed;
         return;
     }
@@ -294,7 +271,7 @@ void ensure_calibration() {
     }
 
     for (const auto offset : OtherCalibrationOffsets) {
-        if ((offset + FLASH_CALIBRATION_LENGTH) > lt_flash_get_size()) {
+        if ((offset + FLASH_CALIBRATION_LENGTH) > ::espurna::beken::flash_size()) {
             continue;
         }
 
@@ -335,7 +312,7 @@ void ensure_unique() {
 
     ensure_calibration();
 
-    // lt_rand_bytes() and our RandomDevice are rand() as well
+    // ::espurna::beken::rand_bytes() and our RandomDevice are rand() as well
     srand(hardware_random());
 
     bool replace { false };
@@ -372,7 +349,7 @@ void ensure_unique() {
 // the SDK reads the block once, the new MAC is used from the next boot on and set by hand for this one
 void apply() {
     if ((result == Result::Generated) || (result == Result::Replaced)) {
-        WiFi.setMacAddress(generated);
+        ::espurna::core::chip::wifi_set_mac(false, generated);
     }
 }
 
@@ -384,11 +361,11 @@ void report() {
         break;
     case Result::Generated:
         DEBUG_MSG_P(PSTR("[MAIN] No RF calibration block, MAC %s written to a new one\n"),
-            WiFi.macAddress().c_str());
+            wifiStaMac().c_str());
         break;
     case Result::Replaced:
         DEBUG_MSG_P(PSTR("[MAIN] MAC of the first build was the same on every board, %s written instead\n"),
-            WiFi.macAddress().c_str());
+            wifiStaMac().c_str());
         break;
     case Result::Failed:
         DEBUG_MSG_P(PSTR("[MAIN] No MAC in the RF calibration block and none could be written, using the SDK default\n"));
@@ -415,7 +392,7 @@ uint32_t bekenCalibrationKeep() {
 
 uint32_t espurna::system::RandomDevice::operator()() const {
     uint32_t out;
-    lt_rand_bytes(reinterpret_cast<uint8_t*>(&out), sizeof(out));
+    ::espurna::beken::rand_bytes(reinterpret_cast<uint8_t*>(&out), sizeof(out));
     return out;
 }
 
@@ -424,33 +401,40 @@ uint32_t espurna::system::RandomDevice::operator()() const {
 // -----------------------------------------------------------------------------
 
 // esp8266 erases the SDK area, i.e. stored WiFi config and RF calibration.
-// LibreTiny does not store WiFi config, RF calibration is kept
+// the BDK does not store the Wi-Fi config here, the RF calibration is kept
 bool eraseSDKConfig() {
     return true;
 }
 
 namespace espurna {
 namespace system {
-namespace chip {
 
-void sdk::loop() {
+// One core, masking its interrupts is enough. Nests
+uint32_t criticalEnter() {
+    return static_cast<uint32_t>(port_disable_interrupts_flag());
 }
+
+void criticalExit(uint32_t state) {
+    port_enable_interrupts_flag(static_cast<int>(state));
+}
+
+namespace chip {
 
 // yield() only feeds it between loop() calls
 void sdk::feed_loop_wdt() {
-    lt_wdt_feed();
+    ::espurna::beken::wdt_feed();
 }
 
 [[noreturn]] void sdk::reboot() {
-    // lt_reboot() -> bk_reboot() writes the reboot type into the retention register. Same reboot,
+    // bk_reboot() writes the reboot type into the retention register. Same reboot,
     // but with the system word (custom reset reason) there instead (ref. rtcmem_beken.cpp)
     constexpr uintptr_t RegRetention { 0x00800150 };
 
     portDISABLE_INTERRUPTS();
     *reinterpret_cast<volatile uint32_t*>(RegRetention) = rtcmemRetention();
 
-    lt_wdt_disable();
-    lt_wdt_enable(5);
+    ::espurna::beken::wdt_disable();
+    ::espurna::beken::wdt_enable(5);
     for (;;) {
     }
 }
@@ -462,7 +446,7 @@ bool mac(uint8_t* out) {
     if ((::mac::result == ::mac::Result::Generated) || (::mac::result == ::mac::Result::Replaced)) {
         std::memcpy(out, ::mac::generated, 6);
     } else {
-        lt_get_device_mac(out);
+        ::espurna::beken::device_mac(out);
     }
 
     return true;
@@ -490,7 +474,7 @@ void mac_set() {
         return;
     }
 
-    String text = getSetting("macSet");
+    espurna::string text = getSetting("macSet");
     delSetting("macSet");
     text.replace(":", "");
     text.replace("-", "");
@@ -515,9 +499,10 @@ void sdk::setup() {
     mac_set();
 }
 
-// hardware WDT, fed by LibreTiny yield() after every loop()
+// hardware WDT, fed by chip::loop_pass() after every loop() (core_beken.cpp). The stall watcher learns the period from
+// beken::wdt_* (rtcmem_beken.cpp)
 void sdk::enable_loop_wdt() {
-    lt_wdt_enable(LoopWdtTimeout);
+    ::espurna::beken::wdt_enable(LoopWdtTimeout);
 }
 
 } // namespace chip
@@ -528,11 +513,11 @@ void pre_setup() {
     loopTaskHandle = xTaskGetCurrentTaskHandle();
 
     // The TCP servers (libs/tcp.h: web, telnet) are started before WiFi is, make sure the TCP/IP stack is up.
-    // LibreTiny only initializes the SDK (lwip tcpip thread included) on the first WiFi.mode()
+    // the BDK's apps (the lwip tcpip thread included) start with the first chip::wifi_mode() (core_beken.cpp)
     // change, until then any tcpip_api_call() waits forever. Station is not connected here,
     // WiFi module sets the mode it needs later on
-    WiFi.mode(WIFI_MODE_STA);
-    WiFi.mode(WIFI_MODE_NULL);
+    ::espurna::core::chip::wifi_mode(WIFI_MODE_STA);
+    ::espurna::core::chip::wifi_mode(WIFI_MODE_NULL);
 
     // the chip id is made of the MAC, which has to be unique by now
     mac::ensure_unique();
@@ -554,18 +539,17 @@ uint32_t reset_reason() {
         }
     }
 
-    switch (lt_get_reboot_reason()) {
-    case REBOOT_REASON_HARDWARE:
-        return REASON_EXT_SYS_RST;
-    case REBOOT_REASON_SOFTWARE:
+    using ::espurna::beken::Reboot;
+    switch (::espurna::beken::reboot_reason()) {
+    case Reboot::Software:
         return REASON_SOFT_RESTART;
-    case REBOOT_REASON_CRASH:
+    case Reboot::Crash:
         return REASON_EXCEPTION_RST;
-    case REBOOT_REASON_WATCHDOG:
+    case Reboot::Watchdog:
         return REASON_WDT_RST;
-    case REBOOT_REASON_SLEEP_GPIO:
-    case REBOOT_REASON_SLEEP_RTC:
-    case REBOOT_REASON_SLEEP_USB:
+    case Reboot::SleepGpio:
+    case Reboot::SleepRtc:
+    case Reboot::SleepUsb:
         return REASON_DEEP_SLEEP_AWAKE;
     // power related, not the firmware's fault
     default:
@@ -584,7 +568,7 @@ namespace debug {
 namespace crash {
 namespace chip {
 
-bool dump(Print& print, bool check) {
+bool dump(::espurna::Output& print, bool check) {
     if (!check) {
         rtcmemCrashDump(print);
     }
@@ -592,7 +576,7 @@ bool dump(Print& print, bool check) {
     return true;
 }
 
-bool dump_empty(Print&) {
+bool dump_empty(::espurna::Output&) {
     return false;
 }
 
@@ -610,60 +594,3 @@ void setup() {
 } // namespace debug
 } // namespace espurna
 
-
-// One head for both bootloaders, built with the 2 MiB Tuya layout: FLASH_LENGTH, and with it the FAL 'root' partition
-// every lt_flash_*() goes through, ends at 2 MiB. On a 4 MiB board (the Quectel layout) FAL refuses all past it: the
-// 'download' partition at 0x286000, the module area and Matter's factory data at 0x3E0000. A longer copy of the 'root'
-// partition does not help: FAL finds the flash device by the index of the partition in its own table, and a copy
-// outside of it gave a garbage device (asserts are off) - every Apply on 10.0.4.214 ended with "flash erase 0x21F000"
-// (2026-11-16, the 2026-11-17 rehearsal). The head's lt_flash_*() go to the flash device itself (-Wl,--wrap in
-// platformio_beken.ini), up to the size the flash chip reports; FAL and FlashDB keep their own partitions
-extern "C" {
-
-extern const struct fal_flash_dev flash0;
-
-namespace {
-
-uint32_t flash_size() {
-    static uint32_t size { 0 };
-    if (!size) {
-        size = lt_flash_get_size();
-    }
-
-    return size;
-}
-
-bool flash_inside(uint32_t offset, size_t length) {
-    const uint32_t size = flash_size();
-    return (offset <= size) && (length <= (size - offset));
-}
-
-} // namespace
-
-bool __wrap_lt_flash_erase(uint32_t offset, size_t length) {
-    return length && flash_inside(offset, length) && (flash0.ops.erase(offset, length) >= 0);
-}
-
-bool __wrap_lt_flash_erase_block(uint32_t offset) {
-    return __wrap_lt_flash_erase(offset, 1);
-}
-
-uint32_t __wrap_lt_flash_read(uint32_t offset, uint8_t* data, size_t length) {
-    if (!flash_inside(offset, length)) {
-        return 0;
-    }
-
-    const int read = flash0.ops.read(offset, data, length);
-    return (read > 0) ? static_cast<uint32_t>(read) : 0;
-}
-
-uint32_t __wrap_lt_flash_write(uint32_t offset, const uint8_t* data, size_t length) {
-    if (!flash_inside(offset, length)) {
-        return 0;
-    }
-
-    const int written = flash0.ops.write(offset, data, length);
-    return (written > 0) ? static_cast<uint32_t>(written) : 0;
-}
-
-} // extern "C"

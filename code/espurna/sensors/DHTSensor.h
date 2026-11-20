@@ -259,16 +259,16 @@ class DHTSensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[20];
             snprintf_P(buffer, sizeof(buffer),
                 "DHT%d @ GPIO%hhu", dht_chip_to_number(_type), _gpio);
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
-            return String(_gpio, 10);
+        espurna::string address(unsigned char) const override {
+            return espurna::string(_gpio, 10);
         }
 
         // Type for slot # index
@@ -292,7 +292,7 @@ class DHTSensor : public BaseSensor {
         // ---------------------------------------------------------------------
 
         void _read_critical(Data& dhtData) {
-            digitalWrite(_gpio, LOW);
+            espurna::pins::write(_gpio, false);
 
             if ((_type == DHT_CHIP_DHT11) || (_type == DHT_CHIP_DHT12)) {
                 espurna::time::blockingDelay(
@@ -304,10 +304,10 @@ class DHTSensor : public BaseSensor {
                 espurna::time::critical::delay(
                     espurna::duration::critical::Microseconds(1100));
             }
-            digitalWrite(_gpio, HIGH);
+            espurna::pins::write(_gpio, true);
             espurna::time::critical::delay(
                 espurna::duration::critical::Microseconds(40));
-            pinMode(_gpio, INPUT_PULLUP);
+            espurna::pins::mode(_gpio, espurna::pins::InputPullup);
             espurna::time::critical::delay(
                 espurna::duration::critical::Microseconds(10));
 
@@ -321,14 +321,14 @@ class DHTSensor : public BaseSensor {
             for( int k = 0; k < 41; k++ ) {
 
                 // Starts new data transmission with >50us low signal
-                low = _signal(100, LOW);
+                low = _signal(100, false);
                 if (low == 0) {
                     _error = SENSOR_ERROR_TIMEOUT;
                     return;
                 }
 
                 // Check to see if after >70us rx data is a 0 or a 1
-                high = _signal(100, HIGH);
+                high = _signal(100, true);
                 if (high == 0) {
                     _error = SENSOR_ERROR_TIMEOUT;
                     return;
@@ -364,21 +364,24 @@ class DHTSensor : public BaseSensor {
                 return;
             }
 
-            pinMode(_gpio, OUTPUT);
+            espurna::pins::mode(_gpio, espurna::pins::Output);
 
             // Send start signal to DHT sensor
             if (++_errors > MaxErrors) {
                 _errors = 0;
-                digitalWrite(_gpio, HIGH);
+                espurna::pins::write(_gpio, true);
                 espurna::time::blockingDelay(
                     espurna::duration::Milliseconds(250));
             }
 
             Data data{};
 
-            noInterrupts();
-            _read_critical(data);
-            interrupts();
+            {
+                // no interrupts while the bits are timed (arch/<chip>/isr_chip.h)
+                static espurna::isr::Lock lock;
+                espurna::isr::Lock::Guard guard(lock);
+                _read_critical(data);
+            }
 
             if (_error != SENSOR_ERROR_OK) {
                 return;
@@ -401,7 +404,7 @@ class DHTSensor : public BaseSensor {
         unsigned long _signal(unsigned long maximum, bool state) {
             unsigned long ticks = 1;
 
-            while (digitalRead(_gpio) == state) {
+            while (espurna::pins::read(_gpio) == state) {
                 if (++ticks > maximum) return 0;
                 espurna::time::critical::delay(
                     espurna::duration::critical::Microseconds(1));

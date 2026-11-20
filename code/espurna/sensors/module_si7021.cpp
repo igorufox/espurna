@@ -15,7 +15,7 @@ using namespace espurna::sensor::module;
 ESPURNA_SENSOR_DRIVER(si7021, "si7021Addr|i2c|Address (0 - find it)|0") {
     if (i2c_bus()) {
         auto* sensor = new SI7021Sensor();
-        sensor->setAddress(getSetting(F("si7021Addr"), uint8_t{ SI7021_ADDRESS }));
+        sensor->setAddress(getSetting("si7021Addr", uint8_t{ SI7021_ADDRESS }));
         sensorAdd(sensor);
     }
 }

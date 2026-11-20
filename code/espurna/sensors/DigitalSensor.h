@@ -43,9 +43,9 @@ constexpr unsigned char pin(unsigned char index) {
 }
 
 constexpr Mode mode_from_value(int value) {
-    return (INPUT == value) ? Mode::Input :
-        (INPUT_PULLUP == value) ? Mode::PullUp :
-        (INPUT_PULLDOWN == value) ? Mode::PullDown : Mode::Input;
+    return (espurna::pins::Input == value) ? Mode::Input :
+        (espurna::pins::InputPullup == value) ? Mode::PullUp :
+        (espurna::pins::InputPulldown == value) ? Mode::PullDown : Mode::Input;
 }
 
 constexpr Mode mode(unsigned char index) {
@@ -57,12 +57,12 @@ constexpr Mode mode(unsigned char index) {
         (4 == index) ? (DIGITAL5_PIN_MODE) :
         (5 == index) ? (DIGITAL6_PIN_MODE) :
         (6 == index) ? (DIGITAL7_PIN_MODE) :
-        (7 == index) ? (DIGITAL8_PIN_MODE) : (INPUT_PULLUP));
+        (7 == index) ? (DIGITAL8_PIN_MODE) : (espurna::pins::InputPullup));
 }
 
 constexpr State state_from_value(int value) {
-    return (HIGH == value) ? State::High :
-        (LOW == value) ? State::Low : State::Initial;
+    return (true == value) ? State::High :
+        (false == value) ? State::Low : State::Initial;
 }
 
 constexpr State state(unsigned char index) {
@@ -74,7 +74,7 @@ constexpr State state(unsigned char index) {
         (4 == index) ? (DIGITAL5_DEFAULT_STATE) :
         (5 == index) ? (DIGITAL6_DEFAULT_STATE) :
         (6 == index) ? (DIGITAL7_DEFAULT_STATE) :
-        (7 == index) ? (DIGITAL8_DEFAULT_STATE) : (HIGH));
+        (7 == index) ? (DIGITAL8_DEFAULT_STATE) : (true));
 }
 
 } // namespace build
@@ -118,20 +118,20 @@ namespace internal {
 using namespace espurna::sensor::driver;
 
 template<>
-digital::Mode convert(const String& value) {
+digital::Mode convert(const espurna::string& value) {
     return convert(digital::settings::options::Mode, value, digital::Mode::PullUp);
 }
 
-String serialize(digital::Mode value) {
+espurna::string serialize(digital::Mode value) {
     return serialize(digital::settings::options::Mode, value);
 }
 
 template<>
-digital::State convert(const String& value) {
+digital::State convert(const espurna::string& value) {
     return convert(digital::settings::options::State, value, digital::State::High);
 }
 
-String serialize(digital::State value) {
+espurna::string serialize(digital::State value) {
     return serialize(digital::settings::options::State, value);
 }
 
@@ -170,7 +170,7 @@ State state(size_t index) {
 namespace query {
 
 #define ID_VALUE(NAME, FUNC)\
-String NAME (size_t id) {\
+espurna::string NAME (size_t id) {\
     return espurna::settings::internal::serialize(FUNC(id));\
 }
 
@@ -235,17 +235,17 @@ public:
     // Initialization method, must be idempotent
     void begin() override {
         if (!_ready) {
-            pinMode(_pin, _pin_mode);
+            espurna::pins::mode(_pin, _pin_mode);
 
             switch (_default_state) {
             case State::Initial:
-                _default = digitalRead(_pin);
+                _default = espurna::pins::read(_pin);
                 break;
             case State::High:
-                _default = HIGH;
+                _default = true;
                 break;
             case State::Low:
-                _default = LOW;
+                _default = false;
                 break;
             }
         }
@@ -254,16 +254,16 @@ public:
     }
 
     // Descriptive name of the sensor
-    String description() const override {
+    espurna::string description() const override {
         char buffer[32];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("Digital @ GPIO%hhu"), _pin);
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
     // Address of the sensor (it could be the GPIO or I2C address)
-    String address(unsigned char) const override {
-        return String(_pin, 10);
+    espurna::string address(unsigned char) const override {
+        return espurna::string(_pin, 10);
     }
 
     // Type for slot # index
@@ -276,7 +276,7 @@ public:
     }
 
     void pre() override {
-        _current = digitalRead(_pin);
+        _current = espurna::pins::read(_pin);
     }
 
     // Current value for slot # index
@@ -294,14 +294,14 @@ private:
     State _default_state;
 
     int _current { -1 };
-    int _default { LOW };
+    int _default { false };
 };
 
 class Init : public sensor::PreInit {
 public:
     Init() = default;
 
-    String description() const override {
+    espurna::string description() const override {
         return STRING_VIEW("DigitalSensor").toString();
     }
 

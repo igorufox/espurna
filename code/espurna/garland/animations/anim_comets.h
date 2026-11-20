@@ -58,9 +58,9 @@ class AnimComets : public Anim {
             points.reset(new Color[len]);
             for (auto i = 0; i < len; ++i) {
                 points[i] = {
-                    (byte)(color.r * (len - i) / len),
-                    (byte)(color.g * (len - i) / len),
-                    (byte)(color.b * (len - i) / len)};
+                    (uint8_t)(color.r * (len - i) / len),
+                    (uint8_t)(color.g * (len - i) / len),
+                    (uint8_t)(color.b * (len - i) / len)};
             }
         }
     };

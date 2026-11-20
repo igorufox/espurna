@@ -54,20 +54,20 @@ bool allowed(WebRequest& request) {
     return true;
 }
 
-void json(WebRequest& request, String&& out) {
+void json(WebRequest& request, espurna::string&& out) {
     webSend(request, 200, "application/json", std::move(out));
 }
 
 // --- scan ----------------------------------------------------------------------------------------------------------
 
 // what the last scan found, JSON array items; kept until a reply after its end took it
-String scan_list;
-String scan_error;
+espurna::string scan_list;
+espurna::string scan_error;
 
 // a few dozen networks at most; the rest is dropped (RAM of the head)
 constexpr size_t ScanListMax { 1536 };
 
-void scanFound(const String& ssid, int8_t rssi, bool open) {
+void scanFound(const espurna::string& ssid, int8_t rssi, bool open) {
     if (!ssid.length() || (scan_list.length() > ScanListMax)) {
         return;
     }
@@ -79,11 +79,11 @@ void scanFound(const String& ssid, int8_t rssi, bool open) {
     scan_list += '[';
     text::jsonString(scan_list, ssid.c_str(), ssid.length());
     scan_list += ',';
-    scan_list += String(static_cast<int>(rssi));
-    scan_list += open ? F(",1]") : F(",0]");
+    scan_list += espurna::string(static_cast<int>(rssi));
+    scan_list += open ? ",1]" : ",0]";
 }
 
-void scanError(const String& error) {
+void scanError(const espurna::string& error) {
     scan_error = error;
 }
 
@@ -93,26 +93,26 @@ void onScan(WebRequest& request) {
     }
 
     if (request.hasParam("start") && !wifiScanning()) {
-        scan_list = String();
-        scan_error = String();
+        scan_list = espurna::string();
+        scan_error = espurna::string();
         wifiScanStart(scanFound, scanError);
     }
 
     const bool running = wifiScanning();
 
-    String out;
+    espurna::string out;
     out.reserve(32 + scan_list.length() + scan_error.length());
-    out += F("{\"run\":");
+    out += "{\"run\":";
     out += running ? '1' : '0';
-    out += F(",\"error\":");
+    out += ",\"error\":";
     text::jsonString(out, scan_error.c_str(), scan_error.length());
-    out += F(",\"list\":[");
+    out += ",\"list\":[";
     out += scan_list;
-    out += F("]}");
+    out += "]}";
 
     if (!running) {
-        scan_list = String();
-        scan_error = String();
+        scan_list = espurna::string();
+        scan_error = espurna::string();
     }
 
     json(request, std::move(out));
@@ -125,13 +125,13 @@ void onState(WebRequest& request) {
         return;
     }
 
-    const auto ssid = getSetting(settings::Key(F("ssid"), 0));
+    const auto ssid = getSetting(settings::Key("ssid", 0));
 
-    String out;
+    espurna::string out;
     out.reserve(32 + ssid.length());
-    out += F("{\"pass\":");
-    out += systemPasswordMustChange() ? F("true") : F("false");
-    out += F(",\"ssid\":");
+    out += "{\"pass\":";
+    out += systemPasswordMustChange() ? "true" : "false";
+    out += ",\"ssid\":";
     text::jsonString(out, ssid.c_str(), ssid.length());
     out += '}';
 
@@ -155,8 +155,8 @@ bool validPassword(const char* value) {
     return !systemPasswordEquals(StringView(value, len));
 }
 
-void refuse(WebRequest& request, const __FlashStringHelper* text) {
-    webSend(request, 400, "text/plain", String(text));
+void refuse(WebRequest& request, const char* text) {
+    webSend(request, 400, "text/plain", espurna::string(text));
 }
 
 void onSave(WebRequest& request) {
@@ -172,40 +172,40 @@ void onSave(WebRequest& request) {
     const bool new_wifi = ssid && *ssid;
 
     if (!new_pass && systemPasswordMustChange()) {
-        refuse(request, F("ERROR: the default password is still on, set a new one first"));
+        refuse(request, "ERROR: the default password is still on, set a new one first");
         return;
     }
 
     if (new_pass && !validPassword(pass)) {
-        refuse(request, F("ERROR: the password must be 8..63 printable characters, not the current one"));
+        refuse(request, "ERROR: the password must be 8..63 printable characters, not the current one");
         return;
     }
 
     const size_t wpass_len = wpass ? strlen(wpass) : 0;
     if (new_wifi && ((strlen(ssid) > 32) || (wpass_len && ((wpass_len < 8) || (wpass_len > 64))))) {
-        refuse(request, F("ERROR: the network name is 1..32 bytes, its password empty or 8..64 characters"));
+        refuse(request, "ERROR: the network name is 1..32 bytes, its password empty or 8..64 characters");
         return;
     }
 
     if (!new_pass && !new_wifi) {
-        refuse(request, F("ERROR: nothing to save"));
+        refuse(request, "ERROR: nothing to save");
         return;
     }
 
     if (new_pass) {
-        setSetting(settings::Key(F("adminPass")), String(pass));
+        setSetting(settings::Key("adminPass"), espurna::string(pass));
     }
 
     if (new_wifi) {
-        setSetting(settings::Key(F("ssid"), 0), String(ssid));
-        setSetting(settings::Key(F("pass"), 0), String(wpass ? wpass : ""));
+        setSetting(settings::Key("ssid", 0), espurna::string(ssid));
+        setSetting(settings::Key("pass", 0), espurna::string(wpass ? wpass : ""));
         // a pinned access point of the network before (wifi.cpp bssid / chan) would keep the board off the new one
-        delSetting(settings::Key(F("bssid"), 0));
-        delSetting(settings::Key(F("chan"), 0));
+        delSetting(settings::Key("bssid", 0));
+        delSetting(settings::Key("chan", 0));
     }
 
     saveSettings();
-    webSend(request, 200, "text/plain", String(F("OK")));
+    webSend(request, 200, "text/plain", espurna::string("OK"));
     prepareReset(CustomResetReason::Web);
 }
 

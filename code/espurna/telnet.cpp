@@ -88,7 +88,7 @@ PROGMEM_STRING(Port, "telnetPort");
 
 } // namespace keys
 
-String password() {
+espurna::string password() {
     return systemPassword();
 }
 
@@ -108,7 +108,7 @@ namespace query {
 namespace internal {
 
 #define EXACT_VALUE(NAME, FUNC)\
-String NAME () {\
+espurna::string NAME () {\
     return espurna::settings::internal::serialize(FUNC());\
 }
 
@@ -221,7 +221,7 @@ protected:
     {}
 
 #if TERMINAL_SUPPORT
-    void process(Print& print) {
+    void process(::espurna::Output& print) {
         while (!_cmds.empty()) {
             auto cmd = std::move(_cmds.front());
             _cmds.pop_front();
@@ -233,7 +233,7 @@ protected:
         }
     }
 
-    void process(String cmd) {
+    void process(espurna::string cmd) {
         _cmds.push_back(std::move(cmd));
     }
 #endif
@@ -280,7 +280,7 @@ protected:
     LineBuffer<build::LineBufferSize> _line_buffer;
 
 #if TERMINAL_SUPPORT
-    std::list<String> _cmds;
+    std::list<espurna::string> _cmds;
 #endif
 };
 
@@ -292,11 +292,11 @@ protected:
 constexpr size_t OutputMax { 4096 };
 
 struct Address {
-    IPAddress ip;
+    espurna::Ip4 ip;
 };
 
 [[gnu::unused]]
-String address_string(Address address) {
+espurna::string address_string(Address address) {
     return ipToString(address.ip);
 }
 
@@ -306,12 +306,12 @@ public:
     explicit Client(std::unique_ptr<tcp::Connection> connection) :
         _conn(std::move(connection)),
         _remote(Address{
-            .ip = IPAddress(_conn ? _conn->remoteIp() : 0),
+            .ip = espurna::Ip4(_conn ? _conn->remoteIp() : 0),
         })
     {}
 
     // an outgoing connection (TELNET.REVERSE, MQTT): connect() resolves the name itself
-    Client(String host, uint16_t port) :
+    Client(espurna::string host, uint16_t port) :
         _conn(new (std::nothrow) tcp::Connection()),
         _host(std::move(host)),
         _port(port)
@@ -399,7 +399,7 @@ public:
 
         if (_state == State::Connecting) {
             if (_conn->connected()) {
-                _remote.ip = IPAddress(_conn->remoteIp());
+                _remote.ip = espurna::Ip4(_conn->remoteIp());
                 activate();
             } else if (_conn->closed()) {
                 DEBUG_MSG_P(PSTR("[TELNET] Cannot connect to %s:%hu\n"), _host.c_str(), _port);
@@ -443,20 +443,18 @@ public:
     }
 
 private:
-    // Terminal output works through Arduino `Print`: wait (up to 3 s) for the connection to take what was printed
+    // Terminal output (espurna::Output): wait (up to 3 s) for the connection to take what was printed
     // before taking more, the loop sleeps in between and lwIP sends meanwhile
-    struct ExhaustingPrint : public Print {
+    struct ExhaustingPrint : public Output {
         explicit ExhaustingPrint(Client* client) :
             _client(client)
         {}
 
-        size_t write(const uint8_t* ptr, size_t length) override {
-            flush();
-            return _client->write(ptr, length);
-        }
+        using Output::write;
 
-        size_t write(uint8_t c) override {
-            return write(&c, 1);
+        void write(const char* ptr, size_t length) override {
+            flush();
+            _client->write(reinterpret_cast<const uint8_t*>(ptr), length);
         }
 
         void flush() override {
@@ -510,10 +508,10 @@ private:
         return take;
     }
 
-    // a flash string is copied out first (String), messages are rare: the prompt, the password result, errors
+    // a flash string is copied out first (espurna::string), messages are rare: the prompt, the password result, errors
     void write_message(StringView message) {
         if (_conn) {
-            const auto blob = String(message);
+            const auto blob = espurna::string(message);
             append(reinterpret_cast<const uint8_t*>(blob.c_str()), blob.length());
         }
     }
@@ -587,7 +585,7 @@ private:
 
     std::unique_ptr<tcp::Connection> _conn;
     Address _remote {};
-    String _host;
+    espurna::string _host;
     uint16_t _port { 0 };
 
     bool _close_requested { false };
@@ -616,7 +614,7 @@ bool accepted(Client& client) {
         return false;
     }
 
-    if (!settings::station() && wifiConnected() && (IPAddress(conn->localIp()) == wifiStaIp())) {
+    if (!settings::station() && wifiConnected() && (espurna::Ip4(conn->localIp()) == wifiStaIp())) {
         return false;
     }
 
@@ -697,7 +695,7 @@ namespace reverse {
 
 // An outgoing session (the telnet_reverse module: TELNET.REVERSE, MQTT <root>/telnet_reverse): shares the client limit
 // with the accepted ones; the connection resolves the name itself
-bool connect(String host, uint16_t port) {
+bool connect(espurna::string host, uint16_t port) {
     if (active() >= build::ClientsMax) {
         return false;
     }
@@ -716,17 +714,17 @@ bool connect(String host, uint16_t port) {
 #if WEB_SUPPORT
 namespace web {
 
-bool onKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool onKeyCheck(espurna::StringView key, espurna::json::Value) {
     return settings::query::checkExactPrefix(key);
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, settings::Prefix);
 }
 
-void onConnected(JsonObject& root) {
+void onConnected(espurna::json::Writer& root) {
     for (auto setting : settings::query::Settings) {
-        root[setting.key()] = setting.value();
+        root.field(setting.key(), setting.value());
     }
 }
 
@@ -762,7 +760,7 @@ uint16_t telnetPort() {
 
 // the telnet_reverse module's: a session out to a listener (a board behind NAT)
 bool telnetReverse(const char* host, uint16_t port) {
-    return host && *host && port && espurna::telnet::reverse::connect(String(host), port);
+    return host && *host && port && espurna::telnet::reverse::connect(espurna::string(host), port);
 }
 
 bool telnetConnected() {

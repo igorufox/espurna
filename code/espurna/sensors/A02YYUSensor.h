@@ -10,14 +10,13 @@
 
 #pragma once
 
-#include "Arduino.h"
 #include "BaseSensor.h"
 
 class A02YYUSensor : public BaseSensor {
 
     public:
 
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -42,8 +41,8 @@ class A02YYUSensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("A02YYU");
+        espurna::string description() const override {
+            return "A02YYU";
         }
 
         // Type for slot # index
@@ -95,7 +94,7 @@ class A02YYUSensor : public BaseSensor {
             while (available) 
             {
                 // read bytes from the device into the frame buffer
-                int n = _serial->readBytes(_frame + _free, min(_frame_len - _free, available));
+                int n = _serial->readBytes(_frame + _free, std::min<size_t>(_frame_len - _free, available));
 
                 available -= n;
                 _free += n;
@@ -124,7 +123,7 @@ class A02YYUSensor : public BaseSensor {
 
         static constexpr int _frame_len = 4;
         uint8_t _frame[_frame_len];
-        Stream* _serial { nullptr };
+        ::espurna::ByteStream* _serial { nullptr };
         double _distance = 0;           // measured distance
         int _free = 0;                  // index of the first free byte in the frame buffer
 };

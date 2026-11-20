@@ -79,7 +79,7 @@ constexpr auto EventTtl = datetime::Days{ 1 };
 constexpr auto EventsMax = size_t{ 4 };
 
 struct NamedEvent {
-    String name;
+    espurna::string name;
     event::time_point time_point;
 };
 
@@ -100,7 +100,7 @@ NamedEvent* find_named(StringView name) {
     return nullptr;
 }
 
-bool named_event(String name, datetime::Clock::time_point time_point) {
+bool named_event(espurna::string name, datetime::Clock::time_point time_point) {
     auto it = find_named(name);
     if (it) {
         it->time_point = time_point;
@@ -128,7 +128,7 @@ bool named_event(String name, datetime::Clock::time_point time_point) {
     return false;
 }
 
-bool named_event(String name, StringView value) {
+bool named_event(espurna::string name, StringView value) {
     datetime::DateHhMmSs date_hhmmss;
     bool utc { false };
 
@@ -142,11 +142,11 @@ bool named_event(String name, StringView value) {
         datetime::make_time_point(date_hhmmss, utc));
 }
 
-String format_time_point(datetime::Clock::time_point time_point) {
+espurna::string format_time_point(datetime::Clock::time_point time_point) {
     return datetime::format_local_tz(time_point);
 }
 
-String format_named_event(const NamedEvent& event) {
+espurna::string format_named_event(const NamedEvent& event) {
     return format_time_point(event.time_point);
 }
 
@@ -171,7 +171,7 @@ struct Last {
     datetime::Clock::time_point time_point;
 };
 
-String format_last_action(const Last& last) {
+espurna::string format_last_action(const Last& last) {
     return format_time_point(last.time_point);
 }
 
@@ -439,20 +439,20 @@ namespace settings {
 namespace internal {
 
 template <>
-scheduler::Type convert(const String& value) {
+scheduler::Type convert(const espurna::string& value) {
     return convert(scheduler::settings::internal::Types, value, scheduler::Type::Unknown);
 }
 
-String serialize(scheduler::Type type) {
+espurna::string serialize(scheduler::Type type) {
     return serialize(scheduler::settings::internal::Types, type);
 }
 
 template <>
-scheduler::v1::Type convert(const String& value) {
+scheduler::v1::Type convert(const espurna::string& value) {
     return convert(scheduler::settings::internal::v1::Types, value, scheduler::v1::Type::None);
 }
 
-String serialize(scheduler::v1::Type type) {
+espurna::string serialize(scheduler::v1::Type type) {
     return serialize(scheduler::settings::internal::v1::Types, type);
 }
 
@@ -515,18 +515,18 @@ bool restore(size_t index) {
     return getSetting({keys::Restore, index}, build::restore());
 }
 
-String time(size_t index) {
+espurna::string time(size_t index) {
     return getSetting({keys::Time, index});
 }
 
-String action(size_t index) {
+espurna::string action(size_t index) {
     return getSetting({keys::Action, index});
 }
 
 namespace internal {
 
 #define ID_VALUE(NAME, FUNC)\
-String NAME (size_t id) {\
+espurna::string NAME (size_t id) {\
     return espurna::settings::internal::serialize(FUNC(id));\
 }
 
@@ -536,7 +536,7 @@ ID_VALUE(restore, settings::restore)
 #undef ID_VALUE
 
 #define EXACT_VALUE(NAME, FUNC)\
-String NAME () {\
+espurna::string NAME () {\
     return espurna::settings::internal::serialize(FUNC());\
 }
 
@@ -670,11 +670,12 @@ void report_validate(size_t index) {
             error::InvalidTime.length(),
             error::InvalidTime.data());
 #if WEB_SUPPORT
-    wsPost([index](JsonObject& root) {
-        auto& info = root.createNestedArray(STRING_VIEW("schValidate"));
-        info.add(index);
-        info.add(keys::Time);
-        info.add(error::InvalidTime);
+    wsPost([index](espurna::json::Writer& root) {
+        root.array(STRING_VIEW("schValidate"));
+        root.value(index);
+        root.value(keys::Time);
+        root.value(error::InvalidTime);
+        root.end();
     });
 #endif
 }
@@ -760,7 +761,7 @@ int minute(size_t index) {
     return getSetting({keys::Minute, index}, 0);
 }
 
-String weekdays(size_t index) {
+espurna::string weekdays(size_t index) {
     return getSetting({keys::Weekdays, index}, DefaultWeekdays);
 }
 
@@ -770,8 +771,8 @@ bool utc(size_t index) {
 
 } // namespace settings
 
-String convert_time(const String& weekdays, int hour, int minute, bool utc) {
-    String out;
+espurna::string convert_time(const espurna::string& weekdays, int hour, int minute, bool utc) {
+    espurna::string out;
 
     // implicit mon..sun already by default
     if (weekdays != settings::DefaultWeekdays) {
@@ -783,14 +784,14 @@ String convert_time(const String& weekdays, int hour, int minute, bool utc) {
         out += '0';
     }
 
-    out += String(hour, 10);
+    out += espurna::string(hour, 10);
     out += ':';
 
     if (minute < 10) {
         out += '0';
     }
 
-    out += String(minute, 10);
+    out += espurna::string(minute, 10);
 
     if (utc) {
         out += STRING_VIEW(" UTC");
@@ -799,8 +800,8 @@ String convert_time(const String& weekdays, int hour, int minute, bool utc) {
     return out;
 }
 
-String convert_action(Type type, int target, int action) {
-    String out;
+espurna::string convert_action(Type type, int target, int action) {
+    espurna::string out;
 
     using namespace espurna::scheduler::settings::internal::v1;
     StringView prefix;
@@ -832,15 +833,15 @@ String convert_action(Type type, int target, int action) {
     if (prefix.length()) {
         out += prefix.toString()
             + ' ';
-        out += String(target, 10)
+        out += espurna::string(target, 10)
             + ' '
-            + String(action, 10);
+            + espurna::string(action, 10);
     }
 
         return out;
     }
 
-String convert_type(bool enabled, Type type) {
+espurna::string convert_type(bool enabled, Type type) {
     auto out = scheduler::Type::Unknown;
 
     switch (type) {
@@ -954,24 +955,24 @@ bool update_schedule(Schedule& schedule) {
     return false;
 }
 
-String format_time_point(const event::time_point& time_point) {
+espurna::string format_time_point(const event::time_point& time_point) {
     return (time_point.time_since_epoch() > datetime::Clock::duration::zero())
         ? datetime::format_local_tz(time_point)
         : STRING_VIEW("value not set").toString();
 }
 
-String format_next(const EventMatch& match) {
+espurna::string format_next(const EventMatch& match) {
     return format_time_point(match.next);
 }
 
-String format_last(const EventMatch& match) {
+espurna::string format_last(const EventMatch& match) {
     return format_time_point(match.last);
 }
 
 } // namespace sun
 #endif
 
-bool api_update_named_event(String name, StringView payload) {
+bool api_update_named_event(espurna::string name, StringView payload) {
 #if SCHEDULER_SUN_SUPPORT
     const auto match = sun::maybe_sunrise_sunset(name);
     if (match) {
@@ -983,7 +984,7 @@ bool api_update_named_event(String name, StringView payload) {
     return named_event(std::move(name), payload);
 }
 
-String api_format_named_event(StringView name) {
+espurna::string api_format_named_event(StringView name) {
 #if SCHEDULER_SUN_SUPPORT
     const auto* match = sun::maybe_sunrise_sunset(name);
     if (match) {
@@ -996,7 +997,7 @@ String api_format_named_event(StringView name) {
         return format_named_event(*it);
     }
 
-    return emptyString;
+    return espurna::empty_string;
 }
 
 // -----------------------------------------------------------------------------
@@ -1011,8 +1012,8 @@ namespace internal {
 #if SCHEDULER_SUN_SUPPORT
 
 struct Datetime {
-    String last;
-    String next;
+    espurna::string last;
+    espurna::string next;
 };
 
 Datetime sunrise_sunset(const sun::EventMatch& event_match) {
@@ -1022,7 +1023,7 @@ Datetime sunrise_sunset(const sun::EventMatch& event_match) {
     };
 }
 
-void format_datetime(CommandContext& ctx, const String& prefix, const Datetime& datetime) {
+void format_datetime(CommandContext& ctx, const espurna::string& prefix, const Datetime& datetime) {
     ctx.output.printf_P(PSTR("- %s\n  last: %s\n  next: %s\n"),
         prefix.c_str(),
         datetime.last.c_str(),
@@ -1084,7 +1085,7 @@ bool dump_calendar(CommandContext& ctx, StringView name = StringView()) {
     if (!last_actions.empty()) {
         for (auto& entry : last_actions) {
             auto event = STRING_VIEW("cal#").toString();
-            event += String(entry.index, 10);
+            event += espurna::string(entry.index, 10);
 
             if (name.length() && !name.equalsIgnoreCase(event)) {
                 continue;
@@ -1114,13 +1115,13 @@ PROGMEM_STRING(Entrypoint, "SCHEDULE");
 
 void entrypoint(CommandContext&& ctx) {
     if (ctx.argv.size() > 2 && (STRING_VIEW("CHECK").equalsIgnoreCase(ctx.argv[1]))) {
-        String spec;
+        espurna::string spec;
 
         size_t reserve = 0;
         std::for_each(
             ctx.argv.begin() + 2,
             ctx.argv.end(),
-            [&](const String& arg) {
+            [&](const espurna::string& arg) {
                 reserve += 1 + arg.length();
             });
         spec.reserve(reserve);
@@ -1154,7 +1155,7 @@ void entrypoint(CommandContext&& ctx) {
 
     size_t id;
     if (!tryParseId(ctx.argv[1], id)) {
-        terminalError(ctx, F("Invalid ID"));
+        terminalError(ctx, "Invalid ID");
         return;
     }
 
@@ -1247,36 +1248,44 @@ struct Schedule {
     size_t id;
     Type type;
     int restore;
-    String time;
-    String action;
+    espurna::string time;
+    espurna::string action;
 };
 
-void print(JsonObject& root, const Schedule& schedule) {
-    root[keys::Type] = serialize(schedule.type);
-    root[keys::Restore] = (1 == schedule.restore);
-    root[keys::Action] = schedule.action;
-    root[keys::Time] = schedule.time;
+void print(espurna::json::Writer& root, const Schedule& schedule) {
+    root.field(keys::Type, serialize(schedule.type));
+    root.field(keys::Restore, (1 == schedule.restore));
+    root.field(keys::Action, schedule.action);
+    root.field(keys::Time, schedule.time);
 }
 
-template <typename T>
-bool set_typed(T& out, JsonObject& root, StringView key) {
-    auto value = root[key];
-    if (value.success()) {
-        out = value.as<T>();
+bool set_typed(espurna::string& out, espurna::json::Value root, StringView key) {
+    const auto value = root[key];
+    if (value.valid()) {
+        out = espurna::string(value.asString().c_str());
         return true;
     }
 
     return false;
 }
 
-template <>
-bool set_typed<Type>(Type& out, JsonObject& root, StringView key) {
-    auto value = root[key];
-    if (!value.success()) {
+bool set_typed(bool& out, espurna::json::Value root, StringView key) {
+    const auto value = root[key];
+    if (value.valid()) {
+        out = value.asBool();
+        return true;
+    }
+
+    return false;
+}
+
+bool set_typed(Type& out, espurna::json::Value root, StringView key) {
+    const auto value = root[key];
+    if (!value.valid()) {
         return false;
     }
 
-    auto type = convert<Type>(value.as<String>());
+    auto type = convert<Type>(espurna::string(value.asString().c_str()));
     if (type != Type::Unknown) {
         out = type;
         return true;
@@ -1284,12 +1293,6 @@ bool set_typed<Type>(Type& out, JsonObject& root, StringView key) {
 
     return false;
 }
-
-template
-bool set_typed<String>(String&, JsonObject&, StringView);
-
-template
-bool set_typed<bool>(bool&, JsonObject&, StringView);
 
 void update_from(const Schedule& schedule) {
     setSetting({keys::Type, schedule.id}, serialize(schedule.type));
@@ -1301,7 +1304,7 @@ void update_from(const Schedule& schedule) {
     }
 }
 
-bool set(JsonObject& root, const size_t id) {
+bool set(espurna::json::Value root, const size_t id) {
     Schedule out;
     out.id = id;
     out.restore = -1;
@@ -1346,23 +1349,24 @@ Schedule make_schedule(size_t id) {
 
 namespace schedules {
 
-bool get(ApiRequest&, JsonObject& root) {
-    JsonArray& out = root.createNestedArray("schedules");
-
+bool get(ApiRequest&, espurna::json::Writer& root) {
+    root.array("schedules");
     for (size_t id = 0; id < build::max(); ++id) {
         const auto sch = make_schedule(id);
         if (sch.type == Type::Unknown) {
             break;
         }
 
-        auto& root = out.createNestedObject();
+        root.beginObject();
         print(root, sch);
+        root.end();
     }
+    root.end();
 
     return true;
 }
 
-bool set(ApiRequest&, JsonObject& root) {
+bool set(ApiRequest&, espurna::json::Value root) {
     size_t id = 0;
     while (hasSetting({settings::keys::Type, id})) {
         ++id;
@@ -1379,7 +1383,7 @@ bool set(ApiRequest&, JsonObject& root) {
 
 namespace schedule {
 
-bool get(ApiRequest& req, JsonObject& root) {
+bool get(ApiRequest& req, espurna::json::Writer& root) {
     const auto param = req.wildcard(0);
 
     size_t id;
@@ -1396,7 +1400,7 @@ bool get(ApiRequest& req, JsonObject& root) {
     return false;
 }
 
-bool set(ApiRequest& req, JsonObject& root) {
+bool set(ApiRequest& req, espurna::json::Value root) {
     const auto param = req.wildcard(0);
 
     size_t id;
@@ -1415,24 +1419,27 @@ constexpr char Datetime[] = "datetime";
 
 namespace events {
 
-bool get(ApiRequest& req, JsonObject& root) {
+bool get(ApiRequest& req, espurna::json::Writer& root) {
     const auto param = req.wildcard(0);
-    auto& out = root.createNestedArray(Events);
+    root.array(Events);
 
 #if SCHEDULER_SUN_SUPPORT
     const auto refs = { std::cref(sun::SunsetMatch), std::cref(sun::SunsetMatch) };
     for (const auto ref : refs) {
-        auto& entry = out.createNestedObject();
-        entry[Name] = ref.get().name;
-        entry[Datetime] = format_next(ref.get().event_match);
+        root.beginObject();
+        root.field(Name, ref.get().name);
+        root.field(Datetime, format_next(ref.get().event_match));
+        root.end();
     }
 #endif
 
     for (auto& event : named_events) {
-        auto& entry = out.createNestedObject();
-        entry[Name] = event.name.c_str();
-        entry[Datetime] = format_named_event(event);
+        root.beginObject();
+        root.field(Name, event.name.c_str());
+        root.field(Datetime, format_named_event(event));
+        root.end();
     }
+    root.end();
 
     return true;
 }
@@ -1441,36 +1448,36 @@ bool get(ApiRequest& req, JsonObject& root) {
 
 namespace event {
 
-bool get(ApiRequest& req, JsonObject& root) {
+bool get(ApiRequest& req, espurna::json::Writer& root) {
     const auto name = req.wildcard(0);
     const auto fmt = api_format_named_event(name);
 
     if (fmt.length()) {
-        root[Datetime] = fmt;
+        root.field(Datetime, fmt);
         return true;
     }
 
     return false;
 }
 
-bool set(ApiRequest& req, JsonObject& root) {
+bool set(ApiRequest& req, espurna::json::Value root) {
     const auto datetime = root[Datetime];
-    if (!datetime.success() || !datetime.is<String>()) {
+    if (!datetime.isString()) {
         return false;
     }
 
     return api_update_named_event(
-        req.wildcard(0), datetime.as<String>());
+        req.wildcard(0), espurna::string(datetime.asString().c_str()));
 }
 
 } // namespace event
 
 void setup() {
-    apiRegister(F(MQTT_TOPIC_SCHEDULE), schedules::get, schedules::set);
-    apiRegister(F(MQTT_TOPIC_SCHEDULE "/+"), schedule::get, schedule::set);
+    apiRegister(MQTT_TOPIC_SCHEDULE, schedules::get, schedules::set);
+    apiRegister(MQTT_TOPIC_SCHEDULE "/+", schedule::get, schedule::set);
 
-    apiRegister(F(MQTT_TOPIC_NAMED_EVENT), events::get, nullptr);
-    apiRegister(F(MQTT_TOPIC_NAMED_EVENT "/+"), event::get, event::set);
+    apiRegister(MQTT_TOPIC_NAMED_EVENT, events::get, nullptr);
+    apiRegister(MQTT_TOPIC_NAMED_EVENT "/+", event::get, event::set);
 }
 
 } // namespace api
@@ -1515,35 +1522,34 @@ void setup() {
 #if WEB_SUPPORT
 namespace web {
 
-bool onKey(StringView key, const JsonVariant&) {
+bool onKey(StringView key, espurna::json::Value) {
     return key.startsWith(settings::Prefix);
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, settings::Prefix);
 #if SCHEDULER_SUN_SUPPORT
     wsPayloadModule(root, sun::Module);
 #endif
 
     for (const auto& pair : settings::Settings) {
-        root[pair.key()] = pair.value();
+        root.field(pair.key(), pair.value());
     }
 
     espurna::web::ws::EnumerableTypes types{root, STRING_VIEW("schTypes")};
     types(settings::internal::Types);
 }
 
-void onConnected(JsonObject& root){
+void onConnected(espurna::json::Writer& root){
     espurna::web::ws::EnumerableConfig config{root, STRING_VIEW("schConfig")};
     config.replacement(
         settings::internal::type,
-        [](JsonArray& out, size_t index) {
-            out.add(std::to_underlying(settings::type(index)));
+        [](espurna::json::Writer& out, size_t index) {
+            out.value(std::to_underlying(settings::type(index)));
         });
     config(STRING_VIEW("schedules"), settings::count(), settings::IndexedSettings);
 
-    auto& schedules = config.root();
-    schedules["max"] = build::max();
+    config.root().field(STRING_VIEW("max"), build::max());
 }
 
 void setup() {
@@ -1646,7 +1652,7 @@ void action(SplitView split) {
 } // namespace curtain
 #endif
 
-void parse_action(String action) {
+void parse_action(espurna::string action) {
     auto split = SplitView{ action };
     if (!split.next()) {
         return;
@@ -1684,7 +1690,7 @@ using terminal_stub::parse_action;
 
 #else
 
-void parse_action(String action) {
+void parse_action(espurna::string action) {
     static EphemeralPrint output;
     PrintString error(64);
 
@@ -1856,7 +1862,7 @@ void run(const datetime::Context& ctx, const Results& results) {
         const auto action = settings::action(result.index);
         DEBUG_MSG_P(PSTR("[SCH] Restoring #%zu => %s (%sm)\n"),
             result.index, action.c_str(),
-            String(static_cast<long>(result.offset.count()), 10).c_str());
+            espurna::string(static_cast<long>(result.offset.count()), 10).c_str());
         last_action(ctx, result.index);
         parse_action(action);
     }
@@ -1959,7 +1965,7 @@ bool Calendar::after(const datetime::Context&) {
 }
 
 struct Named : public Source {
-    explicit Named(String&& name) :
+    explicit Named(espurna::string&& name) :
         _name(std::move(name))
     {}
 
@@ -1980,7 +1986,7 @@ private:
         return event::is_valid(_time_point);
     }
 
-    String _name;
+    espurna::string _name;
     datetime::Clock::time_point _time_point{ event::DefaultTimePoint };
 };
 

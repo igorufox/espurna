@@ -15,7 +15,7 @@ using namespace espurna::sensor::module;
 
 ESPURNA_SENSOR_DRIVER(tmp3x, "tmp3xType|select|Type|35|35=TMP35,36=TMP36") {
     auto* sensor = new TMP3XSensor();
-    sensor->setType(getSetting(F("tmp3xType"), uint8_t{ TMP3X_TYPE }));
+    sensor->setType(getSetting("tmp3xType", uint8_t{ TMP3X_TYPE }));
     sensorAdd(sensor);
 }
 

@@ -13,7 +13,7 @@
 
 class SDS011Sensor : public BaseSensor {
     public:
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -38,13 +38,13 @@ class SDS011Sensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("SDS011");
+        espurna::string description() const override {
+            return "SDS011";
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
-            return String(SDS011_PORT, 10);
+        espurna::string address(unsigned char) const override {
+            return espurna::string(SDS011_PORT, 10);
         }
 
         // Type for slot # index
@@ -72,7 +72,7 @@ class SDS011Sensor : public BaseSensor {
         // ---------------------------------------------------------------------
 
         void _read() {
-            byte buffer;
+            uint8_t buffer;
             int value;
             int len = 0;
             int pm10_serial = 0;
@@ -109,14 +109,14 @@ class SDS011Sensor : public BaseSensor {
                     }
                 }
 
-                yield();
+                espurna::time::yield();
             }
 
         }
 
         double _p2dot5 = 0;
         double _p10 = 0;
-        Stream* _serial;
+        ::espurna::ByteStream* _serial;
 };
 
 #endif // SENSOR_SUPPORT && SDS011_SUPPORT

@@ -79,16 +79,16 @@ class PulseMeterSensor : public BaseEmonSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[24];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("PulseMeter @ GPIO(%hhu)"), _pin.pin());
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
-            return String(_pin);
+        espurna::string address(unsigned char) const override {
+            return espurna::string(_pin);
         }
 
         // Pre-read hook (usually to populate registers with up-to-date data)
@@ -191,7 +191,7 @@ class PulseMeterSensor : public BaseEmonSensor {
         TimeSource::time_point _previous_time;
 
         InterruptablePin _pin;
-        int _interrupt_mode = FALLING;
+        int _interrupt_mode = espurna::pins::Falling;
 };
 
 #ifndef __cpp_inline_variables

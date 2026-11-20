@@ -13,18 +13,18 @@
 # flash format). The head identity is the first 16 bytes of the head's GNU build id (scripts/module_head.py), as on
 # every chip.
 #
-# The initial images: espurna-beken-tuya.uf2 (Tuya bootloader: LibreTiny's UF2 inputs of the build, written again
-# here) and espurna-beken-quectel.uf2 (scripts/beken_quectel_image.py: Quectel bootloader), first flash over UART and
+# The initial images: espurna-beken-tuya.uf2 (Tuya bootloader: the UF2 inputs of the build, scripts/beken_image.py,
+# written again here) and espurna-beken-quectel.uf2 (scripts/beken_quectel_image.py: Quectel bootloader), first flash over UART and
 # OTA. The module area is the OTA 'download' partition from its second sector (modules_beken.cpp findArea()), not
 # behind the head: the modules file of the modules on by default (module_initial_image.py) is a run of its own in both
-# UF2s, `<file>+0x1000=flasher:download`. The flasher (ltchiptool) writes it there; an OTA with the same UF2 skips it
-# (a block of the flasher scheme only, uf2ota ignores it for the device scheme) and puts its RBL into 'download'
-# as always. The install image espurna-beken.ota: both heads and every package (scripts/module_ota.py).
+# UF2s, `<file>+0x1000=flasher:download`. The flasher writes it there; an OTA with the same UF2 skips it (a block of
+# the flasher scheme only, the board's UF2 OTA ignores it for the device scheme, ota_beken.cpp) and puts its RBL into
+# 'download' as always. The install image espurna-beken.ota: both heads and every package (scripts/module_ota.py).
 
+import json
 import os
 import re
 import struct
-import subprocess
 import sys
 from datetime import datetime
 
@@ -34,6 +34,8 @@ Import("env", "projenv")
 env = globals()["env"]
 
 sys.path.insert(0, os.path.join(env.subst("$PROJECT_DIR"), "scripts"))
+import beken_image  # noqa: E402
+import beken_quectel_image  # noqa: E402
 import module_initial_image  # noqa: E402
 import module_link  # noqa: E402
 from release_image import copy, name as release_name, path as release_path, write  # noqa: E402
@@ -68,10 +70,10 @@ def arm_offset(data, at):
 class BekenLinker(module_link.Linker):
     prefix = "arm-none-eabi-"
     container_name = release_name("beken", "modules")
-    # LibreTiny's names of the head's link; its link (ltchiptool link2bin) writes the ELF and the images, then the UF2
-    head_elf_name = "raw_firmware.elf"
-    head_bin_name = "raw_firmware.bin"
-    head_map_name = "raw_firmware.map"
+    # the head's link (igorufox/platform-beken), its images and the UF2: scripts/beken_image.py
+    head_elf_name = "firmware.elf"
+    head_bin_name = "firmware.bin"
+    head_map_name = "firmware.map"
     head_outputs = ("${PROGNAME}.elf", "firmware.uf2")
     link_script = "beken_module.ld"
     bases = (("FLASH", FLASH_A, 0x00280000, "flash"),
@@ -193,23 +195,21 @@ class BekenLinker(module_link.Linker):
             print(f"  initial: the head + {', '.join(sorted(on))} at 'download' + 0x{AREA_IN_DOWNLOAD:X} "
                   f"({len(modules)} bytes)")
 
-        # Tuya: LibreTiny's UF2 inputs of this build (its firmware.uf2) and the modules file
+        # Tuya: the UF2 inputs of this build (its firmware.uf2, scripts/beken_image.py) and the modules file
         if extra:
             env = self.env
             inputs = [env.subst(arg) for arg in env["UF2OTA"] if arg]
             now = datetime.now()
-            subprocess.run([env.subst("$LTPYTHONEXE"), "-m", "ltchiptool", "uf2", "write", "--output", tuya,
-                            "--board", env.subst("$BOARD_JSON"), "--lt-version", env.PioPlatform().version,
-                            "--fw", f"espurna:{now:%y.%m.%d}", "--date", str(int(now.timestamp())), "--legacy"]
-                           + inputs + extra, check=True)
+            with open(os.path.join(folder, "board.json"), encoding="utf-8") as f:
+                board = json.load(f)
+            beken_image.write_uf2(tuya, board, inputs + extra, f"espurna:{now:%y.%m.%d}", int(now.timestamp()))
         else:
             copy(os.path.join(folder, "firmware.uf2"), tuya)
 
-        # Quectel: the same head for the Quectel bootloader, ltchiptool's python (LibreTiny's venv)
+        # Quectel: the same head for the Quectel bootloader
         project = self.env.subst("$PROJECT_DIR")
         quectel = os.path.join(project, self.env.GetProjectOption("custom_quectel_board", "boards_beken/xh-cb2s-bk7231m.json"))
-        subprocess.run([self.env.subst("$LTPYTHONEXE"), os.path.join(project, "scripts", "beken_quectel_image.py"),
-                        folder, os.path.join(folder, "board.json"), quectel] + extra, check=True)
+        beken_quectel_image.build(folder, os.path.join(folder, "board.json"), quectel, extra)
         return [tuya, release_path(folder, "beken", "quectel", ext=".uf2")]
 
     def ota_heads(self, ctx):

@@ -166,9 +166,10 @@ struct PackageHeader {
     uint32_t link_iram;
     uint32_t crc32;         // over everything after this header (maps + chunks)
     uint32_t links;         // its links to the modules it needs (the branch lists, LinkWord / LinkBranch)
+    uint32_t link_pool;     // placeholder base of its pool code (the chip's fixed pool, PoolWord words), 0 - none
 };
 
-static_assert(sizeof(PackageHeader) == 72, "");
+static_assert(sizeof(PackageHeader) == 76, "");
 
 static constexpr size_t ChunkSize { 4096 };
 static constexpr size_t MapSize { ChunkSize / 4 / 4 };
@@ -266,7 +267,7 @@ void headSetupRoutes();
 
 // the identity of the head (its GNU build id, 32 hex digits): what /modules and `info` call "md5", what a module
 // carries of the head it is linked against
-String modulesHeadId();
+espurna::string modulesHeadId();
 // the modules off at the next boot with this reason (the off mark of the directory; nothing when none is installed or
 // the mark is set already): leaving the unstable mode (system.cpp) must not start the modules that put it there
 bool modulesOffMark(const char* reason);

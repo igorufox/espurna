@@ -5,7 +5,7 @@ LLMNR MODULE
 Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 Link-Local Multicast Name Resolution (RFC 4795): Windows asks 224.0.0.252:5355 for a name, the board answers the A
-record of its hostname. One responder on every chip, on lwIP (EspurnaUdp of lib/DNSServer, as the captive portal's
+record of its hostname. One responder on every chip, on lwIP (libs/udp.h, as the captive portal's
 DNS); the ESP8266 core's ESP8266LLMNR is gone, ESP32 and Beken never had one
 
 */
@@ -16,7 +16,7 @@ DNS); the ESP8266 core's ESP8266LLMNR is gone, ESP32 and Beken never had one
 
 #include "llmnr.h"
 
-#include <EspurnaUdp.h>
+#include "libs/udp.h"
 
 #include <cstring>
 
@@ -29,8 +29,8 @@ constexpr uint16_t TypeAny { 255 };
 constexpr uint16_t ClassIn { 1 };
 constexpr uint32_t Ttl { 30 };
 
-EspurnaUdp udp;
-String hostname;
+espurna::udp::Socket udp;
+espurna::string hostname;
 
 uint16_t be16(const uint8_t* at) {
     return static_cast<uint16_t>((at[0] << 8) | at[1]);
@@ -69,13 +69,13 @@ bool asks(const uint8_t* data, size_t len, size_t& end) {
     return ((type == TypeA) || (type == TypeAny)) && (klass == ClassIn);
 }
 
-void answer(EspurnaUdpPacket& packet, size_t question_end) {
-    const auto ip = WiFi.localIP();
+void answer(espurna::udp::Packet& packet, size_t question_end) {
+    const auto ip = wifiStaIp();
     if (!ip[0]) {
         return;
     }
 
-    EspurnaUdpMessage message(question_end + 16);
+    espurna::udp::Message message(question_end + 16);
     if (!message) {
         return;
     }
@@ -107,14 +107,14 @@ void llmnrSetup() {
     llmnr::hostname = systemHostname();
 
     // lwIP's context: answered right there
-    llmnr::udp.onPacket([](EspurnaUdpPacket& packet) {
+    llmnr::udp.onPacket([](espurna::udp::Packet& packet) {
         size_t end;
         if (llmnr::asks(packet.data(), packet.length(), end)) {
             llmnr::answer(packet, end);
         }
     });
 
-    if (!llmnr::udp.listen(llmnr::Port) || !llmnr::udp.joinGroup(IPAddress(224, 0, 0, 252))) {
+    if (!llmnr::udp.listen(llmnr::Port) || !llmnr::udp.joinGroup(espurna::udp::ip4(224, 0, 0, 252))) {
         DEBUG_MSG_P(PSTR("[LLMNR] Cannot listen on %u\n"), llmnr::Port);
         return;
     }

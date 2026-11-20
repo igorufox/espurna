@@ -188,7 +188,7 @@ Led::Led(unsigned char pin, bool inverse, LedMode mode) :
 }
 
 void Led::initial_status() {
-    pinMode(_pin, OUTPUT);
+    espurna::pins::mode(_pin, espurna::pins::Output);
     status(false);
 }
 
@@ -210,7 +210,7 @@ bool Led::toggle() {
 
 bool Led::state(bool next) {
     _state = next;
-    digitalWrite(_pin, _inverse ? !next : next);
+    espurna::pins::write(_pin, _inverse ? !next : next);
     return next;
 }
 
@@ -293,15 +293,15 @@ using led::settings::options::LedModeOptions;
 } // namespace
 
 template <>
-LedMode convert(const String& value) {
+LedMode convert(const espurna::string& value) {
     return convert(LedModeOptions, value, LedMode::Manual);
 }
 
-String serialize(LedMode mode) {
+espurna::string serialize(LedMode mode) {
     return serialize(LedModeOptions, mode);
 }
 
-String serialize(const led::Pattern& pattern) {
+espurna::string serialize(const led::Pattern& pattern) {
     return pattern.toString();
 }
 
@@ -523,7 +523,7 @@ namespace query {
 namespace internal {
 
 #define ID_VALUE(NAME)\
-String NAME (size_t id) {\
+espurna::string NAME (size_t id) {\
     return espurna::settings::internal::serialize(\
         ::espurna::led::settings::NAME(id));\
 }
@@ -928,24 +928,24 @@ void callback(unsigned int type, StringView topic, StringView payload) {
 #if WEB_SUPPORT
 namespace web {
 
-bool onKeyCheck(StringView key, const JsonVariant&) {
+bool onKeyCheck(StringView key, espurna::json::Value) {
     return settings::query::checkSamePrefix(key);
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, settings::Prefix);
 
     espurna::web::ws::EnumerableTypes types{root, STRING_VIEW("ledModes")};
     types(espurna::led::settings::options::LedModeOptions);
 }
 
-void onConnected(JsonObject& root) {
+void onConnected(espurna::json::Writer& root) {
     if (count()) {
         espurna::web::ws::EnumerableConfig config{root, STRING_VIEW("ledConfig")};
         config.replacement(
             settings::query::internal::mode,
-            [](JsonArray& out, size_t index) {
-                out.add(std::to_underlying(settings::mode(index)));
+            [](espurna::json::Writer& out, size_t index) {
+                out.value(std::to_underlying(settings::mode(index)));
             });
         config(STRING_VIEW("leds"), ::espurna::led::count(), settings::query::IndexedSettings);
     }
@@ -963,7 +963,7 @@ void led(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() > 1) {
         size_t id;
         if (!tryParseId(ctx.argv[1], ledCount(), id)) {
-            terminalError(ctx, F("Invalid ledID"));
+            terminalError(ctx, "Invalid ledID");
             return;
         }
 

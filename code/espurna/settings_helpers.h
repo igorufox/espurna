@@ -9,7 +9,6 @@ Copyright (C) 2020-2023 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <memory>
 #include <type_traits>
@@ -30,15 +29,11 @@ public:
         _key(key)
     {}
 
-    Key(const __FlashStringHelper* key) :
+    Key(const espurna::string& key) :
         _key(key)
     {}
 
-    Key(const String& key) :
-        _key(key)
-    {}
-
-    Key(String&& key) :
+    Key(espurna::string&& key) :
         _key(std::move(key))
     {}
 
@@ -46,13 +41,13 @@ public:
         Key(key.toString())
     {}
 
-    Key(const String& prefix, size_t index) :
+    Key(const espurna::string& prefix, size_t index) :
         _key(prefix)
     {
         _key += index;
     }
 
-    Key(String&& prefix, size_t index) :
+    Key(espurna::string&& prefix, size_t index) :
         _key(std::move(prefix))
     {
         _key += index;
@@ -68,10 +63,6 @@ public:
         _key += index;
     }
 
-    Key(const __FlashStringHelper* prefix, size_t index) :
-        Key(reinterpret_cast<const char*>(prefix), index)
-    {}
-
     const char* c_str() const {
         return _key.c_str();
     }
@@ -85,15 +76,15 @@ public:
         return _key == other;
     }
 
-    const String& value() const {
+    const espurna::string& value() const {
         return _key;
     }
 
-    explicit operator String() const & {
+    explicit operator espurna::string() const & {
         return _key;
     }
 
-    explicit operator String() && {
+    explicit operator espurna::string() && {
         return std::move(_key);
     }
 
@@ -102,7 +93,7 @@ public:
     }
 
 private:
-    String _key;
+    espurna::string _key;
 };
 
 // 'optional' type for a byte range (...from the settings storage)
@@ -111,12 +102,12 @@ struct ValueResult {
     ValueResult(const ValueResult&) = default;
     ValueResult(ValueResult&&) = default;
 
-    explicit ValueResult(const String& value) :
+    explicit ValueResult(const espurna::string& value) :
         _value(value),
         _result(true)
     {}
 
-    explicit ValueResult(String&& value) :
+    explicit ValueResult(espurna::string&& value) :
         _value(std::move(value)),
         _result(true)
     {}
@@ -135,7 +126,7 @@ struct ValueResult {
         return _result;
     }
 
-    String get() && {
+    espurna::string get() && {
         auto moved = std::move(_value);
         _result = false;
         return moved;
@@ -145,7 +136,7 @@ struct ValueResult {
         return _value;
     }
 
-    const String& ref() const {
+    const espurna::string& ref() const {
         return _value;
     }
 
@@ -158,7 +149,7 @@ struct ValueResult {
     }
 
 private:
-    String _value;
+    espurna::string _value;
     bool _result { false };
 };
 
@@ -223,7 +214,7 @@ private:
 namespace options {
 
 struct EnumerationNumericHelper {
-    static bool check(const String&);
+    static bool check(const espurna::string&);
 };
 
 template <typename Value>
@@ -239,9 +230,9 @@ struct alignas(8) Enumeration {
     static_assert((alignof(StorageType) % 4) == 0, "");
 
     struct Numeric {
-        using Convert = UnderlyingType(*)(const String&);
+        using Convert = UnderlyingType(*)(const espurna::string&);
 
-        bool check(const String& value, Convert convert) {
+        bool check(const espurna::string& value, Convert convert) {
             _checked = false;
 
             if (EnumerationNumericHelper::check(value)) {
@@ -356,7 +347,7 @@ struct Result;
 
 // single key variant, exact match of the provided string
 struct alignas(8) Setting {
-    using ValueFunc = String(*)();
+    using ValueFunc = espurna::string(*)();
 
     Setting() = delete;
     constexpr Setting(StringView key, ValueFunc func) noexcept :
@@ -368,11 +359,11 @@ struct alignas(8) Setting {
         return _key;
     }
 
-    String value() const {
+    espurna::string value() const {
         return _func();
     }
 
-    bool operator==(const String& key) const {
+    bool operator==(const espurna::string& key) const {
         return _key == key;
     }
 
@@ -388,7 +379,7 @@ private:
 // 'indexed' variant, for a group of objects under the same prefix with a numeric suffix
 // (suffix range depends on the external 'iota', only known at runtime)
 struct alignas(8) IndexedSetting {
-    using ValueFunc = String(*)(size_t);
+    using ValueFunc = espurna::string(*)(size_t);
 
     IndexedSetting() = delete;
     constexpr IndexedSetting(StringView prefix, ValueFunc func) noexcept :
@@ -396,7 +387,7 @@ struct alignas(8) IndexedSetting {
         _func(func)
     {}
 
-    String value(size_t id) const {
+    espurna::string value(size_t id) const {
         return _func(id);
     }
 
@@ -422,12 +413,12 @@ struct Result {
 
     Result() = default;
 
-    explicit Result(const String& value) :
-        _value(std::make_unique<String>(value))
+    explicit Result(const espurna::string& value) :
+        _value(std::make_unique<espurna::string>(value))
     {}
 
-    explicit Result(String&& value) :
-        _value(std::make_unique<String>(std::move(value)))
+    explicit Result(espurna::string&& value) :
+        _value(std::make_unique<espurna::string>(std::move(value)))
     {}
 
     explicit Result(const Setting* setting) :
@@ -447,7 +438,7 @@ struct Result {
         return ok();
     }
 
-    String value() const;
+    espurna::string value() const;
 
     const void* pointer() const {
         return _ptr;
@@ -457,7 +448,7 @@ private:
     const void* _ptr { nullptr };
     size_t _index { IndexMax };
 
-    std::unique_ptr<String> _value;
+    std::unique_ptr<espurna::string> _value;
 };
 
 Result findFrom(const Setting* begin, const Setting* end, StringView key);
@@ -467,10 +458,10 @@ inline Result findFrom(const T& settings, StringView key) {
     return findFrom(std::begin(settings), std::end(settings), key);
 }
 
-String findValueFrom(const Setting* begin, const Setting* end, StringView key);
+espurna::string findValueFrom(const Setting* begin, const Setting* end, StringView key);
 
 template <typename T>
-inline String findValueFrom(const T& settings, StringView key) {
+inline espurna::string findValueFrom(const T& settings, StringView key) {
     return findValueFrom(std::begin(settings), std::end(settings), key);
 }
 
@@ -486,15 +477,15 @@ inline Result findFrom(size_t size, const T& settings, StringView key) {
     return findFrom(Iota{size}, settings, key);
 }
 
-String findValueFrom(Iota iota, const IndexedSetting* begin, const IndexedSetting* end, StringView key);
+espurna::string findValueFrom(Iota iota, const IndexedSetting* begin, const IndexedSetting* end, StringView key);
 
 template <typename T>
-inline String findValueFrom(Iota iota, const T& settings, StringView key) {
+inline espurna::string findValueFrom(Iota iota, const T& settings, StringView key) {
     return findValueFrom(iota, std::begin(settings), std::end(settings), key);
 }
 
 template <typename T>
-inline String findValueFrom(size_t size, const T& settings, StringView key) {
+inline espurna::string findValueFrom(size_t size, const T& settings, StringView key) {
     return findValueFrom(Iota{size}, settings, key);
 }
 

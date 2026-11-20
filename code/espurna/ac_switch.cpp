@@ -59,24 +59,24 @@ AcSwitch::AcSwitch(BasePinPtr&& pin, Config config) :
     _frequency(config.frequency);
 
     // Optocoupler output is usually open-collector
-    // (EventEmitter re-applies the configured pin mode right after this, see pinMode())
-    pinMode(INPUT_PULLUP);
-    _window_start = micros();
+    // (EventEmitter re-applies the configured pin mode right after this, see espurna::pins::mode())
+    pinMode(espurna::pins::InputPullup);
+    _window_start = espurna::time::us();
     _segment_start = _window_start;
     _tracked_level = _level();
-    _last_debug = millis();
+    _last_debug = espurna::time::ms();
     _attach();
 
     // Initial state is the baseline. Sample it right away, so the button does not report
     // the switch position at boot as an event
     if (_attached) {
-        delay(std::min(_timeout_ms, InitialWindowMax));
+        espurna::time::sleep(std::min(_timeout_ms, InitialWindowMax));
 
         const auto window = _take_window();
         _state = _on(window);
         _candidate_state = _state;
         _latch = 1;
-        _last_check = millis();
+        _last_check = espurna::time::ms();
 
         if (_debug) {
             DEBUG_MSG_P(PSTR("[AC] Pin %u: initial state %s (count: %lu, min: %lu, low: %lu%%, min: %lu%%)\n"),
@@ -95,7 +95,7 @@ void AcSwitch::_attach() {
     }
 
     owners[_pin] = this;
-    isr::attach(_pin, _isr_static, this, CHANGE);
+    isr::attach(_pin, _isr_static, this, espurna::pins::Change);
     _attached = true;
 }
 
@@ -104,7 +104,7 @@ void AcSwitch::_detach() {
         return;
     }
 
-    detachInterrupt(_pin);
+    espurna::pins::detach(_pin);
     isr::Lock::sync(_lock);
 
     if ((_pin < AcSwitchPins) && (owners[_pin] == this)) {
@@ -125,7 +125,7 @@ unsigned char AcSwitch::pin() const {
 // Keep the internal pull-up unless something else was explicitly requested
 void AcSwitch::pinMode(int8_t mode) {
     if (_base) {
-        _base->pinMode((mode == INPUT) ? INPUT_PULLUP : mode);
+        _base->pinMode((mode == espurna::pins::Input) ? espurna::pins::InputPullup : mode);
     }
 }
 
@@ -135,7 +135,7 @@ void AcSwitch::digitalWrite(int8_t val) {
     }
 }
 
-// CHANGE interrupt sees both edges, but their spacing depends on the circuit:
+// espurna::pins::Change interrupt sees both edges, but their spacing depends on the circuit:
 // - full-wave (bridge / anti-parallel LEDs): short pulse at every zero crossing,
 //   same-direction edges are 1/(2f) apart (10ms @ 50Hz, 8.33ms @ 60Hz)
 // - half-wave (single LED): line is active for (roughly) a half of every cycle, and the
@@ -170,13 +170,13 @@ void AcSwitch::configure(Config config) {
         _frequency(config.frequency);
         _pulses = 0;
         _low_us = 0;
-        _window_start = micros();
+        _window_start = espurna::time::us();
     }
 
     _debug = config.debug;
     _candidate_state = _state;
     _latch = 0;
-    _last_check = millis();
+    _last_check = espurna::time::ms();
 }
 
 // Direct register read, ISR must not call anything in flash
@@ -191,16 +191,16 @@ AcSwitch::Window AcSwitch::_take_window() {
 
     {
         isr::Lock::Guard guard(_lock);
-        // the time under the lock: an edge between micros() and the lock moved the segment start past `now`, and
+        // the time under the lock: an edge between espurna::time::us() and the lock moved the segment start past `now`, and
         // `now - since` wrapped into a duty above 100 % (review 8.6)
-        const unsigned long now = micros();
+        const unsigned long now = espurna::time::us();
         count = _pulses;
         _pulses = 0;
 
         low = _low_us;
         _low_us = 0;
 
-        // LOW segment that is still going on belongs to this window as well,
+        // false segment that is still going on belongs to this window as well,
         // the ISR only adds the part after the new window start
         if (!_tracked_level) {
             const unsigned long since =
@@ -258,7 +258,7 @@ void AcSwitch::_debug_stats(unsigned long now) {
         _max_low = 0;
     }
 
-    // LOW share of the whole period, plus the shortest and the longest LOW pulse
+    // false share of the whole period, plus the shortest and the longest false pulse
     const unsigned long elapsed = now - _last_debug;
     const unsigned long low = elapsed ? (d_low / 10ul) / elapsed : 0;
 
@@ -271,7 +271,7 @@ void AcSwitch::_debug_stats(unsigned long now) {
 }
 
 int AcSwitch::digitalRead() {
-    unsigned long now = millis();
+    unsigned long now = espurna::time::ms();
 
     if (now - _last_check >= _timeout_ms) {
         const auto window = _take_window();
@@ -303,9 +303,9 @@ int AcSwitch::digitalRead() {
         _last_check = now;
     }
 
-    // Return LOW when AC is detected (active) and HIGH when it is not.
+    // Return false when AC is detected (active) and true when it is not.
     // This matches the behavior of a pushbutton pulling to GND.
-    return _state ? LOW : HIGH;
+    return _state ? false : true;
 }
 
 void IRAM_ATTR AcSwitch::_isr_static(void* arg) {
@@ -313,7 +313,7 @@ void IRAM_ATTR AcSwitch::_isr_static(void* arg) {
 }
 
 void IRAM_ATTR AcSwitch::_isr() {
-    const unsigned long now = micros();
+    const unsigned long now = espurna::time::us();
 
     isr::Lock::IsrGuard guard(_lock);
 
@@ -327,7 +327,7 @@ void IRAM_ATTR AcSwitch::_isr() {
     // (glitch shorter than the interrupt latency), the segment simply goes on
     const bool level = _level();
     if (level != _tracked_level) {
-        // Pin is HIGH again, the segment that just ended was LOW (active)
+        // Pin is true again, the segment that just ended was false (active)
         if (level) {
             const unsigned long width = now - _segment_start;
             const unsigned long since =

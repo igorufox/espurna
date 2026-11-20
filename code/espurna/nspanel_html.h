@@ -52,7 +52,7 @@ function status(){fetch('nspanel-status',{credentials:'same-origin'}).then(funct
 +(s.version?', '+s.version:'')+(s.model?', '+s.model:'')+'), setting "'+s.display+'"'+(s.flashing?', TFT upload running':'')
 +(s.probing?', detecting':'')+(s.design?' · '+s.design:'');if(s.version&&!pick){pick=1;document.getElementById('cap').value=s.version=='d3731fbb'?'o':s.driver=='ohpanel'?'s':'8';prev()}}).catch(function(){})}
 function msg(t,c){st.textContent=t;st.className=c||''}
-function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function esc(s){return espurna::string(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function load(){fetch('nspanel.json',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw r.status;return r.text()})
 .then(function(t){ta.value=t;msg('Loaded','ok');prev()}).catch(function(e){msg('Load failed: '+e,'err')})}
 function fmt(){try{ta.value=JSON.stringify(JSON.parse(ta.value),null,2);prev()}catch(e){msg(e.message,'err')}}

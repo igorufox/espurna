@@ -31,7 +31,7 @@ class T6613Sensor : public BaseSensor {
         using TimeSource = espurna::time::CoreClock;
         static constexpr auto Timeout = espurna::duration::Milliseconds(1000);
 
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -56,8 +56,8 @@ class T6613Sensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("T6613");
+        espurna::string description() const override {
+            return "T6613";
         }
 
         // Type for slot # index
@@ -111,7 +111,7 @@ class T6613Sensor : public BaseSensor {
                     result.error = SENSOR_ERROR_TIMEOUT;
                     return result;
                 }
-                yield();
+                espurna::time::yield();
             }
 
             _serial->setTimeout(Timeout.count());
@@ -147,7 +147,7 @@ class T6613Sensor : public BaseSensor {
         }
 
         double _co2 = 0;
-        Stream* _serial { nullptr };
+        ::espurna::ByteStream* _serial { nullptr };
 
 };
 

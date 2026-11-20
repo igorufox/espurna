@@ -67,7 +67,7 @@ class AnimFountain : public Anim {
             }
         }
 
-        bool Run(Color* leds, byte* seq) {
+        bool Run(Color* leds, uint8_t* seq) {
             if (done)
                 return false;
 
@@ -105,7 +105,7 @@ class AnimFountain : public Anim {
         }
 
         // Decide that fountain have ehough space if seq of len before it is empty
-        bool HaveEnoughSpace(byte* seq) {
+        bool HaveEnoughSpace(uint8_t* seq) {
             for (auto i = 0; i < len; ++i) {
                 if (seq[start + i] != 0 && seq[start - i] != 0) {
                     // DEBUG_MSG_P(PSTR("[GARLAND] Fountain chaven't enouhg space to move.\n"));

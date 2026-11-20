@@ -1,14 +1,14 @@
 /*
 
-ADC, esp8266 part (ref. adc_driver.h)
+ADC, ESP8266 on ESP8266_RTOS_SDK (ref. adc_driver.h)
 
-One 10 bit ADC on the TOUT pad (A0), 0..1V. Or the supply voltage, when the build sets ADC_MODE(ADC_VCC)
+The one TOUT pad (A0), 10 bit, 0..1 V, espurna::pins::analog() of the layer (the SDK's adc_read()). No supply voltage measurement
+(the SDK measures either TOUT or VDD33, set at build time)
 
 */
 
 #pragma once
 
-#include <Arduino.h>
 
 namespace espurna {
 namespace adc {
@@ -25,16 +25,16 @@ inline double millivolts(uint8_t, uint32_t raw) {
     return linear_millivolts(raw, bits());
 }
 
-inline String address(uint8_t) {
-    return F("A0");
+inline espurna::string address(uint8_t) {
+    return "A0";
 }
 
-inline String pad(uint8_t) {
-    return F("TOUT");
+inline espurna::string pad(uint8_t) {
+    return "TOUT";
 }
 
 inline uint16_t vcc() {
-    return ESP.getVcc();
+    return 0;
 }
 
 } // namespace chip

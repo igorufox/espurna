@@ -12,14 +12,12 @@ Chip facts are in arch/<chip>/system_<chip>.cpp, common part of every chip is in
 #include "rtcmem.h"
 #include "storage_eeprom.h"
 
-#if SAFEBOOT_SUPPORT
-#include "safeboot_esp32.h"
-#endif
-
 #include <algorithm>
 #include <cstdlib>
 #include <new>
 #include <vector>
+
+#include <lwip/tcpip.h>
 
 // -----------------------------------------------------------------------------
 // TASK PRIMITIVES (ref. espurna_tasks.h)
@@ -28,32 +26,7 @@ Chip facts are in arch/<chip>/system_<chip>.cpp, common part of every chip is in
 namespace espurna {
 namespace system {
 
-// The chip's part: ESP32 has two cores, a spinlock keeps the other one out (and masks the interrupts of this one),
-// the BK72xx has one core and masking its interrupts is enough. Both nest
-#if defined(ESP32)
-namespace {
-
-portMUX_TYPE critical_spinlock = portMUX_INITIALIZER_UNLOCKED;
-
-} // namespace
-
-uint32_t criticalEnter() {
-    portENTER_CRITICAL(&critical_spinlock);
-    return 0;
-}
-
-void criticalExit(uint32_t) {
-    portEXIT_CRITICAL(&critical_spinlock);
-}
-#else
-uint32_t criticalEnter() {
-    return static_cast<uint32_t>(port_disable_interrupts_flag());
-}
-
-void criticalExit(uint32_t state) {
-    port_enable_interrupts_flag(static_cast<int>(state));
-}
-#endif
+// criticalEnter() / criticalExit() are the chip's (arch/<chip>/system_<chip>.cpp)
 
 Mutex::~Mutex() {
     if (_handle) {
@@ -447,10 +420,165 @@ void registerPendingOutput(PendingOutput check) {
     }
 }
 
+// -----------------------------------------------------------------------------
+// LOOP STALL WATCHER (ref. system_chip.h)
+// -----------------------------------------------------------------------------
+
+namespace stall {
+namespace {
+
+#ifndef SYSTEM_LOOP_STALL
+#define SYSTEM_LOOP_STALL 60    // seconds without a loop() pass before the reset, 0 = off
+#endif
+
+constexpr uint32_t Seconds { SYSTEM_LOOP_STALL };
+
+// periods below this are restart() and its short reset, not a loop that should feed
+constexpr uint32_t PeriodMin { 3000 };
+// written that much before the watchdog fires (a sector erase and a few writes take well below it)
+constexpr uint32_t Margin { 1500 };
+constexpr uint32_t Interval { 250 };
+// bytes, the chip's record() and reset() run on it
+constexpr uint32_t StackBytes { 2048 };
+
+Shared<uint32_t> passes { 0 };
+volatile uint32_t watchdog_period { 0 };
+volatile TickType_t fed_at { 0 };
+
+// a record is there, cancel() it once the feeding comes back
+volatile bool recorded { false };
+
+// the watcher's last look (lateReport())
+volatile TickType_t watcher_at { 0 };
+
+// The task of lwIP must take a call now and then: a board on the network that answers nothing (the tcpip task lost in
+// broken scheduler lists, 11-18) while the loop still runs. A call every TcpipEvery, not taken for TcpipLate - reset
+constexpr uint32_t TcpipEvery { 10000 };
+constexpr uint32_t TcpipLate { 60000 };
+volatile TickType_t tcpip_taken_at { 0 };
+volatile bool tcpip_pending { false };
+TickType_t tcpip_posted_at { 0 };
+
+void tcpip_taken(void*) {
+    tcpip_taken_at = xTaskGetTickCount();
+    tcpip_pending = false;
+}
+
+// a marker in the report's callback field: the tcpip task, not a loop callback
+constexpr uint32_t TcpipStalled { 0x7C9D0001 };
+
+uint32_t ms(TickType_t ticks) {
+    return static_cast<uint32_t>(ticks) * portTICK_PERIOD_MS;
+}
+
+Report report(uint32_t since) {
+    return Report{
+        .callback = static_cast<uint32_t>(espurnaLoopCurrent()),
+        .since = since,
+        .period = watchdog_period,
+        .uptime = static_cast<uint32_t>(espurna::time::ms()),
+    };
+}
+
+void task(void*) {
+    auto seen = passes.load();
+    auto passed_at = xTaskGetTickCount();
+
+    tcpip_taken_at = passed_at;
+    tcpip_posted_at = passed_at;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(Interval));
+
+        const auto now = xTaskGetTickCount();
+        watcher_at = now;
+        ++beat;
+
+        // the tcpip task: a call now and then, it must be taken
+        if (!tcpip_pending && (ms(now - tcpip_posted_at) >= TcpipEvery)) {
+            tcpip_posted_at = now;
+            if (tcpip_try_callback(tcpip_taken, nullptr) == ERR_OK) {
+                tcpip_pending = true;
+            }
+        }
+
+        if (tcpip_pending && (ms(now - tcpip_taken_at) >= TcpipLate)) {
+            auto out = report(ms(now - tcpip_taken_at));
+            out.callback = TcpipStalled;
+            chip::reset(out);
+        }
+
+        const auto current = passes.load();
+        if (current != seen) {
+            seen = current;
+            passed_at = now;
+        }
+
+        const auto since_pass = ms(now - passed_at);
+        if (Seconds && (since_pass >= (Seconds * 1000))) {
+            chip::reset(report(since_pass));
+        }
+
+        const auto limit = watchdog_period;
+        const auto since_fed = ms(now - fed_at);
+        if ((limit >= PeriodMin) && ((since_fed + Margin) >= limit)) {
+            if (!recorded) {
+                recorded = true;
+                chip::record(report(since_fed));
+            }
+        } else if (recorded) {
+            recorded = false;
+            chip::cancel();
+        }
+    }
+}
+
+void start() {
+    fed_at = xTaskGetTickCount();
+    watcher_at = fed_at;
+    xTaskCreate(task, "stall", StackBytes / sizeof(StackType_t), nullptr, configMAX_PRIORITIES - 1, nullptr);
+}
+
+} // namespace
+
+void pass() {
+    passes.fetch_add(1);
+    fed();
+}
+
+void fed() {
+    fed_at = xTaskGetTickCount();
+}
+
+volatile uint32_t beat { 0 };
+
+Report lateReport() {
+    return Report{
+        .callback = static_cast<uint32_t>(espurnaLoopCurrent()),
+        .since = ms(xTaskGetTickCountFromISR() - watcher_at),
+        .period = watchdog_period,
+        .uptime = static_cast<uint32_t>(ms(xTaskGetTickCountFromISR())),
+    };
+}
+
+void period(uint32_t value) {
+    fed_at = xTaskGetTickCount();
+    watchdog_period = value;
+}
+
+void snapshot() {
+    recorded = true;
+    chip::record(report(ms(xTaskGetTickCount() - fed_at)));
+}
+
+} // namespace stall
+
 namespace chip {
 
 void setup() {
+    // the chip reads the record of the previous boot first
     chip::sdk::setup();
+    stall::start();
 
     // Same as esp8266 soft WDT, reset when loop() gets stuck
     espurnaRegisterOnce([]() {
@@ -459,12 +587,12 @@ void setup() {
 }
 
 void loop() {
-    chip::sdk::loop();
+    stall::pass();
     timer::SystemTimer::dispatch();
 }
 
 [[noreturn]] void restart() {
-    // esp8266 ESP.restart() only takes effect once the SDK gets to run again, so network output
+    // esp8266 espurna::core::chip::restart() only takes effect once the SDK gets to run again, so network output
     // queued right before it (e.g. +OK of the RESET command) still has a chance to be sent.
     // The reboot here is immediate, give the network tasks a moment to flush when called from loop().
     // Output may also be stuck waiting for a TCP retransmission (reply sent right after the WS
@@ -482,11 +610,6 @@ void loop() {
 
     // settings are committed by the loop, make sure the last change is not lost
     eepromForceCommit();
-
-    // a restart ESPurna asked for: a new image runs well enough, the bootloader keeps it (ESP32 rollback)
-#if SAFEBOOT_SUPPORT
-    safebootConfirm();
-#endif
 
     chip::sdk::reboot();
 }
@@ -525,7 +648,7 @@ bool timers_in_delay { false };
 // sleep without the loop lock, the network tasks run meanwhile
 void sleep_unlocked(uint32_t ms) {
     const auto depth = lock_impl::mutex.release();
-    ::delay(ms);
+    ::espurna::core::chip::delay(ms);
     lock_impl::mutex.reacquire(depth);
 }
 
@@ -540,17 +663,18 @@ void delay_unlocked(uint32_t ms) {
     }
 
     chip::sdk::feed_loop_wdt();
+    stall::fed();
 
     // the same as the ESP8266: the timers that come due while the loop task waits in delay() run inside it, in the
     // loop task with the loop lock (the SDK runs os_timer callbacks there), not only between loop() passes
     constexpr uint32_t Slice { 5 };
-    const auto start = millis();
+    const auto start = espurna::time::ms();
     for (;;) {
         timers_in_delay = true;
         timer::SystemTimer::dispatch();
         timers_in_delay = false;
 
-        const uint32_t passed = millis() - start;
+        const uint32_t passed = espurna::time::ms() - start;
         if (passed >= ms) {
             break;
         }
@@ -558,30 +682,13 @@ void delay_unlocked(uint32_t ms) {
         sleep_unlocked(std::min<uint32_t>(Slice, ms - passed));
     }
 
-    // delay(0): give the other tasks the CPU, as before
+    // espurna::time::sleep(0): give the other tasks the CPU, as before
     if (!ms) {
         sleep_unlocked(0);
     }
 }
 
 } // namespace system
-} // namespace espurna
-
-// -----------------------------------------------------------------------------
-// SETTINGS HELPERS
-// -----------------------------------------------------------------------------
-
-namespace espurna {
-namespace settings {
-namespace internal {
-
-template <>
-StringSumHelper convert(const String& v) {
-    return StringSumHelper(v);
-}
-
-} // namespace internal
-} // namespace settings
 } // namespace espurna
 
 // -----------------------------------------------------------------------------
@@ -604,3 +711,20 @@ void* operator new[](size_t size, const std::nothrow_t&) noexcept {
     return malloc(size ? size : 1);
 }
 
+// the module guard found the loop stalled (modules.cpp): the chip's stall record, ref. stall::snapshot()
+void rtcmemStallSnapshot() {
+    espurna::system::stall::snapshot();
+}
+
+// a largest free block that is not tracked: the whole free heap counts as usable instead of 100% fragmentation
+HeapStats systemHeapStats() {
+    uint32_t free { 0 };
+    uint32_t block { 0 };
+    espurna::system::chip::sdk::heap(free, block);
+    if (!block) {
+        block = free;
+    }
+
+    const uint8_t frag = free ? (100 - (block * 100 / free)) : 0;
+    return {free, block, frag};
+}

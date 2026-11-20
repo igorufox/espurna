@@ -211,13 +211,12 @@ export function runningNames(status) {
 
 /**
  * How a head reaches the flash, by head name: the restart that frees the place of the head (`away` - what /modules
- * answers once there: 200 ESPurna without modules, 404 the ESP32 safeboot), where the head goes, the form field of it
- * ("" - the file as the body). The ESP32 runs from its only application slot, its safeboot writes the head
+ * answers once there: 200, ESPurna without modules), where the head goes, the form field of it ("" - the file as the
+ * body). No ESP32: its head is not replaced over the network (no safeboot, owner 2026-11-18)
  * @type {{[name: string]: HeadRoute}}
  */
 export const HEAD_ROUTES = {
     esp8266: {restart: "modules/off", away: 200, upload: "upgrade", field: "upgrade"},
-    esp32: {restart: "safeboot/switch", away: 404, upload: "upload", field: ""},
     beken: {restart: "modules/off", away: 200, upload: "upgrade", field: "upgrade"},
 };
 
@@ -295,7 +294,9 @@ function kb(size) {
 export async function installHead(root, head, step) {
     const route = HEAD_ROUTES[head.name];
     if (!route) {
-        throw new Error(`no install route for the head ${head.name}`);
+        throw new Error((head.name === "esp32")
+            ? "the ESP32 head is not replaced over the network"
+            : `no install route for the head ${head.name}`);
     }
 
     step(`Restarting for the new head (${head.name})...`);

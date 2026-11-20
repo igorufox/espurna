@@ -60,14 +60,14 @@ constexpr uint16_t CacheFlush { 0x8000 };
 constexpr uint16_t Unicast { 0x8000 };
 
 struct Service {
-    String owner;
-    String instance;
-    String type;      // "_matterc"
-    String proto;     // "_udp" / "_tcp"
+    espurna::string owner;
+    espurna::string instance;
+    espurna::string type;      // "_matterc"
+    espurna::string proto;     // "_udp" / "_tcp"
     uint16_t port { 0 };
     uint32_t ttl { 0 };  // 0 - the defaults
-    std::vector<String> txt;
-    std::vector<String> subtypes;
+    std::vector<espurna::string> txt;
+    std::vector<espurna::string> subtypes;
     bool stale { false };
     bool goodbye { false };  // removed: one goodbye, then dropped
 };
@@ -104,22 +104,22 @@ struct Addresses {
 // what the query of the loop collects (lwIP's context fills it under the lock)
 struct Found {
     struct Srv {
-        String instance;   // full name, lower case
-        String target;
+        espurna::string instance;   // full name, lower case
+        espurna::string target;
         uint16_t port;
     };
     struct A {
-        String name;
+        espurna::string name;
         uint32_t address;
     };
-    std::vector<String> instances;
+    std::vector<espurna::string> instances;
     std::vector<Srv> srv;
     std::vector<A> a;
 };
 
 struct State {
     MDNS_LOCK lock;
-    String hostname;
+    espurna::string hostname;
     std::vector<Service> services;
     Addresses addresses;
     udp_pcb* pcb { nullptr };
@@ -128,7 +128,7 @@ struct State {
     uint32_t announce_last { 0 };
     uint32_t refresh_last { 0 };
     bool query_active { false };
-    String query_type;    // "_mqtt._tcp.local", lower case
+    espurna::string query_type;    // "_mqtt._tcp.local", lower case
     Found found;
 };
 
@@ -137,12 +137,12 @@ State& state() {
     return out;
 }
 
-String lower(String value) {
+espurna::string lower(espurna::string value) {
     value.toLowerCase();
     return value;
 }
 
-bool equal(const String& lhs, const char* rhs) {
+bool equal(const espurna::string& lhs, const char* rhs) {
     return lhs.equalsIgnoreCase(rhs);
 }
 
@@ -189,7 +189,7 @@ public:
         _size += size;
     }
 
-    void label(const String& value) {
+    void label(const espurna::string& value) {
         const auto size = std::min<size_t>(value.length(), 63);
         u8(size);
         bytes(value.c_str(), size);
@@ -231,7 +231,7 @@ private:
 };
 
 // labels of a name in the packet (compression followed), lower case; false when it is broken
-bool readName(const uint8_t* data, size_t size, size_t& at, std::vector<String>& out) {
+bool readName(const uint8_t* data, size_t size, size_t& at, std::vector<espurna::string>& out) {
     out.clear();
     size_t cursor = at;
     bool jumped = false;
@@ -260,7 +260,7 @@ bool readName(const uint8_t* data, size_t size, size_t& at, std::vector<String>&
         if (cursor + 1 + length > size) {
             return false;
         }
-        String part;
+        espurna::string part;
         part.reserve(length);
         for (size_t index = 0; index < length; ++index) {
             part += static_cast<char>(tolower(data[cursor + 1 + index]));
@@ -272,8 +272,8 @@ bool readName(const uint8_t* data, size_t size, size_t& at, std::vector<String>&
     return false;
 }
 
-String joined(const std::vector<String>& labels) {
-    String out;
+espurna::string joined(const std::vector<espurna::string>& labels) {
+    espurna::string out;
     for (const auto& label : labels) {
         if (out.length()) {
             out += '.';
@@ -361,11 +361,11 @@ uint32_t ttlOf(const State& self, const Record& record, bool legacy, bool goodby
 }
 
 void writeInstance(Writer& out, const Service& service) {
-    out.name(service.instance, service.type, service.proto, String(F("local")));
+    out.name(service.instance, service.type, service.proto, espurna::string("local"));
 }
 
 void writeHost(Writer& out, const State& self) {
-    out.name(self.hostname, String(F("local")));
+    out.name(self.hostname, espurna::string("local"));
 }
 
 // one record; false when it has nothing (no address of that family)
@@ -376,18 +376,18 @@ bool writeRecord(Writer& out, const State& self, const Record& record, bool lega
 
     switch (record.kind) {
     case Kind::Enumeration: {
-        out.name(String(F("_services")), String(F("_dns-sd")), String(F("_udp")), String(F("local")));
+        out.name(espurna::string("_services"), espurna::string("_dns-sd"), espurna::string("_udp"), espurna::string("local"));
         out.u16(TypePtr);
         out.u16(ClassIn);
         out.u32(ttl);
         const auto at = out.begin_data();
-        out.name(service->type, service->proto, String(F("local")));
+        out.name(service->type, service->proto, espurna::string("local"));
         out.end_data(at);
         return true;
     }
 
     case Kind::TypePtr: {
-        out.name(service->type, service->proto, String(F("local")));
+        out.name(service->type, service->proto, espurna::string("local"));
         out.u16(TypePtr);
         out.u16(ClassIn);
         out.u32(ttl);
@@ -398,7 +398,7 @@ bool writeRecord(Writer& out, const State& self, const Record& record, bool lega
     }
 
     case Kind::SubtypePtr: {
-        out.name(service->subtypes[record.subtype], String(F("_sub")), service->type, service->proto, String(F("local")));
+        out.name(service->subtypes[record.subtype], espurna::string("_sub"), service->type, service->proto, espurna::string("local"));
         out.u16(TypePtr);
         out.u16(ClassIn);
         out.u32(ttl);
@@ -499,7 +499,7 @@ void serviceRecords(std::vector<Record>& answers, std::vector<Record>& additiona
 }
 
 // the answers to one question
-void answer(const State& self, const std::vector<String>& name, uint16_t type,
+void answer(const State& self, const std::vector<espurna::string>& name, uint16_t type,
     std::vector<Record>& answers, std::vector<Record>& additional)
 {
     const auto size = name.size();
@@ -700,7 +700,7 @@ void collect(State& self, const uint8_t* data, size_t size) {
     const uint16_t questions = (data[4] << 8) | data[5];
     const uint16_t records = ((data[6] << 8) | data[7]) + ((data[8] << 8) | data[9]) + ((data[10] << 8) | data[11]);
     size_t at = 12;
-    std::vector<String> name;
+    std::vector<espurna::string> name;
     for (uint16_t index = 0; index < questions; ++index) {
         if (!readName(data, size, at, name) || (at + 4 > size)) {
             return;
@@ -708,7 +708,7 @@ void collect(State& self, const uint8_t* data, size_t size) {
         at += 4;
     }
 
-    std::vector<String> target;
+    std::vector<espurna::string> target;
     for (uint16_t index = 0; index < records; ++index) {
         if (!readName(data, size, at, name) || (at + 10 > size)) {
             return;
@@ -783,7 +783,7 @@ void onRecv(void*, udp_pcb*, pbuf* buffer, const ip_addr_t* source, u16_t source
     size_t at = 12;
     size_t question_at = 0;
     size_t question_size = 0;
-    std::vector<String> name;
+    std::vector<espurna::string> name;
     for (uint16_t index = 0; index < questions; ++index) {
         const size_t begin = at;
         if (!readName(data.get(), size, at, name) || (at + 4 > size)) {
@@ -804,7 +804,7 @@ void onRecv(void*, udp_pcb*, pbuf* buffer, const ip_addr_t* source, u16_t source
         // and the heap with them (2026-11-15)
         {
             const auto full = joined(name);
-            if (full.indexOf(F("_matterc")) >= 0) {
+            if (full.indexOf("_matterc") >= 0) {
                 pairing = true;
                 MDNS_LOG("[MDNS] %s:%u asks %s type %u%s: %u answer(s)\n",
                     address_text(source).text, static_cast<unsigned>(source_port), full.c_str(),
@@ -840,8 +840,8 @@ void onRecv(void*, udp_pcb*, pbuf* buffer, const ip_addr_t* source, u16_t source
     // anyway is not what the stock responders (CHIP, IDF) do, and that hub never started the pairing (2026-11-16)
     if (!legacy) {
         const uint16_t known = (data[6] << 8) | data[7];
-        std::vector<String> owner;
-        std::vector<String> target;
+        std::vector<espurna::string> owner;
+        std::vector<espurna::string> target;
         for (uint16_t index = 0; index < known; ++index) {
             if (!readName(data.get(), size, at, owner) || (at + 10 > size)) {
                 break;
@@ -868,7 +868,7 @@ void onRecv(void*, udp_pcb*, pbuf* buffer, const ip_addr_t* source, u16_t source
                         return false;
                     }
                     const auto& service = self.services[record.service];
-                    String name;
+                    espurna::string name;
                     switch (record.kind) {
                     case Kind::TypePtr:
                         name = lower(service.type + '.' + service.proto + ".local");
@@ -1084,13 +1084,13 @@ void refresh() {
     if (changed && now.interface) {
         std::lock_guard<MDNS_LOCK> lock(self.lock);
         self.announce = Announcements;
-        self.announce_last = millis() - AnnounceInterval;
+        self.announce_last = espurna::time::ms() - AnnounceInterval;
     }
 }
 
 } // namespace
 
-bool begin(const String& hostname) {
+bool begin(const espurna::string& hostname) {
     auto& self = state();
     {
         std::lock_guard<MDNS_LOCK> lock(self.lock);
@@ -1188,11 +1188,11 @@ bool add(const char* owner, const char* instance, const char* type, bool tcp, ui
         service->proto = proto;
     }
 
-    std::vector<String> entries;
+    std::vector<espurna::string> entries;
     for (size_t index = 0; index < txt_count; ++index) {
         entries.push_back(txt[index]);
     }
-    std::vector<String> subs;
+    std::vector<espurna::string> subs;
     for (size_t index = 0; index < subtypes_count; ++index) {
         subs.push_back(subtypes[index]);
     }
@@ -1206,7 +1206,7 @@ bool add(const char* owner, const char* instance, const char* type, bool tcp, ui
     service->stale = false;
     if (changed) {
         self.announce = Announcements;
-        self.announce_last = millis() - AnnounceInterval;
+        self.announce_last = espurna::time::ms() - AnnounceInterval;
     }
 
     return true;
@@ -1225,7 +1225,7 @@ void commit(const char* owner) {
     }
     if (gone && !self.announce) {
         self.announce = 1;
-        self.announce_last = millis() - AnnounceInterval;
+        self.announce_last = espurna::time::ms() - AnnounceInterval;
     }
 }
 
@@ -1235,7 +1235,7 @@ bool query(const char* service, const char* protocol, uint32_t timeout, QueryCal
         return false;
     }
 
-    String type = lower(String('_') + service + F("._") + protocol + F(".local"));
+    espurna::string type = lower(espurna::string('_') + service + "._" + protocol + ".local");
     {
         std::lock_guard<MDNS_LOCK> lock(self.lock);
         self.query_active = true;
@@ -1252,7 +1252,7 @@ bool query(const char* service, const char* protocol, uint32_t timeout, QueryCal
     writer.u16(0);
     writer.u16(0);
     writer.u16(0);
-    writer.name(String('_') + service, String('_') + protocol, String(F("local")));
+    writer.name(espurna::string('_') + service, espurna::string('_') + protocol, espurna::string("local"));
     writer.u16(TypePtr);
     writer.u16(ClassIn | Unicast);
 
@@ -1267,9 +1267,9 @@ bool query(const char* service, const char* protocol, uint32_t timeout, QueryCal
         });
     }
 
-    const auto start = millis();
-    while (millis() - start < timeout) {
-        delay(10);
+    const auto start = espurna::time::ms();
+    while (espurna::time::ms() - start < timeout) {
+        espurna::time::sleep(10);
     }
 
     Found found;
@@ -1293,7 +1293,7 @@ bool query(const char* service, const char* protocol, uint32_t timeout, QueryCal
                 const auto* octet = reinterpret_cast<const uint8_t*>(&a.address);
                 char text[16];
                 snprintf(text, sizeof(text), "%u.%u.%u.%u", octet[0], octet[1], octet[2], octet[3]);
-                if (callback(String(text), srv.port)) {
+                if (callback(espurna::string(text), srv.port)) {
                     return true;
                 }
             }
@@ -1309,7 +1309,7 @@ void loop() {
         return;
     }
 
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (now - self.refresh_last >= RefreshInterval) {
         self.refresh_last = now;
         refresh();

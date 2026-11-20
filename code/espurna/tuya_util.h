@@ -148,15 +148,15 @@ public:
     {}
 
     explicit Discovery(uint32_t timeout) :
-        Discovery(millis(), timeout)
+        Discovery(espurna::time::ms(), timeout)
     {}
 
     explicit operator bool() const {
-        return (millis() - _start > _timeout);
+        return (espurna::time::ms() - _start > _timeout);
     }
 
     void feed() {
-        _start = millis();
+        _start = espurna::time::ms();
     }
 
     void add(Type type, uint8_t dp) {

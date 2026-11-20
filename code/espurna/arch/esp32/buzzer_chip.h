@@ -7,7 +7,7 @@ nspanel.cpp). ESP32: a LEDC channel of its own (pwm.cpp allocates them from 0)
 
 #pragma once
 
-#include <Arduino.h>
+#include "core_esp32.h"
 
 #include <cstdint>
 
@@ -18,11 +18,11 @@ namespace buzzer {
 constexpr uint8_t Channel { 15 };
 
 inline void setup(int pin, uint32_t frequency) {
-    ledcAttachChannel(pin, frequency, 8, Channel);
+    ::espurna::core::esp32::ledc_attach(static_cast<uint8_t>(pin), Channel, frequency, 8);
 }
 
 inline void duty(int, uint32_t value) {
-    ledcWriteChannel(Channel, value);
+    ::espurna::core::esp32::ledc_write(Channel, value);
 }
 
 } // namespace buzzer

@@ -1,6 +1,6 @@
 /*
 
-GPIO INTERRUPTS, LibreTiny part (ref. espurna_isr.h)
+GPIO INTERRUPTS, BK72xx part (ref. espurna_isr.h)
 
 Single core, but noInterrupts() is not implemented by the ARM968 port.
 
@@ -8,10 +8,10 @@ Single core, but noInterrupts() is not implemented by the ARM968 port.
 
 #pragma once
 
-#include <Arduino.h>
+#include <chip_sdk.h>
 
 // port_disable_interrupts_flag()
-#include "compat_beken.h"
+#include "compat_sdk.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -19,7 +19,8 @@ Single core, but noInterrupts() is not implemented by the ARM968 port.
 namespace espurna {
 namespace isr {
 
-constexpr size_t Pins { PINS_GPIO_MAX + 1 };
+// the GPIO numbers of the BK7231N, P0 .. P28
+constexpr size_t Pins { 29 };
 
 // any pin of the table
 inline bool attachable(uint8_t) {
@@ -27,11 +28,11 @@ inline bool attachable(uint8_t) {
 }
 
 inline void attach(uint8_t pin, void (*handler)(void*), void* arg, int mode) {
-    attachInterruptParam(pin, handler, static_cast<PinStatus>(mode), arg);
+    ::espurna::core::chip::pin_attach(pin, handler, arg, static_cast<uint8_t>(mode));
 }
 
 inline bool read(uint8_t pin) {
-    return ::digitalRead(pin) == HIGH;
+    return ::espurna::core::chip::pin_read(pin);
 }
 
 struct Lock {

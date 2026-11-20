@@ -1,0 +1,27 @@
+{
+  "name": "espurna-core",
+  "description": "ESPurna's own Arduino API layer: String, Print, Stream, IPAddress of ArduinoCore-API 2022.08.24 (src/arduino-api, unchanged copy) plus time, GPIO, Serial, Wire and SPI on the chip SDK. One layer for ESP8266, ESP32 and Beken, builds without the Arduino framework; the sensor libraries build on it unchanged",
+  "keywords": "arduino,api,string,stream",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arduino/ArduinoCore-API.git"
+  },
+  "version": "2022.08.24",
+  "license": "LGPL-2.1",
+  "frameworks": [
+    "espidf",
+    "base",
+    "esp8266-rtos-sdk"
+  ],
+  "platforms": [
+    "espressif8266",
+    "espressif32",
+    "espurna-beken"
+  ],
+  "build": {
+    "srcFilter": [
+      "+<*>",
+      "-<arduino-api/>"
+    ]
+  }
+}

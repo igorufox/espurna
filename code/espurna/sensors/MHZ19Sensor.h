@@ -60,7 +60,7 @@ class MHZ19Sensor : public BaseSensor {
 
     public:
 
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -93,8 +93,8 @@ class MHZ19Sensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("MHZ19");
+        espurna::string description() const override {
+            return "MHZ19";
         }
 
         // Type for slot # index
@@ -230,7 +230,7 @@ class MHZ19Sensor : public BaseSensor {
         double _co2 = 0;
         bool _calibrateAuto = MHZ19_CALIBRATE_AUTO == 1;
         uint32_t _detectionRange = MHZ19_DETECTION_RANGE;
-        Stream* _serial { nullptr };
+        ::espurna::ByteStream* _serial { nullptr };
 
 };
 

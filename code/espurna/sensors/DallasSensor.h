@@ -168,12 +168,12 @@ public:
     }
 
     // Descriptive name of the sensor
-    String description() const override {
+    espurna::string description() const override {
         return _description();
     }
 
     // Address of the device
-    String address(unsigned char) const override {
+    espurna::string address(unsigned char) const override {
         return _address();
     }
 
@@ -429,7 +429,7 @@ private:
             resolutionConversionTime(resolution));
     }
 
-    String _address() const {
+    espurna::string _address() const {
         return hexEncode(_device.address);
     }
 
@@ -457,17 +457,17 @@ private:
         return out;
     }
 
-    static String _chipIdToString(unsigned char id) {
+    static espurna::string _chipIdToString(unsigned char id) {
         return _chipIdToStringView(id).toString();
     }
 
-    String _description() const {
+    espurna::string _description() const {
         char buffer[24];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("%s @ GPIO%hhu"),
             _chipIdToString(chip(_device)).c_str(),
             _port->pin());
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
     void _maxConversionTime(duration::Milliseconds duration) {
@@ -568,12 +568,12 @@ public:
     }
 
     // Descriptive name of the sensor
-    String description() const override {
+    espurna::string description() const override {
         return _description();
     }
 
     // Address of the device
-    String address(unsigned char) const override {
+    espurna::string address(unsigned char) const override {
         return _address();
     }
 
@@ -663,16 +663,16 @@ private:
         return _read(_device, _data);
     }
 
-    String _description() const {
+    espurna::string _description() const {
         char buffer[24];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("%s @ GPIO%hhu"),
             _chipIdToString(chip(_device)).c_str(),
             _port->pin());
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
-    String _address() const {
+    espurna::string _address() const {
         return hexEncode(_device.address);
     }
 
@@ -692,7 +692,7 @@ private:
         return out;
     }
 
-    static String _chipIdToString(unsigned char id) {
+    static espurna::string _chipIdToString(unsigned char id) {
         return _chipIdToStringView(id).toString();
     }
 
@@ -765,7 +765,7 @@ public:
         return _find_sensors();
     }
 
-    String description() const override {
+    espurna::string description() const override {
         return STRING_VIEW("DallasSensor").toString();
     }
 

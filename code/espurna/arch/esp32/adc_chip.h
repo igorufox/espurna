@@ -2,14 +2,14 @@
 
 ADC, ESP32 part (ref. adc_driver.h)
 
-12 bit ADC on GPIO pins. Raw values are not linear, the voltage comes from the calibrated analogReadMilliVolts().
+12 bit ADC on GPIO pins. Raw values are not linear, the voltage comes from the calibrated core::esp32::adc_millivolts().
 No supply voltage measurement
 
 */
 
 #pragma once
 
-#include <Arduino.h>
+#include "core_esp32.h"
 
 namespace espurna {
 namespace adc {
@@ -19,20 +19,19 @@ constexpr int bits() {
     return 12;
 }
 
-// full 0..3.3V range
-inline void attenuation(uint8_t pin) {
-    analogSetPinAttenuation(pin, ADC_11db);
+// full 0..3.3V range: every channel is set up with 11 dB (core_esp32.cpp)
+inline void attenuation(uint8_t) {
 }
 
 inline double millivolts(uint8_t pin, uint32_t) {
-    return ::analogReadMilliVolts(pin);
+    return ::espurna::core::esp32::adc_millivolts(pin);
 }
 
-inline String address(uint8_t pin) {
-    return String(F("GPIO")) + String(pin, 10);
+inline espurna::string address(uint8_t pin) {
+    return espurna::string("GPIO") + espurna::string(pin, 10);
 }
 
-inline String pad(uint8_t pin) {
+inline espurna::string pad(uint8_t pin) {
     return address(pin);
 }
 

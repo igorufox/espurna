@@ -33,7 +33,7 @@ class Palette {
         return _colors[i0].interpolate(_colors[i1], t0);
     }
 
-    Color getCachedPalColor(byte i) {
+    Color getCachedPalColor(uint8_t i) {
         if (_cache.empty())
             _cache.resize(256);
 

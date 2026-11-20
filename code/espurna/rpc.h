@@ -6,7 +6,6 @@ Part of MQTT and API modules
 
 #pragma once
 
-#include <Arduino.h>
 
 #include "types.h"
 

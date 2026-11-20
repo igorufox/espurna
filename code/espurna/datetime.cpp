@@ -36,8 +36,8 @@ time_t delta_utc_impl(tm& out, Seconds seconds, Days days) {
     return tmp;
 }
 
-String tz_offset_string(Seconds offset) {
-    String out;
+espurna::string tz_offset_string(Seconds offset) {
+    espurna::string out;
 
     out += (offset >= offset.zero()) ? '+' : '-';
     if (offset < offset.zero()) {
@@ -51,7 +51,7 @@ String tz_offset_string(Seconds offset) {
         out += '0';
     }
 
-    out += String(static_cast<long>(hours.count()), 10);
+    out += espurna::string(static_cast<long>(hours.count()), 10);
     out += ':';
 
     auto minutes = std::chrono::duration_cast<Minutes>(offset);
@@ -59,7 +59,7 @@ String tz_offset_string(Seconds offset) {
         out += '0';
     }
 
-    out += String(static_cast<long>(minutes.count()), 10);
+    out += espurna::string(static_cast<long>(minutes.count()), 10);
 
     return out;
 }
@@ -232,7 +232,7 @@ Context delta(const datetime::Context& ctx, Days days) {
 }
 
 // iso8601 time string, without timezone info
-String format(const tm& t) {
+espurna::string format(const tm& t) {
     char buffer[32];
     snprintf_P(buffer, sizeof(buffer),
         PSTR("%04d-%02d-%02dT%02d:%02d:%02d"),
@@ -243,34 +243,34 @@ String format(const tm& t) {
         std::clamp(t.tm_min, 0, 60),
         std::clamp(t.tm_sec, 0, 60));
 
-    return String(buffer);
+    return espurna::string(buffer);
 }
 
 // retrieve local time struct from timestamp and format it
-String format_local(time_t timestamp) {
+espurna::string format_local(time_t timestamp) {
     tm tmp;
     localtime_r(&timestamp, &tmp);
     return format(tmp);
 }
 
-String format_local(Clock::time_point time_point) {
+espurna::string format_local(Clock::time_point time_point) {
     return format_local(time_point.time_since_epoch().count());
 }
 
 // retrieve utc time struct from timestamp and format it
-String format_utc(time_t timestamp) {
+espurna::string format_utc(time_t timestamp) {
     tm tmp;
     gmtime_r(&timestamp, &tmp);
     return format(tmp) + 'Z';
 }
 
-String format_utc(Clock::time_point time_point) {
+espurna::string format_utc(Clock::time_point time_point) {
     return format_utc(time_point.time_since_epoch().count());
 }
 
 // time string plus offset from UTC
 // could be the same as format_utc when offset is zero
-String format_local_tz(const Context& ctx) {
+espurna::string format_local_tz(const Context& ctx) {
     const auto offset = tz_offset(ctx);
     if (offset == offset.zero()) {
         return format(ctx.local) + 'Z';
@@ -279,20 +279,20 @@ String format_local_tz(const Context& ctx) {
     return format(ctx.local) + tz_offset_string(offset);
 }
 
-String format_local_tz(time_t timestamp) {
+espurna::string format_local_tz(time_t timestamp) {
     return format_local_tz(make_context(timestamp));
 }
 
-String format_local_tz(Clock::time_point time_point) {
+espurna::string format_local_tz(Clock::time_point time_point) {
     return format_local_tz(make_context(time_point));
 }
 
 // aka "Zulu time" or "Zulu meridian", shorter version of +00:00
-String format_utc_tz(const tm& t) {
+espurna::string format_utc_tz(const tm& t) {
     return format(t) + 'Z';
 }
 
-String format_utc_tz(const Context& ctx) {
+espurna::string format_utc_tz(const Context& ctx) {
     return format_utc_tz(ctx.utc);
 }
 

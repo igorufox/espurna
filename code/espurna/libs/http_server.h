@@ -1,7 +1,7 @@
 /*
 
 HTTP SERVER - the one web server of everything ESPurna builds: the head of every chip (the WebUI module, the API, the
-head page of the modules, /upgrade, /safeboot ...), code/safeboot-app and code/migration-app. No Arduino: on the TCP
+head page of the modules, /upgrade ...) and code/migration-app. No Arduino: on the TCP
 connection of libs/tcp.h (lwIP's raw API), the loop drives it, nothing waits; handlers run in the loop.
 
 - a request: the method, the path, the query, the headers (up to HeadMax bytes of them), the parameters of the query
@@ -138,7 +138,7 @@ public:
     // `path` exact, or a prefix when it ends with '*'. The body handler takes a body that is not a small form;
     // `handler` runs once the whole body is in
     void on(const char* path, uint8_t methods, Handler handler, BodyHandler body = nullptr);
-    // a path answered as another one (the ESP32's /upgrade on the safeboot layout)
+    // a path answered as another one (`/` as /index.html)
     void rewrite(const char* from, const char* to);
     // the requests no route took, with their body
     void onNotFound(Handler handler, BodyHandler body = nullptr);
@@ -158,6 +158,10 @@ public:
     // requests in progress and accepted connections the loop did not take yet; WebSocket connections taken over
     // (takeConnection()) are not counted. Also from lwIP's context: the low heap guard (web_guard.cpp)
     size_t busy() const;
+
+    // requests handled at once (0: RequestsMax); the connections over it wait in the listener's queue, accepted
+    // and cheap, and are taken in order as one finishes (web_guard.cpp, webGuardReqs)
+    void setConcurrency(size_t limit);
 
     class Impl;
 

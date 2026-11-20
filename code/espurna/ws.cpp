@@ -3,8 +3,8 @@
 WEBSOCKET: what the head keeps (docs/modules.md, modules_ws.h)
 
 The WebSocket server of the WebUI is the ws module (ws_server.cpp, module_ws.cpp). Here: the callbacks the head's
-parts and the modules register (wsRegister()), the payload helpers of ws_utils.h, and the forwarders of the ws.h API
-(wsPost, wsSend, wsConnected ...) to the module's table. Without the module nobody is connected and nothing is sent.
+parts and the modules register (wsRegister()) and the forwarders of the ws.h API (wsPost, wsSend, wsConnected ...) to
+the module's table. No JSON here: the payload helpers of ws_utils.h are the tools module's (ws_utils.cpp). Without the module nobody is connected and nothing is sent.
 
 Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
@@ -83,318 +83,6 @@ Callbacks& Callbacks::onKeyCheck(Callbacks::OnKeyCheck cb, Callbacks::Append) {
     return *this;
 }
 
-namespace {
-
-namespace internal {
-
-STRING_VIEW_INLINE(SchemaKey, "schema");
-
-} // namespace internal
-
-} // namespace
-
-EnumerableConfig::EnumerableConfig(JsonObject& root, StringView name) :
-    _root(root.createNestedObject(name))
-{}
-
-void EnumerableConfig::replacement(SourceFunc source, TargetFunc target) {
-    _replacements.push_back(
-        Replacement{
-            .source = source,
-            .target = target,
-        });
-}
-
-void EnumerableConfig::operator()(StringView name, espurna::settings::Iota iota, Check check, Setting* begin, Setting* end) {
-    JsonArray& entries = _root.createNestedArray(name);
-
-    if (_root.containsKey(internal::SchemaKey)) {
-        return;
-    }
-
-    JsonArray& schema = _root.createNestedArray(internal::SchemaKey);
-    for (auto it = begin; it != end; ++it) {
-        schema.add((*it).prefix());
-    }
-
-    while (iota) {
-        if (!check || check(*iota)) {
-            JsonArray& entry = entries.createNestedArray();
-            for (auto it = begin; it != end; ++it) {
-                auto func = (*it).func();
-
-                auto replacement = std::find_if(
-                    _replacements.begin(),
-                    _replacements.end(),
-                    [&](const Replacement& replacement) {
-                        return func == replacement.source;
-                    });
-
-                if (replacement != _replacements.end()) {
-                    (*replacement).target(entry, *iota);
-                } else {
-                    entry.add(func(*iota));
-                }
-            }
-        }
-
-        ++iota;
-    }
-}
-
-EnumerablePayload::EnumerablePayload(JsonObject& root, StringView name) :
-    _root(root.createNestedObject(name))
-{}
-
-void EnumerablePayload::operator()(StringView name, espurna::settings::Iota iota, Check check, Pairs&& pairs) {
-    JsonArray& entries = _root.createNestedArray(name);
-
-    if (_root.containsKey(internal::SchemaKey)) {
-        return;
-    }
-
-    JsonArray& schema = _root.createNestedArray(internal::SchemaKey);
-
-    const auto begin = std::begin(pairs);
-    const auto end = std::end(pairs);
-    for (auto it = begin; it != end; ++it) {
-        schema.add((*it).name);
-    }
-
-    while (iota) {
-        if (!check || check(*iota)) {
-            JsonArray& entry = entries.createNestedArray();
-            for (auto it = begin; it != end; ++it) {
-                (*it).generate(entry, *iota);
-            }
-        }
-
-        ++iota;
-    }
-}
-
-EnumerableTypes::EnumerableTypes(JsonObject& root, StringView name) :
-    _root(root.createNestedArray(name))
-{}
-
-void EnumerableTypes::operator()(int value, StringView text) {
-    auto& entry = _root.createNestedArray();
-    entry.add(value);
-    entry.add(text);
-}
-
-PostponedPayload::PostponedPayload() = default;
-
-PostponedPayload::Flag::~Flag() {
-    if (_ref._pending) {
-        _ref._data = String();
-        _ref._count = 0;
-    }
-
-    _ref._pending = false;
-}
-
-PostponedPayload::Flag::Flag(PostponedPayload& ref) :
-    _ref(ref)
-{
-    _ref._pending = true;
-}
-
-bool PostponedPayload::connected() const {
-    return _id ? wsConnected(_id) : wsConnected();
-}
-
-std::shared_ptr<PostponedPayload::Flag> PostponedPayload::make_flag() {
-    if (!_pending) {
-        return std::make_shared<Flag>(*this);
-    }
-
-
-    return nullptr;
-}
-
-bool PostponedPayload::post(bool connected) {
-    if (!connected) {
-        if (_data.length()) {
-            _data = String();
-        }
-
-        _count = 0;
-        _pending = false;
-
-        return false;
-    }
-
-    if (connected && !_pending && _count) {
-        auto flag = make_flag();
-        auto cb = [flag](JsonObject& root) {
-            if (flag->pending()) {
-                auto& log = root.createNestedArray("log");
-                log.add(flag->data());
-            }
-        };
-
-        wsPost(_id, std::move(cb), BufferHint);
-        return true;
-    }
-
-    return false;
-}
-
-bool PostponedPayload::post() {
-    return post(connected());
-}
-
-void PostponedPayload::buffer(const char* data, size_t size) {
-    if (!connected()) {
-        return;
-    }
-
-    if (_count < CountMax) {
-        buffer_impl(data, size);
-        ++_count;
-    }
-
-    post();
-}
-
-void PostponedPayload::buffer_impl(StringView data) {
-    _data.concat(data.data(), data.length());
-}
-
-void PostponedPayload::buffer_impl(const char* data, size_t length) {
-    _data.concat(data, length);
-}
-
-void PostponedDebug::buffer(const DebugPrefix& prefix, const char* message, size_t length) {
-    if (!connected()) {
-        return;
-    }
-
-    if (_count < CountMax) {
-        const auto prefixLen = debugPrefixLength(prefix);
-        const auto bufferLen = _data.length()
-            + prefixLen + length;
-
-        _data.reserve(bufferLen);
-
-        if (prefixLen) {
-            buffer_impl(prefix, prefixLen);
-        }
-
-        buffer_impl(message, length);
-        ++_count;
-    }
-
-    post();
-}
-
-constexpr duration::Milliseconds InplacePayload::DefaultWait;
-constexpr duration::Seconds InplacePayload::DefaultTimeout;
-
-InplacePayload::InplacePayload(JsonObject& root, uint32_t id) :
-    _root(root),
-    _id(id)
-{}
-
-void InplacePayload::reset() {
-    if (_data.length()) {
-        _data = String();
-    }
-
-    _count = 0;
-}
-
-bool InplacePayload::connected() const {
-    return wsConnected(_id);
-}
-
-void InplacePayload::write_impl(const char* data, size_t length) {
-    if (!connected()) {
-        return;
-    }
-
-    if (_count > CountMax) {
-        return;
-    }
-
-    _data.concat(data, length);
-    ++_count;
-}
-
-void InplacePayload::write(const char* data, size_t length) {
-    write_impl(data, length);
-    send();
-}
-
-bool InplacePayload::can_send() const {
-    return connected() && _count && _data.length();
-}
-
-bool InplacePayload::poll_send() {
-    if (!can_send()) {
-        reset();
-        return false;
-    }
-
-    auto start = Clock::now();
-
-    while (Clock::now() - start < _timeout) {
-        auto info = wsClientInfo(_id);
-        if (!info.connected) {
-            reset();
-            return false;
-        }
-
-        if (!info.stalled) {
-            return true;
-        }
-
-        time::blockingDelay(_wait);
-    }
-
-    return false;
-}
-
-bool InplacePayload::send() {
-    if (poll_send()) {
-        send_impl();
-        return true;
-    }
-
-    return false;
-}
-
-void InplacePayload::send_impl() {
-    wsSend(_id, _root);
-    reset();
-}
-
-InplaceLog::InplaceLog(JsonObject& root, uint32_t id) :
-    InplacePayload(root, id),
-    _log(root.createNestedArray("log"))
-{}
-
-void InplaceLog::write(const char* data, size_t length) {
-    write_impl(data, length);
-    send();
-}
-
-bool InplaceLog::send() {
-    if (poll_send()) {
-        if (_log.size()) {
-            _log[0] = _data.c_str();
-        } else {
-            _log.add(_data.c_str());
-        }
-
-        send_impl();
-        return true;
-    }
-
-    return false;
-}
-
 } // namespace ws
 } // namespace web
 } // namespace espurna
@@ -416,13 +104,20 @@ espurna::web::ws::Callbacks& wsRegister() {
     return _ws_callbacks;
 }
 
-// Append module's name that webui can make it's widgets visible
-void wsPayloadModule(JsonObject& root, espurna::StringView name) {
-    STRING_VIEW_INLINE(Key, "modulesVisible");
-    JsonArray& modules = root.containsKey(Key)
-        ? root[Key]
-        : root.createNestedArray(Key);
-    modules.add(name);
+namespace {
+
+std::vector<espurna::StringView> _ws_visible_modules;
+
+} // namespace
+
+void wsPayloadModule(espurna::json::Writer&, espurna::StringView name) {
+    _ws_visible_modules.push_back(name);
+}
+
+std::vector<espurna::StringView> wsPayloadModulesTake() {
+    std::vector<espurna::StringView> out;
+    out.swap(_ws_visible_modules);
+    return out;
 }
 
 void modulesWsProvide(const WsModuleApi* api) {
@@ -529,24 +224,15 @@ void wsPostSequence(const espurna::web::ws::Callbacks::OnSendContainer& cbs) {
     wsPostSequence(0, cbs);
 }
 
-void wsSend(JsonObject& root) {
-    if (_ws_api) {
-        _ws_api->sendAll(root);
-    }
-}
-
-void wsSend(uint32_t client_id, JsonObject& root) {
-    if (_ws_api) {
-        _ws_api->sendTo(client_id, root);
-    }
-}
-
 void wsSend(espurna::web::ws::OnSend callback) {
-    if (wsConnected()) {
-        DynamicJsonBuffer jsonBuffer(512);
-        JsonObject& root = jsonBuffer.createObject();
-        callback(root);
-        wsSend(root);
+    if (_ws_api) {
+        _ws_api->sendAll(std::move(callback));
+    }
+}
+
+void wsSend(uint32_t client_id, espurna::web::ws::OnSend callback) {
+    if (_ws_api) {
+        _ws_api->sendTo(client_id, std::move(callback));
     }
 }
 

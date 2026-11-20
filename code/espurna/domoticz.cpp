@@ -8,6 +8,7 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 */
 
 #include "espurna.h"
+#include "libs/PrintString.h"
 
 #if DOMOTICZ_SUPPORT
 
@@ -19,7 +20,7 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "sensor.h"
 #include "ws.h"
 
-#include <ArduinoJson.h>
+#include "json.h"
 #include <bitset>
 
 namespace espurna {
@@ -59,7 +60,7 @@ namespace settings {
 namespace internal {
 
 template <>
-espurna::domoticz::Idx convert(const String& value) {
+espurna::domoticz::Idx convert(const espurna::string& value) {
     return espurna::domoticz::Idx(convert<size_t>(value));
 }
 
@@ -122,32 +123,32 @@ PROGMEM_STRING(LightIdx, "dczLightIdx");
 } // namespace keys
 
 bool enabled() {
-    return getSetting(FPSTR(keys::Enabled), build::enabled());
+    return getSetting(keys::Enabled, build::enabled());
 }
 
-String topicOut() {
-    return getSetting(FPSTR(keys::TopicOut), build::TopicOut);
+espurna::string topicOut() {
+    return getSetting(keys::TopicOut, build::TopicOut);
 }
 
-String topicIn() {
-    return getSetting(FPSTR(keys::TopicIn), build::TopicIn);
+espurna::string topicIn() {
+    return getSetting(keys::TopicIn, build::TopicIn);
 }
 
 #if RELAY_SUPPORT
 Idx relayIdx(size_t id) {
-    return getSetting({FPSTR(keys::RelayIdx), id}, build::DefaultIdx);
+    return getSetting({keys::RelayIdx, id}, build::DefaultIdx);
 }
 #endif
 
 #if SENSOR_SUPPORT
 Idx magnitudeIdx(size_t id) {
-    return getSetting({FPSTR(keys::MagnitudeIdx), id}, build::DefaultIdx);
+    return getSetting({keys::MagnitudeIdx, id}, build::DefaultIdx);
 }
 #endif
 
 #if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
 Idx lightIdx() {
-    return getSetting(FPSTR(keys::LightIdx), build::DefaultIdx);
+    return getSetting(keys::LightIdx, build::DefaultIdx);
 }
 #endif
 
@@ -221,26 +222,26 @@ void setup() {
 #if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
 namespace light {
 
-void status(const JsonObject& root, unsigned char nvalue) {
-    JsonObject& color = root[F("Color")];
-    if (color.success()) {
+void status(espurna::json::Value root, unsigned char nvalue) {
+    const auto color = root["Color"];
+    if (color.isObject()) {
 
         // for ColorMode... see:
         // https://github.com/domoticz/domoticz/blob/development/hardware/ColorSwitch.h
         // https://www.domoticz.com/wiki/Domoticz_API/JSON_URL's#Set_a_light_to_a_certain_color_or_color_temperature
 
-        auto r = color["r"].as<long>();
-        auto g = color["g"].as<long>();
-        auto b = color["b"].as<long>();
+        auto r = color["r"].asLong();
+        auto g = color["g"].asLong();
+        auto b = color["b"].asLong();
 
-        auto cw = color["cw"].as<long>();
-        auto ww = color["ww"].as<long>();
+        auto cw = color["cw"].asLong();
+        auto ww = color["ww"].asLong();
 
         DEBUG_MSG_P(PSTR("[DOMOTICZ] Dimmer nvalue:%hhu rgb:%ld,%ld,%ld ww:%ld,cw:%ld t:%ld brightness:%ld\n"),
-            nvalue, r, g, b, ww, cw, color["t"].as<long>(), color[F("Level")].as<long>());
+            nvalue, r, g, b, ww, cw, color["t"].asLong(), color["Level"].asLong());
 
         // m field contains information about color mode (enum ColorMode from domoticz ColorSwitch.h):
-        switch (color["m"].as<int>()) {
+        switch (color["m"].asLong()) {
         // ColorModeWhite - WW,CW,temperature (t unused for now)
         case 2:
             lightColdWhite(cw);
@@ -261,7 +262,7 @@ void status(const JsonObject& root, unsigned char nvalue) {
     }
 
     // domoticz uses 100 as maximum value while we're using a custom scale
-    lightBrightnessPercent(root[F("Level")].as<long>());
+    lightBrightnessPercent(root["Level"].asLong());
     lightState(nvalue > 0);
     lightUpdate();
 }
@@ -295,20 +296,19 @@ void callback(unsigned int type, espurna::StringView topic, espurna::StringView 
     if (type == MQTT_MESSAGE_EVENT) {
         const auto out = settings::topicOut();
         if (topic == out) {
-            DynamicJsonBuffer jsonBuffer(1024);
-            JsonObject& root = jsonBuffer.parseObject(payload.begin());
-            if (!root.success()) {
+            const auto root = espurna::json::parse(payload);
+            if (!root.isObject()) {
                 DEBUG_MSG_P(PSTR("[DOMOTICZ] Error parsing data\n"));
                 return;
             }
 
-            unsigned char nvalue = root[F("nvalue")];
-            Idx idx(root[F("idx")].as<size_t>());
+            unsigned char nvalue = root["nvalue"].asLong();
+            Idx idx(static_cast<size_t>(root["idx"].asULong()));
 
 #if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
-            String stype = root[F("stype")];
-            String switchType = root[F("switchType")];
-            if ((idx == settings::lightIdx()) && (stype.startsWith(F("RGB")) || (switchType.equals(F("Dimmer"))))) {
+            espurna::string stype(root["stype"].asString().c_str());
+            espurna::string switchType(root["switchType"].asString().c_str());
+            if ((idx == settings::lightIdx()) && (stype.startsWith("RGB") || (switchType.equals("Dimmer")))) {
                 espurna::domoticz::light::status(root, nvalue);
                 return;
             }
@@ -332,16 +332,17 @@ void send(Idx idx, int nvalue, const char* svalue) {
         return;
     }
 
-    StaticJsonBuffer<JSON_OBJECT_SIZE(3)> json;
-    JsonObject& root = json.createObject();
-    root["idx"] = idx.value();
-    root["nvalue"] = nvalue;
-    root["svalue"] = svalue;
+    PrintString payload(128);
+    {
+        espurna::json::StreamWriter root(payload);
+        root.beginObject();
+        root.field("idx", idx.value());
+        root.field("nvalue", nvalue);
+        root.field("svalue", svalue);
+        root.end();
+    }
 
-    char payload[128] = {0};
-    root.printTo(payload);
-
-    mqttSendRaw(settings::topicIn().c_str(), payload);
+    mqttSendRaw(settings::topicIn().c_str(), payload.c_str());
 }
 
 [[gnu::unused]]
@@ -394,7 +395,7 @@ void send(unsigned char index, const espurna::sensor::Value& value) {
     // https://github.com/domoticz/domoticz/blob/6027b1d9e3b6588a901de42d82f3a6baf1374cd1/hardware/I2C.cpp#L1092-L1193
     // For now, just send invalid value. Consider simplifying sampling function and adding it here, with custom sampling time (3 hours, 6 hours, 12 hours etc.)
     if (MAGNITUDE_PRESSURE == value.type) {
-        mqtt::send(idx, 0, (value.repr + F(";-1")).c_str());
+        mqtt::send(idx, 0, (value.repr + ";-1").c_str());
     // Special case to allow us to use it with switches directly
     } else if (MAGNITUDE_DIGITAL == value.type) {
         mqtt::send(idx, (*value.repr.c_str() == '1') ? 1 : 0, value.repr.c_str());
@@ -429,11 +430,11 @@ namespace web {
 
 STRING_VIEW_INLINE(Prefix, "dcz");
 
-bool onKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool onKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(Prefix);
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     bool module { false };
 #if RELAY_SUPPORT
     module = module || (relayCount() > 0);
@@ -446,27 +447,27 @@ void onVisible(JsonObject& root) {
     }
 }
 
-void onConnected(JsonObject& root) {
-    root[FPSTR(settings::keys::Enabled)] = settings::enabled();
-    root[FPSTR(settings::keys::TopicIn)] = settings::topicIn();
-    root[FPSTR(settings::keys::TopicOut)] = settings::topicOut();
-
+void onConnected(espurna::json::Writer& root) {
+    root.field(settings::keys::Enabled, settings::enabled());
+    root.field(settings::keys::TopicIn, settings::topicIn());
+    root.field(settings::keys::TopicOut, settings::topicOut());
 #if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
-    root[FPSTR(settings::keys::LightIdx)] = settings::lightIdx().value();
+    root.field(settings::keys::LightIdx, settings::lightIdx().value());
 #endif
 
 #if RELAY_SUPPORT
     const size_t Relays { relayCount() };
 
-    JsonArray& relays = root.createNestedArray(F("dczRelays"));
+    root.array(STRING_VIEW("dczRelays"));
     for (size_t id = 0; id < Relays; ++id) {
-        relays.add(settings::relayIdx(id).value());
+        root.value(settings::relayIdx(id).value());
     }
+    root.end();
 #endif
 
 #if SENSOR_SUPPORT
-    sensorWebSocketMagnitudes(root, Prefix, [](JsonArray& out, size_t index) {
-        out.add(settings::magnitudeIdx(index).value());
+    sensorWebSocketMagnitudes(root, Prefix, [](espurna::json::Writer& out, size_t index) {
+        out.value(settings::magnitudeIdx(index).value());
     });
 #endif
 }
@@ -507,7 +508,7 @@ void migrate(int version) {
             return;
         }
 
-        moveSetting(F("dczRelayIdx0"), FPSTR(settings::keys::LightIdx));
+        moveSetting("dczRelayIdx0", settings::keys::LightIdx);
     }
 }
 #endif

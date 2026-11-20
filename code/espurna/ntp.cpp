@@ -15,7 +15,6 @@ Copyright (C) 2019 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #if NTP_SUPPORT
 
-#include <Arduino.h>
 
 // NTP_TIMEZONE default (TZ_Etc_UTC): the core's TZ.h where there is one, compat_chip.h otherwise
 #if __has_include(<TZ.h>)
@@ -82,7 +81,7 @@ constexpr bool dhcp() {
 
 #pragma push_macro("F")
 #undef F
-#define F(X) (X)
+#define X (X)
 
 STRING_VIEW_INLINE(Server, NTP_SERVER);
 STRING_VIEW_INLINE(Timezone, NTP_TIMEZONE);
@@ -127,18 +126,18 @@ espurna::duration::Seconds randomUpdateInterval() {
 }
 
 // as either DNS name or IP address
-String server() {
+espurna::string server() {
     return getSetting(keys::Server, build::Server);
 }
 
-void server(const String& value) {
+void server(const espurna::string& value) {
     setSetting(keys::Server, value);
 }
 
 // POSIX TZ variable, ref.
 // - https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap08.html#tag_08_03
 // - https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
-String tz() {
+espurna::string tz() {
     return getSetting(keys::Tz, build::Timezone);
 }
 
@@ -219,7 +218,7 @@ bool setTimestamp(time_t ts) {
 namespace internal {
 
 Status status;
-String server;
+espurna::string server;
 
 } // namespace internal
 
@@ -272,7 +271,7 @@ template <>
 
 } // namespace internal
 
-Result timestamp(const String& value) {
+Result timestamp(const espurna::string& value) {
     Result out;
 
     const char* p { value.c_str() };
@@ -392,33 +391,31 @@ namespace web {
 
 STRING_VIEW_INLINE(Status, "ntpStatus");
 
-bool onKeyCheck(StringView key, const JsonVariant&) {
+bool onKeyCheck(StringView key, espurna::json::Value) {
     return key.startsWith(settings::Prefix);
 }
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, settings::Prefix);
 }
 
-void onData(JsonObject& root) {
-    root[Status] = synced();
+void onData(espurna::json::Writer& root) {
+    root.field(Status, synced());
 }
 
-void onConnected(JsonObject& root) {
-    root[settings::keys::Dhcp] = settings::dhcp();
-
-    root[settings::keys::Server] = settings::server();
-    root[settings::keys::Tz] = settings::tz();
-
-    root[settings::keys::StartDelay] = settings::startDelay().count();
-    root[settings::keys::UpdateInterval] = settings::updateInterval().count();
+void onConnected(espurna::json::Writer& root) {
+    root.field(settings::keys::Dhcp, settings::dhcp());
+    root.field(settings::keys::Server, settings::server());
+    root.field(settings::keys::Tz, settings::tz());
+    root.field(settings::keys::StartDelay, settings::startDelay().count());
+    root.field(settings::keys::UpdateInterval, settings::updateInterval().count());
 }
 
 } // namespace web
 #endif
 
-String activeServer() {
-    String server;
+espurna::string activeServer() {
+    espurna::string server;
 
     server = driver::server_name();
     if (!server.length()) {
@@ -428,17 +425,17 @@ String activeServer() {
     return server;
 }
 
-String format_datetime() {
+espurna::string format_datetime() {
     return synced()
         ? datetime::format_local_tz(::time(nullptr))
-        : String();
+        : espurna::string();
 }
 
 struct Info {
-    String server;
+    espurna::string server;
     duration::Seconds update_interval;
 
-    String last_sync;
+    espurna::string last_sync;
 };
 
 Info make_info() {
@@ -458,8 +455,8 @@ Info make_info() {
 }
 
 struct Datetime {
-    String local;
-    String utc;
+    espurna::string local;
+    espurna::string utc;
 };
 
 Datetime make_datetime() {
@@ -477,7 +474,7 @@ void onSystemTimeSynced();
 #if TERMINAL_SUPPORT
 namespace terminal {
 
-void report_ntp(Print& out) {
+void report_ntp(::espurna::Output& out) {
     const auto report = make_info();
 
     out.printf_P(PSTR("server: %s\n"),
@@ -488,7 +485,7 @@ void report_ntp(Print& out) {
         report.last_sync.c_str());
 }
 
-void report_datetime(Print& out) {
+void report_datetime(::espurna::Output& out) {
     const auto report = make_datetime();
 
     out.printf_P(PSTR("universal time: %s\n"),
@@ -748,7 +745,7 @@ void convertLegacyOffsets() {
 
     if (save && found) {
         // XXX: only expect offsets in hours
-        String custom = (europe
+        espurna::string custom = (europe
             ? STRING_VIEW("CET")
             : STRING_VIEW("CST")).toString();
         custom.reserve(32);
@@ -960,7 +957,7 @@ void ntpOnTick(NtpTickCallback callback) {
     ::espurna::ntp::tick::add(callback);
 }
 
-String ntpDateTime() {
+espurna::string ntpDateTime() {
     return ::espurna::ntp::format_datetime();
 }
 

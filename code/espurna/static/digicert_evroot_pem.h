@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <pgmspace.h>
+#include "../progmem.h"
 
 const char PROGMEM _ssl_digicert_ev_root_ca[] = R"EOF(
 -----BEGIN CERTIFICATE-----

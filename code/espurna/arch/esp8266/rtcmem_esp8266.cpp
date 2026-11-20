@@ -1,13 +1,15 @@
 /*
 
-RTCMEM of the ESP8266 (rtcmem.h): the user part of the RTC memory
+RTCMEM of the ESP8266 on the RTOS SDK (rtcmem.h): RTC_NOINIT memory
 
 */
 
 #include "espurna.h"
 #include "rtcmem.h"
 
-volatile RtcmemData* Rtcmem = reinterpret_cast<volatile RtcmemData*>(RTCMEM_ADDR);
+// RTC_NOINIT_ATTR keeps the values across SW / WDT / panic resets and deep sleep
+RTC_NOINIT_ATTR static RtcmemData _rtcmem_storage;
+volatile RtcmemData* Rtcmem = &_rtcmem_storage;
 
 // Treat memory as dirty on cold boot, hardware wdt reset and rst pin
 bool rtcmemChipKept() {

@@ -20,21 +20,24 @@ namespace {
 #if WEB_SUPPORT
 alignas(4) static constexpr char Spec[] PROGMEM = "spiSCK|gpio|SCK|;spiMISO|gpio|MISO|;spiMOSI|gpio|MOSI|";
 
-void onConnected(JsonObject& root) {
+void onConnected(espurna::json::Writer& root) {
     const auto pins = spiPins();
 
-    JsonArray& out = root.createNestedArray(F("snsBus"));
-    JsonObject& entry = out.createNestedObject();
-    entry[F("name")] = F("spi");
-    entry[F("spec")] = FPSTR(Spec);
+    root.array(STRING_VIEW("snsBus"));
+    root.beginObject();
+    root.field(STRING_VIEW("name"), STRING_VIEW("spi"));
+    root.field(STRING_VIEW("spec"), Spec);
 
-    JsonObject& values = entry.createNestedObject(F("values"));
-    values[F("spiSCK")] = pins.sck;
-    values[F("spiMISO")] = pins.miso;
-    values[F("spiMOSI")] = pins.mosi;
+    root.object(STRING_VIEW("values"));
+    root.field(STRING_VIEW("spiSCK"), pins.sck);
+    root.field(STRING_VIEW("spiMISO"), pins.miso);
+    root.field(STRING_VIEW("spiMOSI"), pins.mosi);
+    root.end();
+    root.end();
+    root.end();
 }
 
-bool onKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool onKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(STRING_VIEW("spi"));
 }
 #endif

@@ -24,12 +24,12 @@ espurna::StringView base() {
 }
 
 espurna::StringView core_version() {
-    static const String out = espurna::chip::core_version();
+    static const espurna::string out = espurna::chip::core_version();
     return out;
 }
 
 espurna::StringView core_revision() {
-    static const String out = espurna::chip::core_revision();
+    static const espurna::string out = espurna::chip::core_revision();
     return out;
 }
 

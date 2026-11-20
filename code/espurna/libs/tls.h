@@ -1,29 +1,23 @@
 /*
 
-TLS - the one TLS of everything ESPurna builds (the head of every chip, code/safeboot-app, code/migration-app), under the
-HTTP client and the MQTT client: a byte stream over the TCP connection of libs/tcp.h, plain or TLS 1.2 by BearSSL.
+TLS - the one TLS of ESPurna (the head of every chip), under the HTTP client and the MQTT client: a byte stream over the
+TCP connection of libs/tcp.h, plain or TLS 1.2 by mbedtls (owner 2026-11-18: one crypto, mbedtls on every chip).
 
-- BearSSL's engine has no I/O of its own: the loop moves its records to and from the TCP connection and runs its
-  crypto there (never in lwIP's context, which would stop the network for the length of a handshake). The ESP8266
-  core has BearSSL, the others take the same sources as a library (igorufox/bearssl-esp8266)
-- the TCP connection, the plain stream and the records of a TLS connection are here (ESPurna: the head); making a TLS
-  connection - the client, the handshake, RSA, AES-GCM, the server's certificate - is libs/tls_setup.h: ESPurna's tls
-  module (module_tls.cpp, with ECDHE, ECDSA, ChaCha20-Poly1305 and the X.509 decoder of libs/tls_full.h), the base
-  alone in code/migration-app. Without it a secure connection fails with Failure::NoTls (libs/tls_engine.h start())
+- the head has the TCP connection and the plain stream (libs/tls_impl.h); a TLS session - the handshake, the records,
+  the server's certificate - is the tls module's (module_tls.cpp, libs/tls_mbedtls.h: mbedtls of the chip's SDK),
+  asked for through one hook (tls::open(), net.cpp). Without the module a secure connection fails with
+  Failure::NoTls, plain ones work
+- the session does its I/O on the TCP connection from the loop (never in lwIP's context, which would stop the network
+  for the length of a handshake)
 - the server: not checked (a download is checked against its SHA-256 instead), the SHA-1 fingerprint of its
-  certificate (MQTT `mqttFP`), or its chain against trust anchors (MQTT `mqttCA`, else the built-in root; the tls
-  module does it, the head has only the hook)
+  certificate (MQTT `mqttFP`), or its chain against CA certificates (MQTT `mqttCA`, else the built-in root)
 - the records: by default every connection asks for small ones by itself (max_fragment_length): 512, then 4096,
-  then full ones (a 16 KB input buffer), what the server took kept per host + port until the reboot (libs/tls_impl.h,
-  AutoSizes); or one size asked for (Options::fragment 512 .. 4096), and a server that ignores it fails the connection
-- what differs per chip is only what the chip forces: the entropy, and on the ESP8266 the second stack for the crypto
-  steps (its loop stack is 4 KB, RSA i15 alone takes ~4.5 KB)
+  then full ones, what the server took kept per host + port until the reboot (libs/tls_impl.h, AutoSizes); or one
+  size asked for (Options::fragment 512 .. 4096), and a server that ignores it fails the connection
 
     espurna::tls::Stream stream;
     stream.connect("host", 443, options);
     ... from the loop: stream.ready() / read() / write() / drained() ...
-
-The implementation is libs/tls_impl.h, part of libs/net_impl.h; the setup of a TLS connection libs/tls_setup.h.
 
 */
 
@@ -32,10 +26,6 @@ The implementation is libs/tls_impl.h, part of libs/net_impl.h; the setup of a T
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-
-// BearSSL: our fork (igorufox/bearssl-esp8266, code/libraries.ini `bearssl`) on every chip, the ESP8266 too (its
-// core's prebuilt libbearssl.a is taken out of the link, scripts/pio_main.py)
-#include <bearssl.h>
 
 namespace espurna {
 namespace tls {
@@ -116,6 +106,45 @@ private:
 
 // "AA:BB:..." or "AABB..." (40 hex digits) into `out`. false - not a fingerprint
 bool parseFingerprint(const char* text, uint8_t (&out)[FingerprintSize]);
+
+// the hardware random of the chip (libs/tls_impl.h)
+void random(uint8_t* out, size_t len);
+
+// the error of a connection that got a record bigger than its input buffer (the server ignored max_fragment_length):
+// the caller's retry gets full records (libs/tls_impl.h AutoSizes)
+bool recordTooLarge(int error);
+
+// --- the session (the tls module) -----------------------------------------------------------------------------------
+
+// The TLS of one connection over the TCP connection of the stream: mbedtls in the tls module (libs/tls_mbedtls.h).
+// Every call returns at once; the errors are mbedtls' (tlsError() of the stream)
+class Session {
+public:
+    virtual ~Session() = default;
+
+    // 1 - done, 0 - not yet, < 0 - the error
+    virtual int handshake() = 0;
+    // > 0 bytes, 0 - nothing now, < 0 - closed by the peer (0x7880 close notify too) or the error
+    virtual int read(uint8_t* out, size_t len) = 0;
+    // >= 0 bytes taken, < 0 - the error
+    virtual int write(const uint8_t* data, size_t len) = 0;
+    // close notify to the peer (best effort)
+    virtual void close() = 0;
+    // after a failed handshake: what the certificate check said (Failure::Fingerprint / Untrusted / None)
+    virtual Failure verify() const = 0;
+};
+
+} // namespace tls
+
+namespace tcp {
+class Connection;
+} // namespace tcp
+
+namespace tls {
+
+// The session of a secure connection, `tcp` connected: the tls module's (net.cpp asks for it through the module API).
+// nullptr - `failure` says why (Failure::NoTls: no tls module)
+Session* open(tcp::Connection& tcp, const char* host, const Options& options, Failure& failure, int& error);
 
 } // namespace tls
 } // namespace espurna

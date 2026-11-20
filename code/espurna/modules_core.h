@@ -17,14 +17,13 @@ forces: the functions of namespace `arch` below.
 
 #include "modules.h"
 
-#include <Arduino.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <new>
 
-class Print;
+#include "text_types.h"
 
 namespace espurna {
 namespace modules {
@@ -52,11 +51,13 @@ struct Entry {
     uint32_t crc32;         // of the image as it runs
     uint32_t ram_offset;    // its statics (.data + .bss) in the heap block; RamInFixedPool set: in the fixed pool
     uint32_t ram_size;
-    uint32_t code_size;     // its IRAM code in the fixed pool (ESP8266), else 0
+    uint32_t code_size;     // its IRAM code in the fixed pool, else 0
     uint32_t bases[3];      // the addresses its words hold now: BaseFlash, BaseCode, BaseRam
     uint32_t flags;         // EntryDisabled
     uint32_t data_offset;   // the flash it keeps its data in (the data column of ESPURNA_MODULES, modulesData()),
     uint32_t data_size;     // whole sectors at the top of the area, placed by the Apply; 0 - none
+    uint32_t pool_base;     // where its pool code runs (PackageHeader::link_pool, its PoolWord words), 0 - none: its
+                            // IRAM code, if any, is all its code (BaseCode, ESP8266)
 };
 
 // Entry::bases: the image as data (kind 1 words), its code (kind 3: ESP8266 its IRAM code in the fixed pool, ESP32 the
@@ -73,7 +74,8 @@ constexpr uint32_t EntryDisabled { 1 };
 constexpr uint32_t RamInFixedPool { 0x80000000 };
 
 // the directory format, one for every chip
-constexpr uint32_t DirectoryMagic { 0x38524445 }; // "EDR8": 24 entries (EDR7: 16, Entry::data_offset, data_size)
+constexpr uint32_t DirectoryMagic { 0x39524445 }; // "EDR9": Entry::pool_base (EDR8: 24 entries, EDR7: 16 and
+                                                  // Entry::data_offset, data_size)
 
 struct Directory {
     uint32_t magic;         // DirectoryMagic
@@ -115,12 +117,12 @@ struct Status {
 
 // what this boot did with the module at this flash offset
 Status statusOf(const Entry& entry);
-const __FlashStringHelper* stateName(const Status& status);
+const char* stateName(const Status& status);
 
 uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t size);
 uint32_t roundUp(uint32_t value, uint32_t to);
 bool insideRange(uint32_t start, uint32_t end, uint32_t lo, uint32_t hi);
-void jsonField(String& out, const __FlashStringHelper* name, uint32_t value);
+void jsonField(espurna::string& out, const char* name, uint32_t value);
 
 bool readDirectory(Directory& out);
 
@@ -131,7 +133,7 @@ uint32_t heapBlockSize();
 uint32_t heapNeed(const Directory& dir);
 bool writeDirectory(const Directory& dir);
 bool writeDirectoryPrimary(const Directory& dir);
-String offReason();
+espurna::string offReason();
 
 // writes into the module area and its directory sector only (arch::area()), erases in whole sectors
 bool flashErase(uint32_t offset, uint32_t size);
@@ -170,6 +172,7 @@ struct Space {
 // what the modules take: the flash, the heap block, the chip's fixed pool (statics and IRAM code)
 struct Spaces {
     Space flash;
+    Space upper;        // arch::Area::upper: data modules and module data only
     Space ram;          // the heap block, as big as the heap may give it
     Space fixed;
 };
@@ -182,21 +185,30 @@ void spaces(const Directory& dir, bool valid, Spaces& out);
 // is, 1 flash, 2 RAM, 3 code), the chunk's branch list (a count, then offset | kind << 16 per branch into the head:
 // Beken's Thumb / ARM BL / BLX; none on the other chips; and the links to the modules it needs, every chip: LinkWord,
 // LinkBranch), then the chunk's bytes
-constexpr uint32_t PackageVersion { 5 };
+constexpr uint32_t PackageVersion { 7 };
 constexpr size_t BranchesMax { 1024 };  // per chunk
 
 // A module is linked against the modules it needs (Header::needs) as against the head (scripts/module_link.py): its
 // words with an address of one of them get where the Apply put that module. Kinds of the branch list:
 //   LinkWord | provider << 2 | base kind (1 flash, 2 RAM, 3 code): the word + where that base of the provider is
 //   LinkBranch | provider << 2 | branch kind (Beken: 1 Thumb, 2 ARM BL / BLX): a branch into the provider
+// provider: 3 bits, up to 8 modules it needs (owner 2026-11-18: the thermostat needs 5, package version 6)
 // provider: the index in the needs of the module. The slot keeps them behind its maps (a count, then image offset |
 // kind << 24 each): a boot rewrites the module when a provider moved
-constexpr uint32_t LinkWord { 0x10 };
-constexpr uint32_t LinkBranch { 0x20 };
-constexpr size_t LinkProviders { 4 };
+constexpr uint32_t LinkWord { 0x20 };
+constexpr uint32_t LinkBranch { 0x40 };
+
+// The pool code of a module (package version 7, owner 2026-11-19 «да, расширяй»): the part of its code that has to run
+// from the chip's fixed pool (ESP32: the BT controller's ISR and what runs with the flash cache off), the rest stays
+// where the chip runs code from flash. Linked at PackageHeader::link_pool, copied into the pool at its start
+// (Header::iram_load / iram_start / iram_end); a word with an address in it is a branch-list entry:
+//   PoolWord: the word + where the Apply put the pool code (Entry::pool_base). The pool is at a fixed address of the
+//   head: the Apply writes these words, a boot relocation leaves them (the map has them as 0)
+constexpr uint32_t PoolWord { 0x10 };
+constexpr size_t LinkProviders { 8 };
 
 constexpr bool isLink(uint32_t kind) {
-    return (kind >= LinkWord) && (kind < (LinkBranch + 0x10));
+    return (kind >= LinkWord) && (kind < (LinkBranch + 0x20));
 }
 
 // one package being written: its statics and IRAM code where the Apply's plan put them (arch::pools, largest first),
@@ -220,15 +232,19 @@ struct Upload {
     const Directory* apply_dir { nullptr };    // the Apply's directory in memory: the slot goes by it
     uint32_t flash_floor { 0 }; // no slot under it (the initial image's modules file)
     uint32_t flash_ceiling { 0 };   // no slot over it (the data of the modules, placed first), 0 - the area's top
+    uint32_t upper_ceiling { 0 };   // the same in arch::Area::upper, 0 - its top
+    bool data_only { false };       // a data module (the modules file's flag): arch::Area::upper first
     uint32_t data_offset { 0 }; // its data, planned (modulesData())
     uint32_t data_size { 0 };
     uint32_t ram_offset { 0 };  // planned (RamInFixedPool: in the fixed pool)
-    uint32_t code_offset { 0 }; // planned, in the fixed pool (ESP8266)
+    uint32_t code_offset { 0 }; // planned, in the fixed pool
 
     uint32_t slot { 0 };        // flash offset of the slot
     uint32_t slot_size { 0 };
     uint32_t bases[3] {};       // the Entry::bases its words get
     uint32_t delta[4] {};       // by kind
+    uint32_t pool_base { 0 };   // Entry::pool_base
+    uint32_t pool_delta { 0 };  // of its PoolWord words
     char needs[32] {};          // the modules it needs (the modules file), the providers of its links
     uint32_t provider[LinkProviders][4] {};    // the deltas of each provider, by kind: where the Apply put it
     bool provider_known[LinkProviders] {};
@@ -282,6 +298,10 @@ struct Area {
     static constexpr size_t KeepMax { 6 };
     Range keep[KeepMax] {};
 
+    // flash the CPU runs no code from (ESP8266: over 1 MB, the cache maps the first MB alone), size 0 - none: the slots
+    // of data modules and the data of the modules go there first; read with rawRead(), never through a view
+    Range upper {};
+
     // bytes of lo..hi in the ranges kept
     uint32_t kept(uint32_t from, uint32_t to) const {
         uint32_t out { 0 };
@@ -299,6 +319,10 @@ Area area();
 // how far the head can erase and write: the whole area has to be below it before an Apply touches anything (Beken: the
 // FAL 'root' partition of the build; a 4 MiB board under a 2 MiB head refused the erase half way, 2026-11-16)
 uint32_t flashReach();
+
+// the bytes of a flash view (flashView(), a data module's data): through the map where there is one (memcpy_P, the
+// default), else with rawRead() (ESP8266: the flash over 1 MB, Area::upper)
+bool viewRead(const void* view, void* out, size_t size);
 
 // the flash as it is stored (Beken: encrypted, a CRC-16 per 32 bytes); erase in whole sectors
 bool rawRead(uint32_t offset, void* data, size_t size);
@@ -344,15 +368,16 @@ struct Pools {
     bool code_in_fixed;     // module IRAM code goes to the fixed pool from its start, copied there at the start
     bool words;             // 32-bit access only to the module's statics in the fixed pool and to the mapped flash
     const char* name;       // of the fixed pool, for the panel ("IRAM", "TCM"), nullptr - none
+    bool code_only;         // the fixed pool takes code only, no statics (ESP32: the IRAM, no byte access at all)
 };
 
 void pools(Pools& out);
 
 // /modules: the chip's own numbers after the common ones. Default: none
-void statusJson(String& out);
+void statusJson(espurna::string& out);
 
 // MODULES: the chip's line after the head line. Default: none
-void listHead(Print& out);
+void listHead(::espurna::Output& out);
 
 uint32_t failedAllocations();   // default 0: the chip does not count them
 

@@ -1,5 +1,5 @@
 #pragma once
-#include <pgmspace.h>
+#include "../progmem.h"
 #include <cstdint>
 // the WebUI part of the rfm69 module (html/parts.mjs), gzip: gulp build
 alignas(4) static const uint8_t ui_rfm69_data[] PROGMEM = {

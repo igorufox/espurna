@@ -2,24 +2,25 @@
 
 esp8266 Core and SDK API shims of the FreeRTOS chips (ESP32, BK72xx with LibreTiny)
 
-Common part. SDK headers, chip facts and what only one of the chips needs are in arch/<chip>/compat_<chip>.h
+Common part. SDK headers (FreeRTOS included), chip facts and what only one of the chips needs are in
+arch/<chip>/compat_sdk.h (the chip's folder, -I of its ini)
 
 */
 
 #pragma once
 
+// the owning text of ESPurna (text_types.h), declared here: compat.h comes before types.h
+namespace espurna {
+class string;
+} // namespace espurna
 
-#include <Arduino.h>
-#include <Update.h>
+
 
 #include <memory>
 #include <type_traits>
 
-#if defined(ESP32)
-#include "../esp32/compat_esp32.h"
-#elif defined(LIBRETINY)
-#include "../beken/compat_beken.h"
-#endif
+#include "compat_sdk.h"
+#include "chip_sdk.h"
 
 // ESP8266-specific memory functions
 #ifndef memmove_P
@@ -81,7 +82,7 @@ struct rst_info {
     uint32_t depc;
 };
 
-#define wifi_station_get_rssi() WiFi.RSSI()
+#define wifi_station_get_rssi() wifiStaRssi()
 
 // Sleep types, same names and values as the esp8266 SDK
 typedef enum : int {
@@ -90,14 +91,13 @@ typedef enum : int {
     MODEM_SLEEP_T
 } sleep_type_t;
 
-// ESP.* calls of the common code. The framework EspClass of both chips already follows the esp8266 API for the most
-// part, the rest is in arch/<chip>/compat_<chip>.cpp. Methods defined here refer to the framework object, the macro
-// below makes `ESP` this one
+// ESP.* calls of the common code (the esp8266 API names), on the SDK calls of the chip (chip_sdk.h); what differs per
+// chip is in arch/<chip>/compat_<chip>.cpp. The macro below makes `ESP` this object
 extern uint16_t systemVcc();
 struct EspCompat {
     // SDK reason names, plus what ESPurna knows better about the last reset
-    String getResetReason();
-    String getResetInfo();
+    espurna::string getResetReason();
+    espurna::string getResetInfo();
 
     // Same as esp8266, last 3 bytes of the STA MAC
     uint32_t getChipId();
@@ -114,19 +114,19 @@ struct EspCompat {
 
     uint16_t getVcc() { return systemVcc(); }
 
-    EspClass* operator->() { return &ESP; }
-    operator EspClass&() { return ESP; }
+    uint32_t getFreeHeap() { return ::espurna::core::chip::heap_free(); }
 
-    uint32_t getFreeHeap() { return ESP.getFreeHeap(); }
+    uint32_t magicFlashChipSize(uint8_t) { return getFlashChipSize(); }
+    uint32_t getFlashChipRealSize() { return getFlashChipSize(); }
+    uint32_t getFlashChipSize() { return ::espurna::core::chip::flash_size(); }
+    uint32_t getFlashChipMode() { return ::espurna::core::chip::flash_mode(); }
 
-    uint32_t magicFlashChipSize(uint8_t) { return ESP.getFlashChipSize(); }
-    uint32_t getFlashChipRealSize() { return ESP.getFlashChipSize(); }
-    uint32_t getFlashChipSize() { return ESP.getFlashChipSize(); }
-    uint32_t getFlashChipMode() { return static_cast<uint32_t>(ESP.getFlashChipMode()); }
+    const char* getChipModel() { return ::espurna::core::chip::chip_model(); }
+    uint8_t getChipRevision() { return ::espurna::core::chip::chip_revision(); }
 
     uint32_t getFreeContStack() { return uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t); }
 
-    void restart() { ESP.restart(); }
+    [[noreturn]] void restart() { ::espurna::core::chip::restart(); }
     bool eraseConfig() { return false; }
 
     void getHeapStats(uint32_t* free, void* max, uint8_t* frag) {
@@ -135,11 +135,10 @@ struct EspCompat {
         if (frag) *frag = 0;
     }
 
-    uint32_t getCycleCount() { return ESP.getCycleCount(); }
+    uint32_t getCycleCount() { return ::espurna::core::chip::cycle_count(); }
 };
 
 extern EspCompat ESP_COMPAT;
-#define ESP ESP_COMPAT
 
 #ifndef FLASH_SECTOR_SIZE
 #define FLASH_SECTOR_SIZE 4096

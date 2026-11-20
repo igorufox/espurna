@@ -10,13 +10,14 @@ Copyright (C) 2020-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 // -----------------------------------------------------------------------------
 
 #include "espurna.h"
+#include "libs/PrintString.h"
 
 #if API_SUPPORT
 #include "api.h"
 #endif
 
 #if WEB_SUPPORT
-#include <ArduinoJson.h>
+#include "json.h"
 
 #include "web.h"
 #endif
@@ -58,8 +59,8 @@ bool accepts(WebRequest& request, StringView pattern) {
         return true;
     }
 
-    const String value(header);
-    return (value.indexOf(StringView(content_type::Anything).toString()) >= 0)
+    const espurna::string value(header);
+    return (value.indexOf(espurna::StringView(content_type::Anything).toString()) >= 0)
         || (value.indexOf(pattern.toString()) >= 0);
 }
 
@@ -72,7 +73,7 @@ bool accepts_json(WebRequest& request) {
 }
 
 bool is_content_type(WebRequest& request, StringView value) {
-    return String(request.contentType()).startsWith(value.toString());
+    return espurna::string(request.contentType()).startsWith(value.toString());
 }
 
 bool is_form_data(WebRequest& request) {
@@ -130,13 +131,13 @@ public:
     // In case this needs to be copied or moved, ensure PathParts copy references the new object's string
     template <typename T,
               typename = typename std::enable_if<
-                  std::is_constructible<String, T>::value>::type>
+                  std::is_constructible<espurna::string, T>::value>::type>
     explicit BaseWebHandler(T&& pattern) :
         _pattern(std::forward<T>(pattern)),
         _parts(_pattern)
     {}
 
-    const String& pattern() const {
+    const espurna::string& pattern() const {
         return _pattern;
     }
 
@@ -152,7 +153,7 @@ public:
     virtual void handleRequest(WebRequest& request) = 0;
 
 private:
-    String _pattern;
+    espurna::string _pattern;
     PathParts _parts;
 };
 
@@ -212,17 +213,22 @@ public:
     }
 
     void _handleGet(WebRequest& request, Request& apireq) {
-        DynamicJsonBuffer jsonBuffer(BufferSize);
-        JsonObject& root = jsonBuffer.createObject();
-        if (!_get(apireq, root)) {
+        StringPrint out;
+        bool result;
+        {
+            json::StreamWriter root(out);
+            root.beginObject();
+            result = _get(apireq, root);
+            root.end();
+        }
+
+        if (!result) {
             request.send(500, "text/plain", "");
             return;
         }
 
         if (!apireq.done()) {
-            String out;
-            root.printTo(out);
-            webSend(request, 200, "application/json", std::move(out));
+            webSend(request, 200, "application/json", std::move(static_cast<espurna::string&>(out)));
             return;
         }
 
@@ -233,11 +239,10 @@ public:
 
     void _handlePut(WebRequest& request, const uint8_t* data, size_t size) {
         auto* ptr = reinterpret_cast<const char*>(data);
-        auto reader = StringView(ptr, ptr + size);
+        auto reader = espurna::StringView(ptr, ptr + size);
 
-        DynamicJsonBuffer jsonBuffer(BufferSize);
-        JsonObject& root = jsonBuffer.parseObject(reader);
-        if (!root.success()) {
+        const auto root = json::parse(reader);
+        if (!root.isObject()) {
             request.send(500, "text/plain", "");
             return;
         }
@@ -314,7 +319,7 @@ public:
 
 private:
     JsonHandler _get;
-    JsonHandler _put;
+    JsonPutHandler _put;
 };
 
 // ESPurna legacy API configuration
@@ -431,7 +436,7 @@ private:
     bool _check_unhandled_params(WebRequest& request) {
         const auto params = request.params();
         for (size_t param = 0; param < params; ++param) {
-            if (!apiReservedParam(StringView(request.paramName(param)))) {
+            if (!apiReservedParam(espurna::StringView(request.paramName(param)))) {
                 return true;
             }
         }
@@ -450,15 +455,15 @@ std::forward_list<BaseWebHandler*> list;
 // API off (the default): a web handler with its parsed path costs ~200 bytes of heap, ~20 of them are registered.
 // Until the API is enabled only the path and the callbacks are kept, the handlers are made on the settings reload
 // that enables it
-template <typename Handler>
+template <typename Handler, typename PutHandler = Handler>
 struct Pending {
-    String path;
+    espurna::string path;
     Handler get;
-    Handler put;
+    PutHandler put;
 };
 
 std::forward_list<Pending<BasicHandler>> pending_basic;
-std::forward_list<Pending<JsonHandler>> pending_json;
+std::forward_list<Pending<JsonHandler, JsonPutHandler>> pending_json;
 
 bool routed { false };
 
@@ -531,7 +536,7 @@ void add(BaseWebHandler* ptr) {
 }
 
 template <typename Handler, typename Get, typename Put>
-void add(String path, Get&& get, Put&& put) {
+void add(espurna::string path, Get&& get, Put&& put) {
     add(new Handler(
         BasePath + path,
         std::forward<Get>(get),
@@ -546,8 +551,8 @@ void add(StringView path, Get&& get, Put&& put) {
         std::forward<Put>(put));
 }
 
-template <typename WebHandler, typename Handler>
-void make_pending(std::forward_list<internal::Pending<Handler>>& pending) {
+template <typename WebHandler, typename Handler, typename PutHandler>
+void make_pending(std::forward_list<internal::Pending<Handler, PutHandler>>& pending) {
     // registration order, emplace_front() reversed it
     pending.reverse();
     for (auto& entry : pending) {
@@ -564,7 +569,7 @@ void reload() {
     }
 }
 
-void register_basic(String path, BasicHandler&& get, BasicHandler&& put) {
+void register_basic(espurna::string path, BasicHandler&& get, BasicHandler&& put) {
     if (apiEnabled()) {
         add<BasicWebHandler>(std::move(path), std::move(get), std::move(put));
         return;
@@ -574,14 +579,14 @@ void register_basic(String path, BasicHandler&& get, BasicHandler&& put) {
         internal::Pending<BasicHandler>{std::move(path), std::move(get), std::move(put)});
 }
 
-void register_json(String path, JsonHandler&& get, JsonHandler&& put) {
+void register_json(espurna::string path, JsonHandler&& get, JsonPutHandler&& put) {
     if (apiEnabled()) {
         add<JsonWebHandler>(std::move(path), std::move(get), std::move(put));
         return;
     }
 
     internal::pending_json.emplace_front(
-        internal::Pending<JsonHandler>{std::move(path), std::move(get), std::move(put)});
+        internal::Pending<JsonHandler, JsonPutHandler>{std::move(path), std::move(get), std::move(put)});
 }
 
 void setup() {
@@ -590,7 +595,7 @@ void setup() {
     register_basic(
         STRING_VIEW("list").toString(),
         [](Request& request) {
-            String paths;
+            espurna::string paths;
             for (auto& api : internal::list) {
                 paths += api->pattern();
                 paths += '\r';
@@ -621,11 +626,11 @@ void setup() {
 
 // -----------------------------------------------------------------------------
 
-void apiRegister(String path, espurna::api::BasicHandler&& get, espurna::api::BasicHandler&& put) {
+void apiRegister(espurna::string path, espurna::api::BasicHandler&& get, espurna::api::BasicHandler&& put) {
     espurna::api::register_basic(std::move(path), std::move(get), std::move(put));
 }
 
-void apiRegister(String path, espurna::api::JsonHandler&& get, espurna::api::JsonHandler&& put) {
+void apiRegister(espurna::string path, espurna::api::JsonHandler&& get, espurna::api::JsonPutHandler&& put) {
     espurna::api::register_json(std::move(path), std::move(get), std::move(put));
 }
 

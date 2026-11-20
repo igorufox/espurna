@@ -15,7 +15,7 @@ using namespace espurna::sensor::module;
 ESPURNA_SENSOR_DRIVER(am2320, "am2320Addr|i2c|Address (0 - find it)|0") {
     if (i2c_bus()) {
         auto* sensor = new AM2320Sensor();
-        sensor->setAddress(getSetting(F("am2320Addr"), uint8_t{ AM2320_ADDRESS }));
+        sensor->setAddress(getSetting("am2320Addr", uint8_t{ AM2320_ADDRESS }));
         sensorAdd(sensor);
     }
 }

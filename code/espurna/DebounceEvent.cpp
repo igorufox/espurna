@@ -22,7 +22,7 @@
 
   Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
-  Modified to include generic INPUT / OUTPUT pin support through a custom interface.
+  Modified to include generic espurna::pins::Input / espurna::pins::Output pin support through a custom interface.
   Definitions are incompatible with DebounceEvent, you should not include it's headers.
 
 */
@@ -53,13 +53,13 @@ EventEmitter::EventEmitter(BasePinPtr&& pin, types::EventHandler callback, const
 
     switch (_config.pin_mode) {
     case types::PinMode::InputPullup:
-        _pin->pinMode(INPUT_PULLUP);
+        _pin->pinMode(espurna::pins::InputPullup);
         break;
     case types::PinMode::InputPulldown:
-        _pin->pinMode(INPUT_PULLDOWN);
+        _pin->pinMode(espurna::pins::InputPulldown);
         break;
     case types::PinMode::Input:
-        _pin->pinMode(INPUT);
+        _pin->pinMode(espurna::pins::Input);
         break;
     }
 
@@ -71,7 +71,7 @@ EventEmitter::EventEmitter(BasePinPtr&& pin, types::EventHandler callback, const
         _default_value = true;
         break;
     case types::PinValue::Initial:
-        _default_value = ((HIGH) == _pin->digitalRead());
+        _default_value = ((true) == _pin->digitalRead());
         break;
     }
 
@@ -88,7 +88,7 @@ bool EventEmitter::isPressed() {
 
 void EventEmitter::sync() {
     if (_pin) {
-        _value = (_pin->digitalRead() == (HIGH));
+        _value = (_pin->digitalRead() == (true));
     }
 }
 
@@ -111,11 +111,11 @@ unsigned long EventEmitter::getEventCount() {
 
 types::Event EventEmitter::loop() {
 
-    static_assert((HIGH) == 1, "Arduino API HIGH is not 1");
-    static_assert((LOW) == 0, "Arduino API LOW is not 0");
+    static_assert((true) == 1, "Arduino API true is not 1");
+    static_assert((false) == 0, "Arduino API false is not 0");
 
     auto event = types::EventNone;
-    bool value = _pin->digitalRead() == (HIGH);
+    bool value = _pin->digitalRead() == (true);
 
     if (value != _value) {
 
@@ -131,21 +131,21 @@ types::Event EventEmitter::loop() {
 
         unsigned long samples = 0;
         unsigned long changed = 0;
-        auto start = millis();
-        while (millis() - start < _delay) {
-            delay(1);
+        auto start = espurna::time::ms();
+        while (espurna::time::ms() - start < _delay) {
+            espurna::time::sleep(1);
             if (slow) {
                 continue;
             }
             ++samples;
-            if ((_pin->digitalRead() == (HIGH)) != _value) {
+            if ((_pin->digitalRead() == (true)) != _value) {
                 ++changed;
             }
         }
 
         if (slow) {
             samples = 1;
-            changed = ((_pin->digitalRead() == (HIGH)) != _value) ? 1 : 0;
+            changed = ((_pin->digitalRead() == (true)) != _value) ? 1 : 0;
         }
 
         if (!samples || ((changed * 100) >= (samples * 80))) {
@@ -158,11 +158,11 @@ types::Event EventEmitter::loop() {
                     : types::EventReleased;
             } else {
                 if (_value == _default_value) {
-                    _event_length = millis() - _event_start;
+                    _event_length = espurna::time::ms() - _event_start;
                     _ready = true;
                 } else {
                     event = types::EventPressed;
-                    _event_start = millis();
+                    _event_start = espurna::time::ms();
                     _event_length = 0;
                     if (_reset_count) {
                         _event_count = 1;
@@ -176,7 +176,7 @@ types::Event EventEmitter::loop() {
         }
     }
 
-    if (_ready && (millis() - _event_start > _repeat)) {
+    if (_ready && (espurna::time::ms() - _event_start > _repeat)) {
         _ready = false;
         _reset_count = true;
         event = types::EventReleased;

@@ -85,7 +85,7 @@ const char* screenName(Screen screen) {
 struct Display {
     bool connected { false };
     int version { 0 };
-    String model;
+    espurna::string model;
     Screen screen { Screen::Unknown };
     size_t card { 0 };
     std::vector<Card> cards;
@@ -98,9 +98,9 @@ struct Display {
     int last_minute { -1 };
     int last_mday { -1 };
     uint8_t status_mask { 0xFF };
-    String temperature_text;
+    espurna::string temperature_text;
 
-    std::deque<String> queue;
+    std::deque<espurna::string> queue;
     uint32_t last_tx { 0 };
 
     bool was_connected { false };
@@ -118,7 +118,7 @@ Display display;
 
 namespace serial {
 
-Stream& port() {
+::espurna::ByteStream& port() {
     return uart::port();
 }
 
@@ -138,7 +138,7 @@ struct Parser {
     uint16_t crc { 0xFFFF };
     uint16_t received_crc { 0 };
     uint32_t raw { 0 };
-    String payload;
+    espurna::string payload;
 
     void update(uint8_t byte) {
         crc = crc16(&byte, 1, crc);
@@ -189,7 +189,7 @@ struct Parser {
                 ++display.crc_errors;
                 break;
             }
-            payload = String();
+            payload = espurna::string();
             payload.reserve(length);
             state = State::Payload;
             break;
@@ -226,7 +226,7 @@ struct Parser {
 
 Parser parser;
 
-void writeFrame(const String& payload) {
+void writeFrame(const espurna::string& payload) {
     const size_t len = payload.length();
     const uint8_t header[4] {
         0x55, 0xBB,
@@ -257,14 +257,14 @@ void writeRaw(const char* command) {
     uart::writeRaw(command);
 }
 
-String commandName(const String& payload) {
+espurna::string commandName(const espurna::string& payload) {
     const auto pos = payload.indexOf('~');
     return (pos < 0) ? payload : payload.substring(0, pos);
 }
 
 // 'coalesce' replaces the latest queued frame of the same command, unless there is a
 // page change queued after it (frames after pageType~ belong to the new page)
-void enqueue(String payload, bool coalesce = false) {
+void enqueue(espurna::string payload, bool coalesce = false) {
     if (payload.length() > FrameMax) {
         DEBUG_MSG_P(PSTR("[NSPANEL] Frame too long (%u bytes), dropped\n"), payload.length());
         return;
@@ -273,7 +273,7 @@ void enqueue(String payload, bool coalesce = false) {
     if (coalesce) {
         const auto name = commandName(payload);
         for (auto it = display.queue.rbegin(); it != display.queue.rend(); ++it) {
-            if ((*it).startsWith(F("pageType~"))) {
+            if ((*it).startsWith("pageType~")) {
                 break;
             }
             if (commandName(*it) == name) {
@@ -296,7 +296,7 @@ void txLoop() {
         return;
     }
 
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (now - display.last_tx < TxGapMs) {
         return;
     }
@@ -316,7 +316,7 @@ void entityChanged(int entity) {
     if ((display.screen == Screen::Card) && cardContains(display.cards, display.card, entity)) {
         if (!display.dirty) {
             display.dirty = true;
-            display.dirty_since = millis();
+            display.dirty_since = espurna::time::ms();
         }
     }
 }
@@ -325,7 +325,7 @@ void entityChanged(int entity) {
 // Rendering
 // -----------------------------------------------------------------------------
 
-String forecastValue(const weather::Day& day) {
+espurna::string forecastValue(const weather::Day& day) {
     char buf[24];
     snprintf(buf, sizeof(buf), "%d\xC2\xB0/%d\xC2\xB0",
         static_cast<int>(lroundf(day.tmax)), static_cast<int>(lroundf(day.tmin)));
@@ -337,8 +337,8 @@ String forecastValue(const weather::Day& day) {
     return buf;
 }
 
-void weatherGroup(String& out, uint16_t icon, uint16_t color, const String& name, const String& value) {
-    out += F("~~~");
+void weatherGroup(espurna::string& out, uint16_t icon, uint16_t color, const espurna::string& name, const espurna::string& value) {
+    out += "~~~";
     out += utf8(icon);
     out += '~';
     if (icon) {
@@ -351,7 +351,7 @@ void weatherGroup(String& out, uint16_t icon, uint16_t color, const String& name
 }
 
 void sendWeather() {
-    String out(F("weatherUpdate"));
+    espurna::string out("weatherUpdate");
     out.reserve(200);
 
     const auto& data = weather::current();
@@ -359,7 +359,7 @@ void sendWeather() {
         const auto main = icons::weather(data.code, data.day);
         char buf[16];
         snprintf(buf, sizeof(buf), "%d\xC2\xB0" "C", static_cast<int>(lroundf(data.temperature)));
-        weatherGroup(out, main.icon, main.color, String(), buf);
+        weatherGroup(out, main.icon, main.color, espurna::string(), buf);
 
         for (size_t n = 0; n < 4; ++n) {
             if (n < data.count) {
@@ -367,21 +367,21 @@ void sendWeather() {
                 const auto icon = icons::weather(day.code, true);
                 weatherGroup(out, icon.icon, icon.color, lang::weekdayShort(day.wday), forecastValue(day));
             } else {
-                weatherGroup(out, 0, 0, String(), String());
+                weatherGroup(out, 0, 0, espurna::string(), espurna::string());
             }
         }
     } else {
         for (size_t n = 0; n < 5; ++n) {
-            weatherGroup(out, 0, 0, String(), String());
+            weatherGroup(out, 0, 0, espurna::string(), espurna::string());
         }
     }
 
     // 6th group switches the screensaver to the alternative layout (second main value)
-    display.temperature_text = config().temperature_show ? ntc::text() : String();
+    display.temperature_text = config().temperature_show ? ntc::text() : espurna::string();
     if (display.temperature_text.length()) {
-        weatherGroup(out, icons::Thermometer, icons::colors::White, String(), display.temperature_text);
+        weatherGroup(out, icons::Thermometer, icons::colors::White, espurna::string(), display.temperature_text);
     } else {
-        out += F("~~~~~~");
+        out += "~~~~~~";
     }
 
     serial::enqueue(std::move(out), true);
@@ -403,7 +403,7 @@ uint8_t statusMask() {
 void sendStatus() {
     display.status_mask = statusMask();
 
-    String out(F("statusUpdate~"));
+    espurna::string out("statusUpdate~");
     if (display.status_mask & 1) {
         out += utf8(icons::WifiOff);
         out += '~';
@@ -415,13 +415,13 @@ void sendStatus() {
     } else {
         out += '~';
     }
-    out += F("~~~~");
+    out += "~~~~";
 
     serial::enqueue(std::move(out), true);
 }
 
 void sendDimmode() {
-    String out(F("dimmode~"));
+    espurna::string out("dimmode~");
     out += config().dim;
     out += '~';
     out += config().brightness;
@@ -431,7 +431,7 @@ void sendDimmode() {
 }
 
 void sendTimeout() {
-    String out(F("timeout~"));
+    espurna::string out("timeout~");
     out += config().timeout;
     serial::enqueue(std::move(out), true);
 }
@@ -454,7 +454,7 @@ void sendClock(bool force) {
 
     if (force || (t.tm_mday != display.last_mday)) {
         display.last_mday = t.tm_mday;
-        serial::enqueue(String(F("date~")) + lang::date(t), true);
+        serial::enqueue(espurna::string("date~") + lang::date(t), true);
     }
 }
 
@@ -480,19 +480,19 @@ uint16_t stateColor(int state) {
         : config().color_unknown;
 }
 
-void renderItem(String& out, uint16_t index) {
+void renderItem(espurna::string& out, uint16_t index) {
     const auto& item = config().items[index];
 
     const char* type = "switch";
-    String icon(item.icon.c_str());
+    espurna::string icon(item.icon.c_str());
     uint16_t color = config().color_unknown;
-    String value;
+    espurna::string value;
 
     switch (item.type) {
     case ItemType::Switch: {
         const auto state = entityState(item.target.entity);
         color = stateColor(state);
-        value = (state == 1) ? F("1") : F("0");
+        value = (state == 1) ? "1" : "0";
         break;
     }
 
@@ -546,7 +546,7 @@ void renderItem(String& out, uint16_t index) {
 
     out += '~';
     out += type;
-    out += F("~i");
+    out += "~i";
     out += index;
     out += '~';
     out += icon;
@@ -558,15 +558,15 @@ void renderItem(String& out, uint16_t index) {
     out += value;
 }
 
-void renderNavHidden(String& out) {
-    out += F("~delete~~~~~");
+void renderNavHidden(espurna::string& out) {
+    out += "~delete~~~~~";
 }
 
-void renderNav(String& out, const char* id, uint16_t icon, const String& name) {
-    String label = name;
+void renderNav(espurna::string& out, const char* id, uint16_t icon, const espurna::string& name) {
+    espurna::string label = name;
     utf8Truncate(label, NameMax);
 
-    out += F("~button~");
+    out += "~button~";
     out += id;
     out += '~';
     out += utf8(icon);
@@ -605,19 +605,19 @@ void showCard(size_t index, bool full) {
     const size_t total = card.sub ? display.cards.size() : rowCards(display.cards);
 
     if (full) {
-        serial::enqueue(String(F("pageType~")) + cardType(card));
+        serial::enqueue(espurna::string("pageType~") + cardType(card));
         sendTimeout();
     }
 
-    String out(F("entityUpd~"));
+    espurna::string out("entityUpd~");
     out.reserve(640);
     out += card.title;
 
     // Linear navigation: the screensaver sits left of the first card, the last card has no right arrow
     if (card.sub && !samePage(display.cards, index, index - 1)) {
-        renderNav(out, "navPrev", icons::ArrowLeftBold, String());
+        renderNav(out, "navPrev", icons::ArrowLeftBold, espurna::string());
     } else if (index == 0) {
-        renderNav(out, "navHome", icons::Home, String());
+        renderNav(out, "navHome", icons::Home, espurna::string());
     } else {
         renderNav(out, "navPrev", icons::ArrowLeftBold, display.cards[index - 1].title);
     }
@@ -644,15 +644,15 @@ void showScreensaver() {
     display.history.clear();
     display.screen = Screen::Screensaver;
     display.dirty = false;
-    serial::enqueue(F("pageType~screensaver"));
+    serial::enqueue("pageType~screensaver");
     sendTimeout();
     sendWeather();
     sendStatus();
 }
 
 void requestStartup() {
-    display.startup_request = millis();
-    serial::enqueue(F("pageType~pageStartup"));
+    display.startup_request = espurna::time::ms();
+    serial::enqueue("pageType~pageStartup");
 }
 
 // "open" items and hardware buttons with a page: first card of that page, the screensaver for home / weather
@@ -679,7 +679,7 @@ void showTarget(int page) {
 // Events
 // -----------------------------------------------------------------------------
 
-void onStartup(int version, const String& model) {
+void onStartup(int version, const espurna::string& model) {
     display.connected = true;
     display.was_connected = true;
     display.lost = false;
@@ -689,11 +689,11 @@ void onStartup(int version, const String& model) {
     display.screen = Screen::Startup;
 
     DEBUG_MSG_P(PSTR("[NSPANEL] Lovelace TFT startup: version %d, model '%s'\n"), version, model.c_str());
-    if ((version < 50) || (model != F("eu"))) {
+    if ((version < 50) || (model != "eu")) {
         DEBUG_MSG_P(PSTR("[NSPANEL] Unexpected TFT version / model, expected >= 50 and 'eu'\n"));
     }
 
-    announceDriver(lovelace::driver(), String(version), model);
+    announceDriver(lovelace::driver(), espurna::string(version), model);
 
     buildCards();
     sendClock(true);
@@ -716,7 +716,7 @@ void tap(size_t index, int value) {
     itemTap(index, value);
 }
 
-void onMessage(const String& message) {
+void onMessage(const espurna::string& message) {
     ++display.rx_frames;
     display.garbage = 0;
     publishEvent(message);
@@ -725,7 +725,7 @@ void onMessage(const String& message) {
         DEBUG_MSG_P(PSTR("[NSPANEL] <- %s\n"), message.c_str());
     }
 
-    String parts[6];
+    espurna::string parts[6];
     size_t count = 0;
     int start = 0;
     while ((count < 6) && (start <= static_cast<int>(message.length()))) {
@@ -737,57 +737,57 @@ void onMessage(const String& message) {
         start = pos + 1;
     }
 
-    if ((count < 2) || (parts[0] != F("event"))) {
+    if ((count < 2) || (parts[0] != "event")) {
         return;
     }
 
     const auto& type = parts[1];
-    if (type == F("startup")) {
+    if (type == "startup") {
         onStartup(parts[2].toInt(), parts[3]);
         return;
     }
 
-    if (type == F("sleepReached")) {
+    if (type == "sleepReached") {
         showScreensaver();
         return;
     }
 
-    if (type == F("renderCurrentPage")) {
+    if (type == "renderCurrentPage") {
         if (display.screen == Screen::Card) {
             showCard(display.card, false);
         }
         return;
     }
 
-    if (type != F("buttonPress2") || (count < 4)) {
+    if (type != "buttonPress2" || (count < 4)) {
         return;
     }
 
     const auto& id = parts[2];
     const auto& action = parts[3];
 
-    if (id == F("screensaver")) {
-        if ((action == F("bExit")) || action.startsWith(F("swipe"))) {
+    if (id == "screensaver") {
+        if ((action == "bExit") || action.startsWith("swipe")) {
             showCard(0, true);
         }
         return;
     }
 
-    if ((action == F("bExit")) || (action == F("notifyAction"))) {
+    if ((action == "bExit") || (action == "notifyAction")) {
         showCard(display.card, true);
         return;
     }
 
-    if (id == F("navHome")) {
+    if (id == "navHome") {
         buzzer::beep();
         showScreensaver();
         return;
     }
 
-    if (id == F("navPrev") || id == F("navNext")) {
+    if (id == "navPrev" || id == "navNext") {
         const bool sub = (display.card < display.cards.size()) && display.cards[display.card].sub;
         const size_t total = sub ? display.cards.size() : rowCards(display.cards);
-        if (id == F("navNext")) {
+        if (id == "navNext") {
             if (((display.card + 1) < total) && (!sub || samePage(display.cards, display.card, display.card + 1))) {
                 buzzer::beep();
                 showCard(display.card + 1, true);
@@ -821,9 +821,9 @@ void onMessage(const String& message) {
 
     if ((id.length() > 1) && (id[0] == 'i')) {
         const auto index = id.substring(1).toInt();
-        if (action == F("button")) {
+        if (action == "button") {
             tap(index, -1);
-        } else if ((action == F("OnOff")) && (count >= 5)) {
+        } else if ((action == "OnOff") && (count >= 5)) {
             tap(index, (parts[4].toInt() != 0) ? 1 : 0);
         }
     }
@@ -840,8 +840,8 @@ void rxLoop() {
 
         bool raw_startup = false;
         if (serial::parser.feed(static_cast<uint8_t>(byte), raw_startup)) {
-            const String message = serial::parser.payload;
-            serial::parser.payload = String();
+            const espurna::string message = serial::parser.payload;
+            serial::parser.payload = espurna::string();
             onMessage(message);
         }
 
@@ -850,7 +850,7 @@ void rxLoop() {
             serial::writeRaw("recmod=1");
             display.garbage = 0;
             if (display.connected) {
-                display.disconnected_since = millis();
+                display.disconnected_since = espurna::time::ms();
             }
             display.connected = false;
             display.screen = Screen::Unknown;
@@ -874,7 +874,7 @@ void begin() {
     display.lost = false;
     display.garbage = 0;
     display.screen = Screen::Unknown;
-    display.last_tx = millis() - TxGapMs;
+    display.last_tx = espurna::time::ms() - TxGapMs;
 
     const uint8_t ff[3] {0xFF, 0xFF, 0xFF};
     serial::port().write(ff, sizeof(ff));
@@ -895,7 +895,7 @@ void loop() {
     rxLoop();
     serial::txLoop();
 
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (!display.connected) {
         if (now - display.startup_request >= StartupRetryMs) {
             requestStartup();
@@ -964,11 +964,11 @@ void showPage(int page) {
     }
 }
 
-void send(String payload) {
+void send(espurna::string payload) {
     serial::enqueue(std::move(payload));
 }
 
-void info(Print& out) {
+void info(::espurna::Output& out) {
     out.printf_P(PSTR("Lovelace: %s, version %d, model '%s'\n"),
         display.connected ? "connected" : "not connected",
         display.version, display.model.c_str());
@@ -1035,11 +1035,11 @@ public:
         lovelace::showPage(page);
     }
 
-    void send(String payload) override {
+    void send(espurna::string payload) override {
         lovelace::send(std::move(payload));
     }
 
-    void info(Print& out) override {
+    void info(::espurna::Output& out) override {
         lovelace::info(out);
     }
 };

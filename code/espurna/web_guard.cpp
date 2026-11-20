@@ -17,7 +17,6 @@ queued TCP data). Parallel requests ran the heap out:
 A gate sits between lwIP and the server: the accept callback of the listening pcb (lpcb->accept) of the web server
 and of telnet. A new connection is not taken when
 - its port already has webGuardConns connections (the new one and web sockets included),
-- the web server already has webGuardReqs HTTP requests in progress (web sockets not counted, Server::busy()),
 - the free heap is below webGuardHeap,
 - the largest free block is below webGuardBlock,
 - lwIP's own heap (where lwIP has one, MEM_LIBC_MALLOC 0: the BK7231N) has less than webGuardLwip free.
@@ -27,7 +26,8 @@ closed (the WebUI stays connected): the guard recovers by itself, the heap comes
 Not taken means waiting, not failing: once a new connection would not be taken, the listener's backlog goes to 0
 (lwIP with TCP_LISTEN_BACKLOG drops the SYNs of new connections, nothing is allocated for them) and the client sends its
 SYN again after 1, 2, 4 ... s - the browser's request waits instead of failing. The loop opens the backlog again as soon
-as one more would be taken; with webGuardReqs it lets in only as many handshakes as there are free request slots. A
+as one more would be taken. webGuardReqs is not a gate (20.11: the dropped SYNs made the WebUI's parallel parts wait
+seconds): the web server handles that many requests at once and takes the next accepted connection from its queue. A
 connection that got through the handshake anyway (it was under way when the backlog closed) is reset at once, before
 the server allocates anything for it.
 
@@ -187,18 +187,9 @@ uint32_t lwipFree() {
 #endif
 }
 
-// HTTP requests of the web server in progress, taken or waiting for the loop
-uint32_t requests(const Listener& listener) {
-    return listener.web ? static_cast<uint32_t>(webServer().busy()) : 0;
-}
-
 // `incoming`: the new connection is in lwIP's list already (the gate), else: would one more be taken now
 bool admit(const State& guard, const Listener& listener, bool incoming) {
     if (guard.conns && ((connections(listener.port) + (incoming ? 0 : 1)) > guard.conns)) {
-        return false;
-    }
-
-    if (guard.requests && listener.web && ((requests(listener) + 1) > guard.requests)) {
         return false;
     }
 
@@ -219,13 +210,8 @@ bool admit(const State& guard, const Listener& listener, bool incoming) {
 
 // handshakes the listener may have under way: its own backlog, or the free request slots of the web server
 uint8_t slots(const State& guard, const Listener& listener) {
-    uint32_t out = listener.backlog ? listener.backlog : 1;
-    if (guard.requests && listener.web) {
-        const auto busy = requests(listener);
-        const uint32_t free = (guard.requests > busy) ? (guard.requests - busy) : 1;
-        out = std::min(out, free);
-    }
-
+    (void)guard;
+    const uint32_t out = listener.backlog ? listener.backlog : 1;
     return static_cast<uint8_t>(out ? out : 1);
 }
 
@@ -342,6 +328,9 @@ void configure() {
     guard.lwip = settings::lwip();
     guard.conns = settings::conns();
     guard.requests = settings::requests();
+    // the request count is the web server's own (a queue of accepted connections), no longer a gate on the SYNs:
+    // dropped SYNs came again after 1 s, 3 s... - the WebUI's parallel parts loaded seconds slower than on NONOS (20.11)
+    webServer().setConcurrency(guard.requests);
 }
 
 bool held() {
@@ -357,7 +346,7 @@ bool held() {
 void loop() {
     auto& guard = *state;
 
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (held() && (now - guard.checked >= build::HoldInterval)) {
         guard.checked = now;
         reopenInLwip();
@@ -393,7 +382,7 @@ void setup() {
 
     configure();
     installInLwip();
-    state->scanned = millis();
+    state->scanned = espurna::time::ms();
 
     ::espurnaRegisterReload(configure);
     ::espurnaRegisterLoop(loop);

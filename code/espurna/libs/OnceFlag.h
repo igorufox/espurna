@@ -1,6 +1,6 @@
 /*
 
-Helper class to set the boolean exactly when setting multiple times in a row
+Helper class to set the bool exactly when setting multiple times in a row
 (as an alternative to checking input every time before setting)
 
 */

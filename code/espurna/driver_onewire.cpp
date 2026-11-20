@@ -351,14 +351,14 @@ Port::Devices Port::search(OneWire& wire, unsigned char pin) {
 
     // If no devices found check again pulling up the line
     if (!out.size()) {
-        pinMode(pin, INPUT_PULLUP);
+        espurna::pins::mode(pin, espurna::pins::InputPullup);
         pulled_up = true;
         out = _search(wire);
     }
 
     // ...and do not forget to go back to the way it was before
     if (pulled_up) {
-        pinMode(pin, INPUT);
+        espurna::pins::mode(pin, espurna::pins::Input);
     }
 
     return out;

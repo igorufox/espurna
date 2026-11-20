@@ -217,7 +217,7 @@ void fail(const char* format, ...) {
     message("%s", error);
 }
 
-Stream& port() {
+::espurna::ByteStream& port() {
     return uart::port();
 }
 
@@ -229,12 +229,12 @@ void setBaud(uint32_t value) {
 
 void wait(Step next, uint32_t ms) {
     step = next;
-    step_at = millis();
+    step_at = espurna::time::ms();
     step_ms = ms;
 }
 
 bool waited() {
-    return millis() - step_at >= step_ms;
+    return espurna::time::ms() - step_at >= step_ms;
 }
 
 // raw RX bytes of the current phase, logged in hex
@@ -389,7 +389,7 @@ struct Source : public ::espurna::http::Sink {
 
 ::espurna::http::Client client;
 Source source;
-String last_http;
+espurna::string last_http;
 
 void httpDone(const ::espurna::http::Result& result) {
     last_http = result.message;
@@ -420,7 +420,7 @@ void finish(bool ok) {
 
 void powerCycle(Step then) {
     message("power-cycling the display");
-    build::powerWrite(HIGH);
+    build::powerWrite(true);
     power_then = then;
     wait(Step::PowerOff, PowerOffMs);
 }
@@ -448,7 +448,7 @@ void attemptStart() {
 void attemptEnd(Result result) {
     if (result == Result::Ok) {
         message("all %u bytes sent in %u s, the display installs the TFT and restarts", total,
-            static_cast<unsigned>((millis() - upload_start) / 1000));
+            static_cast<unsigned>((espurna::time::ms() - upload_start) / 1000));
         finish(true);
         return;
     }
@@ -562,7 +562,7 @@ void stepProbe() {
     if (check_only) {
         message("check: %u bytes, no display", total);
         phase = PhaseUpload;
-        upload_start = millis();
+        upload_start = espurna::time::ms();
         next_report = 0;
         pos = 0;
         sent = 0;
@@ -630,11 +630,11 @@ void stepReady() {
         }
 
         char label[64];
-        snprintf(label, sizeof(label), "RX before the first 05 (%u ms)", static_cast<unsigned>(millis() - step_at));
+        snprintf(label, sizeof(label), "RX before the first 05 (%u ms)", static_cast<unsigned>(espurna::time::ms() - step_at));
         captureDump(label);
 
         phase = PhaseUpload;
-        upload_start = millis();
+        upload_start = espurna::time::ms();
         next_report = 0;
         blockNext();
         return;
@@ -687,7 +687,7 @@ void stepSend() {
         const uint32_t percent = (static_cast<uint64_t>(pos) * 100) / total;
         if (percent >= next_report) {
             message("check %u%% (%u / %u bytes, %u s)", percent, pos, total,
-                static_cast<unsigned>((millis() - upload_start) / 1000));
+                static_cast<unsigned>((espurna::time::ms() - upload_start) / 1000));
             next_report = percent - (percent % 5) + 5;
         }
         if (pos >= total) {
@@ -717,7 +717,7 @@ void stepSend() {
     const uint32_t percent = (static_cast<uint64_t>(pos) * 100) / total;
     if (percent >= next_report) {
         message("%u%% (%u / %u bytes, %u baud, %u s)", percent, pos, total, baud,
-            static_cast<unsigned>((millis() - upload_start) / 1000));
+            static_cast<unsigned>((espurna::time::ms() - upload_start) / 1000));
         next_report = percent - (percent % 5) + 5;
     }
 
@@ -803,7 +803,7 @@ void run() {
 
     case Step::PowerOff:
         if (waited()) {
-            build::powerWrite(LOW);
+            build::powerWrite(false);
             wait(Step::PowerOn, BootMs);
         }
         break;
@@ -929,7 +929,7 @@ bool busy() {
     return state != Idle;
 }
 
-bool check(const String& link, String& out) {
+bool check(const espurna::string& link, espurna::string& out) {
     if (!start(link, 921600, out)) {
         return false;
     }
@@ -937,47 +937,47 @@ bool check(const String& link, String& out) {
     return true;
 }
 
-bool start(const String& link, uint32_t rate, String& out) {
+bool start(const espurna::string& link, uint32_t rate, espurna::string& out) {
     if (busy()) {
-        out = F("an upload is already running");
+        out = "an upload is already running";
         return false;
     }
 
-    if (!link.startsWith(F("http://")) && !link.startsWith(F("https://"))) {
-        out = F("URL must start with http:// or https://");
+    if (!link.startsWith("http://") && !link.startsWith("https://")) {
+        out = "URL must start with http:// or https://";
         return false;
     }
 
     if (link.length() >= sizeof(url)) {
-        out = F("URL too long");
+        out = "URL too long";
         return false;
     }
 
     if (!wifiConnected()) {
-        out = F("no WiFi");
+        out = "no WiFi";
         return false;
     }
 
-    const bool https = link.startsWith(F("https://"));
+    const bool https = link.startsWith("https://");
     const auto heap = systemFreeHeap();
     if (heap < (https ? HeapMinTls : HeapMin)) {
-        out = String(F("low heap (")) + heap + F(" bytes)");
+        out = espurna::string("low heap (") + heap + " bytes)";
         if (https) {
-            out += F(", try a plain http:// URL");
+            out += ", try a plain http:// URL";
         }
         return false;
     }
 
     block.reset(new (std::nothrow) uint8_t[Block]);
     if (!block) {
-        out = F("out of memory");
+        out = "out of memory";
         return false;
     }
 
     strncpy(url, link.c_str(), sizeof(url) - 1);
     url[sizeof(url) - 1] = '\0';
     requested = rate;
-    started_ms = millis();
+    started_ms = espurna::time::ms();
     error[0] = '\0';
     comok[0] = '\0';
     variant[0] = '\0';
@@ -1004,10 +1004,10 @@ bool start(const String& link, uint32_t rate, String& out) {
     source.at = 0;
     source.next = 0;
     source.skip = 0;
-    last_http = String();
+    last_http = espurna::string();
     if (!client.start(url, nullptr, source, httpDone)) {
         block.reset();
-        out = F("HTTP request not started");
+        out = "HTTP request not started";
         return false;
     }
 
@@ -1023,7 +1023,7 @@ void loop() {
         // a block takes several steps (collect, send / CRC, the next request); one step per loop pass and the loop's
         // 10 ms pause made the download ~77 KB/s, slower than the display takes at 921600 baud. Steps run back to back
         // while they move on, up to RunBudgetMs; a step that waits (no data yet, no acknowledge) ends the pass
-        const auto start = millis();
+        const auto start = espurna::time::ms();
         for (;;) {
             const auto before_step = step;
             const auto before_pos = pos;
@@ -1036,7 +1036,7 @@ void loop() {
             if ((step == before_step) && (pos == before_pos) && (fill == before_fill) && (written == before_written)) {
                 break;
             }
-            if ((millis() - start) >= RunBudgetMs) {
+            if ((espurna::time::ms() - start) >= RunBudgetMs) {
                 break;
             }
         }
@@ -1045,7 +1045,7 @@ void loop() {
         }
     }
 
-    const unsigned seconds = (millis() - started_ms) / 1000;
+    const unsigned seconds = (espurna::time::ms() - started_ms) / 1000;
     const bool ok = (state == Done);
     if (ok) {
         snprintf(last_result, sizeof(last_result), "ok, %u bytes in %u s (%s)", total, seconds, variant);
@@ -1067,13 +1067,13 @@ void loop() {
     resume(ok);
 }
 
-void info(Print& out) {
+void info(::espurna::Output& out) {
     if (state == Running) {
         out.printf_P(PSTR("Flash: %s, %u%% (%u / %u bytes), %u baud, %u s\n"),
             phaseName(phase),
             total ? static_cast<unsigned>((static_cast<uint64_t>(sent) * 100) / total) : 0,
             sent, total, baud,
-            static_cast<unsigned>((millis() - started_ms) / 1000));
+            static_cast<unsigned>((espurna::time::ms() - started_ms) / 1000));
     } else {
         out.printf_P(PSTR("Flash: idle, last: %s\n"), last_result);
         if (comok[0]) {

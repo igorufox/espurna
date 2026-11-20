@@ -185,9 +185,8 @@ def library_dir(env):
 
 if env.GetProjectOption("custom_matter_lib", "") or os.environ.get("ESPURNA_MATTER_LIB_DIR"):
     folder = library_dir(env)
-    # bk7231n: first in the include path, our lwipopts.h instead of the SDK one, for every library built after this
-    if os.path.isfile(os.path.join(folder, "include", "lwipopts.h")):
-        env.Prepend(CPPPATH=[os.path.join(folder, "include")])
+    # bk7231n: the lwIP options are the SDK's (framework-beken-bdk glue/lwipopts, the lwIP of the package is compiled
+    # with them); the library checks the layout it shares with them (matter_requirements.h / matter_abi.h)
     # same as `-L<folder> -lMatterApp` in build_flags: LIBS come after the objects of the link
     env.Append(LIBPATH=[os.path.join(folder, "lib")], LIBS=["MatterApp"])
 

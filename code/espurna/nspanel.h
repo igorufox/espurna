@@ -4,7 +4,7 @@ NSPANEL MODULE
 
 Sonoff NSPanel (gen1, ESP32) display backend for the OHpanel TFT (nspanel_ohpanel.cpp) and the
 joBr99 "NSPanel Lovelace UI" TFT (nspanel_lovelace.cpp), detected automatically (the parts: nspanel_core.h),
-(flash layout and updates: arch/esp32/safeboot_esp32.cpp, as on every ESP32 image)
+(flash layout: esp32_4mb.csv, as on every ESP32 image)
 
 The screen of another part (nspanelScreen* below, OHpanel only for now): nspanelqr.cpp (this module; the matter
 module through the head) shows the Matter pairing QR code on it, drawn with Nextion `fill`
@@ -20,7 +20,7 @@ NSPANEL.QR off; a touch puts the page back
 #include <cstdint>
 
 // Early, right after the basic modules (works in the 'unstable' system mode as well):
-// display power and buzzer pins (safebootSetup() follows with the crash-loop guard and `safeboot`)
+// display power and buzzer pins
 void nspanelBootSetup();
 
 // Display backend, MQTT, web endpoints, weather and temperature

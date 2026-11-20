@@ -9,9 +9,9 @@ Inspired by https://github.com/Vasil-Pahomov/ArWs2812 (currently https://github.
 
 class Color {
 public:
-    byte r = 0;
-    byte g = 0;
-    byte b = 0;
+    uint8_t r = 0;
+    uint8_t g = 0;
+    uint8_t b = 0;
 
     Color() = default;
     Color(const Color&) = default;
@@ -48,7 +48,7 @@ public:
     }
 
     //creates color with decreased brightness
-    Color brightness(byte k) const {
+    Color brightness(uint8_t k) const {
         int r0 = r * (int)k / 255;
         int g0 = g * (int)k / 255;
         int b0 = b * (int)k / 255;
@@ -56,7 +56,7 @@ public:
     }
 
     //fades (decreases all RGB channels brightness) this color by k
-    Color& fade(byte k) {
+    Color& fade(uint8_t k) {
         if (r>=k) { r=r-k; } else { r=0; }
         if (g>=k) { g=g-k; } else { g=0; }
         if (b>=k) { b=b-k; } else { b=0; }
@@ -64,7 +64,7 @@ public:
     }
 
     //fades color separately for each channel
-    Color& fade3(byte dr, byte dg, byte db) {
+    Color& fade3(uint8_t dr, uint8_t dg, uint8_t db) {
         if (r>=dr) { r=r-dr; } else { r=0; }
         if (g>=dg) { g=g-dg; } else { g=0; }
         if (b>=db) { b=b-db; } else { b=0; }
@@ -100,7 +100,7 @@ public:
         return r == 0 && g == 0 && b == 0;
     }
 
-    String to_str() {
+    espurna::string to_str() {
         char buf[20];
         snprintf_P(buf, sizeof(buf),
             PSTR("r=%hhu, g=%hhu, b=%hhu"),

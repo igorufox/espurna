@@ -19,10 +19,10 @@ WebUI NSPANEL section with its screen mirror
 #include "ws.h"
 #endif
 
-#include <ArduinoJson.h>
-#include <StreamString.h>
+#include "json.h"
 
 #include "espurna_tasks.h"
+#include "libs/PrintString.h"
 #include <algorithm>
 #include <cstring>
 #include <memory>
@@ -53,7 +53,7 @@ struct Job {
     std::unique_ptr<char[]> buffer;
     size_t size { 0 };
     int code { 0 };
-    String message;
+    espurna::string message;
 };
 
 Job job;
@@ -76,14 +76,14 @@ void process() {
     }
 
     // its TLS session takes 40-60 KB, the parse goes after it (the crash of 2026-10-25)
-    if (weather::running() && ((millis() - job.queued_ms) < build::UploadWeatherWaitMs)) {
+    if (weather::running() && ((espurna::time::ms() - job.queued_ms) < build::UploadWeatherWaitMs)) {
         return;
     }
 
     int code = 500;
-    String message;
-    String error;
-    String warnings;
+    espurna::string message;
+    espurna::string error;
+    espurna::string warnings;
 
     ESPURNA_TRY {
         // compiled straight into the flash (no heap copy of the image)
@@ -91,34 +91,34 @@ void process() {
         job.buffer.reset(); // the parse destroyed it
 
         if (result == ParseResult::WriteFailed) {
-            message = String(F("ERROR: write failed: ")) + error;
+            message = espurna::string("ERROR: write failed: ") + error;
         } else if (result != ParseResult::Ok) {
             code = (result == ParseResult::LowMemory) ? 503 : 400;
-            message = String(F("ERROR: ")) + error;
+            message = espurna::string("ERROR: ") + error;
         } else {
             code = 200;
-            message = F("OK");
+            message = "OK";
             if (warnings.length()) {
-                message += F(", warnings: ");
+                message += ", warnings: ";
                 message += warnings;
             }
 
             Config next;
-            String ignored;
+            espurna::string ignored;
             if (!storage::open(next, error, ignored)) {
-                message = String(F("OK, saved; it cannot be read back: ")) + error;
+                message = espurna::string("OK, saved; it cannot be read back: ") + error;
             } else {
-                setLoadError(String());
+                setLoadError(espurna::string());
                 applyConfig(std::move(next), warnings, build::ConfigPath);
             }
         }
     } ESPURNA_CATCH_BAD_ALLOC {
         // the image is saved before applyConfig() runs
         if (code == 200) {
-            message = F("OK, saved; the display reload ran out of memory (try nspanel.reload)");
+            message = "OK, saved; the display reload ran out of memory (try nspanel.reload)";
         } else {
             code = 503;
-            message = F("ERROR: out of memory, retry");
+            message = "ERROR: out of memory, retry";
         }
     }
 
@@ -141,7 +141,7 @@ void process() {
 
 namespace {
 
-void sendText(WebRequest& request, int code, const String& message) {
+void sendText(WebRequest& request, int code, const espurna::string& message) {
     if (code == 503) {
         request.addHeader("Retry-After", "2");
     }
@@ -204,7 +204,7 @@ void onGetConfig(WebRequest& request) {
 
     const auto* image = reinterpret_cast<const uint8_t*>(config().image);
     if (!image) {
-        webSend(request, 503, "text/plain; charset=utf-8", F("ERROR: no config loaded"));
+        webSend(request, 503, "text/plain; charset=utf-8", "ERROR: no config loaded");
         return;
     }
 
@@ -238,7 +238,7 @@ struct Receive {
     bool in_string { false };
     bool escaped { false };
     int code { 0 };
-    String message;
+    espurna::string message;
 };
 
 Receive rx;
@@ -258,13 +258,13 @@ void rxReset() {
     rx.in_string = false;
     rx.escaped = false;
     rx.code = 0;
-    rx.message = String();
+    rx.message = espurna::string();
     upload::receiving.store(false);
 }
 
-void rxFail(int code, const __FlashStringHelper* message) {
+void rxFail(int code, const char* message) {
     rx.code = code;
-    rx.message = message ? String(message) : String();
+    rx.message = message ? espurna::string(message) : espurna::string();
     rx.buffer.reset();
     upload::receiving.store(false);
 }
@@ -301,12 +301,12 @@ void onPostBody(WebRequest& request, const char*, size_t index, const uint8_t* d
         // the limit is on the text without the whitespace outside strings: the editor's own formatted GET (2-space
         // indents, ~18 KB for the NSPANEL1 config) goes back as it came. The body itself up to 4 times that
         if (!total || (total > (4 * build::ConfigMax))) {
-            rxFail(413, F("ERROR: config too large (max 16384 bytes without the whitespace)"));
+            rxFail(413, "ERROR: config too large (max 16384 bytes without the whitespace)");
             return;
         }
 
         if (upload::job.state == upload::State::Queued) {
-            rxFail(503, F("ERROR: another upload is being processed, retry"));
+            rxFail(503, "ERROR: another upload is being processed, retry");
             return;
         }
 
@@ -315,13 +315,13 @@ void onPostBody(WebRequest& request, const char*, size_t index, const uint8_t* d
         if ((systemHeapStats().usable < (keep + 1 + build::ConfigBlockReserve))
             || (systemFreeHeap() < (keep + build::ConfigHeapReserve)))
         {
-            rxFail(503, F("ERROR: low memory, retry"));
+            rxFail(503, "ERROR: low memory, retry");
             return;
         }
 
         rx.buffer.reset(new (std::nothrow) char[keep + 1]);
         if (!rx.buffer) {
-            rxFail(503, F("ERROR: low memory, retry"));
+            rxFail(503, "ERROR: low memory, retry");
             return;
         }
         rx.total = total;
@@ -333,7 +333,7 @@ void onPostBody(WebRequest& request, const char*, size_t index, const uint8_t* d
     }
 
     if (!rx.buffer || (index != rx.received) || ((index + len) > rx.total)) {
-        rxFail(400, F("ERROR: unexpected body"));
+        rxFail(400, "ERROR: unexpected body");
         return;
     }
 
@@ -355,7 +355,7 @@ void onPostBody(WebRequest& request, const char*, size_t index, const uint8_t* d
         }
 
         if (rx.size >= build::ConfigMax) {
-            rxFail(413, F("ERROR: config too large (max 16384 bytes without the whitespace)"));
+            rxFail(413, "ERROR: config too large (max 16384 bytes without the whitespace)");
             return;
         }
         rx.buffer[rx.size++] = c;
@@ -370,10 +370,10 @@ void onPostConfig(WebRequest& request) {
             return;
         }
         if (rx.request || waiting || (upload::job.state == upload::State::Queued)) {
-            sendText(request, 503, F("ERROR: another upload is in progress, retry"));
+            sendText(request, 503, "ERROR: another upload is in progress, retry");
             return;
         }
-        sendText(request, 400, F("ERROR: empty body"));
+        sendText(request, 400, "ERROR: empty body");
         return;
     }
 
@@ -389,20 +389,20 @@ void onPostConfig(WebRequest& request) {
 
     if (code) {
         rxReset();
-        sendText(request, code, message.length() ? message : String(F("ERROR: busy, retry")));
+        sendText(request, code, message.length() ? message : espurna::string("ERROR: busy, retry"));
         return;
     }
 
     if (!rx.buffer || (request.bodyReceived() != rx.total) || (rx.received != rx.total)) {
         rxReset();
-        sendText(request, 400, F("ERROR: incomplete body"));
+        sendText(request, 400, "ERROR: incomplete body");
         return;
     }
 
     auto& job = upload::job;
     if (job.state == upload::State::Queued) {
         rxReset();
-        sendText(request, 503, F("ERROR: another upload is being processed, retry"));
+        sendText(request, 503, "ERROR: another upload is being processed, retry");
         return;
     }
 
@@ -411,16 +411,16 @@ void onPostConfig(WebRequest& request) {
     job.buffer = std::move(rx.buffer);
     job.size = rx.size;
     job.id = ++last_id;
-    job.queued_ms = millis();
+    job.queued_ms = espurna::time::ms();
     job.code = 0;
-    job.message = String();
+    job.message = espurna::string();
     job.state = upload::State::Queued;
     rxReset();
 
     // no answer before loop() has saved and applied it, ref. answerLoop()
     waiting = &request;
     waiting_id = job.id;
-    waiting_ms = millis();
+    waiting_ms = espurna::time::ms();
 }
 
 // the result of the job the waiting request is for
@@ -430,22 +430,22 @@ void answerLoop() {
     }
 
     int code = 0;
-    String message;
+    espurna::string message;
     auto& job = upload::job;
     if (job.id != waiting_id) {
         code = 500;
-        message = F("ERROR: upload lost");
+        message = "ERROR: upload lost";
     } else if (job.state == upload::State::Done) {
         code = job.code;
         message = std::move(job.message);
-        job.message = String();
+        job.message = espurna::string();
         job.state = upload::State::Idle;
-    } else if ((millis() - waiting_ms) >= build::UploadAnswerMs) {
+    } else if ((espurna::time::ms() - waiting_ms) >= build::UploadAnswerMs) {
         job.buffer.reset();
         job.size = 0;
         job.state = upload::State::Idle;
         code = 503;
-        message = F("ERROR: busy, retry");
+        message = "ERROR: busy, retry";
     } else {
         return;
     }
@@ -462,58 +462,59 @@ void onStatus(WebRequest& request) {
         return;
     }
 
-    DynamicJsonBuffer buffer(3072);
-    JsonObject& root = buffer.createObject();
-    root["display"] = driverPrefName(config().display);
-    root["driver"] = link::name();
-    root["connected"] = link::connected();
-    root["probing"] = link::probing();
-    root["version"] = driver::version();
-    root["model"] = driver::model();
+    StringPrint out;
+    espurna::json::StreamWriter root(out);
+    root.beginObject();
+    root.field("display", driverPrefName(config().display));
+    root.field("driver", link::name());
+    root.field("connected", link::connected());
+    root.field("probing", link::probing());
+    root.field("version", driver::version());
+    root.field("model", driver::model());
     const auto design = driver::design();
     if (design.length()) {
-        root["design"] = design;
+        root.field("design", design);
     }
-    root["flashing"] = flash::busy();
+    root.field("flashing", flash::busy());
     {
         // the progress or the last result, the WebUI shows it under "Flash the screen"
-        StreamString text;
+        PrintString text(256);
         flash::info(text);
         text.trim();
-        root["flash"] = static_cast<const String&>(text);
+        root.field("flash", static_cast<const espurna::string&>(text));
     }
 
     // the icon names of the built-in table, offered by the editor's icon field
-    JsonArray& names = root.createNestedArray("icons");
+    root.array("icons");
     for (size_t index = 0; index < iconCount(); ++index) {
-        names.add(iconName(index));
+        root.value(iconName(index));
     }
+    root.end();
+    root.end();
 
-    String out;
-    root.printTo(out);
-    webSend(request, 200, "application/json", std::move(out));
+    webSend(request, 200, "application/json", std::move(static_cast<espurna::string&>(out)));
 }
 
 // the WebUI screen mirror (OHpanel only): "nspanelScreen" starts it, touches come back as the TFT's own events
-void onWsAction(uint32_t client_id, const char* action, JsonObject& data) {
+void onWsAction(uint32_t client_id, const char* action, espurna::json::Value data) {
     auto* active = link::active();
     // "Flash the screen": the TFT by its URL, as nspanel.flash at its default rate; any screen, also the stock one
     if (!strcmp_P(action, PSTR("nspanelFlash"))) {
-        String out;
-        const char* link = data["url"] | "";
-        if (flash::start(String(link), 921600, out)) {
-            out = F("started");
+        espurna::string out;
+        const auto link = data["url"].asString();
+        if (flash::start(espurna::string(link.c_str()), 921600, out)) {
+            out = "started";
         }
-        wsPost(client_id, [out](JsonObject& root) {
-            root["nspanelFlash"] = out;
+        wsPost(client_id, [out](espurna::json::Writer& root) {
+            root.field("nspanelFlash", out);
         });
         return;
     }
 
     if (!strcmp_P(action, PSTR("nspanelScreen"))) {
         if (!active || flash::busy() || !active->mirrorStart()) {
-            wsPost(client_id, [](JsonObject& root) {
-                root["nspanelTft"] = F("#unsupported\n");
+            wsPost(client_id, [](espurna::json::Writer& root) {
+                root.field("nspanelTft", "#unsupported\n");
             });
         }
         return;
@@ -524,21 +525,21 @@ void onWsAction(uint32_t client_id, const char* action, JsonObject& data) {
     }
 
     if (!strcmp_P(action, PSTR("nspanelTouch"))) {
-        const char* page = data["page"] | "";
-        const char* component = data["component"] | "";
-        const char* value = data["value"] | "";
-        if (*page && *component && *value) {
-            active->event(page, component, value);
+        const auto page = data["page"].asString();
+        const auto component = data["component"].asString();
+        const auto value = data["value"].asString();
+        if (page.size() && component.size() && value.size()) {
+            active->event(page.c_str(), component.c_str(), value.c_str());
         }
     } else if (!strcmp_P(action, PSTR("nspanelXY"))) {
-        if (data.is<int>("x") && data.is<int>("y")) {
-            active->touchXY(data["x"].as<int>(), data["y"].as<int>(), (data["press"] | 0) != 0);
+        if (data["x"].isNumber() && data["y"].isNumber()) {
+            active->touchXY(data["x"].asLong(), data["y"].asLong(), data["press"].asLong() != 0);
         }
     }
 }
 
 // shows the NSPANEL section of the WebUI
-void onWsVisible(JsonObject& root) {
+void onWsVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, STRING_VIEW("nspanel"));
 }
 

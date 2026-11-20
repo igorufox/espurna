@@ -726,7 +726,7 @@ struct Relative {
     Type type { Type::None };
     Order order { Order::None };
 
-    String name;
+    espurna::string name;
     uint8_t data { 0 };
 
     datetime::Minutes offset{};

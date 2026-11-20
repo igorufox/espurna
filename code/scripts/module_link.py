@@ -46,8 +46,10 @@
 # instruction view), a u32 branch count and that many u32 branches (offset in the chunk | kind << 16: Beken's BL / BLX
 # into the head, kind 1 / 2; the links to the modules it needs, every chip: LINK_WORD | provider << 2 | base kind, a
 # word plus where that provider's base is, LINK_BRANCH | provider << 2 | branch kind, Beken's BL / BLX into it;
-# provider: its index in the needs of the module), then the chunk. The last word of PACKAGE: how many links, the
-# board keeps them behind the maps of the slot (a boot relocates the module again when a provider moved). The module header (modules.h) in the image gets the head id
+# provider: its index in the needs of the module; POOL_WORD, a word with an address of its pool code, version 7),
+# then the chunk. The word at PACKAGE_LINKS: how many links, the
+# board keeps them behind the maps of the slot (a boot relocates the module again when a provider moved); the last word
+# of PACKAGE: the link base of its pool code (Linker.pool_base). The module header (modules.h) in the image gets the head id
 # (offset 24) and the modules it needs (HEADER_REQUIRES).
 #
 # The outputs of every chip: module-<name>.module / .elf / .map, the modules file espurna-<chip>-modules.bin (EMC2,
@@ -72,18 +74,29 @@ import release_image  # noqa: E402  pylint: disable=wrong-import-position
 
 HEADER_MAGIC = 0x31444D45   # "EMD1"
 PACKAGE_MAGIC = 0x31504D45  # "EMP1"
-PACKAGE_VERSION = 5         # modules_core.h PackageVersion
-# magic, version, name, head id, image size, RAM, IRAM, the link A bases of kind 1, 2, 3, crc32 of the body, links
-PACKAGE = struct.Struct("<II16s16sIIIIIIII")
+PACKAGE_VERSION = 7         # modules_core.h PackageVersion
+# magic, version, name, head id, image size, RAM, IRAM, the link A bases of kind 1, 2, 3, crc32 of the body, links,
+# the link A base of the pool code (version 7, 0 - none)
+PACKAGE = struct.Struct("<II16s16sIIIIIIIII")
 PACKAGE_LINKS = 68
 # the links to the modules a module needs, in the branch lists (modules_core.h LinkWord, LinkBranch)
-LINK_WORD = 0x10
-LINK_BRANCH = 0x20
-LINK_PROVIDERS = 4
+# provider << 2: 3 bits, up to 8 modules it needs (package version 6)
+LINK_WORD = 0x20
+LINK_BRANCH = 0x40
+LINK_PROVIDERS = 8
+# a word with an address of the module's pool code (modules_core.h PoolWord, package version 7): the code that runs from
+# the chip's fixed pool (ESP32: the IRAM), linked at Linker.pool_base, the rest of its code where the chip runs code
+POOL_WORD = 0x10
 # the symbols a provider module keeps for the modules that need it (custom_module_provided)
 PROVIDED_FILE = "espurna/modules_provided.txt"
+# the modules of a library (regress-todo.md item 30, owner 18.11 «ардуино сделать как модулем, но на него ссылаться
+# прям только если совсем никак»): {module: the library, a part of its archive's name}. The library is linked into that
+# module only, every other module links without it: one that uses it needs the module (config/head.h) and takes the
+# symbols from there (custom_module_provided), the library is on the board once. The layer of the Arduino names
+# (lib/espurna-core) for the third-party libraries of the modules
+LIBRARY_MODULES = {"arduino": "espurna-core"}
 # a provider's own symbols that are no symbols of the modules that need it
-PROVIDER_PRIVATE = ("__mod_", "espurna_module_", "_GLOBAL_", "_etext", "_edata", "_end")
+PROVIDER_PRIVATE =("__mod_", "espurna_module_", "_GLOBAL_", "_etext", "_edata", "_end")
 CHUNK = 4096
 MAP_SIZE = CHUNK // 16
 RENAMED = "espmod_"
@@ -97,6 +110,9 @@ CONTAINER_ENTRY = struct.Struct("<16sIIIII32sI")
 # takes 32-bit access only (ESP8266: the IRAM tail); the upper 16 bits: its links to the modules it needs (the slot
 # keeps them, the Apply plans the flash with them)
 CONTAINER_BYTE_RAM = 1
+# a data module (no code, e.g. the WebUI page): modules.cpp ModuleDataOnly, its slot may lie where the CPU runs no code
+# (ESP8266: the flash over 1 MB, arch::Area::upper)
+CONTAINER_DATA_MODULE = 2
 # bits 8..15: the sectors of flash it keeps its data in (the data column of ESPURNA_MODULES, modulesData())
 CONTAINER_DATA_SHIFT = 8
 CONTAINER_LINKS_SHIFT = 16
@@ -158,15 +174,16 @@ def pack_body(image, kinds, branches):
     return bytes(body)
 
 
-def package_bytes(name, head_id, image, kinds, ram, iram, bases, branches=None):
+def package_bytes(name, head_id, image, kinds, ram, iram, bases, branches=None, link_pool=0):
     """PACKAGE + body; bases: the link A bases of kind 1, 2, 3 (0 for what the chip has not); branches: {offset in the
-    image: kind} of the words the board moves other than by the map (Beken), none elsewhere"""
+    image: kind} of the words the board moves other than by the map (Beken's branches, the links, the pool words);
+    link_pool: the link A base of its pool code, 0 - none"""
     branches = branches or {}
     body = pack_body(image, kinds, branches)
     bases = list(bases) + [0] * (3 - len(bases))
     links = sum(1 for kind in branches.values() if kind >= LINK_WORD)
     header = PACKAGE.pack(PACKAGE_MAGIC, PACKAGE_VERSION, module_name(name), head_id, len(image), ram, iram, *bases,
-                          zlib.crc32(body) & 0xFFFFFFFF, links)
+                          zlib.crc32(body) & 0xFFFFFFFF, links, link_pool)
     return header + body
 
 
@@ -199,7 +216,7 @@ def export_chip(env):
     """the chip key of the export list: esp8266, esp32, beken"""
     # the platform option of the env: a name or a URL (pioarduino), with a version
     platform = (env.GetProjectOption("platform", "") or env.subst("$PIOPLATFORM")).lower()
-    for key, chip in (("espressif8266", "esp8266"), ("espressif32", "esp32"), ("libretiny", "beken")):
+    for key, chip in (("espressif8266", "esp8266"), ("espressif32", "esp32"), ("platform-beken", "beken"), ("espurna-beken", "beken")):
         if key in platform:
             return chip
     raise RuntimeError(f"head exports: unknown platform {platform!r}")
@@ -280,6 +297,15 @@ def define_name(item):
     return str(item).split("=", 1)[0]
 
 
+def library_module(archive):
+    """the module of LIBRARY_MODULES whose library the archive is (the filtered copies too), else None"""
+    base = os.path.basename(archive)
+    for module, library in LIBRARY_MODULES.items():
+        if library in base:
+            return module
+    return None
+
+
 class MissingSymbols(Exception):
     def __init__(self, names, log):
         super().__init__(f"{len(names)} undefined symbols")
@@ -314,6 +340,10 @@ class Linker:
     system_libs = ("-lstdc++", "-lm", "-lc", "-lgcc")
     # the module has IRAM code of its own (ESP8266: copied into the fixed pool at its start), its size in the package
     has_iram = False
+    # the pool code (package version 7): the placeholder of its section in the link script, its bases A and B, its name
+    # in the summary; (placeholder, A, B, name), None - the chip has none. Its words are POOL_WORD entries of the branch
+    # lists, not kinds of the map: the map has 2 bits, kinds 1, 2, 3 are taken (ESP32: flash, RAM, instruction view)
+    pool_base = None
 
     def __init__(self, env, projenv=None):
         self.env = env
@@ -325,7 +355,8 @@ class Linker:
         self._members_lock = threading.Lock()
         self._libs_lock = threading.Lock()
         self._libs = {}
-        assert len({b - a for _, a, b, _ in self.bases}) == len(self.bases), "every base needs its own delta"
+        everything = self.all_bases()
+        assert len({b - a for _, a, b, _ in everything}) == len(everything), "every base needs its own delta"
 
     # --- chip hooks ------------------------------------------------------------------------------------------------
 
@@ -457,6 +488,15 @@ class Linker:
             parts = line.split()
             if len(parts) == 3:
                 out[parts[2]] = int(parts[0], 16)
+        return out
+
+    def global_symbols(self, elf):
+        """the global names `elf` defines"""
+        out = set()
+        for line in self.run([self.tool("nm"), "-g", "--defined-only", elf]).splitlines():
+            parts = line.split()
+            if len(parts) == 3:
+                out.add(parts[2])
         return out
 
     def symbol_sizes(self, elf):
@@ -669,6 +709,18 @@ class Linker:
         return sorted(set(re.findall(r"undefined reference to `([^']+)'", stderr)))
 
     @staticmethod
+    def pulled_archives(mapfile):
+        """the archives the members of a link's map come from (full paths)"""
+        out = set()
+        with open(mapfile, errors="replace") as f:
+            lines = f.read().split("Allocating common symbols")[0].split("Discarded input sections")[0]
+        for line in lines.splitlines():
+            line = line.strip()
+            if line.endswith(")") and ".a(" in line and not line.startswith("("):
+                out.add(line.rsplit("(", 1)[0])
+        return sorted(out)
+
+    @staticmethod
     def pulled_members(mapfile):
         out = []
         with open(mapfile, errors="replace") as f:
@@ -761,6 +813,31 @@ class Linker:
             data = f.read()
         return elf, mapfile, data + b"\0" * (-len(data) % self.image_align)
 
+    def all_bases(self):
+        """the bases of the link script: the kinds 1, 2, 3 of the map, then the pool code's, if any"""
+        return list(self.bases) + ([self.pool_base] if self.pool_base else [])
+
+    def placed(self, index):
+        """(placeholder, base) of every base of the link script, link A (0) or B (1)"""
+        return [(base[0], base[1 + index]) for base in self.all_bases()]
+
+    def pool_words(self, image_a, image_b, branches):
+        """{offset: POOL_WORD} of the words that move with the pool code (none without a pool section)"""
+        if not self.pool_base:
+            return {}
+        _, a, b, _ = self.pool_base
+        delta = (b - a) & 0xFFFFFFFF
+        covered = {word for offset in branches for word in range(offset // 4, (offset + 3) // 4 + 1)}
+        out = {}
+        for offset in range(0, len(image_a), 4):
+            if (offset // 4) in covered:
+                continue
+            wa, = struct.unpack_from("<I", image_a, offset)
+            wb, = struct.unpack_from("<I", image_b, offset)
+            if wa != wb and ((wb - wa) & 0xFFFFFFFF) == delta:
+                out[offset] = POOL_WORD
+        return out
+
     def relocations(self, name, image_a, image_b, branches):
         """the kind of every word: 0 as is, else the base it moves with; counts per kind"""
         deltas = {(b - a) & 0xFFFFFFFF: kind for kind, (_, a, b, _) in enumerate(self.bases, 1)}
@@ -788,7 +865,8 @@ class Linker:
         provider link in parallel)"""
         build_dir = ctx["build_dir"]
         elf = os.path.join(build_dir, f"module-{provider}.elf" if tag == "a" else f"module-{provider}-b.elf")
-        head = ctx["head_syms"]
+        # the head's defined globals: a local of the SDK of the same name (ESP8266 `SPI`) stays the provider's
+        head = ctx["head_globals"]
         names = []
         for line in self.run([self.tool("nm"), "-g", "--defined-only", elf]).splitlines():
             parts = line.split()
@@ -811,7 +889,7 @@ class Linker:
             extra = list(extra_a)
             extra[position] = self.provider_symbols(ctx, name, provider, "b")
             elf_p, map_p, image_p = self.link(build_dir, name, ctx["head_elf"], objects, archives, f"p{index}",
-                                              [(base[0], base[1]) for base in self.bases], extra, keep)
+                                              self.placed(0), extra, keep)
             if len(image_p) != len(image_a):
                 raise RuntimeError(f"module {name}: image changes size with {provider}")
             branches = self.provider_branches(name, elf_p, image_a, image_p)
@@ -844,8 +922,7 @@ class Linker:
         build_dir = ctx["build_dir"]
         head_id = ctx["head_id"]
         extra_a = [self.provider_symbols(ctx, name, provider, "a") for _, provider in providers]
-        links = [self.link(build_dir, name, ctx["head_elf"], objects, archives, tag,
-                           [(base[0], base[1 + index]) for base in self.bases], extra_a, keep)
+        links = [self.link(build_dir, name, ctx["head_elf"], objects, archives, tag, self.placed(index), extra_a, keep)
                  for index, tag in enumerate("ab")]
         (elf_a, map_a, image_a), (_, _, image_b) = links
         if len(image_a) != len(image_b) or len(image_a) % 4:
@@ -853,6 +930,8 @@ class Linker:
 
         branches = self.branches(name, elf_a, image_a, image_b)
         linked = len(branches)
+        pool_words = self.pool_words(image_a, image_b, branches)
+        branches.update(pool_words)
         kinds, counts = self.relocations(name, image_a, image_b, branches)
         provided = self.provider_links(ctx, name, objects, archives, providers, extra_a, image_a, keep) if providers else {}
         # a branch into a provider is one into the head too for the links A and B (the provider stays where it is in
@@ -870,7 +949,10 @@ class Linker:
         flash = self.bases[0][1]
         syms = self.symbols(elf_a)
         ram_size = syms["__mod_bss_end"] - syms["__mod_data_start"]
-        iram_size = syms["__mod_iram_end"] - syms["__mod_iram_start"] if self.has_iram else 0
+        iram_size = syms["__mod_iram_end"] - syms["__mod_iram_start"] if (self.has_iram or self.pool_base) else 0
+        if pool_words and not iram_size:
+            raise RuntimeError(f"module {name}: words with addresses of a pool code it has not")
+        link_pool = self.pool_base[1] if (self.pool_base and iram_size) else 0
         if syms["__mod_flash_start"] != flash or struct.unpack_from("<I", image_a, 0)[0] != HEADER_MAGIC:
             raise RuntimeError(f"module {name}: no module header at the start (KEEP .module_header)")
         if round_up(syms["__mod_flash_end"] - flash, self.image_align) != len(image_a):
@@ -884,16 +966,18 @@ class Linker:
         image[HEADER_REQUIRES: HEADER_REQUIRES + REQUIRES_SIZE] = self.requires_bytes(name)
 
         data = package_bytes(name, head_id, bytes(image), kinds, ram_size, iram_size, [base[1] for base in self.bases],
-                             branches)
+                             branches, link_pool)
         with open(os.path.join(build_dir, f"module-{name}.module"), "wb") as f:
             f.write(data)
 
         memory = f"RAM {ram_size} (data {syms['__mod_data_end'] - syms['__mod_data_start']}, bss " \
                  f"{syms['__mod_bss_end'] - syms['__mod_bss_start']})"
-        if self.has_iram:
+        if self.has_iram or self.pool_base:
             memory += f", IRAM {iram_size}"
         moved = ", ".join(f"{label} {counts[kind]}" for kind, (_, _, _, label) in enumerate(self.bases, 1))
-        head_branches = len(branches) - len(provided)
+        head_branches = len(branches) - len(provided) - len(pool_words)
+        if pool_words:
+            moved += f", {self.pool_base[3]} {len(pool_words)}"
         if head_branches:
             moved += f", branches into the head {head_branches} ({head_branches - linked} in veneers)"
         if provided:
@@ -1017,7 +1101,10 @@ class Linker:
         """the modules file: every package of this build, for the MODULES panel and the head's page (EMC2)"""
         build_dir = ctx["build_dir"]
         paths = [os.path.join(build_dir, f"module-{name}.module") for name in names]
-        paths += self.extra_packages(ctx)
+        extra = self.extra_packages(ctx)
+        paths += extra
+        # the data modules (no code): CONTAINER_DATA_MODULE, the Apply may put them where no code runs
+        data_modules = {os.path.basename(path)[len("module-"):-len(".module")] for path in extra}
 
         packages = []
         for path in paths:
@@ -1035,6 +1122,8 @@ class Linker:
             name, image, ram, iram = struct.unpack_from("<8x16s16xIII", data, 0)
             requires = self.requires_bytes(name.rstrip(b"\0").decode())
             flags = CONTAINER_BYTE_RAM if name.rstrip(b"\0").decode() in byte_ram else 0
+            if name.rstrip(b"\0").decode() in data_modules:
+                flags |= CONTAINER_DATA_MODULE
             links, = struct.unpack_from("<I", data, PACKAGE_LINKS)
             flags |= links << CONTAINER_LINKS_SHIFT
             flags |= self.data_sectors(name.rstrip(b"\0").decode()) << CONTAINER_DATA_SHIFT
@@ -1076,6 +1165,14 @@ class Linker:
         rest = {key: value for key, value in parsed.items() if value}
         if rest:
             menv.Append(**rest)
+        # the layer of the Arduino names (lib/espurna-core) before ESPurna's src/: on a case-insensitive
+        # file system <SPI.h> / <WiFi.h> of a module would find src/spi.h / src/wifi.h first (the framework's own
+        # libraries were first before)
+        core = os.path.join(self.env.subst("$PROJECT_DIR"), "lib", "espurna-core", "src")
+        if os.path.isdir(core):
+            menv.Prepend(CPPPATH=[core])
+        # our forks (IRremoteESP8266, FauxmoESP: their `rtos` branches) include <espurna_base.h> of the library
+        # espurna-base, never a header of ESPurna: its src/ is on projenv's path (a library of the head's lib_deps)
         # what a pre: script of the chip gives the modules alone (scripts/matter_lib.py: the include folders and
         # defines of the Matter library's API for matter.cpp, matter_app.cpp, matter_identity.cpp), not the head. First
         # on the include path: the ESP32 framework has the headers of esp_matter's own connectedhomeip build too
@@ -1084,20 +1181,26 @@ class Linker:
         return menv
 
     def library_dir(self, name):
-        """the project's lib/ first (its own copies: DNSServer, which the frameworks also have), <libdeps>/<name>, the
-        lib_extra_dirs, the framework's libraries"""
+        """the project's lib/ first (its own copies: DNSServer), <libdeps>/<name>, the lib_extra_dirs (no Arduino
+        framework and its libraries on any chip)"""
         env = self.env
         folders = [env.subst("$PROJECT_LIB_DIR") or os.path.join(env.subst("$PROJECT_DIR"), "lib")]
         folders += [os.path.join(env.subst("$PROJECT_LIBDEPS_DIR"), env.subst("$PIOENV"))]
         folders += [os.path.join(env.subst("$PROJECT_DIR"), env.subst(str(p)))
                     for p in env.GetProjectOption("lib_extra_dirs", [])]
-        platform = env.PioPlatform()
-        for package in ("framework-arduinoespressif32", "framework-arduinoespressif8266"):
-            folder = platform.get_package_dir(package) if package in platform.packages else None
-            if folder:
-                folders.append(os.path.join(folder, "libraries"))
         for folder in folders:
             path = os.path.join(folder, name)
+            # a symlink:// library (a local clone of one of our forks): PlatformIO leaves <name>.pio-link with its path
+            link = os.path.join(folder, f"{name}.pio-link")
+            if not os.path.isdir(path) and os.path.isfile(link):
+                import json
+                with open(link, encoding="utf-8") as f:
+                    uri = json.load(f).get("spec", {}).get("uri", "")
+                if uri.startswith("symlink://"):
+                    target = uri[len("symlink://"):]
+                    if not os.path.isabs(target):
+                        target = os.path.join(env.subst("$PROJECT_DIR"), target)
+                    path = os.path.normpath(target)
             if not os.path.isdir(path) and os.path.isdir(folder):
                 # the names of the ini are the lib_ignore ones (hlw8012), the folders the libraries' own (HLW8012): a
                 # case-sensitive file system (CI) finds them by the name in any case. A folder with spaces ("SparkFun
@@ -1167,9 +1270,15 @@ class Linker:
                                                    filters.get(name, default_filter))])
             self.precompiled(name, src)
 
+        # without the build middlewares of the head: ESP-IDF's drops every file of the project's src_dir (the framework
+        # builds them as its component), the module objects of the same files are the modules' own
         src_filter = "-<*> " + " ".join(f"+<{source}>" for source in self.module_sources())
-        for node in menv.CollectBuildFiles(os.path.join("$BUILD_DIR", MODULE_SRC), "$PROJECT_SRC_DIR", src_filter):
-            out += menv.Flatten([menv.Object(node)])
+        senv = menv.Clone()
+        senv.Replace(__PIO_BUILD_MIDDLEWARES=[])
+        # <source>.o, the names custom_modules gives the objects (the platforms of ESP8266 and LibreTiny name them so,
+        # ESP-IDF's OBJSUFFIX drops the source's extension)
+        for node in senv.CollectBuildFiles(os.path.join("$BUILD_DIR", MODULE_SRC), "$PROJECT_SRC_DIR", src_filter):
+            out += menv.Flatten([menv.Object(target=node.get_abspath() + ".o", source=node)])
         return out
 
     # --- the head link again, when the modules added head exports ---------------------------------------------------
@@ -1204,6 +1313,7 @@ class Linker:
         }
         ctx["head_id"] = self.head_id(ctx)
         ctx["head_syms"] = self.symbol_sizes(head_elf)
+        ctx["head_globals"] = self.global_symbols(head_elf)
         return ctx
 
     def link_all(self, ctx):
@@ -1215,7 +1325,9 @@ class Linker:
         print(f"Head {head_env}: id {ctx['head_id'].hex()}")
 
         src = os.path.join(build_dir, MODULE_SRC)
-        head_names = set(self.symbols(ctx["head_elf"]))
+        # the head's global names only: a local of the SDK (ESP8266: `SPI`, the register block) is no member of a library
+        # the head has
+        head_names = set(self.global_symbols(ctx["head_elf"]))
         libraries, head_only = self.lib_archives(build_dir, head_names)
         provided = read_provided(self.env)
         missing = {}
@@ -1301,6 +1413,8 @@ class Linker:
             archives += self.provider_libs(build_dir, names, tag)
         else:
             archives += libraries
+        # the library of a library module only in that module (LIBRARY_MODULES)
+        archives = [a for a in archives if library_module(a) in (None, name)]
         if api:
             print(f"  {name} provides {len(api)} functions through the head")
 
@@ -1311,17 +1425,38 @@ class Linker:
             e.providers = [provider for _, provider in providers]
             return None, e
 
+    def library_symbols(self, ctx):
+        """{global symbol: module} of the libraries of LIBRARY_MODULES in this build"""
+        out = {}
+        for path in self.archives_in(ctx["build_dir"]).values():
+            module = library_module(path)
+            if module is None:
+                continue
+            for defined in self.archive_members(path).values():
+                out.update((symbol, module) for kind, symbol in defined if kind.isupper())
+        return out
+
     def provider_defined(self, ctx, provider):
         """the global symbols the inputs of a provider's link define (before --gc-sections): its objects and the
         members of the libraries its link pulled"""
         mapfile = os.path.join(ctx["build_dir"], f"module-{provider}.map")
         pulled = set(self.pulled_members(mapfile)) if os.path.exists(mapfile) else set()
         out = set()
+        # the archives the map names (a provider may take a member of the whole library, not of the filtered copy in
+        # its inputs: ESP8266 spi and SPI.o of lib/espurna-core)
+        for archive in self.pulled_archives(mapfile) if os.path.exists(mapfile) else []:
+            if os.path.isfile(archive):
+                base = os.path.basename(archive)
+                for member, defined in self.archive_members(archive).items():
+                    if f"{base}({member})" in pulled:
+                        out.update(symbol for kind, symbol in defined if kind.isupper())
         for path in ctx["provider_inputs"].get(provider, []):
             if path.endswith(".a"):
                 base = os.path.basename(path)
+                # a library module has all of its library, its link keeps what the modules that need it take
+                whole = library_module(path) == provider
                 for member, defined in self.archive_members(path).items():
-                    if f"{base}({member})" in pulled:
+                    if whole or f"{base}({member})" in pulled:
                         out.update(symbol for kind, symbol in defined if kind.isupper())
             else:
                 for line in self.run([self.tool("nm"), "-g", "--defined-only", path]).splitlines():
@@ -1358,8 +1493,13 @@ class Linker:
                 exported_all += exported
                 for symbol in exported:
                     print(f"  {name}: head export added: {symbol}")
+                # what only a library module has: this module does not have that module in its needs
+                library = self.library_symbols(ctx) if absent else {}
                 for symbol in absent:
-                    print(f"  {name}: NOT IN THE HEAD: {symbol}")
+                    if symbol in library:
+                        print(f"  {name}: needs {library[symbol]} (config/head.h): {symbol}")
+                    else:
+                        print(f"  {name}: NOT IN THE HEAD: {symbol}")
                 absent_all += absent
             if absent_all or not (exported_all or kept_all) or attempt == RELINKS:
                 raise RuntimeError(f"{len(set(exported_all))} head exports added, "

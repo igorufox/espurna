@@ -9,7 +9,10 @@ Copyright (C) 2019 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <IPAddress.h>
+#include "ip4.h"
+
+#include <cstdlib>
+#include <cstring>
 
 #include <cstdint>
 #include <memory>
@@ -24,7 +27,7 @@ Copyright (C) 2019 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 struct WsTicket {
     using TimeSource = espurna::time::CoreClock;
-    IPAddress ip;
+    espurna::Ip4 ip;
     TimeSource::time_point timestamp{};
 };
 
@@ -39,6 +42,79 @@ struct WsTicket {
 namespace espurna {
 namespace web {
 namespace ws {
+
+// One text message written by json::Writer: grows by doubling (from 256 bytes), keeping the heap headroom of every
+// message free (a failed allocation would abort the board); failed() - it did not fit, nothing of it is sent
+class Message final : public Output {
+public:
+    static constexpr size_t Headroom { 512 };
+
+    Message() = default;
+    ~Message() override {
+        std::free(_data);
+    }
+
+    Message(const Message&) = delete;
+    Message& operator=(const Message&) = delete;
+
+    using Output::write;
+
+    void write(const char* data, size_t size) override {
+        if (_failed || !size) {
+            return;
+        }
+
+        if ((_size + size) > _capacity) {
+            size_t capacity = _capacity ? _capacity : 256;
+            while (capacity < (_size + size)) {
+                capacity *= 2;
+            }
+
+            if (systemHeapStats().usable < (capacity + Headroom)) {
+                fail();
+                return;
+            }
+
+            auto* grown = static_cast<char*>(std::realloc(_data, capacity));
+            if (!grown) {
+                fail();
+                return;
+            }
+
+            _data = grown;
+            _capacity = capacity;
+        }
+
+        std::memcpy(_data + _size, data, size);
+        _size += size;
+    }
+
+    const char* data() const {
+        return _data;
+    }
+
+    size_t size() const {
+        return _size;
+    }
+
+    bool failed() const {
+        return _failed || !_size;
+    }
+
+private:
+    void fail() {
+        _failed = true;
+        std::free(_data);
+        _data = nullptr;
+        _size = 0;
+        _capacity = 0;
+    }
+
+    char* _data { nullptr };
+    size_t _size { 0 };
+    size_t _capacity { 0 };
+    bool _failed { false };
+};
 
 class PostponedCallback {
 public:
@@ -234,7 +310,7 @@ public:
     };
 
     struct Sequence {
-        Sequence(JsonObject& root) :
+        Sequence(json::Writer& root) :
             _root(root)
         {}
 
@@ -257,11 +333,11 @@ public:
         }
 
     private:
-        JsonObject& _root;
+        json::Writer& _root;
     };
 
     struct All {
-        All(JsonObject& root) :
+        All(json::Writer& root) :
             _root(root)
         {}
 
@@ -286,7 +362,7 @@ public:
         }
 
     private:
-        JsonObject& _root;
+        json::Writer& _root;
     };
 
     // back to before the last send(): one callback of a sequence, all of them for All
@@ -335,15 +411,15 @@ public:
         return _storage.visit(Done{}, true);
     }
 
-    void sendAll(JsonObject& root) {
+    void sendAll(json::Writer& root) {
         _storage.visit(All(root));
     }
 
-    void sendCurrent(JsonObject& root) {
+    void sendCurrent(json::Writer& root) {
         _storage.visit(Sequence(root));
     }
 
-    void send(JsonObject& root) {
+    void send(json::Writer& root) {
         switch (_mode) {
         case Mode::Sequence:
         case Mode::Manual:

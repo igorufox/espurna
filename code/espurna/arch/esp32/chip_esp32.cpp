@@ -9,39 +9,43 @@ CHIP DESCRIPTION AND LWIP GLUE, ESP32 part (ref. espurna_chip.h)
 #include "../../espurna_chip.h"
 
 
-#include <esp_arduino_version.h>
+#include <chip_sdk.h>
+
+#include <esp_idf_version.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 
 namespace espurna {
 namespace chip {
 
-void ws_connected(JsonObject& root) {
-    root[F("arch")] = F("esp32");
-    root[F("mcu")] = ESP->getChipModel();
+WebInfo web_info() {
+    return WebInfo{
+        .arch = "esp32",
+        .mcu = ::espurna::core::chip::chip_model(),
+        .layout = nullptr,
+        .tcm_used = 0,
+        .tcm_size = 0,
+    };
 }
 
-void ws_visible(JsonObject&) {
-}
-
-void info(Print& out) {
+void info(::espurna::Output& out) {
     out.printf_P(PSTR("mcu: %s rev%u chipid: %s freq: %hhumhz\n"),
-            ESP->getChipModel(), ESP->getChipRevision(),
+            ::espurna::core::chip::chip_model(), ::espurna::core::chip::chip_revision(),
             systemChipId().c_str(), system_get_cpu_freq());
 }
 
-void memory(Print&) {
+void memory(::espurna::Output&) {
 }
 
-IPAddress address(const ip_addr_t* addr) {
-    return IPAddress(addr->u_addr.ip4.addr);
+espurna::Ip4 address(const ip_addr_t* addr) {
+    return espurna::Ip4(addr->u_addr.ip4.addr);
 }
 
 // Flash is split into partitions (ref. board_build.partitions), unlike the esp8266 fixed layout
-bool storage(Print& out, const char* mode) {
-    out.printf_P(PSTR("speed: %u\n"), ESP.getFlashChipSpeed());
+bool storage(::espurna::Output& out, const char* mode) {
+    out.printf_P(PSTR("speed: %u\n"), ::espurna::core::chip::flash_speed());
     out.printf_P(PSTR("mode: %s\n"), mode);
-    out.printf_P(PSTR("size: %u\n"), ESP.getFlashChipSize());
+    out.printf_P(PSTR("size: %u\n"), ::espurna::core::chip::flash_size());
 
     const auto* running = esp_ota_get_running_partition();
 
@@ -55,13 +59,13 @@ bool storage(Print& out, const char* mode) {
     esp_partition_iterator_release(it);
 
     out.printf_P(PSTR("app: %u bytes, free for OTA: %u bytes\n"),
-        ESP.getSketchSize(), ESP.getFreeSketchSpace());
+        ::espurna::core::chip::sketch_size(), ::espurna::core::chip::sketch_space());
 
     return true;
 }
 
-String image() {
-    return F(ESPURNA_IMAGE);
+espurna::string image() {
+    return ESPURNA_IMAGE;
 }
 
 
@@ -75,26 +79,36 @@ WebGuard web_guard() {
     };
 }
 
-String core_version() {
-    return ESP_ARDUINO_VERSION_STR;
+// the SDK: ESP-IDF, no Arduino core (lib/espurna-core is the layer of the Arduino names)
+espurna::string core_version() {
+    return espurna::string("ESP-IDF ") + esp_get_idf_version();
 }
 
 // packed version (MAJOR << 16 | MINOR << 8 | PATCH)
-String core_revision() {
-    String out;
+espurna::string core_revision() {
+    espurna::string out;
     out.reserve(16);
-    out += String((ESP_ARDUINO_VERSION >> 16) & 0xFF);
+    out += espurna::string(ESP_IDF_VERSION_MAJOR);
     out += '.';
-    out += String((ESP_ARDUINO_VERSION >> 8) & 0xFF);
+    out += espurna::string(ESP_IDF_VERSION_MINOR);
     out += '.';
-    out += String(ESP_ARDUINO_VERSION & 0xFF);
+    out += espurna::string(ESP_IDF_VERSION_PATCH);
     return out;
 }
 
 } // namespace chip
 } // namespace espurna
 
-// the core's IPAddress has toString(), utils.h
-String ipToString(const IPAddress& ip) {
-    return ip.toString();
+// utils.h
+espurna::string ipToString(const espurna::Ip4& ip) {
+    espurna::string out;
+    out.reserve(16);
+    for (int index = 0; index < 4; ++index) {
+        if (index) {
+            out += '.';
+        }
+        out += espurna::string(ip[index]);
+    }
+
+    return out;
 }

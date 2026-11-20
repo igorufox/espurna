@@ -18,7 +18,6 @@ nothing here waits for a lock, nothing is answered "busy".
 #include <functional>
 #include <vector>
 
-#include "web_utils.h"
 #include "web_print.h"
 
 using WebRequest = espurna::http::server::Request;
@@ -45,11 +44,11 @@ void webSecurityHeaders(WebRequest&);
 void webLog(WebRequest&);
 
 // the Arduino side of a request
-String webHeader(WebRequest&, const char* name);
-String webParam(WebRequest&, const char* name);
-void webSend(WebRequest&, int code, const char* type, const String& body);
+espurna::string webHeader(WebRequest&, const char* name);
+espurna::string webParam(WebRequest&, const char* name);
+void webSend(WebRequest&, int code, const char* type, const espurna::string& body);
 // the body moved into the response, sent from it (no copy of the whole body)
-void webSend(WebRequest&, int code, const char* type, String&& body);
+void webSend(WebRequest&, int code, const char* type, espurna::string&& body);
 void webSend(WebRequest&, int code);
 
 void webBodyRegister(web_body_callback_f);

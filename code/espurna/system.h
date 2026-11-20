@@ -286,14 +286,14 @@ namespace settings {
 namespace internal {
 
 template <>
-heartbeat::Mode convert(const String&);
+heartbeat::Mode convert(const espurna::string&);
 
-String serialize(heartbeat::Mode);
+espurna::string serialize(heartbeat::Mode);
 
 template <>
-sleep::Interrupt convert(const String&);
+sleep::Interrupt convert(const espurna::string&);
 
-String serialize(sleep::Interrupt);
+espurna::string serialize(sleep::Interrupt);
 
 } // namespace internal
 } // namespace settings
@@ -337,7 +337,7 @@ bool systemCheck();
 
 void customResetReason(CustomResetReason);
 CustomResetReason customResetReason();
-String customResetReasonToPayload(CustomResetReason);
+espurna::string customResetReasonToPayload(CustomResetReason);
 
 void deferredReset(espurna::duration::Milliseconds, CustomResetReason);
 void prepareReset(CustomResetReason);
@@ -379,8 +379,8 @@ bool systemHeartbeat();
 espurna::duration::Seconds systemUptime();
 
 espurna::StringView systemDevice();
-String systemManufacturer();
-String systemDeviceName();
+espurna::string systemManufacturer();
+espurna::string systemDeviceName();
 espurna::StringView systemIdentifier();
 
 espurna::StringView systemChipId();
@@ -388,12 +388,12 @@ espurna::StringView systemShortChipId();
 
 espurna::StringView systemDefaultPassword();
 
-String systemPassword();
+espurna::string systemPassword();
 bool systemPasswordEquals(espurna::StringView);
 bool systemPasswordMustChange();
 
-String systemHostname();
-String systemDescription();
+espurna::string systemHostname();
+espurna::string systemDescription();
 
 void systemSetup();
 void systemSetupUnstable();

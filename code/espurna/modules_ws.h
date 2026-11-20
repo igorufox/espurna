@@ -27,8 +27,8 @@ struct WsModuleApi {
     void (*postSequence)(uint32_t, Container&&);
     void (*postSequenceRef)(uint32_t, const Container&);
 
-    void (*sendAll)(JsonObject&);
-    void (*sendTo)(uint32_t, JsonObject&);
+    void (*sendAll)(espurna::web::ws::OnSend);
+    void (*sendTo)(uint32_t, espurna::web::ws::OnSend);
     void (*sendText)(const char*);
 
     WsClientInfo (*clientInfo)(uint32_t);

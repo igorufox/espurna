@@ -22,18 +22,21 @@ namespace {
 #if WEB_SUPPORT
 alignas(4) static constexpr char Spec[] PROGMEM = "i2cSDA|gpio|SDA|;i2cSCL|gpio|SCL|";
 
-void onConnected(JsonObject& root) {
-    JsonArray& out = root.createNestedArray(F("snsBus"));
-    JsonObject& entry = out.createNestedObject();
-    entry[F("name")] = F("i2c");
-    entry[F("spec")] = FPSTR(Spec);
+void onConnected(espurna::json::Writer& root) {
+    root.array(STRING_VIEW("snsBus"));
+    root.beginObject();
+    root.field(STRING_VIEW("name"), STRING_VIEW("i2c"));
+    root.field(STRING_VIEW("spec"), Spec);
 
-    JsonObject& values = entry.createNestedObject(F("values"));
-    values[F("i2cSDA")] = getSetting(F("i2cSDA"));
-    values[F("i2cSCL")] = getSetting(F("i2cSCL"));
+    root.object(STRING_VIEW("values"));
+    root.field(STRING_VIEW("i2cSDA"), getSetting("i2cSDA"));
+    root.field(STRING_VIEW("i2cSCL"), getSetting("i2cSCL"));
+    root.end();
+    root.end();
+    root.end();
 }
 
-bool onKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool onKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(STRING_VIEW("i2c"));
 }
 #endif

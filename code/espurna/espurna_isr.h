@@ -6,7 +6,7 @@ Chip part of the code running in GPIO interrupt handlers, ref. arch/<chip>/isr_<
 
 - Pins                   size of a table indexed by the pin number
 - attachable(pin)        pin can have an interrupt handler
-- attach(pin, ...)       handler with an argument, CHANGE / RISING / FALLING
+- attach(pin, ...)       handler with an argument, espurna::pins::Change / espurna::pins::Rising / espurna::pins::Falling
 - read(pin)              pin level, safe to call from the handler (no flash access)
 - Lock                   state shared between the handler and the task, one per owner of that state
 - Lock::Guard            task side, the handler does not run while it is held
@@ -17,7 +17,6 @@ Chip part of the code running in GPIO interrupt handlers, ref. arch/<chip>/isr_<
 
 #pragma once
 
-#include <Arduino.h>
 
 // arch/<chip>/isr_chip.h: the chip's folder (-I of its ini)
 #include "isr_chip.h"

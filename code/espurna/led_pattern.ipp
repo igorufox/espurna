@@ -607,8 +607,8 @@ struct Pattern {
         return ok();
     }
 
-    String toString() const {
-        String out;
+    espurna::string toString() const {
+        espurna::string out;
 
         bool first = true;
         for (auto it = _delays.begin(); it != _delays.end(); ++it) {
@@ -637,7 +637,7 @@ struct Pattern {
             }
 
             out += ',';
-            out += String((*it).repeats);
+            out += espurna::string((*it).repeats);
         }
 
         return out;
@@ -669,7 +669,7 @@ struct Pattern {
     }
 
 private:
-    static String as_millis(Duration value) {
+    static espurna::string as_millis(Duration value) {
         const auto ms = std::chrono::duration_cast<duration::Milliseconds>(value);
         return ::espurna::settings::internal::serialize(ms);
     }

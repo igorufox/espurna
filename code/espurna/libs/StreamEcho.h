@@ -6,7 +6,6 @@ Arduino Stream holding both input and output. Currently, only used in tests.
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <limits>
 #include <vector>

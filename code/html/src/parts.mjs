@@ -147,7 +147,50 @@ async function fetchText(url, options, what) {
 }
 
 /**
- * Every part of the board, one after another (an ESP8266 serves one request at a time well). An error leaves the page
+ * GET ui/parts: every part in one answer (one request instead of one a module: 7 parts one after another took ~3 s on
+ * an ESP8266, 20.11). Records of: u8 name length, the name, u32 LE size, the gzip'ed fragment
+ * @param {URL} base
+ * @returns {Promise<{name: string, text: string}[] | null>} null - not there (an older head, the dev server) or no
+ * DecompressionStream in this browser: the parts one by one then
+ */
+async function fetchAll(base) {
+    if (typeof DecompressionStream === "undefined") {
+        return null;
+    }
+
+    let response;
+    try {
+        response = await fetch(new URL("ui/parts", base), {cache: "no-store", credentials: "same-origin"});
+    } catch {
+        return null;
+    }
+    if (!response.ok) {
+        return null;
+    }
+
+    const data = new Uint8Array(await response.arrayBuffer());
+    const decoder = new TextDecoder();
+    /** @type {{name: string, text: string}[]} */
+    const out = [];
+    let at = 0;
+    while (at < data.length) {
+        const name_len = data[at];
+        const name = decoder.decode(data.subarray(at + 1, at + 1 + name_len));
+        at += 1 + name_len;
+        const size = (data[at] | (data[at + 1] << 8) | (data[at + 2] << 16) | (data[at + 3] << 24)) >>> 0;
+        at += 4;
+        const gz = data.slice(at, at + size);
+        at += size;
+        const stream = new Blob([gz]).stream().pipeThrough(new DecompressionStream("gzip"));
+        out.push({name, text: await new Response(stream).text()});
+    }
+
+    return out;
+}
+
+/**
+ * Every part of the board: all of them in one answer (ui/parts), else one after another (an ESP8266 serves one
+ * request at a time well). An error leaves the page
  * without that part, the rest works
  * @param {URL} base
  * @returns {Promise<string[]>} the names of the parts that went in
@@ -155,6 +198,24 @@ async function fetchText(url, options, what) {
 export async function loadParts(base) {
     /** @type {string[]} */
     const done = [];
+
+    try {
+        const all = await fetchAll(base);
+        if (all) {
+            for (const part of all) {
+                try {
+                    await insert(part.text, base);
+                    done.push(part.name);
+                } catch (e) {
+                    notify.notifyError(/** @type {Error} */(e));
+                }
+            }
+            return done;
+        }
+    } catch (e) {
+        notify.notifyError(/** @type {Error} */(e));
+        return done;
+    }
 
     /** @type {string[]} */
     let names;

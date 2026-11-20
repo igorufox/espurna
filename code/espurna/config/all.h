@@ -21,9 +21,8 @@
 
 #pragma once
 
-#include <Arduino.h>
 
-#include <pgmspace.h>
+#include "../progmem.h"
 
 #ifdef USE_CUSTOM_H
 #include "custom.h"

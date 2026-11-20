@@ -121,14 +121,6 @@ describe('waitFor: the waits of every install', () => {
         expect(asked.map((at) => at - start)).toEqual([4000, 6000, 8000]);
     });
 
-    test('the ESP32 safeboot answers 404, that is the wait for it', async () => {
-        vi.useFakeTimers();
-        vi.stubGlobal('fetch', async () => new Response('', {status: 404}));
-        const done = waitModules(new URL('http://board/'), 404);
-        await vi.runAllTimersAsync();
-        expect(await done).toBe(null);
-    });
-
     test('a board that does not come back stops the install', async () => {
         vi.useFakeTimers();
         vi.stubGlobal('fetch', async () => { throw new Error('down'); });

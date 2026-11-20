@@ -6,7 +6,6 @@ MATTER: THE IDENTITY OF THE BOARD (ref. matter_identity.cpp), one code on ESP32 
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -58,7 +57,7 @@ bool ids(uint16_t& vendor, uint16_t& product);
 // the factory tables keep it; the declaration optional) and stores it. Checked: Matter DAC and PAI format, VID / PID in
 // the DAC subject, the PAI signed the DAC, the key belongs to the DAC. false with the reason in `error`. The key is
 // never logged or sent back. It does not switch to it: `matterIdentity custom` and a restart do
-bool custom_store(const char* dac, const char* key, const char* pai, const char* declaration, String& error);
+bool custom_store(const char* dac, const char* key, const char* pai, const char* declaration, espurna::string& error);
 
 // Before the stack starts: the own identity read or made (once per board), its setup passcode and discriminator (the
 // custom identity uses them too). false: the board has a factory identity (its codes come from the factory data) or the
@@ -72,7 +71,7 @@ bool install();
 bool factory();
 
 // For the status command, no secrets
-String status();
+espurna::string status();
 
 } // namespace identity
 } // namespace matter

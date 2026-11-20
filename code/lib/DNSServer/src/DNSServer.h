@@ -1,10 +1,14 @@
 #pragma once
 // DNSServer of arduino-esp32 3.3.12, one copy for every ESPurna chip. Changes from the original:
-// - EspurnaUdp (EspurnaUdp.h, the same on every chip) instead of the core AsyncUDP
+// - espurna::udp::Socket (code/espurna/libs/udp.h, the same on every chip) instead of the core AsyncUDP
 // - start() binds the socket to the AP address (DNSServer.cpp); start() without an address set returns false on every
 //   chip (the original asked the ESP32 WiFi for the AP address), ESPurna passes it to start(port, domainName, ip)
-// - String calls common to the three cores (no isEmpty() / clear() in the ArduinoCore-API String of LibreTiny)
-#include "EspurnaUdp.h"
+// - no Arduino: the domain name in a buffer of its own (DNS_NAME_MAX), the address an espurna::Ip4
+#include "../../../espurna/ip4.h"
+#include "../../../espurna/libs/udp.h"
+
+#include <cstddef>
+#include <cstdint>
 
 #define DNS_QR_QUERY           0
 #define DNS_QR_RESPONSE        1
@@ -13,6 +17,7 @@
 #define DNS_HEADER_SIZE        12
 #define DNS_OFFSET_DOMAIN_NAME DNS_HEADER_SIZE  // Offset in bytes to reach the domain name labels in the DNS message
 #define DNS_DEFAULT_PORT       53
+#define DNS_NAME_MAX           64  // the domain name served, its terminating zero included
 
 #define DNS_SOA_MNAME_LABEL "ns"
 #define DNS_SOA_RNAME_LABEL "esp32"
@@ -106,7 +111,7 @@ public:
      * builds DNS server with default parameters
      * @param domainName - domain name to serve
      */
-  DNSServer(const String &domainName);
+  explicit DNSServer(const char *domainName);
   ~DNSServer(){};  // default d-tor
 
   // Copy semantics not implemented (won't run on same UDP port anyway)
@@ -153,7 +158,8 @@ public:
      * @return true on success
      * @return false if IP or socket error
      */
-  bool start(uint16_t port, const String &domainName, const IPAddress &resolvedIP);
+  // domainName "*": every name (the captive portal)
+  bool start(uint16_t port, const char *domainName, espurna::Ip4 resolvedIP);
 
   /**
      * @brief stops the server and close UDP socket
@@ -169,7 +175,7 @@ public:
      * @return false otherwise
      */
   inline bool isCaptive() const {
-    return _domainName.length() == 0;
+    return _domainName[0] == 0;
   };
 
   /**
@@ -183,14 +189,14 @@ public:
   };
 
 private:
-  EspurnaUdp _udp;
+  espurna::udp::Socket _udp;
   uint16_t _port;
   uint32_t _ttl;
   DNSReplyCode _errorReplyCode;
-  String _domainName;
-  IPAddress _resolvedIP;
+  char _domainName[DNS_NAME_MAX] {};
+  espurna::Ip4 _resolvedIP;
 
-  void downcaseAndRemoveWwwPrefix(String &domainName);
+  static void downcaseAndRemoveWwwPrefix(char *domainName);
 
   /**
      * @brief Get the Domain Name Without Www Prefix object
@@ -198,13 +204,13 @@ private:
      * truncate any www. label if found
      * @param start a pointer to the start of labels records in DNS packet
      * @param len labels length
-     * @return String
+     * @param out the name, terminated; false when it does not fit
      */
-  String getDomainNameWithoutWwwPrefix(const unsigned char *start, size_t len);
+  static bool getDomainNameWithoutWwwPrefix(const unsigned char *start, size_t len, char *out, size_t size);
   inline bool requestIncludesOnlyOneQuestion(DNSHeader &dnsHeader);
-  void replyWithIP(EspurnaUdpPacket &req, DNSHeader &dnsHeader, DNSQuestion &dnsQuestion);
-  inline void replyWithCustomCode(EspurnaUdpPacket &req, DNSHeader &dnsHeader);
-  inline void replyWithNoAnsw(EspurnaUdpPacket &req, DNSHeader &dnsHeader, DNSQuestion &dnsQuestion);
+  void replyWithIP(espurna::udp::Packet &req, DNSHeader &dnsHeader, DNSQuestion &dnsQuestion);
+  inline void replyWithCustomCode(espurna::udp::Packet &req, DNSHeader &dnsHeader);
+  inline void replyWithNoAnsw(espurna::udp::Packet &req, DNSHeader &dnsHeader, DNSQuestion &dnsQuestion);
 
-  void _handleUDP(EspurnaUdpPacket &pkt);
+  void _handleUDP(espurna::udp::Packet &pkt);
 };

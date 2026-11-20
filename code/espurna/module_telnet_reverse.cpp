@@ -27,13 +27,13 @@ PROGMEM_STRING(Reverse, "TELNET.REVERSE");
 
 void reverse(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() != 3) {
-        terminalError(ctx, F("TELNET.REVERSE <HOST> <PORT>"));
+        terminalError(ctx, "TELNET.REVERSE <HOST> <PORT>");
         return;
     }
 
     const auto port = espurna::settings::internal::convert<uint16_t>(ctx.argv[2]);
     if (!port) {
-        terminalError(ctx, F("Invalid port"));
+        terminalError(ctx, "Invalid port");
         return;
     }
 
@@ -42,7 +42,7 @@ void reverse(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    terminalError(ctx, F("Unable to connect"));
+    terminalError(ctx, "Unable to connect");
 }
 
 static constexpr ::terminal::Command Commands[] PROGMEM {
@@ -52,9 +52,9 @@ static constexpr ::terminal::Command Commands[] PROGMEM {
 
 #if MQTT_SUPPORT
 // host:port, or an URL with them
-void connectTo(String target) {
-    if (target.indexOf(F("://")) < 0) {
-        target = String(F("telnet://")) + target;
+void connectTo(espurna::string target) {
+    if (target.indexOf("://") < 0) {
+        target = espurna::string("telnet://") + target;
     }
 
     URL parsed(std::move(target));

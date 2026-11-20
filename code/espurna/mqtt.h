@@ -69,11 +69,11 @@ using MqttPidCallback = std::function<void()>;
 void mqttOnPublish(uint16_t pid, MqttPidCallback);
 void mqttOnSubscribe(uint16_t pid, MqttPidCallback);
 
-String mqttTopic(const String& magnitude);
-String mqttTopic(const String& magnitude, size_t index);
+espurna::string mqttTopic(const espurna::string& magnitude);
+espurna::string mqttTopic(const espurna::string& magnitude, size_t index);
 
-String mqttTopicSetter(const String& magnitude);
-String mqttTopicSetter(const String& magnitude, size_t index);
+espurna::string mqttTopicSetter(const espurna::string& magnitude);
+espurna::string mqttTopicSetter(const espurna::string& magnitude, size_t index);
 
 espurna::StringView mqttMagnitude(espurna::StringView topic);
 
@@ -104,8 +104,8 @@ void mqttFlush();
 
 void mqttEnqueue(espurna::StringView topic, espurna::StringView payload);
 
-const String& mqttPayloadOnline();
-const String& mqttPayloadOffline();
+const espurna::string& mqttPayloadOnline();
+const espurna::string& mqttPayloadOffline();
 const char* mqttPayloadStatus(bool status);
 
 void mqttEnabled(bool status);

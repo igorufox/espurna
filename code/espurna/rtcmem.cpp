@@ -80,7 +80,7 @@ void dump(::terminal::CommandContext&& ctx) {
     constexpr size_t BlocksPerLine = 8;
 
     alignas(4) uint8_t buffer[BytesPerBlock * BlocksPerLine];
-    String line;
+    espurna::string line;
 
     const auto last = end();
     for (auto addr = begin(); addr < last; addr += std::size(buffer)) {
@@ -88,7 +88,7 @@ void dump(::terminal::CommandContext&& ctx) {
         std::memcpy(&buffer[0], reinterpret_cast<const uint32_t*>(addr), size);
 
         line += PSTR("0x");
-        line += String(addr, 16);
+        line += espurna::string(addr, 16);
         line += ':';
 
         for (auto it = std::begin(buffer); it != std::begin(buffer) + size; it += BytesPerBlock) {

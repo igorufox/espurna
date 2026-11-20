@@ -8,12 +8,14 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #pragma once
 
-#include <Arduino.h>
-#include <IPAddress.h>
+#include "byte_stream.h"
+#include "text_types.h"
+
+#include "ip4.h"
 
 #include "types.h"
 
-String prettyDuration(espurna::duration::Seconds);
+espurna::string prettyDuration(espurna::duration::Seconds);
 
 
 char* strnstr(const char* buffer, const char* token, size_t n);
@@ -30,14 +32,21 @@ struct ParseUnsignedResult {
 
 ParseUnsignedResult parseUnsigned(espurna::StringView, int base);
 ParseUnsignedResult parseUnsigned(espurna::StringView);
-String formatUnsigned(uint32_t value, int base);
+espurna::string formatUnsigned(uint32_t value, int base);
 
-// Same as IPAddress::toString(), which ArduinoCore-API (LibreTiny) does not have.
+// "-12.50" (espurna::formatDecimal(), no printf("%f"))
+inline espurna::string formatDecimalString(double value, unsigned char decimals) {
+    char buffer[24];
+    espurna::formatDecimal(value, decimals, buffer, sizeof(buffer));
+    return espurna::string(buffer);
+}
+
+// Same as espurna::Ip4::toString(), which ArduinoCore-API (LibreTiny) does not have.
 // LibreTiny provides it (wiring_compat.h)
-String ipToString(const IPAddress&);
+espurna::string ipToString(const espurna::Ip4&);
 
-// Same as String::equalsConstantTime(), which ArduinoCore-API (LibreTiny) does not have
-bool equalsConstantTime(const String& lhs, const String& rhs);
+// Same as espurna::string::equalsConstantTime(), which ArduinoCore-API (LibreTiny) does not have
+bool equalsConstantTime(const espurna::string& lhs, const espurna::string& rhs);
 
 long adjustNumber(long, espurna::StringView operation);
 
@@ -75,38 +84,38 @@ inline bool peek_consume(T&, size_t, long) {
 } // namespace espurna
 
 // Stream has the peek buffer and its data can be dropped without copying
-inline bool streamPeekBuffer(Stream& stream) {
+inline bool streamPeekBuffer(::espurna::ByteStream& stream) {
     return espurna::stream::peek_buffer(stream, 0);
 }
 
 // Drop `size` bytes from the peek buffer. false when there is none, data has to be read instead
-inline bool streamPeekConsume(Stream& stream, size_t size) {
+inline bool streamPeekConsume(::espurna::ByteStream& stream, size_t size) {
     return espurna::stream::peek_consume(stream, size, 0);
 }
 
 char* hexEncode(const uint8_t* in_begin, const uint8_t* in_end, char* out_begin, char* out_end);
 size_t hexEncode(const uint8_t* in, size_t in_size, char* out, size_t out_size);
-String hexEncode(const uint8_t* begin, const uint8_t* end);
+espurna::string hexEncode(const uint8_t* begin, const uint8_t* end);
 
 template <size_t Size>
-inline String hexEncode(const uint8_t (&data)[Size]) {
+inline espurna::string hexEncode(const uint8_t (&data)[Size]) {
     return hexEncode(std::begin(data), std::end(data));
 }
 
 template <size_t Size>
-inline String hexEncode(const std::array<uint8_t, Size>& data) {
+inline espurna::string hexEncode(const std::array<uint8_t, Size>& data) {
     return hexEncode(data.data(), data.data() + data.size());
 }
 
-inline String hexEncode(espurna::Span<const uint8_t> data) {
+inline espurna::string hexEncode(espurna::Span<const uint8_t> data) {
     return hexEncode(std::begin(data), std::end(data));
 }
 
-inline String hexEncode(espurna::Span<uint8_t> data) {
+inline espurna::string hexEncode(espurna::Span<uint8_t> data) {
     return hexEncode(std::begin(data), std::end(data));
 }
 
-inline String hexEncode(uint8_t value) {
+inline espurna::string hexEncode(uint8_t value) {
     uint8_t buffer[1] { value };
     return hexEncode(buffer);
 }
@@ -121,5 +130,5 @@ bool tryParseIdPath(espurna::StringView, size_t limit, size_t& out);
 
 espurna::StringView stripNewline(espurna::StringView);
 
-size_t consumeAvailable(Stream&);
+size_t consumeAvailable(::espurna::ByteStream&);
 

@@ -4,14 +4,14 @@ UART MODULE, ESP32 part (ref. uart_driver.h)
 
 Any pins are routed through the GPIO matrix. UART0 keeps its default pins (1 & 3, serial
 console / debug), UART2 takes any other pins (UART1 default pins are the flash ones).
-Unlike esp8266, HardwareSerial::begin() takes (baud, config, rx, tx, invert) and there is no
-separate mode or swap(). -1 leaves the pin unused
+The port is SdkStream (arch/rtos/uart_stream.h, the same as the ESP8266) on the UART calls of the chip (core_esp32.cpp
+uart_*, ESP-IDF's UART driver): console pins or none - UART0, any other pins - UART2. No Arduino HardwareSerial
 
 */
 
 #pragma once
 
-#include <Arduino.h>
+#include "../rtos/uart_stream.h"
 
 namespace espurna {
 namespace driver {
@@ -67,39 +67,36 @@ inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, boo
         return Opened{nullptr, Type::Unknown};
     }
 
-    used(slot) = true;
+    const auto pin = [](uint8_t value) {
+        return (value == GPIO_NONE) ? core::chip::NoPin : value;
+    };
 
-    auto* ptr = new HardwareSerial(number);
-    // the buffer is made by begin(): its size first
-    if (rx_buffer) {
-        ptr->setRxBufferSize(rx_buffer);
+    // rx_buffer 0: the driver's least, twice the FIFO
+    const auto port = core::chip::uart_open(baudrate,
+        sdk_config(config.data_bits, config.parity == Parity::Even, config.parity == Parity::Odd, config.stop_bits),
+        pin(rx), pin(tx), invert, rx_buffer);
+    if (port < 0) {
+        return Opened{nullptr, Type::Unknown};
     }
-    ptr->begin(baudrate,
-        static_cast<SerialConfig>(serial_config(config)),
-        (rx == GPIO_NONE) ? -1 : static_cast<int8_t>(rx),
-        (tx == GPIO_NONE) ? -1 : static_cast<int8_t>(tx),
-        invert);
 
-    return Opened{ptr, (number == 0) ? Type::Uart0 : Type::Uart1};
+    used(slot) = true;
+    return Opened{new SdkStream(port), (number == 0) ? Type::Uart0 : Type::Uart1};
 }
 
 // another speed for a hardware port, after what is queued went out
-inline bool baud(Stream* stream, Type type, uint32_t value) {
+inline bool baud(ByteStream* stream, Type type, uint32_t value) {
     if ((type != Type::Uart0) && (type != Type::Uart1)) {
         return false;
     }
 
-    auto* serial = static_cast<HardwareSerial*>(stream);
-    serial->flush(true);
-    serial->updateBaudRate(value);
-    return true;
+    return stream->baud(value);
 }
 
-// the console UART belongs to the framework, its RX interrupt stays
+// the console UART keeps its RX
 inline void disable_uart0_rx() {
 }
 
-// SDK log goes to the console port of the framework, nothing to switch
+// SDK log goes to the console port, nothing to switch
 inline void sdk_log(Type) {
 }
 

@@ -13,7 +13,7 @@ A module of its own (sensors/driver.h): needs the sensors module and the uart mo
 using namespace espurna::sensor::module;
 
 ESPURNA_SENSOR_DRIVER(sds011, "sds011Port|uart|UART port|0") {
-    if (auto port = uart_port(F("sds011Port"))) {
+    if (auto port = uart_port("sds011Port")) {
         auto* sensor = new SDS011Sensor();
         sensor->setPort(port->stream);
         sensorAdd(sensor);

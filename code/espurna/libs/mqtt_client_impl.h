@@ -351,15 +351,25 @@ private:
     // --- output -----------------------------------------------------------------------------------------------------
 
     bool room(size_t size) {
-        if (!_out) {
-            _out = static_cast<uint8_t*>(malloc(_output_max));
-            if (!_out) {
-                return false;
-            }
+        // what is queued goes out first (an empty buffer is freed by it), then the buffer for the packet
+        flush();
+        const size_t need = _out_len + size;
+        if (need > _output_max) {
+            return false;
         }
 
-        flush();
-        return (_out_len + size) <= _output_max;
+        // as much as is queued (a packet, 256 at least), grown while TCP's send buffer is full, up to _output_max
+        if (need > _out_size) {
+            const size_t size_new = std::min(_output_max, std::max<size_t>(need, 256));
+            auto* out = static_cast<uint8_t*>(realloc(_out, size_new));
+            if (!out) {
+                return false;
+            }
+            _out = out;
+            _out_size = size_new;
+        }
+
+        return true;
     }
 
     void put(const uint8_t* data, size_t len) {
@@ -420,6 +430,14 @@ private:
             memmove(_out, _out + sent, _out_len - sent);
             _out_len -= sent;
             _last_out = tcp::now();
+        }
+
+        // all of it in TCP's send buffer (tcp_write copies): the buffer goes back to the heap until the next packet
+        // (20.11 COM3: 4 KB kept for the whole connection, 12.8 KB free with the full module set, a WebUI page stalled)
+        if (_out && !_out_len) {
+            free(_out);
+            _out = nullptr;
+            _out_size = 0;
         }
     }
 
@@ -732,6 +750,7 @@ private:
         _out_len = 0;
         free(_out);
         _out = nullptr;
+        _out_size = 0;
         resetParser();
     }
 
@@ -758,6 +777,7 @@ private:
     uint16_t _pid { 0 };
 
     uint8_t* _out { nullptr };
+    size_t _out_size { 0 };
     size_t _out_len { 0 };
     uint32_t _last_out { 0 };
     bool _ping_sent { false };

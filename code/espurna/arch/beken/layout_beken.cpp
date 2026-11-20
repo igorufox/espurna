@@ -8,7 +8,8 @@ no layout at all: nothing is written to its partitions then (no OTA, no Matter c
 
 */
 
-#include "espurna.h"
+#include "beken_api.h"
+#include "../../espurna.h"
 
 #include "layout_beken.h"
 #include "../../libs/crc32_ieee.h"
@@ -59,12 +60,12 @@ using ::espurna::crc32_ieee::crc32Update;
 
 FlashLayout detect() {
     FlashLayout out {};
-    out.flash_size = lt_flash_get_size();
+    out.flash_size = ::espurna::beken::flash_size();
 
     uint8_t buffer[256];
     uint32_t crc { 0 };
     for (uint32_t offset = 0; offset < BootloaderSize; offset += sizeof(buffer)) {
-        if (lt_flash_read(offset, buffer, sizeof(buffer)) != sizeof(buffer)) {
+        if (::espurna::beken::flash_read(offset, buffer, sizeof(buffer)) != sizeof(buffer)) {
             return out;
         }
         crc = crc32Update(crc, buffer, sizeof(buffer));

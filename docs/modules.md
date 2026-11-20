@@ -44,6 +44,7 @@ leaves out only what cannot exist on it.
 | `matter` | Matter On/Off plugs | ESP32, Beken |
 | `nspanel` | the Sonoff NSPanel display protocol, its pages, the TFT upload | ESP32 |
 | `test` | a tiny module for testing the loader | all |
+| `arduino` | the Arduino names (`String`, `Print`, `pinMode`, `Wire`, `SPI`, `Serial`, `WiFiUDP`: `code/lib/espurna-core`) for the third-party libraries of the modules: only modules whose library needs it have it in their needs (I2C, SPI, sensors of the libraries, IR, RF, RFM69, Alexa, RPN rules, garland, thermostat, my92xx); linked into no other module. Beken: empty, LibreTiny's core is in the head | all |
 
 A module that needs another one (`requires`) cannot be switched on without it, and the other one cannot be switched off
 or removed while it is needed. Modules that use each other's functions do it through the head (Home Assistant shows the

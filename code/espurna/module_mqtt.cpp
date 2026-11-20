@@ -23,10 +23,10 @@ const MqttModuleApi Table {
     .onPublish = mqttOnPublish,
     .onSubscribe = mqttOnSubscribe,
 
-    .topic = static_cast<String(*)(const String&)>(mqttTopic),
-    .topicIndex = static_cast<String(*)(const String&, size_t)>(mqttTopic),
-    .setter = static_cast<String(*)(const String&)>(mqttTopicSetter),
-    .setterIndex = static_cast<String(*)(const String&, size_t)>(mqttTopicSetter),
+    .topic = static_cast<espurna::string(*)(const espurna::string&)>(mqttTopic),
+    .topicIndex = static_cast<espurna::string(*)(const espurna::string&, size_t)>(mqttTopic),
+    .setter = static_cast<espurna::string(*)(const espurna::string&)>(mqttTopicSetter),
+    .setterIndex = static_cast<espurna::string(*)(const espurna::string&, size_t)>(mqttTopicSetter),
     .magnitude = mqttMagnitude,
 
     .sendRaw4 = static_cast<uint16_t(*)(const char*, const char*, bool, int)>(mqttSendRaw),

@@ -31,9 +31,9 @@ constexpr size_t DataBufferSize { 256 };
 
 bool _idb_enabled = false;
 bool _idb_flush = false;
-std::map<String, String> _idb_values;
-String _idb_payload;
-String _idb_url;
+std::map<espurna::string, espurna::string> _idb_values;
+espurna::string _idb_payload;
+espurna::string _idb_url;
 
 espurna::http::Client _idb_client;
 espurna::http::Discard _idb_sink;
@@ -44,21 +44,21 @@ espurna::http::Discard _idb_sink;
 
 STRING_VIEW_INLINE(IdbPrefix, "idb");
 
-bool _idbWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant& value) {
+bool _idbWebSocketOnKeyCheck(espurna::StringView key, espurna::json::Value value) {
     return key.startsWith(IdbPrefix);
 }
 
-void _idbWebSocketOnVisible(JsonObject& root) {
+void _idbWebSocketOnVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, IdbPrefix);
 }
 
-void _idbWebSocketOnConnected(JsonObject& root) {
-    root["idbEnabled"] = getSetting("idbEnabled", 1 == INFLUXDB_ENABLED);
-    root["idbHost"] = getSetting("idbHost", INFLUXDB_HOST);
-    root["idbPort"] = getSetting("idbPort", INFLUXDB_PORT);
-    root["idbDatabase"] = getSetting("idbDatabase", INFLUXDB_DATABASE);
-    root["idbUsername"] = getSetting("idbUsername", INFLUXDB_USERNAME);
-    root["idbPassword"] = getSetting("idbPassword", INFLUXDB_PASSWORD);
+void _idbWebSocketOnConnected(espurna::json::Writer& root) {
+    root.field("idbEnabled", getSetting("idbEnabled", 1 == INFLUXDB_ENABLED));
+    root.field("idbHost", getSetting("idbHost", INFLUXDB_HOST));
+    root.field("idbPort", getSetting("idbPort", INFLUXDB_PORT));
+    root.field("idbDatabase", getSetting("idbDatabase", INFLUXDB_DATABASE));
+    root.field("idbUsername", getSetting("idbUsername", INFLUXDB_USERNAME));
+    root.field("idbPassword", getSetting("idbPassword", INFLUXDB_PASSWORD));
 }
 
 void _idbConfigure() {
@@ -101,18 +101,18 @@ void _idbDone(const espurna::http::Result& result) {
     _idb_url = "";
 }
 
-void _idbSend(const String& host, const uint16_t port) {
+void _idbSend(const espurna::string& host, const uint16_t port) {
     DEBUG_MSG_P(PSTR("[INFLUXDB] Sending to %s:%u\n"), host.c_str(), port);
 
-    _idb_url = F("http://");
+    _idb_url = "http://";
     _idb_url += host;
     _idb_url += ':';
-    _idb_url += String(port, 10);
-    _idb_url += F("/write?db=");
+    _idb_url += espurna::string(port, 10);
+    _idb_url += "/write?db=";
     _idb_url += getSetting("idbDatabase", INFLUXDB_DATABASE);
-    _idb_url += F("&u=");
+    _idb_url += "&u=";
     _idb_url += getSetting("idbUsername", INFLUXDB_USERNAME);
-    _idb_url += F("&p=");
+    _idb_url += "&p=";
     _idb_url += getSetting("idbPassword", INFLUXDB_PASSWORD);
 
     espurna::http::Request request;
@@ -142,13 +142,13 @@ void _idbFlush() {
 
     // TODO: should we always store specific pairs like tspk keeps relay / sensor readings?
     //       note that we also send heartbeat data, persistent values should be flagged
-    const String device = systemHostname();
+    const espurna::string device = systemHostname();
 
     _idb_payload = "";
     _idb_payload.reserve(DataBufferSize);
     for (auto& pair : _idb_values) {
         if (!isNumber(pair.second)) {
-            String quoted;
+            espurna::string quoted;
             quoted.reserve(pair.second.length() + 2);
             quoted += '"';
             quoted += pair.second;
@@ -180,27 +180,27 @@ bool idbEnabled() {
 
 bool _idbHeartbeat(espurna::heartbeat::Mask mask) {
     if (mask & espurna::heartbeat::Report::Uptime)
-        idbSend(MQTT_TOPIC_UPTIME, String(systemUptime().count()).c_str());
+        idbSend(MQTT_TOPIC_UPTIME, espurna::string(systemUptime().count()).c_str());
 
     if (mask & espurna::heartbeat::Report::Freeheap) {
         auto stats = systemHeapStats();
-        idbSend(MQTT_TOPIC_FREEHEAP, String(stats.available).c_str());
+        idbSend(MQTT_TOPIC_FREEHEAP, espurna::string(stats.available).c_str());
     }
 
     if (mask & espurna::heartbeat::Report::Rssi)
-        idbSend(MQTT_TOPIC_RSSI, String(WiFi.RSSI()).c_str());
+        idbSend(MQTT_TOPIC_RSSI, espurna::string(wifiStaRssi()).c_str());
 
     if ((mask & espurna::heartbeat::Report::Vcc) && (ADC_MODE_VALUE == ADC_VCC))
-        idbSend(MQTT_TOPIC_VCC, String(ESP.getVcc()).c_str());
+        idbSend(MQTT_TOPIC_VCC, espurna::string(systemVcc()).c_str());
 
     if (mask & espurna::heartbeat::Report::Loadavg)
-        idbSend(MQTT_TOPIC_LOADAVG, String(systemLoadAverage()).c_str());
+        idbSend(MQTT_TOPIC_LOADAVG, espurna::string(systemLoadAverage()).c_str());
 
     if (mask & espurna::heartbeat::Report::Ssid)
-        idbSend(MQTT_TOPIC_SSID, WiFi.SSID().c_str());
+        idbSend(MQTT_TOPIC_SSID, wifiStaSsid().c_str());
 
     if (mask & espurna::heartbeat::Report::Bssid)
-        idbSend(MQTT_TOPIC_BSSID, WiFi.BSSIDstr().c_str());
+        idbSend(MQTT_TOPIC_BSSID, wifiStaBssid().c_str());
 
     return true;
 }
@@ -210,7 +210,7 @@ PROGMEM_STRING(IdbSend, "IDB.SEND");
 
 static void idbTerminalSend(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() != 4) {
-        terminalError(ctx, F("idb.send <topic> <id> <value>"));
+        terminalError(ctx, "idb.send <topic> <id> <value>");
         return;
     }
 

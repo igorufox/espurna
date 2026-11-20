@@ -8,7 +8,7 @@ LEDC, one LEDC channel per pin, channel numbers are the indexes of the pins
 
 #pragma once
 
-#include <Arduino.h>
+#include "core_esp32.h"
 
 namespace espurna {
 namespace driver {
@@ -39,29 +39,24 @@ inline uint32_t setup(uint32_t frequency, uint32_t resolution) {
     return (1UL << resolution) - 1;
 }
 
-// SOC_LEDC_CHANNEL_NUM: classic ESP32 = 16, S2/S3 = 8, C3 = 6.
+// the 16 LEDC channels of the ESP32, 8 high speed and 8 low speed (core_esp32.h numbering).
 // pwm.cpp bails before touching the peripheral so a misconfigured pin list
 // cannot half-claim channels and leak them.
 inline size_t channels_max() {
-    return SOC_LEDC_CHANNEL_NUM;
+    return 16;
 }
 
 inline bool pin_valid(uint8_t pin) {
     return gpioValidForOutput(pin);
 }
 
-// core 3.x: ledcSetup() / ledcAttachPin() are gone, ledcAttachChannel() keeps the explicit channel numbers
+// LEDC channels by number, the index of the pin is its channel (core_esp32.h)
 inline bool init(const uint8_t* begin, const uint8_t* end) {
     const auto& config = ledc::config();
 
     uint8_t channel = 0;
     for (auto it = begin; it != end; ++it) {
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-        ledcAttachChannel(*it, config.frequency, config.resolution, channel);
-#else
-        ledcSetup(channel, config.frequency, config.resolution);
-        ledcAttachPin(*it, channel);
-#endif
+        ::espurna::core::esp32::ledc_attach(*it, channel, config.frequency, config.resolution);
         ++channel;
     }
 
@@ -69,11 +64,7 @@ inline bool init(const uint8_t* begin, const uint8_t* end) {
 }
 
 inline void write(size_t index, uint8_t, uint32_t duty, uint32_t) {
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-    ledcWriteChannel(index, duty);  // ledcWrite() takes the pin in 3.x
-#else
-    ledcWrite(index, duty);
-#endif
+    ::espurna::core::esp32::ledc_write(static_cast<uint8_t>(index), duty);
 }
 
 inline void update() {

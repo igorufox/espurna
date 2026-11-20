@@ -250,47 +250,47 @@ using espurna::button::settings::options::ButtonActionOptions;
 } // namespace
 
 template<>
-debounce_event::types::Mode convert(const String& value) {
+debounce_event::types::Mode convert(const espurna::string& value) {
     return convert(DebounceEventMode, value, debounce_event::types::Mode::Pushbutton);
 }
 
-String serialize(debounce_event::types::Mode value) {
+espurna::string serialize(debounce_event::types::Mode value) {
     return serialize(DebounceEventMode, value);
 }
 
 template<>
-debounce_event::types::PinValue convert(const String& value) {
+debounce_event::types::PinValue convert(const espurna::string& value) {
     return convert(DebounceEventPinValue, value, debounce_event::types::PinValue::Low);
 }
 
-String serialize(debounce_event::types::PinValue value) {
+espurna::string serialize(debounce_event::types::PinValue value) {
     return serialize(DebounceEventPinValue, value);
 }
 
 template<>
-debounce_event::types::PinMode convert(const String& value) {
+debounce_event::types::PinMode convert(const espurna::string& value) {
     return convert(DebounceEventPinMode, value, debounce_event::types::PinMode::Input);
 }
 
-String serialize(debounce_event::types::PinMode mode) {
+espurna::string serialize(debounce_event::types::PinMode mode) {
     return serialize(DebounceEventPinMode, mode);
 }
 
 template <>
-ButtonProvider convert(const String& value) {
+ButtonProvider convert(const espurna::string& value) {
     return convert(ButtonProviderOptions, value, ButtonProvider::None);
 }
 
-String serialize(ButtonProvider value) {
+espurna::string serialize(ButtonProvider value) {
     return serialize(ButtonProviderOptions, value);
 }
 
 template<>
-ButtonAction convert(const String& value) {
+ButtonAction convert(const espurna::string& value) {
     return convert(ButtonActionOptions, value, ButtonAction::None);
 }
 
-String serialize(::ButtonAction value) {
+espurna::string serialize(::ButtonAction value) {
     return serialize(ButtonActionOptions, value);
 }
 
@@ -656,7 +656,7 @@ STRING_VIEW_INLINE(Prefix, "btn");
 namespace internal {
 
 template <typename T>
-T indexedThenGlobal(const String& prefix, size_t index, T defaultValue) {
+T indexedThenGlobal(const espurna::string& prefix, size_t index, T defaultValue) {
     const auto key = espurna::settings::Key{prefix, index};
 
     auto& instance = espurna::settings::kvs_instance();
@@ -732,7 +732,7 @@ debounce_event::types::PinMode pinMode(size_t index) {
 debounce_event::types::PinValue defaultValue(size_t index) {
     // Follow: «released» is the open contact, never the position at boot (W68). Otherwise a switch
     // that was on at boot would be taken as off and the relay would go the opposite way.
-    // Open contact reads as the pull: HIGH with a pull-up (or none), LOW with a pull-down
+    // Open contact reads as the pull: true with a pull-up (or none), false with a pull-down
     if (isFollow(index)) {
         const auto value = internal::getDynamicButton(index)
             ? debounce_event::types::PinValue::Initial
@@ -830,7 +830,7 @@ unsigned long minPulses(size_t index) {
     return internal::indexedThenGlobal(keys::MinPulses, index, 5ul);
 }
 
-// Percentage of the window spent in the active (LOW) level, 0 to only count pulses
+// Percentage of the window spent in the active (false) level, 0 to only count pulses
 unsigned long minDuty(size_t index) {
     return internal::indexedThenGlobal(keys::MinDuty, index, 0ul);
 }
@@ -882,7 +882,7 @@ int analogLevel(size_t index) {
 #endif
 
 #if TERMINAL_SUPPORT
-String terminalCommand(size_t index) {
+espurna::string terminalCommand(size_t index) {
     return getSetting(espurna::settings::Key{keys::TerminalCommand, index});
 }
 #endif
@@ -891,7 +891,7 @@ namespace query {
 namespace internal {
 
 #define ID_VALUE(NAME, FUNC)\
-String NAME (size_t id) {\
+espurna::string NAME (size_t id) {\
     return espurna::settings::internal::serialize(FUNC(id));\
 }
 
@@ -901,9 +901,9 @@ ID_VALUE(provider, settings::provider)
 ID_VALUE(mode, settings::mode)
 
 // btnMode as stored, including "follow"
-String modeName(size_t id) {
+espurna::string modeName(size_t id) {
     return settings::isFollow(id)
-        ? String(FPSTR(settings::options::Follow))
+        ? espurna::string(settings::options::Follow)
         : mode(id);
 }
 ID_VALUE(defaultValue, settings::defaultValue)
@@ -991,7 +991,7 @@ void setup() {
 namespace terminal {
 namespace internal {
 
-void inject(String command) {
+void inject(espurna::string command) {
     static EphemeralPrint output;
     PrintString error(64);
 
@@ -1015,7 +1015,7 @@ void button(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() == 2) {
         size_t id;
         if (!tryParseId(ctx.argv[1], buttonCount(), id)) {
-            terminalError(ctx, F("Invalid button ID"));
+            terminalError(ctx, "Invalid button ID");
             return;
         }
 
@@ -1251,7 +1251,7 @@ void process_action(size_t id, ButtonAction action) {
 #if WEB_SUPPORT
 namespace {
 
-void _buttonWebSocketOnVisible(JsonObject& root) {
+void _buttonWebSocketOnVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, espurna::button::settings::Prefix);
 }
 
@@ -1270,22 +1270,20 @@ static constexpr espurna::settings::query::IndexedSetting WebSocketSettings[] PR
 #endif
 };
 
-void _buttonWebSocketOnConnected(JsonObject& root) {
+void _buttonWebSocketOnConnected(espurna::json::Writer& root) {
     const auto buttons = buttonCount();
     if (!buttons) {
         return;
     }
 
-    root["btnRepDel"] = espurna::button::settings::repeatDelay();
-
-    root[FPSTR(espurna::button::settings::keys::AcFreq)] = espurna::button::settings::acFreq();
-    root[FPSTR(espurna::button::settings::keys::AcDebug)] = espurna::button::settings::acDebug();
-
+    root.field("btnRepDel", espurna::button::settings::repeatDelay());
+    root.field(espurna::button::settings::keys::AcFreq, espurna::button::settings::acFreq());
+    root.field(espurna::button::settings::keys::AcDebug, espurna::button::settings::acDebug());
     espurna::web::ws::EnumerableConfig config{root, STRING_VIEW("btnConfig")};
     config(STRING_VIEW("values"), buttons, WebSocketSettings);
 }
 
-bool _buttonWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool _buttonWebSocketOnKeyCheck(espurna::StringView key, espurna::json::Value) {
     return espurna::button::settings::query::checkSamePrefix(key);
 }
 
@@ -1378,7 +1376,7 @@ void buttonEvent(size_t id, ButtonEvent event) {
 
 #if MQTT_SUPPORT
     if ((action != ButtonAction::None) || _buttons_mqtt_send_all[id]) {
-        mqttSend(MQTT_TOPIC_BUTTON, id, String(_buttonEventString(event)).c_str(), false, _buttons_mqtt_retain[id]);
+        mqttSend(MQTT_TOPIC_BUTTON, id, espurna::string(_buttonEventString(event)).c_str(), false, _buttons_mqtt_retain[id]);
     }
 #endif
 
@@ -1570,7 +1568,7 @@ public:
         adjustPinRanges();
     }
 
-    String description() const override {
+    espurna::string description() const override {
         char buffer[64];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("%s @ level %d (%d...%d)"),
@@ -1582,14 +1580,14 @@ public:
     // Notice that 'static' method vars are shared between instances
     // This way we will throttle every invocation (which should be safe to do, since we only read things through the button loop)
     int analogRead() {
-        static unsigned long ts { ESP.getCycleCount() };
-        static int last { ::analogRead(_pin) };
+        static unsigned long ts { espurna::core::chip::cycle_count() };
+        static int last { espurna::pins::analog(_pin) };
 
-        // Cannot hammer analogRead() all the time:
+        // Cannot hammer espurna::pins::analog() all the time:
         // https://github.com/esp8266/Arduino/issues/1634
-        if (ESP.getCycleCount() - ts >= _read_interval) {
-            ts = ESP.getCycleCount();
-            last = ::analogRead(_pin);
+        if (espurna::core::chip::cycle_count() - ts >= _read_interval) {
+            ts = espurna::core::chip::cycle_count();
+            last = espurna::pins::analog(_pin);
         }
 
         return last;
@@ -1618,9 +1616,9 @@ public:
         return "AnalogPin";
     }
 
-    // Simulate LOW level when the range matches and HIGH when it does not
+    // Simulate false level when the range matches and true when it does not
     int digitalRead() override {
-        const auto reading = analogRead();
+        const auto reading = espurna::pins::analog();
         return !((_from < reading) && (reading < _to));
     }
 
@@ -1633,7 +1631,7 @@ public:
 private:
     // ref. https://github.com/bxparks/AceButton/tree/develop/docs/resistor_ladder#level-matching-tolerance-range
     // fuzzy matching instead of directly comparing with the `_expected` level and / or specifying tolerance manually
-    // for example, for pins with expected values 0, 327, 512 and 844 we match analogRead() when:
+    // for example, for pins with expected values 0, 327, 512 and 844 we match espurna::pins::analog() when:
     // - 0..163 for 0
     // - 163..419 for 327
     // - 419..678 for 512
@@ -1643,7 +1641,7 @@ private:
 
     unsigned long _read_interval { microsecondsToClockCycles(200u) };
 
-    unsigned char _pin { A0 };
+    unsigned char _pin { espurna::pins::Adc0 };
 
     int _expected { 0u };
     int _from { RangeFrom };
@@ -1702,7 +1700,7 @@ BasePinPtr _buttonGpioPin(size_t index, ButtonProvider provider) {
 
    case ButtonProvider::Analog: {
 #if BUTTON_PROVIDER_ANALOG_SUPPORT
-        if (A0 != pin) {
+        if (espurna::pins::Adc0 != pin) {
             break;
         }
 
@@ -1808,7 +1806,7 @@ espurna::button::Button _buttonWithPin(size_t index, BasePinPtr&& pin) {
 
     if (ac_switch) {
         // Maintained wall switch, only position changes (press / release) are meaningful.
-        // AcSwitch reads LOW while AC is present, idle (no AC) is HIGH.
+        // AcSwitch reads false while AC is present, idle (no AC) is true.
         config.mode = debounce_event::types::Mode::Switch;
         config.default_value = debounce_event::types::PinValue::High;
 
@@ -1880,7 +1878,7 @@ bool _buttonSetupProvider(size_t index, ButtonProvider provider) {
 void _buttonSettingsMigrate(int version) {
     if (version < 5) {
         delSettingPrefix({PSTR("btnGPIO")});
-        moveSetting(F("btnDelay"), F("btnRepDel"));
+        moveSetting("btnDelay", "btnRepDel");
     }
 }
 

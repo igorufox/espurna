@@ -16,8 +16,8 @@ ESPURNA_SENSOR_DRIVER(veml6075, "veml6075Time|select|Integration time|1|0=50 ms,
     if (i2c_bus()) {
         auto* sensor = new VEML6075Sensor();
         sensor->setIntegrationTime(static_cast<VEML6075::veml6075_uv_it_t>(
-            getSetting(F("veml6075Time"), static_cast<int>(VEML6075_INTEGRATION_TIME))));
-        sensor->setDynamicMode(getSetting(F("veml6075High"), false)
+            getSetting("veml6075Time", static_cast<int>(VEML6075_INTEGRATION_TIME))));
+        sensor->setDynamicMode(getSetting("veml6075High", false)
             ? VEML6075::DYNAMIC_HIGH : VEML6075_DYNAMIC_MODE);
         sensorAdd(sensor);
     }

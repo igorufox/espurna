@@ -131,18 +131,18 @@ bool authentication() {
 
 namespace {
 
-void _wsUpdateAp(JsonObject& root) {
-    IPAddress ip{};
+void _wsUpdateAp(espurna::json::Writer& root) {
+    espurna::Ip4 ip{};
 
     if (wifiConnectable()) {
         ip = wifiApIp();
     }
 
-    root[F("apip")] = ipToString(ip);
+    root.field(STRING_VIEW("apip"), espurna::StringView(ipToString(ip)));
 }
 
-void _wsUpdateSta(JsonObject& root) {
-    IPAddress ip{};
+void _wsUpdateSta(espurna::json::Writer& root) {
+    espurna::Ip4 ip{};
     espurna::wifi::StaNetwork network{};
 
     if (wifiConnected()) {
@@ -150,28 +150,29 @@ void _wsUpdateSta(JsonObject& root) {
         network = wifiStaInfo();
     }
 
-    root[F("ssid")] = network.ssid;
-    root[F("bssid")] =
-        ::espurna::settings::internal::serialize(network.bssid);
-    root[F("channel")] = network.channel;
-    root[F("staip")] = ipToString(ip);
+    root.field(STRING_VIEW("ssid"), espurna::StringView(network.ssid));
+    root.field(STRING_VIEW("bssid"),
+        espurna::StringView(::espurna::settings::internal::serialize(network.bssid)));
+    root.field(STRING_VIEW("channel"), network.channel);
+    root.field(STRING_VIEW("security"), espurna::StringView(wifiStaSecurity()));
+    root.field(STRING_VIEW("staip"), espurna::StringView(ipToString(ip)));
 }
 
-void _wsUpdateStats(JsonObject& root) {
+void _wsUpdateStats(espurna::json::Writer& root) {
     const auto stats = systemHeapStats();
-    root[F("heap")] = stats.available;
-    root[F("heapUsable")] = stats.usable;
-    root[F("heapFrag")] = stats.fragmentation;
-    root[F("uptime")] = prettyDuration(systemUptime());
-    root[F("rssi")] = WiFi.RSSI();
-    root[F("loadaverage")] = systemLoadAverage();
+    root.field(STRING_VIEW("heap"), stats.available);
+    root.field(STRING_VIEW("heapUsable"), stats.usable);
+    root.field(STRING_VIEW("heapFrag"), stats.fragmentation);
+    root.field(STRING_VIEW("uptime"), espurna::StringView(prettyDuration(systemUptime())));
+    root.field(STRING_VIEW("rssi"), wifiStaRssi());
+    root.field(STRING_VIEW("loadaverage"), systemLoadAverage());
 #if ADC_MODE_VALUE == ADC_VCC
-    root[F("vcc")] = espurna::adc::chip::vcc();
+    root.field(STRING_VIEW("vcc"), espurna::adc::chip::vcc());
 #endif
 }
 
 #if NTP_SUPPORT
-void _wsUpdateTime(JsonObject& root) {
+void _wsUpdateTime(espurna::json::Writer& root) {
     if (!ntpSynced()) {
         return;
     }
@@ -179,11 +180,11 @@ void _wsUpdateTime(JsonObject& root) {
     using namespace espurna::datetime;
 
     const auto ctx = make_context(time(nullptr));
-    root[F("now")] = format_local_tz(ctx);
+    root.field(STRING_VIEW("now"), espurna::StringView(format_local_tz(ctx)));
 }
 #endif
 
-void _wsUpdate(JsonObject& root) {
+void _wsUpdate(espurna::json::Writer& root) {
     _wsUpdateAp(root);
     _wsUpdateSta(root);
     _wsUpdateStats(root);
@@ -388,12 +389,12 @@ void _onAuth(WebRequest& request) {
         return;
     }
 
-    const IPAddress ip(request.remoteIp());
+    const espurna::Ip4 ip(request.remoteIp());
     auto now = WsTicket::TimeSource::now();
 
     auto it = std::begin(_ws_tickets);
     while (it != std::end(_ws_tickets)) {
-        if (!((*it).ip != IPAddress())
+        if (!((*it).ip != espurna::Ip4())
             || ((*it).ip == ip)
             || (now - (*it).timestamp > WsTimeout)) {
             break;
@@ -411,7 +412,7 @@ void _onAuth(WebRequest& request) {
     request.send(429, "text/plain", "Too many sessions");
 }
 
-void _wsAuthUpdate(const IPAddress& ip) {
+void _wsAuthUpdate(const espurna::Ip4& ip) {
     for (auto& ticket : _ws_tickets) {
         if (ticket.ip == ip) {
             ticket.timestamp = WsTicket::TimeSource::now();
@@ -420,7 +421,7 @@ void _wsAuthUpdate(const IPAddress& ip) {
     }
 }
 
-bool _wsAuth(const IPAddress& ip) {
+bool _wsAuth(const espurna::Ip4& ip) {
     auto now = WsTicket::TimeSource::now();
 
     for (auto& ticket : _ws_tickets) {
@@ -468,7 +469,7 @@ namespace {
 
 // Check the existing setting before saving it
 // (we only care about the settings storage, don't mind the build values)
-bool _wsStore(espurna::settings::kvs_type& instance, String key, const String& value) {
+bool _wsStore(espurna::settings::kvs_type& instance, espurna::string key, const espurna::string& value) {
     const auto current = instance.get(key);
     if (!current || (current.ref() != value)) {
         return instance.set(key, value);
@@ -479,7 +480,7 @@ bool _wsStore(espurna::settings::kvs_type& instance, String key, const String& v
 
 // TODO: generate "accepted" keys in the initial phase of the connection?
 // TODO: is value ever used... by anything?
-bool _wsCheckKey(const String& key, const JsonVariant& value) {
+bool _wsCheckKey(espurna::StringView key, espurna::json::Value value) {
     for (auto& callback : wsRegister().on_keycheck) {
         if (callback(key, value)) {
             return true;
@@ -494,26 +495,26 @@ void _wsPostParse(uint32_t client_id, bool save, bool reload) {
         saveSettings();
         espurnaReload();
 
-        wsPost(client_id, [save, reload](JsonObject& root) {
+        wsPost(client_id, [save, reload](espurna::json::Writer& root) {
             if (reload) {
-                root[F("action")] = F("reload");
+                root.field(STRING_VIEW("action"), STRING_VIEW("reload"));
             } else if (save) {
-                root[F("saved")] = true;
+                root.field(STRING_VIEW("saved"), true);
             }
-            root[F("message")] = F("Changes saved");
+            root.field(STRING_VIEW("message"), STRING_VIEW("Changes saved"));
         });
 
         _wsResetUpdateTimer();
         return;
     }
 
-    wsPost(client_id, [](JsonObject& root) {
-        root[F("message")] = F("No changes detected");
+    wsPost(client_id, [](espurna::json::Writer& root) {
+        root.field(STRING_VIEW("message"), STRING_VIEW("No changes detected"));
     });
 }
 
 // by the client id and address: a deferred message is parsed in the loop, the client may be gone by then
-void _wsParseImpl(uint32_t client_id, const IPAddress& ip, uint8_t* payload, size_t length) {
+void _wsParseImpl(uint32_t client_id, const espurna::Ip4& ip, uint8_t* payload, size_t length) {
     //DEBUG_MSG_P(PSTR("[WEBSOCKET] Parsing: %.*s\n"),
     //    length, reinterpret_cast<cont char*>(payload));
 
@@ -526,27 +527,25 @@ void _wsParseImpl(uint32_t client_id, const IPAddress& ip, uint8_t* payload, siz
         return;
     }
 
-    // Notice that the buffer payload above *is null terminated*!
-    // JSON parser should be pretty efficient with the non-const payload,
-    // most of the space is taken by the object key references
-    auto* ptr = reinterpret_cast<char*>(payload);
-
-    DynamicJsonBuffer jsonBuffer(512);
-    JsonObject& root = jsonBuffer.parseObject(ptr);
-    if (!root.success()) {
-        wsPost(client_id, [](JsonObject& root) {
-            root[F("message")] = F("JSON parsing error");
+    // the message text itself is read (json.h), nothing is copied
+    const auto root = espurna::json::parse(
+        espurna::StringView(reinterpret_cast<const char*>(payload), length));
+    if (!root.isObject()) {
+        wsPost(client_id, [](espurna::json::Writer& root) {
+            root.field(STRING_VIEW("message"), STRING_VIEW("JSON parsing error"));
         });
         return;
     }
 
     // Check actions -----------------------------------------------------------
 
-    const char* action = root["action"];
+    char action_text[32];
+    const char* action = root["action"].asString(action_text, sizeof(action_text))
+        ? action_text : nullptr;
     if (action) {
         if (strcmp(action, "ping") == 0) {
-            wsPost(client_id, [](JsonObject& root) {
-                root["pong"] = 1;
+            wsPost(client_id, [](espurna::json::Writer& root) {
+                root.field(STRING_VIEW("pong"), 1);
             });
             _wsAuthUpdate(ip);
             return;
@@ -567,15 +566,15 @@ void _wsParseImpl(uint32_t client_id, const IPAddress& ip, uint8_t* payload, siz
             return;
         }
 
-        JsonObject& data = root["data"];
-        if (data.success()) {
+        const auto data = root["data"];
+        if (data.isObject()) {
             if (strcmp(action, "restore") == 0) {
                 const auto message = settingsRestoreJson(data)
                     ? STRING_VIEW("Changes saved, you should be able to reboot now")
                     : STRING_VIEW("Cound not restore the configuration, see the debug log for more information");
 
-                wsPost(client_id, [message](JsonObject& root) {
-                    root[F("message")] = message;
+                wsPost(client_id, [message](espurna::json::Writer& root) {
+                    root.field(STRING_VIEW("message"), message);
                 });
                 return;
             }
@@ -588,31 +587,29 @@ void _wsParseImpl(uint32_t client_id, const IPAddress& ip, uint8_t* payload, siz
 
     // Update settings in-place. Unlike 'restore', this only
     // removes keys explicitly set in the 'del' list
-    JsonObject& settings = root[F("settings")];
-    if (!settings.success()) {
+    const auto settings = root["settings"];
+    if (!settings.isObject()) {
         return;
     }
 
     bool save { false };
     bool reload { false };
 
-    JsonArray& toDelete = settings["del"];
-    for (const auto& value : toDelete) {
-        delSetting(value.as<String>());
-    }
+    settings["del"].items([](espurna::json::Value value) {
+        const auto key = value.asString();
+        delSetting(espurna::string(key.c_str()));
+    });
 
     auto& instance = espurna::settings::kvs_instance();
 
-    // TODO: pass key as string, we always attempt to use it as such
-    JsonObject& toAssign = settings["set"];
-    for (auto& kv : toAssign) {
-        const String key = kv.key;
-        if (_wsCheckKey(key, kv.value)) {
-            if (_wsStore(instance, key, kv.value.as<String>())) {
+    settings["set"].members([&](espurna::StringView key, espurna::json::Value value) {
+        if (_wsCheckKey(key, value)) {
+            const auto text = value.asString();
+            if (_wsStore(instance, espurna::string(key), espurna::string(text.c_str()))) {
                 save = true;
             }
         }
-    }
+    });
 
     _wsPostParse(client_id, save, reload);
 }
@@ -626,52 +623,62 @@ bool _wsOutputPending() {
     return _ws.pending();
 }
 
-bool _wsOnKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool _wsOnKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(espurna::web::ws::settings::keys::Prefix);
 }
 
-void _wsOnConnected(JsonObject& root) {
-    root["webMode"] = WEB_MODE_NORMAL;
+void _wsOnConnected(espurna::json::Writer& root) {
+    root.field(STRING_VIEW("webMode"), WEB_MODE_NORMAL);
 
     const auto info = buildInfo();
-    root[F("sdk")] = info.sdk.base.c_str();
-    root[F("core")] = info.sdk.version.c_str();
+    root.field(STRING_VIEW("sdk"), info.sdk.base.c_str());
+    root.field(STRING_VIEW("core"), info.sdk.version.c_str());
 
     // device template search picks the database and the pin layout by 'arch' and 'mcu'
-    espurna::chip::ws_connected(root);
+    const auto chip = espurna::chip::web_info();
+    root.field(STRING_VIEW("arch"), chip.arch);
+    root.field(STRING_VIEW("mcu"), chip.mcu);
+    if (chip.layout) {
+        root.field(STRING_VIEW("fwLayout"), chip.layout);
+    }
 
     // build values, or the ones written by the device template
-    root[F("manufacturer")] = systemManufacturer();
-    root[F("device")] = systemDeviceName();
+    root.field(STRING_VIEW("manufacturer"), espurna::StringView(systemManufacturer()));
+    root.field(STRING_VIEW("device"), espurna::StringView(systemDeviceName()));
 
-    root[F("app_name")] = info.app.name;
-    root[F("app_version")] = info.app.version;
-    root[F("app_build")] = info.app.build_time;
+    root.field(STRING_VIEW("app_name"), info.app.name);
+    root.field(STRING_VIEW("app_version"), info.app.version);
+    root.field(STRING_VIEW("app_build"), info.app.build_time);
     // release image this build belongs to, WebUI OTA lists its files from GitHub ("" - local build)
-    root[F("fwImage")] = espurna::chip::image();
+    root.field(STRING_VIEW("fwImage"), espurna::chip::image());
 
-    root[F("hostname")] = systemHostname();
-    root[F("chipid")] = systemChipId().c_str();
-    root[F("desc")] = systemDescription();
+    root.field(STRING_VIEW("hostname"), espurna::StringView(systemHostname()));
+    root.field(STRING_VIEW("chipid"), systemChipId().c_str());
+    root.field(STRING_VIEW("desc"), espurna::StringView(systemDescription()));
 
-    root[F("sketch_size")] = ESP.getSketchSize();
-    root[F("free_size")] = ESP.getFreeSketchSpace();
+    root.field(STRING_VIEW("sketch_size"), espurna::core::chip::sketch_size());
+    root.field(STRING_VIEW("free_size"), espurna::core::chip::sketch_space());
 }
 
-void _wsOnVisible(JsonObject& root) {
-    root[espurna::web::ws::settings::keys::Auth] = _ws_auth ? 1 : 0;
+void _wsOnVisible(espurna::json::Writer& root) {
+    root.field(espurna::web::ws::settings::keys::Auth, _ws_auth ? 1 : 0);
 #if ADC_MODE_VALUE == ADC_VCC
     // supply voltage is only known with the ADC measuring it, the row is hidden otherwise
     wsPayloadModule(root, STRING_VIEW("vcc"));
 #endif
-    espurna::chip::ws_visible(root);
+    const auto chip = espurna::chip::web_info();
+    if (chip.tcm_size) {
+        wsPayloadModule(root, STRING_VIEW("tcm"));
+        root.field(STRING_VIEW("tcmUsed"), chip.tcm_used);
+        root.field(STRING_VIEW("tcmSize"), chip.tcm_size);
+    }
 }
 
 void _wsConnected(uint32_t client_id) {
     if (systemPasswordMustChange()) {
-        wsPost(client_id, [](JsonObject& root) {
-            root["webMode"] = WEB_MODE_PASSWORD;
-        }, JSON_OBJECT_SIZE(1));
+        wsPost(client_id, [](espurna::json::Writer& root) {
+            root.field(STRING_VIEW("webMode"), WEB_MODE_PASSWORD);
+        });
         return;
     }
 
@@ -684,7 +691,7 @@ void _wsConnected(uint32_t client_id) {
 void _wsEvent(espurna::websocket::Event event, uint32_t id, uint32_t ip, const uint8_t* data, size_t len) {
     using espurna::websocket::Event;
 
-    const IPAddress address(ip);
+    const espurna::Ip4 address(ip);
     switch (event) {
     case Event::Connect:
 #ifndef NOWSAUTH
@@ -718,7 +725,7 @@ constexpr size_t WsSendHeadroom { 1536 };
 constexpr size_t WsMessageHeadroom { 512 };
 
 // a message to one client printed and queued; false: no heap for it now (nothing queued, the caller may try again)
-bool _wsSendTo(uint32_t client_id, JsonObject& root);
+bool _wsSendTo(uint32_t client_id, const espurna::web::ws::Message& message);
 
 // after a message of the queue did not go out: the next try not before this (not every loop pass)
 constexpr espurna::duration::Milliseconds WsRetryInterval { 100 };
@@ -749,12 +756,12 @@ void _wsHandlePostponedCallbacks(bool connected) {
 
     auto& callbacks = _ws_queue.front();
 
-    // avoid stalling forever when can't send anything: 10 s without a message going out
+    // avoid stalling forever when can't send anything: 10 s without a message going out. In seconds of the queue's
+    // clock: the CPU-cycle duration it was before is 10 cycles, every queued message timed out at once (11-18: the
+    // terminal's output of the WebUI arrived a command late or never)
     using TimeSource = espurna::time::CpuClock;
-    using CpuSeconds = std::chrono::duration<TimeSource::rep>;
-
-    constexpr CpuSeconds WsQueueTimeoutClockCycles { 10 };
-    if (TimeSource::now() - callbacks.start() > WsQueueTimeoutClockCycles) {
+    constexpr auto WsQueueTimeout = std::chrono::duration_cast<TimeSource::duration>(espurna::duration::Seconds(10));
+    if (TimeSource::now() - callbacks.start() > WsQueueTimeout) {
         DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u queued message timed out\n"), callbacks.id());
         _wsQueuePop();
         return;
@@ -789,10 +796,14 @@ void _wsHandlePostponedCallbacks(bool connected) {
     // XXX: block allocation will try to create *2 next time,
     // likely failing and causing wsSend to reference empty objects
     // XXX: arduinojson6 will not do this, but we may need to use per-callback buffers
-    DynamicJsonBuffer jsonBuffer(callbacks.buffer_hint());
-    JsonObject& root = jsonBuffer.createObject();
-
-    callbacks.send(root);
+    espurna::web::ws::Message message;
+    {
+        espurna::json::StreamWriter root(message);
+        root.beginObject();
+        callbacks.send(root);
+        wsPayloadModulesFlush(root);
+        root.end();
+    }
 
     using Mode = decltype(callbacks.mode());
 
@@ -805,17 +816,17 @@ void _wsHandlePostponedCallbacks(bool connected) {
         if (callbacks.id()) {
             // the initial messages of a WebUI page (its panels, the relays): one lost leaves the page without that
             // part for good (W70). Not out now - the same callback again, once the heap is back
-            if (!root.success() || !_wsSendTo(callbacks.id(), root)) {
+            if (message.failed() || !_wsSendTo(callbacks.id(), message)) {
                 callbacks.rewind();
                 _ws_queue_failed = now;
                 _ws_queue_waiting = true;
                 return;
             }
             callbacks.touch();
-        } else {
-            wsSend(root);
+        } else if (!message.failed()) {
+            _ws.textAll(message.data(), message.size());
         }
-        yield();
+        espurna::time::yield();
         break;
     }
 
@@ -833,35 +844,15 @@ void _wsLoop() {
 
 } // namespace
 
-// -----------------------------------------------------------------------------
-// ArduinoJson <-> WS: the message printed into one block, sent as one frame
-// -----------------------------------------------------------------------------
-
 namespace {
 
-std::unique_ptr<char[]> _wsPrint(JsonObject& root, size_t len) {
-    std::unique_ptr<char[]> out(new (std::nothrow) char[len + 1]);
-    if (out) {
-        root.printTo(out.get(), len + 1);
-    }
-    return out;
-}
-
 // a client that is gone needs no second try: true
-bool _wsSendTo(uint32_t client_id, JsonObject& root) {
+bool _wsSendTo(uint32_t client_id, const espurna::web::ws::Message& message) {
     if (!_ws.hasClient(client_id)) {
         return true;
     }
 
-    // tried again every WsRetryInterval while the heap is short: no log line each time (the debug log goes to the
-    // WebSocket as well and takes heap of its own)
-    const auto len = root.measureLength();
-    if (systemHeapStats().usable < (len + WsMessageHeadroom)) {
-        return false;
-    }
-
-    auto buffer = _wsPrint(root, len);
-    return buffer && _ws.text(client_id, buffer.get(), len);
+    return _ws.text(client_id, message.data(), message.size());
 }
 
 } // namespace
@@ -902,44 +893,22 @@ bool wsConnected(uint32_t client_id) {
     return _ws.hasClient(client_id);
 }
 
-// Note: 'measurement' tries to serialize json contents byte-by-byte by using a dummy printer
-// Make sure there is no off-by-one errors, since *some* output impelementations inject '\0'
-
-void wsSend(JsonObject& root) {
-    const auto len = root.measureLength();
-    if (systemHeapStats().usable < (len + WsMessageHeadroom)) {
-        DEBUG_MSG_P(PSTR("[WEBSOCKET] No heap for %u bytes, message dropped\n"), len);
-        return;
-    }
-    auto buffer = _wsPrint(root, len);
-    if (buffer) {
-        _ws.textAll(buffer.get(), len);
-    }
-}
-
-void wsSend(uint32_t client_id, JsonObject& root) {
-    if (!_ws.hasClient(client_id)) {
-        return;
-    }
-
-    const auto len = root.measureLength();
-    if (systemHeapStats().usable < (len + WsMessageHeadroom)) {
-        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u no heap for %u bytes, message dropped\n"), client_id, len);
-        return;
-    }
-    auto buffer = _wsPrint(root, len);
-    if (buffer) {
-        _ws.text(client_id, buffer.get(), len);
-    }
-}
+// the message is written into one block by the callback, then sent as one frame; no heap for it - dropped
 
 void wsSend(espurna::web::ws::OnSend callback) {
     if (_ws.count() > 0) {
-        DynamicJsonBuffer jsonBuffer(512);
-        JsonObject& root = jsonBuffer.createObject();
-        callback(root);
+        espurna::web::ws::Message message;
+        {
+            espurna::json::StreamWriter root(message);
+            root.beginObject();
+            callback(root);
+            wsPayloadModulesFlush(root);
+            root.end();
+        }
 
-        wsSend(root);
+        if (!message.failed()) {
+            _ws.textAll(message.data(), message.size());
+        }
     }
 }
 
@@ -950,12 +919,22 @@ void wsSend(const char * payload) {
 }
 
 void wsSend(uint32_t client_id, espurna::web::ws::OnSend callback) {
-    if (!_ws.hasClient(client_id)) return;
+    if (!_ws.hasClient(client_id)) {
+        return;
+    }
 
-    DynamicJsonBuffer jsonBuffer(512);
-    JsonObject& root = jsonBuffer.createObject();
-    callback(root);
-    wsSend(client_id, root);
+    espurna::web::ws::Message message;
+    {
+        espurna::json::StreamWriter root(message);
+        root.beginObject();
+        callback(root);
+        wsPayloadModulesFlush(root);
+        root.end();
+    }
+
+    if (!message.failed()) {
+        _ws.text(client_id, message.data(), message.size());
+    }
 }
 
 void wsSend(uint32_t client_id, const char* payload) {
@@ -984,6 +963,10 @@ void wsSetup() {
         .onConnected(_wsOnConnected, Prepend{})
         .onVisible(_wsOnVisible, Prepend{})
         .onKeyCheck(_wsOnKeyCheck);
+
+    // the restore of a backup (POST /config) and the DEBUG panel's command line: the parts that read JSON
+    settingsJsonSetup();
+    wsHeadSetup();
 
     // e.g. RESET command reply, don't restart before it reaches the client
     espurna::system::registerPendingOutput([]() {

@@ -19,9 +19,12 @@ Not for the rest of the firmware (that is nspanel.h)
 
 #pragma once
 
+#include "byte_stream.h"
+
+#include "text_types.h"
+
 #include "nspanel_config.h"
 
-#include <HardwareSerial.h>
 
 #include <deque>
 #include <memory>
@@ -78,7 +81,7 @@ constexpr size_t WeatherBodyMax { 8192 };      // the 7 day forecast is ~1.5 KB
 constexpr size_t SubscribeBurst { 2 };
 constexpr uint32_t SubscribeStepMs { 20 };
 
-// display power (nspPower, LOW = display ON), nothing when the pin is not connected
+// display power (nspPower, false = display ON), nothing when the pin is not connected
 void powerWrite(int level);
 
 } // namespace build
@@ -129,13 +132,13 @@ const char* weekdayFull(int wday);
 const char* weekdayShort(int wday);
 
 // "Saturday, October 24, 2026" / "Суббота, 24 октября 2026", shorter when longer than DateMax
-String date(const tm& t);
+espurna::string date(const tm& t);
 
 // "Oct 25" / "25 окт"
-String dayMonth(int mday, int mon);
+espurna::string dayMonth(int mday, int mon);
 
 // "Sun, Oct 25" / "Вс, 25 окт"
-String dateShort(const tm& t);
+espurna::string dateShort(const tm& t);
 
 // a printf'ed number for the screen: "21.5" / "21,5"
 void decimal(char* text);
@@ -149,13 +152,13 @@ void decimal(char* text);
 Config& config();
 
 // a parsed config replaces the running one
-void applyConfig(Config&& next, const String& warnings, const char* source);
+void applyConfig(Config&& next, const espurna::string& warnings, const char* source);
 
 // boot and nspanel.reload: /nspanel.json, or the built-in config when there is none
 void load();
 
 // the last load / upload error, empty when the running config is the file's
-void setLoadError(const String& error);
+void setLoadError(const espurna::string& error);
 
 // what the entity is now (RAM), nullptr for no such entity
 EntityLive* entityLive(int index);
@@ -164,7 +167,7 @@ EntityLive* entityLive(int index);
 int entityState(int index);
 
 // the last value text, empty when nothing is known
-const String& entityValue(int index);
+const espurna::string& entityValue(int index);
 
 // -1 when nothing is known, 1 when anything is on
 int groupState(int group);
@@ -173,7 +176,7 @@ int groupState(int group);
 int groupOnCount(int group);
 
 // publishes a value to the entity's command topic, through its "payload" template ("%s" = value)
-void entitySend(int index, const String& value);
+void entitySend(int index, const espurna::string& value);
 void entitySet(int index, Action action);
 void groupSet(int group, Action action);
 
@@ -193,7 +196,7 @@ float thermostatMax(const Thermostat& thermostat);
 float thermostatClamp(const Thermostat& thermostat, float value);
 
 // "21.5" / "21,5"
-String temperatureShort(float value);
+espurna::string temperatureShort(float value);
 
 // on-panel settings (OHpanel settings tiles), kept in ESPurna settings
 void applyUiSettings(Config& out);
@@ -209,7 +212,7 @@ struct Card {
     uint16_t page;
     uint16_t first;
     uint16_t count;
-    String title;
+    espurna::string title;
     bool settings { false }; // the settings tiles (count of them), no items
     bool list { false };     // rows of a "type": "list" page (only when the driver draws lists)
     bool sub { false };      // a sheet of a nested page: after all cards of the swipe row
@@ -248,7 +251,7 @@ namespace ntc {
 float value();
 
 // "21.5°C", empty when there is none or the config hides it
-String text();
+espurna::string text();
 
 } // namespace ntc
 
@@ -298,7 +301,7 @@ struct Series {
     std::vector<int16_t> on;    // a switch: % of each step it was ON
 };
 
-void open(const String& name);
+void open(const espurna::string& name);
 void close();
 
 // a new message arrived and was not taken yet
@@ -344,7 +347,7 @@ void reset();
 // the fetch task holds a TLS session, config parsing waits for it
 bool running();
 
-void info(Print& out);
+void info(::espurna::Output& out);
 
 // starts the fetch task when it is time, takes its result
 void loop();
@@ -355,7 +358,7 @@ void loop();
 namespace http {
 
 // false when it could not be started (no WiFi, too many at once, low heap)
-bool get(const String& url);
+bool get(const espurna::string& url);
 
 // logs the result of the last request
 void loop();
@@ -376,14 +379,14 @@ bool exists();
 
 // the saved config bound to 'out' (its image read in place). The JSON text of the old format or an image of an older
 // layout is compiled once and saved as an image first. false - none or not usable, 'error' says why
-bool open(Config& out, String& error, String& warnings);
+bool open(Config& out, espurna::string& error, espurna::string& warnings);
 
 // 'text' (NUL terminated, destroyed by the parse) compiled straight into the other half, which becomes the current one:
 // the half is erased once the draft is complete, the image written in small pieces as it is laid out, its header last
 // (a failure or a power cut leaves the current half). ParseResult::WriteFailed - the flash write failed
-ParseResult save(char* text, size_t length, String& error, String& warnings);
+ParseResult save(char* text, size_t length, espurna::string& error, espurna::string& warnings);
 
-void info(Print& out);
+void info(::espurna::Output& out);
 
 } // namespace storage
 
@@ -395,13 +398,13 @@ Limits parseLimits();
 
 // Free heap a compile needs: the JSON nodes plus the draft plus what WiFi / lwIP / TLS must keep (the image goes to its
 // sink as it is laid out); the largest block it takes is build::CompileBlock
-bool heapAvailable(size_t json_size, size_t length, String& error);
+bool heapAvailable(size_t json_size, size_t length, espurna::string& error);
 
 // heap check + compile into 'out', for text the caller does not need afterwards
-ParseResult compileText(char* text, size_t length, ImageSink& out, String& error, String& warnings);
+ParseResult compileText(char* text, size_t length, ImageSink& out, espurna::string& error, espurna::string& warnings);
 
 // built-in config, compiled into a heap image (nothing is written to the flash)
-ParseResult parseDefault(Config& out, String& error, String& warnings);
+ParseResult parseDefault(Config& out, espurna::string& error, espurna::string& warnings);
 
 // a new config bound since the last call: anything that reads the image across loop() calls starts again
 uint32_t configGeneration();
@@ -440,8 +443,8 @@ public:
     virtual const char* model() const = 0;
 
     // OHpanel: the design's name and what it has (grid layouts, backgrounds)
-    virtual String design() const {
-        return String();
+    virtual espurna::string design() const {
+        return espurna::string();
     }
 
     virtual void entityChanged(int entity) = 0;
@@ -451,8 +454,8 @@ public:
     virtual void temperatureChanged() = 0;
     virtual void reload() = 0;
     virtual void showPage(int page) = 0;
-    virtual void send(String payload) = 0;
-    virtual void info(Print& out) = 0;
+    virtual void send(espurna::string payload) = 0;
+    virtual void info(::espurna::Output& out) = 0;
 
     // the WebUI screen mirror, false when the driver has none
     virtual bool mirrorStart() {
@@ -469,7 +472,7 @@ public:
     }
 
     // nspanel.capture: the commands sent to the TFT, false when the driver has none
-    virtual bool capture(Capture, Print&) {
+    virtual bool capture(Capture, ::espurna::Output&) {
         return false;
     }
 
@@ -497,7 +500,7 @@ Driver& driver();
 namespace uart {
 
 // the display's port, a port of the uart module (nspPort); begin() false - no port, the display part stays off
-Stream& port();
+::espurna::ByteStream& port();
 bool begin();
 void drainInput();
 
@@ -514,15 +517,15 @@ void writeRaw(const char* command);
 } // namespace uart
 
 // every TFT event: kept for nspanel.info and published to <root>/nspanel
-void publishEvent(const String& message);
+void publishEvent(const espurna::string& message);
 
 // {"driver":"ohpanel","version":"bc629e1e","model":"..."} to <root>/nspanel
-void announceDriver(const Driver& driver, const String& version, const String& model);
+void announceDriver(const Driver& driver, const espurna::string& version, const espurna::string& model);
 
 // the last driver announcement, republished on MQTT connect
-const String& panelInfo();
+const espurna::string& panelInfo();
 
-const std::deque<String>& panelEvents();
+const std::deque<espurna::string>& panelEvents();
 
 namespace link {
 
@@ -542,7 +545,7 @@ void afterFlash(bool done);
 void loop();
 
 // Display: and Detect: lines of nspanel.info, then the driver's own
-void info(Print& out);
+void info(::espurna::Output& out);
 
 } // namespace link
 
@@ -553,12 +556,12 @@ void weatherChanged();
 void temperatureChanged();
 void reload();
 void showPage(int page);
-void send(String payload);
+void send(espurna::string payload);
 
 // only while connected, "" otherwise
 const char* version();
 const char* model();
-String design();
+espurna::string design();
 
 } // namespace driver
 
@@ -569,11 +572,11 @@ String design();
 namespace flash {
 
 bool busy();
-bool start(const String& link, uint32_t rate, String& out);
+bool start(const espurna::string& link, uint32_t rate, espurna::string& out);
 // the file the way an upload takes it, into a CRC-32: nothing goes to the display
-bool check(const String& link, String& out);
+bool check(const espurna::string& link, espurna::string& out);
 void loop();
-void info(Print& out);
+void info(::espurna::Output& out);
 
 } // namespace flash
 

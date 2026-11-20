@@ -7,7 +7,6 @@ default (a board has its SPI device wherever it is soldered)
 
 #pragma once
 
-#include <Arduino.h>
 #include <SPI.h>
 
 #include <cstdint>

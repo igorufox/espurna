@@ -1,6 +1,6 @@
 /*
 
-TCP - the one TCP connection of everything ESPurna builds (the head of every chip, code/safeboot-app, code/migration-app),
+TCP - the one TCP connection of everything ESPurna builds (the head of every chip, code/migration-app),
 under the HTTP client, the HTTP server, telnet. No Arduino: lwIP's raw TCP API, the same on every chip.
 
 - lwIP's callbacks only copy what arrived into a ring buffer and note that the peer closed. The TCP window stays
@@ -24,6 +24,11 @@ namespace tcp {
 
 // ms, lwIP's clock
 uint32_t now();
+
+// a TCP connection of this board holds data the peer did not acknowledge yet (closed ones too: lwIP finishes them by
+// itself). A requested restart waits for it, a few seconds at most (system.cpp: the 200 of /upgrade or of the Apply
+// lost once had nothing left to retransmit it, 20.11 COM3)
+bool sending();
 
 class Connection {
 public:

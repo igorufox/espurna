@@ -8,6 +8,7 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #include "types.h"
 #include "utils.h"
+#include "text_types.h"
 
 namespace espurna {
 
@@ -97,67 +98,6 @@ Callback& Callback::operator=(Callback&& other) noexcept {
     reset();
     move(other);
     return *this;
-}
-
-bool StringView::equals(StringView other) const {
-    if (other._len == _len) {
-        if (inFlash(_ptr) && inFlash(other._ptr)) {
-            return _ptr == other._ptr;
-        } else if (inFlash(_ptr)) {
-            return memcmp_P(other._ptr, _ptr, _len) == 0;
-        } else if (inFlash(other._ptr)) {
-            return memcmp_P(_ptr, other._ptr, _len) == 0;
-        }
-
-        return __builtin_memcmp(_ptr, other._ptr, _len) == 0;
-    }
-
-    return false;
-}
-
-bool StringView::equalsIgnoreCase(StringView other) const {
-    if (other._len == _len) {
-        if (inFlash(_ptr) && inFlash(other._ptr) && (_ptr == other._ptr)) {
-            return true;
-        } else if (inFlash(_ptr) || inFlash(other._ptr)) {
-            String copy;
-            const char* ptr = _ptr;
-            if (inFlash(_ptr)) {
-                copy = toString();
-                ptr = copy.begin();
-            }
-
-            return strncasecmp_P(ptr, other._ptr, _len) == 0;
-        }
-
-        return __builtin_strncasecmp(_ptr, other._ptr, _len) == 0;
-    }
-
-    return false;
-}
-
-bool StringView::startsWith(StringView other) const {
-    if (other._len <= _len) {
-        return StringView(begin(), begin() + other._len).equals(other);
-    }
-
-    return false;
-}
-
-bool StringView::endsWith(StringView other) const {
-    if (other._len <= _len) {
-        return StringView(end() - other._len, end()).equals(other);
-    }
-
-    return false;
-}
-
-StringView StringView::slice(size_t index, size_t len) const {
-    return StringView(_ptr + std::min(index, _len), std::min(len, _len - index));
-}
-
-StringView StringView::slice(size_t index) const {
-    return slice(index, _len - index);
 }
 
 namespace duration {
@@ -293,7 +233,7 @@ PairResult parse(StringView view, int num, int den) {
     PairResult out;
     out.ok = false;
 
-    String token;
+    espurna::string token;
     Type last { Type::Unknown };
     Type type { Type::Unknown };
 
@@ -363,8 +303,8 @@ update_floating:
             goto reset;
         }
 
-        char* endp { nullptr };
-        auto value = strtod(token.c_str(), &endp);
+        const char* endp { nullptr };
+        auto value = espurna::parseDecimal(token.c_str(), &endp);
         if (endp && (endp != token.c_str()) && endp[0] == '\0') {
             using Seconds = std::chrono::duration<float, std::ratio<1> >;
 

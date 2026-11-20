@@ -48,7 +48,7 @@ class SI7021Sensor : public I2CSensor<> {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char name[10];
             strncpy_P(name,
                 _chip == SI7021_CHIP_SI7021 ?
@@ -59,11 +59,11 @@ class SI7021Sensor : public I2CSensor<> {
             char buffer[32];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("%s @ I2C (0x%02X)"), name, lockedAddress());
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Descriptive name of the slot # index
-        String description(unsigned char index) const override {
+        espurna::string description(unsigned char index) const override {
             return description();
         };
 

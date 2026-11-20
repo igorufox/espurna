@@ -1,10 +1,10 @@
 /*
 
-GPIO MODULE, BK72xx (LibreTiny) part (common part is in gpio.cpp and arch/rtos/gpio_rtos.cpp)
+GPIO MODULE, BK72xx part (common part is in gpio.cpp and arch/rtos/gpio_rtos.cpp)
 
 */
 
-#include "espurna.h"
+#include "../../espurna.h"
 
 namespace espurna {
 namespace gpio {
@@ -22,29 +22,29 @@ uint32_t pin_config(unsigned char pin) {
 
 namespace chip {
 
-// LibreTiny pin numbers are GPIO numbers (P6 is 6). Only the pins routed out by the module (ref. LibreTiny board variant)
+// pin numbers are GPIO numbers (P6 is 6). Only the pins routed out by the module (core_beken.cpp pin_valid(), the pads
+// of the BK7231N QFN32 modules)
 bool valid(uint8_t pin) {
-    return pinSupported(pinInfo(pin), PIN_GPIO);
+    return ::espurna::core::chip::pin_valid(pin);
 }
 
 bool valid_output(uint8_t) {
     return true;
 }
 
-// ArduinoCore-API has enums instead of plain ints, values are the same
 void pin_mode(uint8_t pin, int8_t mode) {
-    ::pinMode(pin, static_cast<PinMode>(mode));
+    espurna::pins::mode(pin, static_cast<uint8_t>(mode));
 }
 
 void write(uint8_t pin, int8_t value) {
-    ::digitalWrite(pin, static_cast<PinStatus>(value));
+    espurna::pins::write(pin, (value != 0));
 }
 
 // Nothing but the system word survives the reset (ref. rtcmem_beken.cpp), pins are not kept
 void setup() {
 }
 
-void print_pin(Print& out, uint8_t pin) {
+void print_pin(::espurna::Output& out, uint8_t pin) {
     const auto config = pin_config(pin);
     const bool function = config & (1 << 6);
     const bool output = !(config & (1 << 3));

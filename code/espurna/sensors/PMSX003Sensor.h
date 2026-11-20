@@ -36,7 +36,7 @@ inline int PMS_PAYLOAD_SIZE(int size) {
 class PMSX003 {
 
     protected:
-        Stream *_serial = nullptr; // Should initialized by child class
+        ::espurna::ByteStream*_serial = nullptr; // Should initialized by child class
 
     public:
 
@@ -157,7 +157,7 @@ class PMSX003Sensor : public BaseSensor, PMSX003 {
         };
 
     public:
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -196,14 +196,14 @@ class PMSX003Sensor : public BaseSensor, PMSX003 {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return String(Specs[_type].name);
+        espurna::string description() const override {
+            return espurna::string(Specs[_type].name);
         }
 
         // Descriptive name of the slot # index
-        String description(unsigned char index) const override {
-            String out;
-            out += String(index + 1, 10);
+        espurna::string description(unsigned char index) const override {
+            espurna::string out;
+            out += espurna::string(index + 1, 10);
             out += " @ ";
             out += description();
             return out;

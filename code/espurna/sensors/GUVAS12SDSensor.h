@@ -85,16 +85,16 @@ class GUVAS12SDSensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[18];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("GUVAS12SD @ GPIO%hhu"), _gpio);
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
-            return String(_gpio, 10);
+        espurna::string address(unsigned char) const override {
+            return espurna::string(_gpio, 10);
         }
 
         // Type for slot # index
@@ -120,10 +120,10 @@ class GUVAS12SDSensor : public BaseSensor {
                 int _average = 0;
 
             #if UV_SAMPLE_RATE == 1
-                _average = analogRead(0);
+                _average = espurna::pins::analog(0);
             #else
                 for (unsigned int i=0; i < UV_SAMPLE_RATE; i++) {
-                    _average += analogRead(0);
+                    _average += espurna::pins::analog(0);
                     espurna::time::blockingDelay(
                         espurna::duration::Milliseconds(2));
                 }

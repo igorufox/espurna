@@ -32,8 +32,8 @@ void otaProgress(size_t bytes);
 bool otaWebUploading();
 
 // systemHostname() inside a "..." string of a page script
-inline String otaWebJsString(const String& value) {
-    String out;
+inline espurna::string otaWebJsString(const espurna::string& value) {
+    espurna::string out;
     out.reserve(value.length() + 8);
 
     for (size_t index = 0; index < value.length(); ++index) {
@@ -54,6 +54,8 @@ inline String otaWebJsString(const String& value) {
 }
 #endif
 
+// an image is being written into the update slot
+bool otaRunning();
 void otaPrintError();
 
 // the espota upload in RtcmemData::ota_trace: running, or stopped by the stall watcher (arch/esp8266/ota_esp8266.cpp).

@@ -47,8 +47,8 @@ private:
 } // namespace
 
 ESPURNA_MODULE(light_pwm, "light_pwm", 11) {
-    const auto provider = getSetting(F("ltProvider"));
-    if (provider.length() && !provider.equals(F("dimmer"))) {
+    const auto provider = getSetting("ltProvider");
+    if (provider.length() && !provider.equals("dimmer")) {
         return;
     }
 
@@ -56,7 +56,7 @@ ESPURNA_MODULE(light_pwm, "light_pwm", 11) {
     std::vector<uint8_t> pins;
     pins.reserve(espurna::light::ChannelsMax);
     for (size_t index = 0; index < espurna::light::ChannelsMax; ++index) {
-        const auto pin = getSetting({F("ltDimmerGPIO"), index}, uint8_t{ GPIO_NONE });
+        const auto pin = getSetting({"ltDimmerGPIO", index}, uint8_t{ GPIO_NONE });
         if (!gpioValid(pin)) {
             break;
         }

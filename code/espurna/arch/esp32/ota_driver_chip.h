@@ -9,26 +9,17 @@ Update writes the app image into the other app partition, every upload it takes 
 
 #pragma once
 
-#include <Arduino.h>
-#include <Update.h>
+#include <chip_sdk.h>
 
 #include <esp_app_format.h>
 #include <esp_task_wdt.h>
 #include <sdkconfig.h>
 
-namespace espurna {
-namespace system {
-namespace chip {
-
-// system.h: a loop() pass for the stall watcher
-void loop();
-
-} // namespace chip
-} // namespace system
-} // namespace espurna
-
 #include <cstddef>
 #include <cstdint>
+
+// espurna::system::stall::pass()
+#include "system_chip.h"
 
 // eepromForceCommit()
 #include "../../storage_eeprom.h"
@@ -54,32 +45,26 @@ inline bool verify_header(const uint8_t* data, size_t len) {
 }
 
 inline size_t update_size() {
-    return (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+    return (::espurna::core::chip::sketch_space() - 0x1000) & 0xFFFFF000;
 }
 
 inline void update_prepare() {
 }
 
-// same as esp8266, mDNS is handled by the mdns module (and only when enabled)
-template <typename T>
-inline void arduino_ota_begin(T& ota) {
-    ota.setMdnsEnabled(false);
-    ota.begin();
-}
-
 // no backup sectors on ESP32, make sure pending settings reach NVS before the restart
-inline void arduino_ota_started() {
+inline void espota_started() {
     eepromForceCommit();
 }
 
-// ArduinoOTA receives the whole image inside of a single loop() call: the task WDT and the loop stall watcher
-// (system_esp32.cpp, 60 s without a loop() pass) are both fed between the chunks, a slow upload is not aborted
-inline void arduino_ota_progress() {
+// espota (libs/espota.h) receives the whole image inside of a single loop() call: the task WDT and the loop stall watcher
+// (arch/rtos/system_rtos.cpp, SYSTEM_LOOP_STALL s without a loop() pass) are both fed between the chunks, a slow upload
+// is not aborted
+inline void espota_progress() {
     esp_task_wdt_reset();
-    ::espurna::system::chip::sdk::loop();
+    ::espurna::system::stall::pass();
 }
 
-inline void arduino_ota_stopped() {
+inline void espota_stopped() {
 }
 
 } // namespace driver

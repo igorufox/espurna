@@ -1,0 +1,14 @@
+# ESP8266 on ESP8266_RTOS_SDK 3.4, the 1 MB layout on every chip size (owner 2026-11-17: one 960 KB slot, the settings
+# in sectors 250/251 as on the NONOS build). scripts/esp8266_rtos_sdk.py hands it to the SDK as its custom table.
+#   0x000000  bootloader of the SDK
+#   0x008000  this table
+#   0x009000  nvs       the SDK's (the Wi-Fi driver; ESPurna keeps nothing there)
+#   0x00F000  phy_init  the RF calibration of the SDK
+#   0x010000  factory   the head and the modules behind it (ESPurna's own update copies a new head into place)
+#   0x0FA000  settings  sectors 250 and 251, storage_eeprom.cpp (arch/esp8266/storage_flash_esp8266.cpp)
+#   0x0FC000  free      the NONOS SDK's own sectors there, unused by this SDK
+# Name,    Type, SubType, Offset,   Size
+nvs,       data, nvs,     0x9000,   0x6000
+phy_init,  data, phy,     0xf000,   0x1000
+factory,   app,  factory, 0x10000,  0xEA000
+settings,  data, 0x40,    0xFA000,  0x2000

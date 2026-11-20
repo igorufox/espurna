@@ -1,51 +1,52 @@
 #include "DNSServer.h"
 #include <lwip/def.h>
-#include <Arduino.h>
 
-// #define DEBUG_ESP_DNS
-#ifdef DEBUG_ESP_PORT
-#define DEBUG_OUTPUT DEBUG_ESP_PORT
-#else
-#define DEBUG_OUTPUT Serial
-#endif
+#include <cctype>
+#include <cstring>
 
 #define DNS_MIN_REQ_LEN 17  // minimal size for DNS request asking ROOT = DNS_HEADER_SIZE + 1 null byte for Name + 4 bytes type/class
 
 DNSServer::DNSServer() : _port(DNS_DEFAULT_PORT), _ttl(htonl(DNS_DEFAULT_TTL)), _errorReplyCode(DNSReplyCode::NonExistentDomain) {}
 
-DNSServer::DNSServer(const String &domainName)
-  : _port(DNS_DEFAULT_PORT), _ttl(htonl(DNS_DEFAULT_TTL)), _errorReplyCode(DNSReplyCode::NonExistentDomain), _domainName(domainName){};
+DNSServer::DNSServer(const char *domainName)
+  : _port(DNS_DEFAULT_PORT), _ttl(htonl(DNS_DEFAULT_TTL)), _errorReplyCode(DNSReplyCode::NonExistentDomain) {
+  if (domainName && (std::strlen(domainName) < sizeof(_domainName))) {
+    std::strcpy(_domainName, domainName);
+  }
+}
 
 bool DNSServer::start() {
-  if (_resolvedIP.operator uint32_t() == 0) {
+  if (!_resolvedIP.value()) {
     return false;  // no address is set, an overloaded method must be used to get device's IP
-                   // start(uint16_t port, const String &domainName, const IPAddress &resolvedIP)
+                   // start(uint16_t port, const char *domainName, espurna::Ip4 resolvedIP)
   }
 
   _udp.close();
-  _udp.onPacket([this](EspurnaUdpPacket &pkt) {
+  _udp.onPacket([this](espurna::udp::Packet &pkt) {
     this->_handleUDP(pkt);
   });
-  return _udp.listen(_resolvedIP, _port);
+  return _udp.listen(_resolvedIP.value(), _port);
 }
 
-bool DNSServer::start(uint16_t port, const String &domainName, const IPAddress &resolvedIP) {
+bool DNSServer::start(uint16_t port, const char *domainName, espurna::Ip4 resolvedIP) {
   _port = port;
-  if (domainName != "*") {
-    _domainName = domainName;
+  _domainName[0] = 0;
+  if (domainName && (std::strcmp(domainName, "*") != 0)) {
+    if (std::strlen(domainName) >= sizeof(_domainName)) {
+      return false;
+    }
+    std::strcpy(_domainName, domainName);
     downcaseAndRemoveWwwPrefix(_domainName);
-  } else {
-    _domainName = "";
   }
 
   _resolvedIP = resolvedIP;
   _udp.close();
-  _udp.onPacket([this](EspurnaUdpPacket &pkt) {
+  _udp.onPacket([this](espurna::udp::Packet &pkt) {
     this->_handleUDP(pkt);
   });
   // Bound to the AP address, not to any: the Beken SDK DHCP server keeps its own catch-all socket on port 53 that
   // refuses every query, lwIP prefers the socket bound to the address. Other chips answer on the AP only as well
-  return _udp.listen(_resolvedIP, _port);
+  return _udp.listen(_resolvedIP.value(), _port);
 }
 
 void DNSServer::setErrorReplyCode(const DNSReplyCode &replyCode) {
@@ -60,12 +61,20 @@ void DNSServer::stop() {
   _udp.close();
 }
 
-void DNSServer::downcaseAndRemoveWwwPrefix(String &domainName) {
-  domainName.toLowerCase();
-  domainName.replace("www.", "");
+// lower case, every "www." taken out (as String::replace("www.", "") of the original)
+void DNSServer::downcaseAndRemoveWwwPrefix(char *domainName) {
+  char *out = domainName;
+  for (const char *in = domainName; *in;) {
+    if (std::strncmp(in, "www.", 4) == 0) {
+      in += 4;
+      continue;
+    }
+    *out++ = static_cast<char>(std::tolower(static_cast<unsigned char>(*in++)));
+  }
+  *out = 0;
 }
 
-void DNSServer::_handleUDP(EspurnaUdpPacket &pkt) {
+void DNSServer::_handleUDP(espurna::udp::Packet &pkt) {
   if (pkt.length() < DNS_MIN_REQ_LEN) {
     return;  // truncated packet or not a DNS req
   }
@@ -107,8 +116,12 @@ void DNSServer::_handleUDP(EspurnaUdpPacket &pkt) {
   }
 
   // will reply with IP only to "*" or if domain matches without www. subdomain
+  char name[DNS_NAME_MAX];
   if (dnsHeader.OPCode == DNS_OPCODE_QUERY && requestIncludesOnlyOneQuestion(dnsHeader)
-      && ((_domainName.length() == 0) || getDomainNameWithoutWwwPrefix(static_cast<const unsigned char *>(dnsQuestion.QName), dnsQuestion.QNameLength) == _domainName)) {
+      && (isCaptive()
+          || (getDomainNameWithoutWwwPrefix(static_cast<const unsigned char *>(dnsQuestion.QName), dnsQuestion.QNameLength,
+                name, sizeof(name))
+              && (std::strcmp(name, _domainName) == 0)))) {
 
     // Qtype = A (1) or ANY (255): send an A record otherwise an empty response
     if (ntohs(dnsQuestion.QType) == 1 || ntohs(dnsQuestion.QType) == 255) {
@@ -127,24 +140,29 @@ bool DNSServer::requestIncludesOnlyOneQuestion(DNSHeader &dnsHeader) {
   return ntohs(dnsHeader.QDCount) == 1 && dnsHeader.ANCount == 0 && dnsHeader.NSCount == 0;
 }
 
-String DNSServer::getDomainNameWithoutWwwPrefix(const unsigned char *start, size_t len) {
-  // exclude trailing null byte from labels length (the ESP8266 String has no (pointer, length) constructor)
-  String parsedDomainName;
-  parsedDomainName.concat(reinterpret_cast<const char *>(start), --len);
+bool DNSServer::getDomainNameWithoutWwwPrefix(const unsigned char *start, size_t len, char *out, size_t size) {
+  // the labels without the trailing null byte: "<n>label<n>label" -> ".label.label" -> "label.label"
+  if (!len || (--len >= size)) {
+    return false;
+  }
+
+  std::memcpy(out, start, len);
+  out[len] = 0;
 
   size_t pos = 0;
   while (pos < len) {
-    parsedDomainName.setCharAt(pos, 0x2e);  // replace label len byte with dot char "."
-    pos += *(start + pos);
-    ++pos;
+    const size_t label = static_cast<unsigned char>(out[pos]);
+    out[pos] = '.';
+    pos += label + 1;
   }
-  parsedDomainName.remove(0, 1);  // remove first "." char
-  downcaseAndRemoveWwwPrefix(parsedDomainName);
-  return parsedDomainName;
+
+  std::memmove(out, out + 1, len);  // the first "." out, the terminator moves with it
+  downcaseAndRemoveWwwPrefix(out);
+  return true;
 }
 
-void DNSServer::replyWithIP(EspurnaUdpPacket &req, DNSHeader &dnsHeader, DNSQuestion &dnsQuestion) {
-  EspurnaUdpMessage rpl;
+void DNSServer::replyWithIP(espurna::udp::Packet &req, DNSHeader &dnsHeader, DNSQuestion &dnsQuestion) {
+  espurna::udp::Message rpl;
   // Change the type of message to a response and set the number of answers equal to
   // the number of questions in the header
   dnsHeader.QR = DNS_QR_RESPONSE;
@@ -170,36 +188,29 @@ void DNSServer::replyWithIP(EspurnaUdpPacket &req, DNSHeader &dnsHeader, DNSQues
   rpl.write((unsigned char *)&answerClass, 2);
   rpl.write((unsigned char *)&_ttl, 4);  // DNS Time To Live
   rpl.write((unsigned char *)&answerIPv4, 2);
-  uint32_t ip = _resolvedIP;
+  uint32_t ip = _resolvedIP.value();
   rpl.write(reinterpret_cast<uint8_t *>(&ip), sizeof(uint32_t));  // The IPv4 address to return
 
   _udp.sendTo(rpl, req.remoteIP(), req.remotePort());
-
-#ifdef DEBUG_ESP_DNS
-  DEBUG_OUTPUT.printf(
-    "DNS responds: %s for %s\n", _resolvedIP.toString().c_str(),
-    getDomainNameWithoutWwwPrefix(static_cast<const unsigned char *>(dnsQuestion.QName), dnsQuestion.QNameLength).c_str()
-  );
-#endif
 }
 
-void DNSServer::replyWithCustomCode(EspurnaUdpPacket &req, DNSHeader &dnsHeader) {
+void DNSServer::replyWithCustomCode(espurna::udp::Packet &req, DNSHeader &dnsHeader) {
   dnsHeader.QR = DNS_QR_RESPONSE;
   dnsHeader.RCode = static_cast<uint16_t>(_errorReplyCode);
   dnsHeader.QDCount = 0;
 
-  EspurnaUdpMessage rpl(sizeof(DNSHeader));
+  espurna::udp::Message rpl(sizeof(DNSHeader));
   rpl.write(reinterpret_cast<const uint8_t *>(&dnsHeader), sizeof(DNSHeader));
   _udp.sendTo(rpl, req.remoteIP(), req.remotePort());
 }
 
-void DNSServer::replyWithNoAnsw(EspurnaUdpPacket &req, DNSHeader &dnsHeader, DNSQuestion &dnsQuestion) {
+void DNSServer::replyWithNoAnsw(espurna::udp::Packet &req, DNSHeader &dnsHeader, DNSQuestion &dnsQuestion) {
 
   dnsHeader.QR = DNS_QR_RESPONSE;
   dnsHeader.ANCount = 0;
   dnsHeader.NSCount = htons(1);
 
-  EspurnaUdpMessage rpl;
+  espurna::udp::Message rpl;
   rpl.write(reinterpret_cast<const uint8_t *>(&dnsHeader), sizeof(DNSHeader));
 
   // Write the question

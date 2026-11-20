@@ -16,7 +16,7 @@ ESPURNA_SENSOR_DRIVER(emon_analog, "emonAnalogRes|select|ADC resolution|10|10=10
     auto* sensor = new EmonAnalogSensor();
     sensor->setVoltage(EMON_MAINS_VOLTAGE);
     sensor->setReferenceVoltage(EMON_REFERENCE_VOLTAGE);
-    sensor->setResolution(getSetting(F("emonAnalogRes"), EMON_ANALOG_RESOLUTION));
+    sensor->setResolution(getSetting("emonAnalogRes", EMON_ANALOG_RESOLUTION));
     sensorAdd(sensor);
 }
 

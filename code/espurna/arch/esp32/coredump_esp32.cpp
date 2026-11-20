@@ -9,11 +9,11 @@ xtensa-esp32-elf-addr2line -pfiaC -e firmware.elf <PC>:<SP> ...
 
 */
 
-#include "espurna.h"
+#include "../../espurna.h"
 
 #if TERMINAL_SUPPORT
 
-#include "terminal.h"
+#include "../../terminal.h"
 
 #include <esp_core_dump.h>
 
@@ -29,7 +29,7 @@ void command(::terminal::CommandContext&& ctx) {
     size_t address { 0 };
     size_t size { 0 };
     if (esp_core_dump_image_get(&address, &size) != ESP_OK) {
-        terminalError(ctx, F("No core dump saved"));
+        terminalError(ctx, "No core dump saved");
         return;
     }
 
@@ -37,7 +37,7 @@ void command(::terminal::CommandContext&& ctx) {
     auto summary = std::make_unique<esp_core_dump_summary_t>();
     const auto err = esp_core_dump_get_summary(summary.get());
     if (err != ESP_OK) {
-        terminalError(ctx, String(F("Could not read core dump, error 0x")) + String(err, 16));
+        terminalError(ctx, espurna::string("Could not read core dump, error 0x") + espurna::string(err, 16));
         return;
     }
 
@@ -47,7 +47,7 @@ void command(::terminal::CommandContext&& ctx) {
     ctx.output.printf_P(PSTR("exccause: %u excvaddr: 0x%08X\n"),
         summary->ex_info.exc_cause, summary->ex_info.exc_vaddr);
 
-    ctx.output.print(F("backtrace:"));
+    ctx.output.print("backtrace:");
     for (uint32_t index = 0; index < summary->exc_bt_info.depth; ++index) {
         ctx.output.printf_P(PSTR(" 0x%08X"), summary->exc_bt_info.bt[index]);
     }
@@ -61,7 +61,7 @@ STRING_VIEW_INLINE(CoredumpErase, "COREDUMP.ERASE");
 
 void command_erase(::terminal::CommandContext&& ctx) {
     if (esp_core_dump_image_erase() != ESP_OK) {
-        terminalError(ctx, F("Could not erase core dump"));
+        terminalError(ctx, "Could not erase core dump");
         return;
     }
 
@@ -75,7 +75,7 @@ STRING_VIEW_INLINE(LoopStall, "LOOP.STALL");
 void command_loop_stall(::terminal::CommandContext&& ctx) {
     terminalOK(ctx);
     for (;;) {
-        delay(100);
+        espurna::time::sleep(100);
     }
 }
 #endif

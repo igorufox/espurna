@@ -166,13 +166,13 @@ void scan(T&& callback) {
 }
 
 void bootScan() {
-    String addresses;
+    espurna::string addresses;
     scan([&](uint8_t address) {
         if (addresses.length()) {
-            addresses += F(", ");
+            addresses += ", ";
         }
 
-        addresses += F("0x");
+        addresses += "0x";
         addresses += hexEncode(address);
     });
 
@@ -190,8 +190,8 @@ int clear(unsigned char sda, unsigned char scl) {
 #endif
 
     // Make SDA (data) and SCL (clock) pins inputs with pullup
-    pinMode(sda, INPUT_PULLUP);
-    pinMode(scl, INPUT_PULLUP);
+    espurna::pins::mode(sda, espurna::pins::InputPullup);
+    espurna::pins::mode(scl, espurna::pins::InputPullup);
 
     // Wait 2.5 secs. This is strictly only necessary on the first power
     // up of the DS3231 module to allow it to initialize properly,
@@ -203,12 +203,12 @@ int clear(unsigned char sda, unsigned char scl) {
 
     // If it is held low the device cannot become the I2C master
     // I2C bus error. Could not clear SCL clock line held low
-    bool scl_low = (digitalRead(scl) == LOW);
+    bool scl_low = (espurna::pins::read(scl) == false);
     if (scl_low) {
         return 1;
     }
 
-    bool sda_low = (digitalRead(sda) == LOW);
+    bool sda_low = (espurna::pins::read(sda) == false);
     int clockCount = 20; // > 2x9 clock
 
     // While SDA is low for at most 20 cycles
@@ -217,23 +217,23 @@ int clear(unsigned char sda, unsigned char scl) {
         clockCount--;
 
         // Note: I2C bus is open collector so do NOT drive SCL or SDA high
-        pinMode(scl, INPUT);        // release SCL pullup so that when made output it will be LOW
-        pinMode(scl, OUTPUT);       // then clock SCL Low
-        delayMicroseconds(10);      // for >5uS
-        pinMode(scl, INPUT);        // release SCL LOW
-        pinMode(scl, INPUT_PULLUP); // turn on pullup resistors again
+        espurna::pins::mode(scl, espurna::pins::Input);        // release SCL pullup so that when made output it will be false
+        espurna::pins::mode(scl, espurna::pins::Output);       // then clock SCL Low
+        espurna::time::sleep_us(10);      // for >5uS
+        espurna::pins::mode(scl, espurna::pins::Input);        // release SCL false
+        espurna::pins::mode(scl, espurna::pins::InputPullup); // turn on pullup resistors again
                                     // do not force high as slave may be holding it low for clock stretching
 
-        delayMicroseconds(10);      // The >5uS is so that even the slowest I2C devices are handled
+        espurna::time::sleep_us(10);      // The >5uS is so that even the slowest I2C devices are handled
 
         //  loop waiting for SCL to become high only wait 2sec
-        scl_low = (digitalRead(scl) == LOW);
+        scl_low = (espurna::pins::read(scl) == false);
         int counter = 20;
         while (scl_low && (counter > 0)) {
             counter--;
             espurna::time::blockingDelay(
                 espurna::duration::Milliseconds(100));
-            scl_low = (digitalRead(scl) == LOW);
+            scl_low = (espurna::pins::read(scl) == false);
         }
 
         // If still low after 2 sec error
@@ -242,7 +242,7 @@ int clear(unsigned char sda, unsigned char scl) {
             return 2;
         }
 
-        sda_low = (digitalRead(sda) == LOW); //   and check SDA input again and loop
+        sda_low = (espurna::pins::read(sda) == false); //   and check SDA input again and loop
 
     }
 
@@ -253,19 +253,19 @@ int clear(unsigned char sda, unsigned char scl) {
     }
 
     // Pull SDA line low for "start" or "repeated start"
-    pinMode(sda, INPUT);        // remove pullup
-    pinMode(sda, OUTPUT);       // and then make it LOW i.e. send an I2C Start or Repeated start control
+    espurna::pins::mode(sda, espurna::pins::Input);        // remove pullup
+    espurna::pins::mode(sda, espurna::pins::Output);       // and then make it false i.e. send an I2C Start or Repeated start control
 
     // When there is only one I2C master a "start" or "repeat start" has the same function as a "stop" and clears the bus
     // A Repeat Start is a Start occurring after a Start with no intervening Stop.
 
-    delayMicroseconds(10);      // wait >5uS
-    pinMode(sda, INPUT);        // remove output low
-    pinMode(sda, INPUT_PULLUP); // and make SDA high i.e. send I2C STOP control.
+    espurna::time::sleep_us(10);      // wait >5uS
+    espurna::pins::mode(sda, espurna::pins::Input);        // remove output low
+    espurna::pins::mode(sda, espurna::pins::InputPullup); // and make SDA high i.e. send I2C STOP control.
 
-    delayMicroseconds(10);      // wait >5uS
-    pinMode(sda, INPUT);        // and reset pins as tri-state inputs which is the default state on reset
-    pinMode(scl, INPUT);
+    espurna::time::sleep_us(10);      // wait >5uS
+    espurna::pins::mode(sda, espurna::pins::Input);        // and reset pins as tri-state inputs which is the default state on reset
+    espurna::pins::mode(scl, espurna::pins::Input);
 
     // Everything OK
     return 0;
@@ -322,7 +322,7 @@ void scan(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    terminalError(ctx, F("no devices found"));
+    terminalError(ctx, "no devices found");
 }
 
 PROGMEM_STRING(Clear, "I2C.CLEAR");
@@ -370,7 +370,7 @@ void read(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    String message;
+    espurna::string message;
     message.reserve(out.size() * 2);
 
     for (auto& value : out) {
@@ -712,7 +712,7 @@ uint32_t i2c_read_most(uint8_t address, uint32_t reg, size_t len, bool stop) {
 
     uint32_t out{};
     for (size_t byte = 0; byte < most; ++byte) {
-        out = (out << 8ul) | static_cast<uint32_t>(buf[byte]);
+        out = (out << 8ul) | static_cast<uint32_t>(buf[byte ]);
     }
 
     return out;

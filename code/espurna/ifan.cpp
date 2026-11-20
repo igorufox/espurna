@@ -47,11 +47,11 @@ static constexpr std::array<espurna::settings::options::Enumeration<FanSpeed>, 4
 namespace internal {
 
 template <>
-FanSpeed convert(const String& value) {
+FanSpeed convert(const espurna::string& value) {
     return convert(options::FanSpeedOptions, value, FanSpeed::Medium);
 }
 
-String serialize(FanSpeed speed) {
+espurna::string serialize(FanSpeed speed) {
     return serialize(options::FanSpeedOptions, speed);
 }
 
@@ -61,11 +61,11 @@ String serialize(FanSpeed speed) {
 namespace ifan02 {
 namespace {
 
-FanSpeed payloadToSpeed(const String& value) {
+FanSpeed payloadToSpeed(const espurna::string& value) {
     return espurna::settings::internal::convert<FanSpeed>(value);
 }
 
-String speedToPayload(FanSpeed speed) {
+espurna::string speedToPayload(FanSpeed speed) {
     return espurna::settings::internal::serialize(speed);
 }
 
@@ -96,7 +96,7 @@ FanSpeed speed() {
 
 } // namespace settings
 
-// We expect to write a specific 'mask' via GPIO LOW & HIGH to set the speed
+// We expect to write a specific 'mask' via GPIO false & true to set the speed
 // Sync up with the relay and write it on ON / OFF status events
 
 struct Pin {
@@ -133,7 +133,7 @@ struct StatePins {
         return _state;
     }
 
-    String toString() const;
+    espurna::string toString() const;
 
 private:
     // XXX: while these are hard-coded, we don't really benefit from having these in the hardware cfg
@@ -143,22 +143,22 @@ private:
         Pin{4, nullptr},
         Pin{15, nullptr}}};
 
-    State _state{{LOW, LOW, LOW}};
+    State _state{{false, false, false}};
 };
 
 StatePins::State StatePins::state(FanSpeed speed) {
     switch (speed) {
     case FanSpeed::Low:
-        _state = {HIGH, LOW, LOW};
+        _state = {true, false, false};
         break;
     case FanSpeed::Medium:
-        _state = {HIGH, HIGH, LOW};
+        _state = {true, true, false};
         break;
     case FanSpeed::High:
-        _state = {HIGH, LOW, HIGH};
+        _state = {true, false, true};
         break;
     case FanSpeed::Off:
-        _state = {LOW, LOW, LOW};
+        _state = {false, false, false};
         break;
     }
 
@@ -187,7 +187,7 @@ bool StatePins::init() {
             return false;
         }
 
-        pair.handle->pinMode(OUTPUT);
+        pair.handle->pinMode(espurna::pins::Output);
     }
 
     _initialized = true;
@@ -210,10 +210,10 @@ StatePins::State StatePins::update(FanSpeed speed) {
 }
 
 #if DEBUG_SUPPORT
-String StatePins::toString() const {
-    String out("0b000");
+espurna::string StatePins::toString() const {
+    espurna::string out("0b000");
     for (size_t index = 2; index != out.length(); ++index) {
-        out[index] = (_state[index - 2] == HIGH) ? '1' : '0';
+        out[index] = (_state[index - 2] == true) ? '1' : '0';
     }
 
     return out;
@@ -234,7 +234,7 @@ struct ControlPin {
 
         _pin = gpioRegister(pin);
         if (_pin) {
-            _pin->pinMode(OUTPUT);
+            _pin->pinMode(espurna::pins::Output);
         }
 
         return *this;
@@ -297,7 +297,7 @@ FanSpeed currentSpeed() {
     return internal::speed;
 }
 
-String speedToPayload() {
+espurna::string speedToPayload() {
     return speedToPayload(currentSpeed());
 }
 
@@ -326,7 +326,7 @@ void pin_update(FanSpeed speed) {
     const bool status = FanSpeed::Off != speed;
 
     relayStatus(internal::relay_id, status);
-    internal::control_pin->digitalWrite(status ? HIGH : LOW);
+    internal::control_pin->digitalWrite(status ? true : false);
 
     internal::state_pins.update(speed);
 }
@@ -454,13 +454,13 @@ bool setup() {
 #endif
 
 #if API_SUPPORT
-    apiRegister(F(MQTT_TOPIC_SPEED),
+    apiRegister(MQTT_TOPIC_SPEED,
         [](ApiRequest& request) {
             request.send(speedToPayload());
             return true;
         },
         [](ApiRequest& request) {
-            updateSpeedFromPayload(request.param(F("value")));
+            updateSpeedFromPayload(request.param("value"));
             return true;
         }
     );

@@ -69,13 +69,13 @@ class AnimDolphins : public Anim {
             for (auto i = 0; i < len; ++i) {
                 int nth = (i > halflen) ? (len - i) : i;
                 points[i] = {
-                    (byte)(color.r * nth / halflen),
-                    (byte)(color.g * nth / halflen),
-                    (byte)(color.b * nth / halflen)};
+                    (uint8_t)(color.r * nth / halflen),
+                    (uint8_t)(color.g * nth / halflen),
+                    (uint8_t)(color.b * nth / halflen)};
             }
         }
 
-        bool Run(Color* leds, byte* seq) {
+        bool Run(Color* leds, uint8_t* seq) {
             if (done)
                 return false;
 
@@ -112,7 +112,7 @@ class AnimDolphins : public Anim {
         }
 
         // Decide that dolphin have ehough space if seq of len before it is empty
-        bool HaveEnoughSpace(byte* seq) {
+        bool HaveEnoughSpace(uint8_t* seq) {
             for (auto i = 0; i < len; ++i) {
                 int j = start + i * dir;
                 if (j > 0 && j < numLeds) {

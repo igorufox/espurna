@@ -15,7 +15,7 @@ using namespace espurna::sensor::module;
 ESPURNA_SENSOR_DRIVER(bme680, "bme680Addr|i2c|Address (0 - find it)|0") {
     if (i2c_bus()) {
         auto* sensor = new BME680Sensor();
-        sensor->setAddress(getSetting(F("bme680Addr"), uint8_t{ BME680_I2C_ADDRESS }));
+        sensor->setAddress(getSetting("bme680Addr", uint8_t{ BME680_I2C_ADDRESS }));
         sensorAdd(sensor);
     }
 }

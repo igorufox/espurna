@@ -14,7 +14,7 @@
 // (required) SSID must be set for network to be considered enabled.
 // (optional) PASS with some value will require the network to use WPA (or better) authentication, otherwise it must be an OPEN network.
 // (optional) IP, GW, MASK and DNS must all be defined for static configuration to be applied.
-// (optional) BSSID and CHANNEL are only used when WIFI_SCAN_NETWORKS is disabled.
+// (optional) BSSID and CHANNEL pin a network to one AP (the SDK joins only that BSSID).
 
 #ifndef WIFI1_SSID
 #define WIFI1_SSID                  ""
@@ -723,35 +723,35 @@
 #endif
 
 #ifndef ENCODER1_BUTTON_LOGIC
-#define ENCODER1_BUTTON_LOGIC       HIGH
+#define ENCODER1_BUTTON_LOGIC       true
 #endif
 #ifndef ENCODER2_BUTTON_LOGIC
-#define ENCODER2_BUTTON_LOGIC       HIGH
+#define ENCODER2_BUTTON_LOGIC       true
 #endif
 #ifndef ENCODER3_BUTTON_LOGIC
-#define ENCODER3_BUTTON_LOGIC       HIGH
+#define ENCODER3_BUTTON_LOGIC       true
 #endif
 #ifndef ENCODER4_BUTTON_LOGIC
-#define ENCODER4_BUTTON_LOGIC       HIGH
+#define ENCODER4_BUTTON_LOGIC       true
 #endif
 #ifndef ENCODER5_BUTTON_LOGIC
-#define ENCODER5_BUTTON_LOGIC       HIGH
+#define ENCODER5_BUTTON_LOGIC       true
 #endif
 
 #ifndef ENCODER1_BUTTON_MODE
-#define ENCODER1_BUTTON_MODE        INPUT_PULLUP
+#define ENCODER1_BUTTON_MODE        espurna::pins::InputPullup
 #endif
 #ifndef ENCODER2_BUTTON_MODE
-#define ENCODER2_BUTTON_MODE        INPUT_PULLUP
+#define ENCODER2_BUTTON_MODE        espurna::pins::InputPullup
 #endif
 #ifndef ENCODER3_BUTTON_MODE
-#define ENCODER3_BUTTON_MODE        INPUT_PULLUP
+#define ENCODER3_BUTTON_MODE        espurna::pins::InputPullup
 #endif
 #ifndef ENCODER4_BUTTON_MODE
-#define ENCODER4_BUTTON_MODE        INPUT_PULLUP
+#define ENCODER4_BUTTON_MODE        espurna::pins::InputPullup
 #endif
 #ifndef ENCODER5_BUTTON_MODE
-#define ENCODER5_BUTTON_MODE        INPUT_PULLUP
+#define ENCODER5_BUTTON_MODE        espurna::pins::InputPullup
 #endif
 
 #ifndef ENCODER1_MODE

@@ -19,7 +19,7 @@ class Anim {
 public:
     Anim(const char* name);
     const char* name() const { return _name; }
-    void Setup(Palette* palette, Palette* pals, size_t pals_size, uint16_t numLeds, Color* leds, Color* _ledstmp, byte* seq);
+    void Setup(Palette* palette, Palette* pals, size_t pals_size, uint16_t numLeds, Color* leds, Color* _ledstmp, uint8_t* seq);
     virtual bool finishedycle() const { return true; };
     virtual void Run() = 0;
     virtual void setCycleFactor(float new_cycle_factor) { cycleFactor = new_cycle_factor; }
@@ -32,18 +32,18 @@ protected:
     size_t      palsNum     = 0;
     Color*      leds        = nullptr;
     Color*      ledstmp     = nullptr;
-    byte*       seq         = nullptr;
+    uint8_t*       seq         = nullptr;
 
     int         phase;
     int         pos;
     int         inc;
 
     //brigthness animation (BrA) current initial phase
-    byte        braPhase = 0;
+    uint8_t        braPhase = 0;
     //braPhase change speed
-    byte        braPhaseSpd  = 8;
+    uint8_t        braPhaseSpd  = 8;
     //BrA frequency (spatial)
-    byte        braFreq      = 40;
+    uint8_t        braFreq      = 40;
 
     Color       curColor     = Color(0);
     Color       prevColor    = Color(0);
@@ -75,7 +75,7 @@ protected:
 
     //random number helpers for animations
     static unsigned int rng();
-    static byte         rngb();
+    static uint8_t         rngb();
 
 private:
     const char* _name;

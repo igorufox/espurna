@@ -51,14 +51,14 @@ espurna::sensor::Info magnitudeInfo(unsigned char index) {
     return out;
 }
 
-String magnitudeTypeTopic(unsigned char type) {
+espurna::string magnitudeTypeTopic(unsigned char type) {
     const auto func = api<decltype(magnitudeTypeTopic)>(Api::MagnitudeTypeTopic);
-    return func ? func(type) : String();
+    return func ? func(type) : espurna::string();
 }
 
-String magnitudeUnitsName(espurna::sensor::Unit units) {
+espurna::string magnitudeUnitsName(espurna::sensor::Unit units) {
     const auto func = api<decltype(magnitudeUnitsName)>(Api::MagnitudeUnitsName);
-    return func ? func(units) : String();
+    return func ? func(units) : espurna::string();
 }
 
 bool sensorReady() {
@@ -66,7 +66,7 @@ bool sensorReady() {
     return func ? func() : false;
 }
 
-void sensorWebSocketMagnitudes(JsonObject& root, espurna::StringView prefix, SensorWebSocketMagnitudesCallback callback) {
+void sensorWebSocketMagnitudes(espurna::json::Writer& root, espurna::StringView prefix, SensorWebSocketMagnitudesCallback callback) {
     const auto func = api<decltype(sensorWebSocketMagnitudes)>(Api::SensorWebSocketMagnitudes);
     if (func) {
         func(root, prefix, callback);
@@ -122,9 +122,9 @@ unsigned char magnitudeIndex(unsigned char index) {
     return func ? func(index) : 0;
 }
 
-String magnitudeTopic(unsigned char index) {
+espurna::string magnitudeTopic(unsigned char index) {
     const auto func = api<decltype(magnitudeTopic)>(Api::MagnitudeTopic);
-    return func ? func(index) : String();
+    return func ? func(index) : espurna::string();
 }
 
 // --- relay module: the modules that follow the relays and work without them too (button, led, sensors, scheduler,
@@ -203,16 +203,16 @@ void buttonSetCustomAction(ButtonEventHandler handler) {
 
 // --- api module: the modules that register API paths work without it
 
-void apiRegister(String path, espurna::api::BasicHandler&& get, espurna::api::BasicHandler&& put) {
-    const auto func = api<void(String, espurna::api::BasicHandler&&, espurna::api::BasicHandler&&)>(
+void apiRegister(espurna::string path, espurna::api::BasicHandler&& get, espurna::api::BasicHandler&& put) {
+    const auto func = api<void(espurna::string, espurna::api::BasicHandler&&, espurna::api::BasicHandler&&)>(
         Api::ApiRegisterBasic);
     if (func) {
         func(std::move(path), std::move(get), std::move(put));
     }
 }
 
-void apiRegister(String path, espurna::api::JsonHandler&& get, espurna::api::JsonHandler&& put) {
-    const auto func = api<void(String, espurna::api::JsonHandler&&, espurna::api::JsonHandler&&)>(
+void apiRegister(espurna::string path, espurna::api::JsonHandler&& get, espurna::api::JsonPutHandler&& put) {
+    const auto func = api<void(espurna::string, espurna::api::JsonHandler&&, espurna::api::JsonPutHandler&&)>(
         Api::ApiRegisterJson);
     if (func) {
         func(std::move(path), std::move(get), std::move(put));
@@ -228,9 +228,9 @@ void ntpOnTick(NtpTickCallback callback) {
     }
 }
 
-String ntpDateTime() {
+espurna::string ntpDateTime() {
     const auto func = api<decltype(ntpDateTime)>(Api::NtpDateTime);
-    return func ? func() : String();
+    return func ? func() : espurna::string();
 }
 
 bool ntpSynced() {
@@ -334,8 +334,8 @@ void domoticzSendMagnitude(unsigned char index, const espurna::sensor::Value& va
     }
 }
 
-bool tspkEnqueueMagnitude(unsigned char index, const String& value) {
-    const auto func = api<bool(unsigned char, const String&)>(Api::TspkEnqueueMagnitude);
+bool tspkEnqueueMagnitude(unsigned char index, const espurna::string& value) {
+    const auto func = api<bool(unsigned char, const espurna::string&)>(Api::TspkEnqueueMagnitude);
     return func ? func(index, value) : false;
 }
 
@@ -410,9 +410,9 @@ void lightOnReport(LightReportListener listener) {
     }
 }
 
-String lightColor() {
-    const auto func = api<String()>(Api::LightColor);
-    return func ? func() : String();
+espurna::string lightColor() {
+    const auto func = api<espurna::string()>(Api::LightColor);
+    return func ? func() : espurna::string();
 }
 
 bool lightUseRGB() {
@@ -572,42 +572,6 @@ std::unique_ptr<RelayProviderBase> lightMakeStateRelayProvider(size_t id) {
 
 #endif // MODULES_SUPPORT
 
-#if MODULES_SUPPORT
-
-// ArduinoOTA references mDNS although ESPurna starts it without (begin(false)): these stubs take its references
-// (scripts/module_head.py, custom_head_wraps links the head with --wrap), the real mDNS is in the mdns module
-extern "C" {
-
-alignas(4) char __wrap_MDNS[8];
-
-bool espurna_mdns_stub_begin(void*, const char*, const void*, uint32_t)
-    __asm__("__wrap__ZN7esp826618MDNSImplementation13MDNSResponder5beginEPKcRK9IPAddressj");
-bool espurna_mdns_stub_begin(void*, const char*, const void*, uint32_t) {
-    return false;
-}
-
-bool espurna_mdns_stub_enable(void*, uint16_t, bool)
-    __asm__("__wrap__ZN7esp826618MDNSImplementation13MDNSResponder13enableArduinoEtb");
-bool espurna_mdns_stub_enable(void*, uint16_t, bool) {
-    return false;
-}
-
-bool espurna_mdns_stub_end(void*)
-    __asm__("__wrap__ZN7esp826618MDNSImplementation13MDNSResponder3endEv");
-bool espurna_mdns_stub_end(void*) {
-    return false;
-}
-
-bool espurna_mdns_stub_update(void*)
-    __asm__("__wrap__ZN7esp826618MDNSImplementation13MDNSResponder6updateEv");
-bool espurna_mdns_stub_update(void*) {
-    return false;
-}
-
-} // extern "C"
-
-#endif // MODULES_SUPPORT
-
 // --- MQTT as a module (modules_mqtt.h): the head's MQTT API forwards to the mqtt module's table ----------------------
 
 #if MODULES_SUPPORT && MQTT_SUPPORT && MQTT_MODULE
@@ -624,8 +588,8 @@ size_t mqtt_callbacks_count { 0 };
 espurna::heartbeat::Callback mqtt_heartbeats[8] {};
 size_t mqtt_heartbeats_count { 0 };
 
-const String& mqttEmpty() {
-    static const String out;
+const espurna::string& mqttEmpty() {
+    static const espurna::string out;
     return out;
 }
 
@@ -672,20 +636,20 @@ void mqttOnSubscribe(uint16_t pid, MqttPidCallback callback) {
     }
 }
 
-String mqttTopic(const String& magnitude) {
-    return mqtt_api ? mqtt_api->topic(magnitude) : String();
+espurna::string mqttTopic(const espurna::string& magnitude) {
+    return mqtt_api ? mqtt_api->topic(magnitude) : espurna::string();
 }
 
-String mqttTopic(const String& magnitude, size_t index) {
-    return mqtt_api ? mqtt_api->topicIndex(magnitude, index) : String();
+espurna::string mqttTopic(const espurna::string& magnitude, size_t index) {
+    return mqtt_api ? mqtt_api->topicIndex(magnitude, index) : espurna::string();
 }
 
-String mqttTopicSetter(const String& magnitude) {
-    return mqtt_api ? mqtt_api->setter(magnitude) : String();
+espurna::string mqttTopicSetter(const espurna::string& magnitude) {
+    return mqtt_api ? mqtt_api->setter(magnitude) : espurna::string();
 }
 
-String mqttTopicSetter(const String& magnitude, size_t index) {
-    return mqtt_api ? mqtt_api->setterIndex(magnitude, index) : String();
+espurna::string mqttTopicSetter(const espurna::string& magnitude, size_t index) {
+    return mqtt_api ? mqtt_api->setterIndex(magnitude, index) : espurna::string();
 }
 
 espurna::StringView mqttMagnitude(espurna::StringView topic) {
@@ -770,11 +734,11 @@ void mqttEnqueue(espurna::StringView topic, espurna::StringView payload) {
     }
 }
 
-const String& mqttPayloadOnline() {
+const espurna::string& mqttPayloadOnline() {
     return mqtt_api ? mqtt_api->payloadOnline() : mqttEmpty();
 }
 
-const String& mqttPayloadOffline() {
+const espurna::string& mqttPayloadOffline() {
     return mqtt_api ? mqtt_api->payloadOffline() : mqttEmpty();
 }
 
@@ -823,7 +787,7 @@ bool mdnsRunning() {
     return func ? func() : false;
 }
 
-bool mdnsServiceQuery(const String& service, const String& protocol, MdnsServerQueryCallback callback) {
+bool mdnsServiceQuery(const espurna::string& service, const espurna::string& protocol, MdnsServerQueryCallback callback) {
     const auto func = modulesApi<decltype(mdnsServiceQuery)>(espurna::modules::Api::MdnsServiceQuery);
     return func ? func(service, protocol, callback) : false;
 }
@@ -842,12 +806,12 @@ espurna::driver::uart::PortPtr uartPort(size_t index) {
     return func ? func(index) : nullptr;
 }
 
-bool uartClaim(size_t index, const __FlashStringHelper* owner) {
+bool uartClaim(size_t index, const char* owner) {
     const auto func = modulesApi<decltype(uartClaim)>(espurna::modules::Api::UartClaim);
     return func ? func(index, owner) : false;
 }
 
-const __FlashStringHelper* uartClaimed(size_t index) {
+const char* uartClaimed(size_t index) {
     const auto func = modulesApi<decltype(uartClaimed)>(espurna::modules::Api::UartClaimed);
     return func ? func(index) : nullptr;
 }

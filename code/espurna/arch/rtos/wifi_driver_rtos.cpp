@@ -6,11 +6,10 @@ WIFI MODULE, the shared driver of ESP32 and Beken (ref. wifi_driver_rtos.h, wifi
 
 #include "../../espurna.h"
 
-#if defined(ARDUINO_ARCH_ESP32) || defined(LIBRETINY)
-
 #include "wifi_driver_rtos.h"
 
-#include <WiFi.h>
+#include "wifi_sdk.h"
+
 #include <lwip/dns.h>
 
 #include "../../espurna_tasks.h"
@@ -19,6 +18,9 @@ namespace espurna {
 namespace wifi {
 namespace driver {
 namespace {
+
+// the SDK calls of the chip (wifi_sdk.h); `chip` here is the driver's own part of the chip (wifi_driver_rtos.h)
+namespace sdk = ::espurna::core::chip;
 
 static_assert(OpmodeNull == WIFI_MODE_NULL, "");
 static_assert(OpmodeSta == WIFI_MODE_STA, "");
@@ -72,8 +74,8 @@ bool connecting { false };
 uint32_t connect_at { 0 };
 
 // Last connection request, the SDK forgets it once disconnected
-String ssid;
-String passphrase;
+espurna::string ssid;
+espurna::string passphrase;
 Mac target_bssid{};
 uint8_t target_channel { 0 };
 
@@ -82,6 +84,18 @@ bool begun_again { false };
 
 bool scanning { false };
 rtos::Scan scan;
+
+// WIFI.DEBUG: the last disconnects the SDK reported, what the driver was doing then
+struct Disconnect {
+    uint32_t at;
+    int reason;
+    uint8_t bssid[6];
+    bool linked;
+    bool connecting;
+    bool associated;
+};
+Disconnect disconnects[8]{};
+size_t disconnects_next { 0 };
 
 } // namespace internal
 
@@ -96,38 +110,34 @@ Mac to_mac(const uint8_t* ptr) {
     return out;
 }
 
-// millis() based, safe across the wrap
+// espurna::time::ms() based, safe across the wrap
 bool before(uint32_t at, uint32_t since) {
     return static_cast<int32_t>(at - since) < 0;
 }
 
 // SDK event task: the event goes to loop() as it is
-void event(arduino_event_id_t id, arduino_event_info_t info) {
+void event(sdk::WifiEvent id, const sdk::WifiEventInfo& info) {
     Event out{};
-    out.at = millis();
+    out.at = espurna::time::ms();
 
     switch (id) {
-    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+    case sdk::WifiEvent::StaGotIp:
         out.type = Event::Type::GotIp;
         break;
 
-    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+    case sdk::WifiEvent::StaConnected:
         out.type = Event::Type::Associated;
         break;
 
-    case ARDUINO_EVENT_WIFI_SCAN_DONE:
+    case sdk::WifiEvent::ScanDone:
         out.type = Event::Type::ScanDone;
         break;
 
-    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+    case sdk::WifiEvent::StaDisconnected:
         out.type = Event::Type::Disconnected;
-        std::copy(info.wifi_sta_disconnected.bssid,
-            info.wifi_sta_disconnected.bssid + sizeof(out.bssid), out.bssid);
-        out.reason = static_cast<int>(info.wifi_sta_disconnected.reason);
+        std::copy(info.bssid, info.bssid + sizeof(out.bssid), out.bssid);
+        out.reason = static_cast<int>(info.reason);
         break;
-
-    default:
-        return;
     }
 
     internal::events.push(out);
@@ -152,9 +162,9 @@ void link_lost(const Event& event, const chip::LinkLost& lost) {
 void begin() {
     const char* passphrase = internal::passphrase.length() ? internal::passphrase.c_str() : nullptr;
     if (internal::target_channel) {
-        WiFi.begin(internal::ssid.c_str(), passphrase, internal::target_channel, internal::target_bssid.data());
+        sdk::wifi_sta_begin(internal::ssid.c_str(), passphrase, internal::target_channel, internal::target_bssid.data());
     } else {
-        WiFi.begin(internal::ssid.c_str(), passphrase);
+        sdk::wifi_sta_begin(internal::ssid.c_str(), passphrase, 0, nullptr);
     }
 }
 
@@ -180,7 +190,7 @@ void attempt_failed(const Event& event) {
         DEBUG_MSG_P(PSTR("[WIFI] Disconnect of the previous connection during the attempt, reason %d (%s), "
             "starting it again\n"), reason, chip::reason_name(reason));
         internal::associated = false;
-        internal::connect_at = millis();
+        internal::connect_at = espurna::time::ms();
         begin();
         return;
 
@@ -205,6 +215,16 @@ void attempt_failed(const Event& event) {
 void disconnected(const Event& event) {
     auto& state = internal::state;
 
+    {
+        auto& entry = internal::disconnects[internal::disconnects_next++ % 8];
+        entry.at = event.at;
+        entry.reason = event.reason;
+        std::copy(std::begin(event.bssid), std::end(event.bssid), std::begin(entry.bssid));
+        entry.linked = state.linked;
+        entry.connecting = internal::connecting;
+        entry.associated = internal::associated;
+    }
+
     if (state.linked) {
         chip::LinkLost lost{};
         if (chip::map_reason(event.reason, to_mac(event.bssid), state.linked_bssid, lost)) {
@@ -219,14 +239,21 @@ void got_ip() {
     auto& state = internal::state;
 
     // the station is gone again by now: its disconnect is the next event in the queue
-    if (WiFi.status() != WL_CONNECTED) {
+    uint32_t ip { 0 };
+    uint32_t netmask { 0 };
+    uint32_t gateway { 0 };
+    if (!sdk::wifi_sta_address(ip, netmask, gateway) || !ip) {
         return;
     }
 
     if (internal::connecting) {
         internal::connecting = false;
         state.linked = true;
-        state.linked_bssid = to_mac(WiFi.BSSID());
+        sdk::WifiInfo info{};
+        state.linked_bssid = sdk::wifi_sta_info(info) ? to_mac(info.bssid) : Mac{};
+        // the sleep too: the setting went in with the opmode, before the association (20.11 COM3: pings 3..295 ms, a
+        // 50 KB WebUI page in 8..18 s - the modem sleep between the beacons)
+        chip::apply_sleep();
         chip::apply_tx_power();
         on_station_got_ip();
     } else if (!state.linked) {
@@ -281,31 +308,29 @@ void deliver_events(bool station = true) {
 
 void scan_report(int16_t count) {
     if (count < 0) {
-        WiFi.scanDelete();
+        sdk::wifi_scan_delete();
         on_scan_done(false, 0);
         return;
     }
 
     for (int16_t index = 0; index < count; ++index) {
-        ScanResult result{};
-
-        const auto* bssid = WiFi.BSSID(index);
-        if (bssid) {
-            std::copy(bssid, bssid + sizeof(result.bssid), result.bssid);
+        sdk::WifiInfo info{};
+        if (!sdk::wifi_scan_record(static_cast<uint16_t>(index), info)) {
+            continue;
         }
 
-        const auto ssid = WiFi.SSID(index);
-        result.ssid_len = std::min(ssid.length(), sizeof(result.ssid));
-        std::copy(ssid.c_str(), ssid.c_str() + result.ssid_len, result.ssid);
-
-        result.channel = WiFi.channel(index);
-        result.rssi = WiFi.RSSI(index);
-        result.authmode = WiFi.encryptionType(index);
+        ScanResult result{};
+        std::copy(info.bssid, info.bssid + sizeof(result.bssid), result.bssid);
+        result.ssid_len = static_cast<uint8_t>(strnlen(reinterpret_cast<const char*>(info.ssid), sizeof(result.ssid)));
+        std::copy(info.ssid, info.ssid + result.ssid_len, result.ssid);
+        result.channel = info.channel;
+        result.rssi = info.rssi;
+        result.authmode = info.authmode;
 
         on_scan_result(result);
     }
 
-    WiFi.scanDelete();
+    sdk::wifi_scan_delete();
     on_scan_done(true, count);
 }
 
@@ -341,10 +366,10 @@ bool setup() {
 void init() {
     chip::init();
 
-    WiFi.mode(WIFI_MODE_NULL);
-    internal::state.mode = OpmodeNull;
+    sdk::wifi_on_event(event);
 
-    WiFi.onEvent(event);
+    sdk::wifi_mode(WIFI_MODE_NULL);
+    internal::state.mode = OpmodeNull;
 }
 
 void loop() {
@@ -384,7 +409,7 @@ bool sleep_type(sleep_type_t type) {
     return true;
 }
 
-String authmode(AUTH_MODE mode) {
+espurna::string authmode(AUTH_MODE mode) {
     StringView out;
 
     switch (mode) {
@@ -395,44 +420,51 @@ String authmode(AUTH_MODE mode) {
         out = STRING_VIEW("WEP");
         break;
     case WIFI_AUTH_WPA_PSK:
-        out = STRING_VIEW("WPAPSK");
+        out = STRING_VIEW("WPA-PSK");
         break;
     case WIFI_AUTH_WPA2_PSK:
-        out = STRING_VIEW("WPA2PSK");
+        out = STRING_VIEW("WPA2-PSK");
         break;
     case WIFI_AUTH_WPA_WPA2_PSK:
-        out = STRING_VIEW("WPAWPA2-PSK");
+        out = STRING_VIEW("WPA/WPA2-PSK");
         break;
     case WIFI_AUTH_WPA2_ENTERPRISE:
         out = STRING_VIEW("WPA2-EAP");
         break;
     case WIFI_AUTH_WPA3_PSK:
-        out = STRING_VIEW("WPA3PSK");
+        out = STRING_VIEW("WPA3-PSK");
         break;
     case WIFI_AUTH_WPA2_WPA3_PSK:
-        out = STRING_VIEW("WPA2WPA3-PSK");
+        out = STRING_VIEW("WPA2/WPA3-PSK");
         break;
-    case WIFI_AUTH_WAPI_PSK:
-        out = STRING_VIEW("WAPIPSK");
-        break;
-    default:
-        out = STRING_VIEW("UNKNOWN");
-        break;
+    default: {
+        const auto* name = chip::auth_name(static_cast<int>(mode));
+        return espurna::string(name ? name : "UNKNOWN");
+    }
     }
 
     return out.toString();
 }
 
-IPAddress sta_ip() {
-    return WiFi.localIP();
+espurna::Ip4 sta_ip() {
+    uint32_t ip { 0 };
+    uint32_t netmask { 0 };
+    uint32_t gateway { 0 };
+    sdk::wifi_sta_address(ip, netmask, gateway);
+    return espurna::Ip4(ip);
 }
 
 uint8_t sta_channel() {
-    return static_cast<uint8_t>(WiFi.channel());
+    return sdk::wifi_channel();
+}
+
+const char* sta_security() {
+    return internal::state.linked ? chip::sta_security() : "";
 }
 
 int8_t sta_rssi() {
-    return WiFi.RSSI();
+    sdk::WifiInfo info{};
+    return sdk::wifi_sta_info(info) ? info.rssi : 0;
 }
 
 // Same as the esp8266 station config, last requested network stays known after the disconnect
@@ -485,17 +517,16 @@ void sta_prepare() {
 
 // Lengths are checked by the common code before this call (ref. StaConnect)
 bool sta_connect(const StaConnect& connect) {
-    // DHCP stays disabled after WiFi.config() with a static IP, unless explicitly reset.
-    // Otherwise one network with a static IP makes every other one use it as well.
-    // (zero IP restarts the DHCP client, not INADDR_NONE, lwip defines it as 255.255.255.255)
+    // DHCP stays disabled after a static IP, unless explicitly reset: otherwise one network with a static IP makes
+    // every other one use it as well (zero IP restarts the DHCP client)
     if (!connect.dhcp) {
-        WiFi.config(connect.ip, connect.gateway, connect.netmask, connect.dns);
+        sdk::wifi_sta_config(static_cast<uint32_t>(connect.ip), static_cast<uint32_t>(connect.gateway),
+            static_cast<uint32_t>(connect.netmask), static_cast<uint32_t>(connect.dns), 0);
     } else {
-        const IPAddress none(uint32_t{0});
-        WiFi.config(none, none, none);
+        sdk::wifi_sta_config(0, 0, 0, 0, 0);
     }
 
-    WiFi.setHostname(connect.hostname.c_str());
+    sdk::wifi_hostname(connect.hostname.c_str());
 
     chip::before_connect(connect);
 
@@ -512,28 +543,30 @@ bool sta_connect(const StaConnect& connect) {
     internal::associated = false;
     internal::connecting = true;
     internal::begun_again = false;
-    internal::connect_at = millis();
+    internal::connect_at = espurna::time::ms();
 
     begin();
     return true;
 }
 
 bool scan_start() {
-    if (internal::scanning || (WiFi.scanComplete() == WIFI_SCAN_RUNNING)) {
+    if (internal::scanning || (sdk::wifi_scan_count() == WIFI_SCAN_RUNNING)) {
         return false;
     }
 
+    // connected: active, the shortest dwell; else every network, hidden ones too, the SDK's default dwell (300 ms)
     const bool linked = internal::state.linked;
-    const auto result = linked
-        ? WiFi.scanNetworks(true, false, false, build::ScanDwellMax, 0)
-        : WiFi.scanNetworks(true, true);
-    if (result == WIFI_SCAN_FAILED) {
+    sdk::wifi_scan_delete();
+    const bool started = linked
+        ? sdk::wifi_scan_start(false, false, build::ScanDwellMax, 0)
+        : sdk::wifi_scan_start(true, false, 300, 0);
+    if (!started) {
         return false;
     }
 
     internal::scan = rtos::Scan{};
     internal::scan.linked = linked;
-    internal::scan.at = millis();
+    internal::scan.at = espurna::time::ms();
     internal::scanning = true;
 
     return true;
@@ -541,14 +574,17 @@ bool scan_start() {
 
 void ap_start(const char* ssid, const char* passphrase, uint8_t channel) {
     // copies first, the arguments may be these very strings (ap restart of the chip)
-    const String ssid_copy(ssid);
-    const String passphrase_copy(passphrase ? passphrase : "");
+    const espurna::string ssid_copy(ssid);
+    const espurna::string passphrase_copy(passphrase ? passphrase : "");
 
     const auto sdk_channel = chip::ap_prepare(channel);
 
-    const IPAddress ip(192, 168, 4, 1);
-    WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0));
-    if (!WiFi.softAP(ssid, passphrase, sdk_channel)) {
+    // 192.168.4.1/24, the AP itself the gateway and the DNS of its clients (the captive portal)
+    const uint32_t ip = static_cast<uint32_t>(espurna::Ip4(192, 168, 4, 1));
+    const uint32_t netmask = static_cast<uint32_t>(espurna::Ip4(255, 255, 255, 0));
+    sdk::wifi_ap_config(ip, ip, netmask);
+    const bool with_passphrase = passphrase && *passphrase;
+    if (!sdk::wifi_ap_start(ssid, with_passphrase ? passphrase : nullptr, sdk_channel, false, 4)) {
         DEBUG_MSG_P(PSTR("[WIFI] SoftAP start failed\n"));
     }
 
@@ -565,24 +601,27 @@ void ap_start(const char* ssid, const char* passphrase, uint8_t channel) {
 // from the opmode is what actually stops the beacons, ref. opmode()
 void ap_stop() {
     chip::ap_stop();
-    internal::state.ap_ssid = String();
-    internal::state.ap_passphrase = String();
+    internal::state.ap_ssid = espurna::string();
+    internal::state.ap_passphrase = espurna::string();
 }
 
-IPAddress ap_ip() {
-    return WiFi.softAPIP();
+espurna::Ip4 ap_ip() {
+    return espurna::Ip4(sdk::wifi_ap_ip());
 }
 
 SoftApNetwork ap_current() {
     Mac mac{};
-    WiFi.softAPmacAddress(mac.data());
+    sdk::wifi_mac(true, mac.data());
+
+    uint8_t ssid[33] {};
+    sdk::wifi_ap_ssid(ssid);
 
     const auto& passphrase = internal::state.ap_passphrase;
     return {
         mac,
-        WiFi.softAPSSID(),
+        espurna::string(reinterpret_cast<const char*>(ssid)),
         passphrase,
-        static_cast<uint8_t>(WiFi.channel()),
+        sdk::wifi_channel(),
         passphrase.length()
             ? WIFI_AUTH_WPA2_PSK
             : WIFI_AUTH_OPEN};
@@ -592,23 +631,54 @@ size_t ap_stations() {
     return chip::ap_stations();
 }
 
-size_t print_stations(Print& out) {
+size_t print_stations(::espurna::Output& out) {
     return chip::print_stations(out);
 }
 
-void print_network(Print& out) {
+// WIFI.DEBUG: the driver's state and the last disconnects, oldest first
+void print_debug(::espurna::Output& out) {
+    const auto now = espurna::time::ms();
+    out.printf_P(PSTR("driver: mode %u linked %s connecting %s (%u ms) associated %s begun again %s scanning %s\n"),
+        static_cast<unsigned>(internal::state.mode), internal::state.linked ? "yes" : "no",
+        internal::connecting ? "yes" : "no",
+        internal::connecting ? static_cast<unsigned>(now - internal::connect_at) : 0u,
+        internal::associated ? "yes" : "no", internal::begun_again ? "yes" : "no",
+        internal::scanning ? "yes" : "no");
+    out.printf_P(PSTR("target: ssid \"%s\" bssid %s channel %u rssi %d\n"), internal::ssid.c_str(),
+        espurna::settings::internal::serialize(internal::target_bssid).c_str(),
+        static_cast<unsigned>(internal::target_channel), static_cast<int>(sta_rssi()));
+    out.printf_P(PSTR("sleep: setting %u, driver %s\n"), static_cast<unsigned>(internal::state.sleep), chip::sleep_name());
+    for (size_t index = 0; index < 8; ++index) {
+        const auto& entry = internal::disconnects[(internal::disconnects_next + index) % 8];
+        if (!entry.at) {
+            continue;
+        }
+        Mac bssid{};
+        std::copy(std::begin(entry.bssid), std::end(entry.bssid), bssid.begin());
+        out.printf_P(PSTR("disconnect %u s ago: reason %d (%s) bssid %s, was %s%s%s\n"),
+            static_cast<unsigned>((now - entry.at) / 1000), entry.reason, chip::reason_name(entry.reason),
+            espurna::settings::internal::serialize(bssid).c_str(), entry.linked ? "linked " : "",
+            entry.connecting ? "connecting " : "", entry.associated ? "associated" : "");
+    }
+}
+
+void print_network(::espurna::Output& out) {
     const auto mode = internal::state.mode;
     if (mode & OpmodeSta) {
+        uint32_t ip { 0 };
+        uint32_t netmask { 0 };
+        uint32_t gateway { 0 };
+        sdk::wifi_sta_address(ip, netmask, gateway);
         out.printf_P(PSTR("sta %4s ip %s gateway %s mask %s\n"),
             internal::state.linked ? "up" : "down",
-            ipToString(WiFi.localIP()).c_str(),
-            ipToString(WiFi.gatewayIP()).c_str(),
-            ipToString(WiFi.subnetMask()).c_str());
+            ipToString(espurna::Ip4(ip)).c_str(),
+            ipToString(espurna::Ip4(gateway)).c_str(),
+            ipToString(espurna::Ip4(netmask)).c_str());
     }
 
     if (mode & OpmodeAp) {
         out.printf_P(PSTR("ap     up ip %s\n"),
-            ipToString(WiFi.softAPIP()).c_str());
+            ipToString(espurna::Ip4(sdk::wifi_ap_ip())).c_str());
     }
 
     for (int n = 0; n < DNS_MAX_SERVERS; ++n) {
@@ -618,12 +688,10 @@ void print_network(Print& out) {
         }
 
         out.printf_P(PSTR("dns %s\n"),
-            ipToString(IPAddress(ip_2_ip4(addr)->addr)).c_str());
+            ipToString(espurna::Ip4(ip_2_ip4(addr)->addr)).c_str());
     }
 }
 
 } // namespace driver
 } // namespace wifi
 } // namespace espurna
-
-#endif

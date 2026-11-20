@@ -15,6 +15,8 @@ Chips running WiFi in a task of their own latch the events and deliver them from
 
 #pragma once
 
+#include "text_types.h"
+
 #include "espurna_wifi.h"
 
 namespace espurna {
@@ -38,8 +40,8 @@ static constexpr size_t PassphraseMin { 8 };
 // are the chip's, ref. espurna_wifi.h
 static_assert(sizeof(ScanResult::ssid) == SsidMax, "");
 
-// Same as the esp8266 IPAddress::isSet(), neither 'any' nor 'none'
-inline bool ip_set(const IPAddress& ip) {
+// Same as the esp8266 espurna::Ip4::isSet(), neither 'any' nor 'none'
+inline bool ip_set(const espurna::Ip4& ip) {
     const auto v4 = static_cast<uint32_t>(ip);
     return (v4 != 0) && (v4 != 0xffffffff);
 }
@@ -47,16 +49,16 @@ inline bool ip_set(const IPAddress& ip) {
 // Station connection request. References are only valid during the sta_connect() call.
 // Checked by the common code before the call: ssid is 1..SsidMax, passphrase is empty or PassphraseMin..PassphraseMax
 struct StaConnect {
-    const String& hostname;
-    const String& ssid;
-    const String& passphrase;
+    const espurna::string& hostname;
+    const espurna::string& ssid;
+    const espurna::string& passphrase;
 
     // static address otherwise
     bool dhcp;
-    const IPAddress& ip;
-    const IPAddress& netmask;
-    const IPAddress& gateway;
-    const IPAddress& dns;
+    const espurna::Ip4& ip;
+    const espurna::Ip4& netmask;
+    const espurna::Ip4& gateway;
+    const espurna::Ip4& dns;
 
     // channel is 0 when bssid is not set
     const Mac& bssid;
@@ -107,12 +109,14 @@ void ipv6(bool);
 sleep_type_t sleep_type();
 bool sleep_type(sleep_type_t);
 
-String authmode(AUTH_MODE);
+espurna::string authmode(AUTH_MODE);
 
 // Station
-IPAddress sta_ip();
+espurna::Ip4 sta_ip();
 uint8_t sta_channel();
 int8_t sta_rssi();
+// what the connection negotiated: "WPA3-PSK", "WPA2-PSK", ... (STATUS of the WebUI)
+const char* sta_security();
 
 // Current BSSID and our authmode threshold
 void sta_info(Mac& bssid, AUTH_MODE& authmode);
@@ -131,13 +135,15 @@ bool scan_start();
 // Access point
 void ap_start(const char* ssid, const char* passphrase, uint8_t channel);
 void ap_stop();
-IPAddress ap_ip();
+espurna::Ip4 ap_ip();
 SoftApNetwork ap_current();
 size_t ap_stations();
 
 // Terminal helpers. Return the number of the printed entries
-size_t print_stations(Print&);
-void print_network(Print&);
+size_t print_stations(::espurna::Output&);
+void print_network(::espurna::Output&);
+// WIFI.DEBUG: what the driver does and why the last attempts ended
+void print_debug(::espurna::Output&);
 
 } // namespace driver
 } // namespace wifi

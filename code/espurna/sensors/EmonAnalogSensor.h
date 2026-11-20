@@ -33,22 +33,22 @@ public:
         _ready = true;
     }
 
-    String description() const override {
-        return F("EMON @ A0");
+    espurna::string description() const override {
+        return "EMON @ A0";
     }
 
-    String address(unsigned char) const override {
-        return F("A0");
+    espurna::string address(unsigned char) const override {
+        return "A0";
     }
 
-    // Cannot hammer analogRead() all the time:
+    // Cannot hammer espurna::pins::analog() all the time:
     // https://github.com/esp8266/Arduino/issues/1634
 
     unsigned int analogRead() override {
         auto now = TimeSource::now();
         if (now - _last > _interval) {
             _last = now;
-            _value = ::analogRead(A0);
+            _value = espurna::pins::analog(espurna::pins::Adc0);
         }
 
         return _value;

@@ -6,6 +6,12 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 */
 
+// the library first: its Arduino headers (the layer of a module, LibreTiny's on Beken) declare the Wi-Fi types and ESP
+// before ESPurna's own (which skip what is declared already)
+#if MODULE_BUILD && __has_include(<fauxmoESP.h>)
+#include <fauxmoESP.h>
+#endif
+
 #include "espurna.h"
 
 #if ALEXA_SUPPORT
@@ -21,8 +27,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include "web.h"
 #include "ws.h"
 
-#include <fauxmoESP.h>
-#include <ArduinoJson.h>
+#include "json.h"
 
 namespace espurna {
 namespace alexa {
@@ -88,7 +93,7 @@ bool enabled() {
 }
 
 // Use custom alexa hostname if defined, device hostname otherwise
-String hostname() {
+espurna::string hostname() {
     auto out = getSetting(keys::Name, build::hostname());
     if (!out.length()) {
         out = systemHostname();
@@ -110,22 +115,22 @@ namespace web {
 
 STRING_VIEW_INLINE(Prefix, "alexa");
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, Prefix);
 }
 
-bool onKeyCheck(StringView key, const JsonVariant&) {
+bool onKeyCheck(StringView key, espurna::json::Value) {
     return key.startsWith(Prefix);
 }
 
-void onConnected(JsonObject& root) {
-    root[FPSTR(settings::keys::Enabled)] = alexa::settings::enabled();
-    root[FPSTR(settings::keys::Name)] = alexa::settings::hostname();
+void onConnected(espurna::json::Writer& root) {
+    root.field(settings::keys::Enabled, alexa::settings::enabled());
+    root.field(settings::keys::Name, alexa::settings::hostname());
 }
 
 // fauxmoESP answers through the reply (our fork, 3.4.1-espurna.2: no TCP of its own), the web server sends it
-bool process(WebRequest& request, const String& body) {
-    return fauxmo.process(request.method() == WebMethod::Get, String(request.url()), body,
+bool process(WebRequest& request, const espurna::string& body) {
+    return fauxmo.process(request.method() == WebMethod::Get, ::String(request.url()), ::String(body.c_str()),
         [&request](const char* code, const char* text, const char* mime) {
             request.send(atoi(code), mime, text);
         });
@@ -133,14 +138,14 @@ bool process(WebRequest& request, const String& body) {
 
 // the body of a request no route took, kept until it is complete
 struct Body {
-    String data;
+    espurna::string data;
 };
 
 bool body_callback(WebRequest& request, const uint8_t* data, size_t len, size_t index, size_t total) {
     if (total > 1024) {
         DEBUG_MSG_P(PSTR("[ALEXA] Ignoring %s %s from %s (%u bytes)\n"),
             request.methodName(), request.url(),
-            ipToString(IPAddress(request.remoteIp())).c_str(), total);
+            ipToString(espurna::Ip4(request.remoteIp())).c_str(), total);
         return false;
     }
 
@@ -154,7 +159,7 @@ bool body_callback(WebRequest& request, const uint8_t* data, size_t len, size_t 
 
     if (body) {
         if (!index) {
-            body->data = String();
+            body->data = espurna::string();
         }
         body->data.concat(reinterpret_cast<const char*>(data), len);
     }
@@ -169,7 +174,7 @@ bool request_callback(WebRequest& request) {
     }
 
     const char* form = request.param("body");
-    return process(request, form ? String(form) : String());
+    return process(request, form ? espurna::string(form) : espurna::string());
 }
 
 void setup() {

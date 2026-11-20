@@ -26,11 +26,11 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #endif
 
 #if DEBUG_WEB_SUPPORT
-#include <ArduinoJson.h>
+#include "json.h"
 #endif
 
 #if DEBUG_UDP_SUPPORT
-#include <WiFiUdp.h>
+#include "libs/udp.h"
 #endif
 
 #include "espurna_tasks.h"
@@ -81,12 +81,12 @@ using espurna::debug::settings::options::DebugLogModeOptions;
 
 } // namespace
 
-String serialize(::DebugLogMode value) {
+espurna::string serialize(::DebugLogMode value) {
     return serialize(DebugLogModeOptions, value);
 }
 
 template<>
-DebugLogMode convert(const String& value) {
+DebugLogMode convert(const espurna::string& value) {
     return convert(DebugLogModeOptions, value, DebugLogMode::Enabled);
 }
 
@@ -409,7 +409,7 @@ void add(const DebugPrefix& prefix, const char* data, size_t len) {
     internal::storage.insert(internal::storage.end(), data, data + len);
 }
 
-void dump(Print& out) {
+void dump(::espurna::Output& out) {
     size_t index = 0;
     do {
         if (index >= internal::storage.size()) {
@@ -457,7 +457,7 @@ static constexpr bool CoreDebug {
 
 namespace internal {
 
-Print* port { nullptr };
+::espurna::Output* port { nullptr };
 Output output { null_output };
 
 } // namespace
@@ -553,8 +553,10 @@ bool attach() {
 namespace syslog {
 namespace build {
 
-IPAddress ip() {
-    return DEBUG_UDP_IP;
+// IPv4 in network order (libs/udp.h)
+uint32_t ip() {
+    constexpr espurna::Ip4 address = DEBUG_UDP_IP;
+    return address.value();
 }
 
 constexpr uint16_t port() {
@@ -571,7 +573,9 @@ namespace internal {
 
 size_t len { 0 };
 char header[128] = {0};
-WiFiUDP udp;
+
+// sending only: bound to any free port at the first message
+udp::Socket socket;
 
 } // namespace
 
@@ -584,15 +588,24 @@ void configure() {
         internal::header, sizeof(internal::header),
         PSTR("<%u>1 - %.31s ESPurna - - - "), DEBUG_UDP_FAC_PRI,
         systemHostname().c_str());
+    internal::len = strlen(internal::header);
 }
 
 bool output(const char* message, size_t len) {
     if (build::enabled() && wifiConnected()) {
-        internal::udp.beginPacket(build::ip(), build::port());
-        internal::udp.write(internal::header, internal::len);
-        internal::udp.write(message, len);
+        if (!internal::socket.connected() && !internal::socket.listen(0)) {
+            return false;
+        }
 
-        return internal::udp.endPacket() > 0;
+        udp::Message out(internal::len + len);
+        if (!out) {
+            return false;
+        }
+
+        out.write(reinterpret_cast<const uint8_t*>(internal::header), internal::len);
+        out.write(reinterpret_cast<const uint8_t*>(message), len);
+
+        return internal::socket.sendTo(out, build::ip(), build::port()) > 0;
     }
 
     return false;
@@ -730,7 +743,7 @@ void send_now(const char* message, size_t len, Timestamp timestamp) {
     char prefix[10] = {0};
     static bool continue_timestamp = true;
     if (timestamp && continue_timestamp) {
-        snprintf(prefix, sizeof(prefix), "[%06lu] ", millis() % 1000000);
+        snprintf(prefix, sizeof(prefix), "[%06lu] ", espurna::time::ms() % 1000000);
     }
 
     continue_timestamp = static_cast<bool>(timestamp)
@@ -760,7 +773,7 @@ void send_now(const char* message, size_t len, Timestamp timestamp) {
 #endif
 
     if (pause) {
-        optimistic_yield(1000);
+        espurna::time::yield();
     }
 }
 
@@ -771,7 +784,7 @@ namespace web {
 
 STRING_VIEW_INLINE(Prefix, "dbg");
 
-void onVisible(JsonObject& root) {
+void onVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, Prefix);
 }
 
@@ -792,7 +805,7 @@ bool status(espurna::heartbeat::Mask mask) {
     }
 
     if ((mask & espurna::heartbeat::Report::Vcc) && (ADC_MODE_VALUE == ADC_VCC)) {
-        debugSend(PSTR("[MAIN] VCC: %lu mV\n"), ESP.getVcc());
+        debugSend(PSTR("[MAIN] VCC: %lu mV\n"), systemVcc());
     }
 
 #if NTP_SUPPORT
@@ -852,7 +865,7 @@ PROGMEM_STRING(DebugBuffer, "DEBUG.BUFFER");
 void debug_buffer(::terminal::CommandContext&& ctx) {
     debug::buffer::disable();
     if (!debug::buffer::size()) {
-        terminalError(ctx, F("buffer is empty\n"));
+        terminalError(ctx, "buffer is empty\n");
         return;
     }
 

@@ -4,13 +4,12 @@ NTP MODULE
 
 Chip part of the NTP module. ntp.cpp holds the settings, timezone, ticks, terminal and WebUI;
 everything that talks to the SNTP client of the SDK is behind these functions: ntp_driver.cpp (what every chip has
-alike) and arch/<chip>/ntp_<chip>.cpp (the SDK around lwIP's client)
+alike) and the SDK around lwIP's client: arch/esp8266/ntp_esp8266.cpp, arch/rtos/ntp_rtos.cpp (ESP32 and Beken)
 
 */
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstdint>
 
@@ -38,7 +37,7 @@ void server(const char*);
 
 // First server, by name or by the address (e.g. from DHCP). Empty string when there is none
 const char* server_name();
-String server_address();
+espurna::string server_address();
 
 // Implemented by ntp.cpp. on_synced() is called after every sync, from loop(). on_got_ip() is
 // called once the station gets its address (esp8266 from SYS, other chips from loop())

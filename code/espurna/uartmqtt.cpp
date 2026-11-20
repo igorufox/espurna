@@ -51,7 +51,7 @@ using Serialized = std::array<char, build::SerializedSize>;
 using Buffer = std::array<uint8_t, build::BufferSize>;
 
 // Prefer smaller output instead of using `Serialized` directly
-using Queue = std::queue<String>;
+using Queue = std::queue<espurna::string>;
 
 namespace internal {
 
@@ -59,14 +59,14 @@ Buffer buffer;
 auto cursor = buffer.begin();
 
 Queue queue;
-Stream* port;
+::espurna::ByteStream* port;
 
 } // namespace internal
 
 using Bytes = Span<const uint8_t>;
 
-String serialize(Bytes bytes, bool encode) {
-    String out;
+espurna::string serialize(Bytes bytes, bool encode) {
+    espurna::string out;
 
     Serialized string;
     if (encode) {
@@ -92,7 +92,7 @@ String serialize(Bytes bytes, bool encode) {
 // Client shares the internal payload buffer for the whole 'connection', so it is possible
 // to lose data here when network is either too slow or the network stack did not (yet)
 // have time to send the previously buffered data.
-void send(String data) {
+void send(espurna::string data) {
     mqttSendRaw(
         mqttTopic(MQTT_TOPIC_UARTIN).c_str(),
         data.c_str(), false, 0);
@@ -102,7 +102,7 @@ void send(Bytes bytes, bool encode) {
     send(serialize(bytes, encode));
 }
 
-void read_no_termination(Stream& stream, bool encode) {
+void read_no_termination(::espurna::ByteStream& stream, bool encode) {
     const size_t capacity = std::distance(internal::cursor, internal::buffer.end());
     const size_t available = stream.available();
     if (available && capacity) {
@@ -128,7 +128,7 @@ void read_no_termination(Stream& stream, bool encode) {
     }
 }
 
-void read(Stream& stream, uint8_t termination, bool encode) {
+void read(::espurna::ByteStream& stream, uint8_t termination, bool encode) {
     if (termination == 0) {
         read_no_termination(stream, encode);
         return;
@@ -172,11 +172,11 @@ void read(Stream& stream, uint8_t termination, bool encode) {
 }
 
 // Only handle writes in the main loop(), both HW and SW serial streams may block
-void enqueue(String data) {
+void enqueue(espurna::string data) {
     internal::queue.emplace(std::move(data));
 }
 
-void write(Print& print, uint8_t termination, bool decode) {
+void write(::espurna::Output& print, uint8_t termination, bool decode) {
     using Clock = time::CoreClock;
 
     const auto start = Clock::now();

@@ -38,10 +38,17 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 // Where each row in values is the specific index, and the key string is taken from the schema list
 // Obviously, number of elements is always expected to match
 
-#include <ArduinoJson.h>
+// The helpers are the tools module's (ws_utils.cpp): a module that uses them has tools in its needs (config/head.h).
+// They write into the message object the callback got (json::Writer), the containers open in the constructor and
+// close in the destructor
 
+#include "json.h"
 #include "system_time.h"
 #include "settings.h"
+
+#include <initializer_list>
+#include <memory>
+#include <vector>
 
 namespace espurna {
 namespace web {
@@ -50,7 +57,8 @@ namespace ws {
 // generic way to set up iterable payload with a schema
 struct EnumerablePayload {
     using Check = bool(*)(size_t);
-    using Generator = void(*)(JsonArray&, size_t);
+    // one value of the entry `index`
+    using Generator = void(*)(json::Writer&, size_t);
 
     struct Pair {
         StringView name;
@@ -59,32 +67,43 @@ struct EnumerablePayload {
 
     using Pairs = std::initializer_list<Pair>;
 
-    EnumerablePayload(JsonObject& root, StringView name);
+    EnumerablePayload(json::Writer& root, StringView name);
+    ~EnumerablePayload();
+
+    EnumerablePayload(const EnumerablePayload&) = delete;
+    EnumerablePayload& operator=(const EnumerablePayload&) = delete;
 
     void operator()(StringView name, settings::Iota iota, Check, Pairs&&);
+
     void operator()(StringView name, size_t iota_end, Pairs&& pairs) {
         (*this)(name, settings::Iota { iota_end }, nullptr, std::move(pairs));
     }
 
-    JsonObject& root() {
+    // more members of the container object
+    json::Writer& root() {
         return _root;
     }
 
 private:
-    JsonObject& _root;
+    json::Writer& _root;
+    bool _schema { false };
 };
 
 // payload generator for IndexedSettings
 struct EnumerableConfig {
     using Check = bool(*)(size_t);
     using Setting = const settings::query::IndexedSetting;
-
     using SourceFunc = Setting::ValueFunc;
-    using TargetFunc = void (*)(JsonArray&, size_t);
+    using TargetFunc = void (*)(json::Writer&, size_t);
 
-    EnumerableConfig(JsonObject& root, StringView name);
+    EnumerableConfig(json::Writer& root, StringView name);
+    ~EnumerableConfig();
+
+    EnumerableConfig(const EnumerableConfig&) = delete;
+    EnumerableConfig& operator=(const EnumerableConfig&) = delete;
 
     void operator()(StringView name, settings::Iota iota, Check check, Setting* begin, Setting* end);
+
     void operator()(StringView name, settings::Iota iota, Setting* begin, Setting* end) {
         (*this)(name, iota, nullptr, begin, end);
     }
@@ -104,7 +123,8 @@ struct EnumerableConfig {
         (*this)(name, settings::Iota{iota_end}, check, std::begin(settings), std::end(settings));
     }
 
-    JsonObject& root() {
+    // more members of the container object
+    json::Writer& root() {
         return _root;
     }
 
@@ -116,16 +136,20 @@ private:
         TargetFunc target;
     };
 
-
     std::vector<Replacement> _replacements;
-    JsonObject& _root;
+    json::Writer& _root;
+    bool _schema { false };
 };
 
 struct EnumerableTypes {
     template <typename T>
     using Enumeration = settings::options::Enumeration<T>;
 
-    EnumerableTypes(JsonObject& root, StringView name);
+    EnumerableTypes(json::Writer& root, StringView name);
+    ~EnumerableTypes();
+
+    EnumerableTypes(const EnumerableTypes&) = delete;
+    EnumerableTypes& operator=(const EnumerableTypes&) = delete;
 
     template <typename T>
     void operator()(const Enumeration<T>* begin, const Enumeration<T>* end) {
@@ -142,13 +166,12 @@ struct EnumerableTypes {
     void operator()(int, StringView);
 
 private:
-    JsonArray& _root;
+    json::Writer& _root;
 };
 
 struct PostponedDebug;
 
 struct PostponedPayload {
-    static constexpr size_t BufferHint = size_t{ JSON_OBJECT_SIZE(1) + JSON_ARRAY_SIZE(1) };
     static constexpr size_t CountMax { 8 };
 
     struct Flag {
@@ -198,10 +221,8 @@ private:
     void buffer_impl(const char*, size_t);
 
     size_t _count{};
-
-    String _data;
+    espurna::string _data;
     bool _pending { false };
-
     uint32_t _id{};
 };
 
@@ -209,21 +230,16 @@ struct PostponedDebug : public PostponedPayload {
     void buffer(const DebugPrefix&, const char*, size_t);
 };
 
-struct InplaceLog;
-
+// text for one client right away: {"log": ["<what was written>"]} once the client takes more
 struct InplacePayload {
-    static constexpr size_t BufferHint = size_t{ JSON_OBJECT_SIZE(1) + JSON_ARRAY_SIZE(1) };
-
     using Clock = espurna::time::CoreClock;
-    using Send = std::function<void(JsonObject&, String&)>;
 
     static constexpr size_t CountMax { 8 };
-
     static constexpr auto DefaultTimeout = duration::Seconds{ 2 };
     static constexpr auto DefaultWait = duration::Milliseconds{ 100 };
 
     InplacePayload() = delete;
-    InplacePayload(JsonObject& root, uint32_t id);
+    explicit InplacePayload(uint32_t id);
 
     void reset();
 
@@ -246,27 +262,15 @@ private:
     void write_impl(const char*, size_t);
     void send_impl();
 
-    friend InplaceLog;
-
     Clock::duration _timeout { DefaultTimeout };
     Clock::duration _wait { DefaultWait };
 
-    String _data;
+    espurna::string _data;
     size_t _count{};
-
-    JsonObject& _root;
     uint32_t _id;
 };
 
-struct InplaceLog : public InplacePayload {
-    InplaceLog(JsonObject&, uint32_t);
-
-    void write(const char* , size_t);
-    bool send();
-
-private:
-    JsonArray& _log;
-};
+using InplaceLog = InplacePayload;
 
 } // namespace ws
 } // namespace web

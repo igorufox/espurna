@@ -1,15 +1,16 @@
 /*
 
-GPIO INTERRUPTS, esp8266 part (ref. espurna_isr.h)
+GPIO INTERRUPTS, ESP8266 on ESP8266_RTOS_SDK (ref. espurna_isr.h)
 
-The handler always runs on the same (only) core, masking interrupts is enough
-and the handler itself does not need any extra protection.
+One core: masking the interrupts is enough (the FreeRTOS critical section of the port nests)
 
 */
 
 #pragma once
 
-#include <Arduino.h>
+
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -17,43 +18,42 @@ and the handler itself does not need any extra protection.
 namespace espurna {
 namespace isr {
 
-constexpr size_t Pins { EXTERNAL_NUM_INTERRUPTS };
+// GPIO0..15 (GPIO16 is the RTC pad, it has no interrupt)
+constexpr size_t Pins { 16 };
 
 inline bool attachable(uint8_t pin) {
-    return digitalPinToInterrupt(pin) != NOT_AN_INTERRUPT;
+    return pin < Pins;
 }
 
 inline void attach(uint8_t pin, void (*handler)(void*), void* arg, int mode) {
-    attachInterruptArg(pin, handler, arg, mode);
+    ::espurna::core::chip::pin_attach(pin, handler, arg, static_cast<uint8_t>(mode));
 }
 
+// GPIO_IN register, the handler must not call anything in flash
 [[gnu::always_inline]]
 inline bool read(uint8_t pin) {
-    return GPIP(pin);
+    return ((*reinterpret_cast<volatile uint32_t*>(0x60000318)) >> pin) & 1;
 }
 
 struct Lock {
     struct Guard {
-        [[gnu::always_inline]]
         explicit Guard(Lock&) {
-            noInterrupts();
+            portENTER_CRITICAL();
         }
 
-        [[gnu::always_inline]]
         ~Guard() {
-            interrupts();
+            portEXIT_CRITICAL();
         }
 
         Guard(const Guard&) = delete;
         Guard& operator=(const Guard&) = delete;
     };
 
+    // the handler runs with the interrupts off already
     struct IsrGuard {
-        [[gnu::always_inline]]
         explicit IsrGuard(Lock&) {
         }
 
-        [[gnu::always_inline]]
         ~IsrGuard() {
         }
     };

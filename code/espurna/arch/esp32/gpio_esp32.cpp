@@ -4,9 +4,11 @@ GPIO MODULE, ESP32 part (common part is in gpio.cpp and arch/rtos/gpio_rtos.cpp)
 
 */
 
-#include "espurna.h"
+#include "../../espurna.h"
 
-#include "rtcmem.h"
+#include "../../rtcmem.h"
+
+#include "../rtos/chip_sdk.h"
 
 #include <driver/gpio.h>
 #include <soc/gpio_reg.h>
@@ -37,14 +39,15 @@ bool valid_output(uint8_t pin) {
 // reboot()). While held, pad ignores any configuration change, so the output stays
 // as it was until the first write sets the output register and the hold is released.
 void pin_mode(uint8_t pin, int8_t mode) {
-    ::pinMode(pin, mode);
-    if (mode != OUTPUT) {
+    const auto value = static_cast<uint8_t>(mode);
+    ::espurna::core::chip::pin_mode(pin, value);
+    if (value != ::espurna::core::chip::pin::Output) {
         gpio_hold_dis(static_cast<gpio_num_t>(pin));
     }
 }
 
 void write(uint8_t pin, int8_t value) {
-    ::digitalWrite(pin, value);
+    ::espurna::core::chip::pin_write(pin, value != 0);
     gpio_hold_dis(static_cast<gpio_num_t>(pin));
 }
 
@@ -69,7 +72,7 @@ void setup() {
 }
 
 // GPIO matrix output enable and input registers, GPIO0..31 and GPIO32..39
-void print_pin(Print& out, uint8_t pin) {
+void print_pin(::espurna::Output& out, uint8_t pin) {
     const auto bit = uint32_t{1} << (pin % 32);
     const bool output = (REG_READ((pin < 32) ? GPIO_ENABLE_REG : GPIO_ENABLE1_REG) & bit) != 0;
     const bool level = (REG_READ((pin < 32) ? GPIO_IN_REG : GPIO_IN1_REG) & bit) != 0;

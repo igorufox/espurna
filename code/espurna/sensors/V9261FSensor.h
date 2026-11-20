@@ -45,7 +45,7 @@ class V9261FSensor : public BaseEmonSensor {
             BaseEmonSensor(Magnitudes)
         {}
 
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -71,7 +71,7 @@ class V9261FSensor : public BaseEmonSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             STRING_VIEW_INLINE(Name, "V9261F");
             return Name.toString();
         }
@@ -403,7 +403,7 @@ class V9261FSensor : public BaseEmonSensor {
         Buffer _buffer;
         size_t _size { 0 };
 
-        Stream* _serial { nullptr };
+        ::espurna::ByteStream* _serial { nullptr };
 };
 
 #ifndef __cpp_inline_variables

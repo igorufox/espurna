@@ -120,13 +120,13 @@ class LDRSensor : public AnalogSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override{
-            return F("LDR @ TOUT");
+        espurna::string description() const override{
+            return "LDR @ TOUT";
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char index) {
-            return F("0");
+        espurna::string address(unsigned char index) {
+            return "0";
         }
 
         // Type for slot # index

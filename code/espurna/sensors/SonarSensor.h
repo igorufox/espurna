@@ -82,16 +82,16 @@ class SonarSensor : public BaseSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
+        espurna::string description() const override {
             char buffer[32];
             snprintf_P(buffer, sizeof(buffer),
                 PSTR("Sonar @ GPIO(%hhu, %hhu)"), _trigger, _echo);
-            return String(buffer);
+            return espurna::string(buffer);
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
-            return String(_trigger);
+        espurna::string address(unsigned char) const override {
+            return espurna::string(_trigger);
         }
 
         // Type for slot # index

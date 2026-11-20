@@ -4,8 +4,8 @@ RTCMEM of the ESP32 (rtcmem.h): RTC_NOINIT memory
 
 */
 
-#include "espurna.h"
-#include "rtcmem.h"
+#include "../../espurna.h"
+#include "../../rtcmem.h"
 
 // RTC_NOINIT_ATTR keeps the values across SW / WDT / panic resets and deep sleep
 RTC_NOINIT_ATTR static RtcmemData _rtcmem_storage;

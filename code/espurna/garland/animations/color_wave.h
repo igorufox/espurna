@@ -12,7 +12,7 @@ class ColorWave {
         Palette *palette;   // palette for wave colors
         uint16_t waveLen;   // wave length in leds (for clean colors - length of one color), also fade length
         bool cleanColors;   // if true - use clean colors from palette, else - use interpolated colors
-        byte fade;          // wave fade deep: 0 - no fade, 255 - fade to black
+        uint8_t fade;          // wave fade deep: 0 - no fade, 255 - fade to black
         Color* pixelCache;  // pointer to array of Color with numLeds size, if not null - use it for caching colors
         WaveType type;      // Wave or Comet
         float speed;        // wave moving speed (0.5 - 2.0)
@@ -61,7 +61,7 @@ class ColorWave {
          : params.palette->getCachedPalColor(dist_to_head * 256 * 20 / params.waveLen / params.numLeds);
 
         if (fade_step > 0) {
-            byte bright = 255;
+            uint8_t bright = 255;
 
             if (params.type == WaveType::Wave) {
                 bright -= fade_step * abs(params.waveLen / 2 - (dist_to_head % params.waveLen));
@@ -98,5 +98,5 @@ class ColorWave {
    private:
     Params params;
     float head;
-    byte fade_step;
+    uint8_t fade_step;
 };

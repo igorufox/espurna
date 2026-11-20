@@ -19,7 +19,7 @@ libs/http_client.h; the tls module it needs gives it ECDHE / ECDSA for these ser
 #include "mqtt.h"
 #endif
 
-#include <ArduinoJson.h>
+#include "json.h"
 
 #include "libs/http_client.h"
 
@@ -60,7 +60,7 @@ void done(const ::espurna::http::Result& result) {
 } // namespace
 
 // false when it could not be started (no WiFi, too many at once, low heap)
-bool get(const String& url) {
+bool get(const espurna::string& url) {
     if (wifiConnected() && (systemFreeHeap() >= build::WeatherHeapMin)) {
         for (auto& request : requests) {
             if (!request.client.busy()) {
@@ -103,14 +103,14 @@ void error(const char* format, ...) {
     va_end(args);
 }
 
-String lastError() {
-    return String(last_error);
+espurna::string lastError() {
+    return espurna::string(last_error);
 }
 
 // the response body, at most WeatherBodyMax bytes (the client decodes a chunked body)
 struct Body : public ::espurna::http::Sink {
     const char* begin(const ::espurna::http::Head& head) override {
-        text = String();
+        text = espurna::string();
         if (head.status != 200) {
             return PSTR("HTTP status not 200");
         }
@@ -133,62 +133,59 @@ struct Body : public ::espurna::http::Sink {
         return nullptr;
     }
 
-    String text;
+    espurna::string text;
 };
 
 ::espurna::http::Client client;
 Body body;
 
 // the JSON of Open-Meteo into `out`; false - not a forecast
-bool parse(const String& text, Data& out) {
-    {
-        DynamicJsonBuffer buffer(1024);
-        JsonObject& root = buffer.parseObject(text.c_str());
-        JsonObject& cur = root["current"];
-        JsonObject& daily = root["daily"];
-        if (root.success() && cur.success()) {
-            out.temperature = cur["temperature_2m"].as<float>();
-            out.code = cur["weather_code"] | -1;
-            out.day = (cur["is_day"] | 1) != 0;
-            out.valid = true;
+bool parse(const espurna::string& text, Data& out) {
+    const auto root = espurna::json::parse(espurna::StringView(text));
+    const auto cur = root["current"];
+    const auto daily = root["daily"];
+    if (root.isObject() && cur.isObject()) {
+        out.temperature = cur["temperature_2m"].asDouble();
+        out.code = cur["weather_code"].asLong(-1);
+        out.day = cur["is_day"].asLong(1) != 0;
+        out.valid = true;
 
-            if (daily.success()) {
-                JsonArray& times = daily["time"];
-                JsonArray& codes = daily["weather_code"];
-                JsonArray& tmax = daily["temperature_2m_max"];
-                JsonArray& tmin = daily["temperature_2m_min"];
-                JsonArray& wind = daily["wind_speed_10m_max"];
-                JsonArray& rain = daily["precipitation_probability_max"];
-                JsonArray& uv = daily["uv_index_max"];
-                const size_t count = std::min<size_t>(DaysMax, times.size());
-                for (size_t n = 0; n < count; ++n) {
-                    int y = 0, m = 0, d = 0;
-                    const char* date = times[n].as<const char*>();
-                    if (!date || (sscanf(date, "%d-%d-%d", &y, &m, &d) != 3)) {
-                        break;
-                    }
-                    // month 1..12, else no weekday (and no index into the month names)
-                    const int wday = weekday(y, m, d);
-                    if ((wday < 0) || (d < 1) || (d > 31)) {
-                        break;
-                    }
-                    out.days[n].wday = wday;
-                    out.days[n].mday = d;
-                    out.days[n].mon = m - 1;
-                    out.days[n].code = codes[n] | -1;
-                    out.days[n].tmax = tmax[n].as<float>();
-                    out.days[n].tmin = tmin[n].as<float>();
-                    if (wind.success() && wind[n].is<float>()) {
-                        out.days[n].wind = wind[n].as<float>();
-                    }
-                    if (rain.success() && rain[n].is<int>()) {
-                        out.days[n].rain = rain[n].as<int>();
-                    }
-                    if (uv.success() && uv[n].is<float>()) {
-                        out.days[n].uv = uv[n].as<float>();
-                    }
-                    out.count = n + 1;
+        if (daily.isObject()) {
+            const auto times = daily["time"];
+            const auto codes = daily["weather_code"];
+            const auto tmax = daily["temperature_2m_max"];
+            const auto tmin = daily["temperature_2m_min"];
+            const auto wind = daily["wind_speed_10m_max"];
+            const auto rain = daily["precipitation_probability_max"];
+            const auto uv = daily["uv_index_max"];
+            const size_t count = std::min<size_t>(DaysMax, times.size());
+            for (size_t n = 0; n < count; ++n) {
+                int y = 0, m = 0, d = 0;
+                char date[16];
+                if (!times[n].asString(date, sizeof(date)) || (sscanf(date, "%d-%d-%d", &y, &m, &d) != 3)) {
+                    break;
                 }
+                // month 1..12, else no weekday (and no index into the month names)
+                const int wday = weekday(y, m, d);
+                if ((wday < 0) || (d < 1) || (d > 31)) {
+                    break;
+                }
+                out.days[n].wday = wday;
+                out.days[n].mday = d;
+                out.days[n].mon = m - 1;
+                out.days[n].code = codes[n].asLong(-1);
+                out.days[n].tmax = tmax[n].asDouble();
+                out.days[n].tmin = tmin[n].asDouble();
+                if (wind[n].isNumber()) {
+                    out.days[n].wind = wind[n].asDouble();
+                }
+                if (rain[n].isNumber()) {
+                    out.days[n].rain = static_cast<int>(rain[n].asLong());
+                }
+                if (uv[n].isNumber()) {
+                    out.days[n].uv = uv[n].asDouble();
+                }
+                out.count = n + 1;
             }
         }
     }
@@ -198,7 +195,7 @@ bool parse(const String& text, Data& out) {
 
 void done(const ::espurna::http::Result& result) {
     running_now = false;
-    const auto now = millis();
+    const auto now = espurna::time::ms();
 
     Data out;
     if (!result.ok) {
@@ -208,7 +205,7 @@ void done(const ::espurna::http::Result& result) {
     } else {
         out.updated = ::time(nullptr);
         data = out;
-        body.text = String();
+        body.text = espurna::string();
         error("ok");
         failures = 0;
         next_ms = now + config().refresh * 1000ul;
@@ -218,7 +215,7 @@ void done(const ::espurna::http::Result& result) {
         return;
     }
 
-    body.text = String();
+    body.text = espurna::string();
     ++failures;
     next_ms = now + build::WeatherRetryMs;
     DEBUG_MSG_P(PSTR("[NSPANEL] Weather update failed: %s\n"), last_error);
@@ -232,7 +229,7 @@ const Data& current() {
 
 void reset() {
     data = Data();
-    next_ms = millis();
+    next_ms = espurna::time::ms();
 }
 
 // a request holds a TLS session, config parsing waits for it (ref. upload::process())
@@ -240,7 +237,7 @@ bool running() {
     return running_now;
 }
 
-void info(Print& out) {
+void info(::espurna::Output& out) {
     out.printf_P(PSTR("Weather: %s, last: %s, %.1fC code %d, %u days\n"),
         config().weather ? "enabled" : "disabled", lastError().c_str(),
         data.temperature, data.code, data.count);
@@ -254,7 +251,7 @@ void loop() {
         return;
     }
 
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (static_cast<int32_t>(now - next_ms) < 0) {
         return;
     }
@@ -314,8 +311,8 @@ namespace {
 constexpr size_t PendingMax { 8 };
 
 struct Pending {
-    String topic;
-    String payload;
+    espurna::string topic;
+    espurna::string payload;
 };
 
 std::vector<Pending> pending;
@@ -325,7 +322,7 @@ uint32_t dropped { 0 };
 
 void queue(espurna::StringView topic, espurna::StringView payload) {
     for (auto& entry : pending) {
-        if (topic.equals(StringView(entry.topic))) {
+        if (topic.equals(espurna::StringView(entry.topic))) {
             entry.payload = payload.toString();
             return;
         }
@@ -344,50 +341,46 @@ void queue(espurna::StringView topic, espurna::StringView payload) {
 }
 
 // the value at the entity's path (its keys, an array index as its number): text and number
-bool extract(JsonVariant root, const Span<Str>& path, String& text, float& number) {
-    JsonVariant value = root;
+bool extract(espurna::json::Value root, const Span<Str>& path, espurna::string& text, float& number) {
+    auto value = root;
     for (const auto& part : path) {
         const char* key = part.c_str();
 
-        if (value.is<JsonObject>()) {
-            JsonObject& obj = value.as<JsonObject>();
-            if (!obj.containsKey(key)) {
+        if (value.isObject()) {
+            value = value[espurna::StringView(key)];
+            if (!value.valid()) {
                 return false;
             }
-            value = obj.get<JsonVariant>(key);
-        } else if (value.is<JsonArray>()) {
-            JsonArray& array = value.as<JsonArray>();
+        } else if (value.isArray()) {
             const long n = strtol(key, nullptr, 10);
-            if ((n < 0) || (static_cast<size_t>(n) >= array.size())) {
+            if (n < 0) {
                 return false;
             }
-            value = array.get<JsonVariant>(n);
+            value = value[static_cast<size_t>(n)];
+            if (!value.valid()) {
+                return false;
+            }
         } else {
             return false;
         }
     }
 
     number = NAN;
-    if (value.is<const char*>()) {
-        // ArduinoJson 5 takes a JSON null for a string and gives NULL for it: a String assigned NULL has no
-        // buffer, and strtof(NULL) below crashed the panel on any null at an entity's path (crash loop -> unstable mode)
-        const char* raw = value.as<const char*>();
-        if (!raw) {
-            return false;
-        }
-        text = raw;
+    if (value.isString()) {
+        const auto raw = value.asString();
+        text = raw.c_str();
         char* end = nullptr;
         const float parsed = strtof(text.c_str(), &end);
         if (text.length() && end && !*end) {
             number = parsed;
         }
-    } else if (value.is<bool>()) {
-        text = value.as<bool>() ? F("true") : F("false");
-    } else if (value.is<long>() || value.is<double>()) {
-        number = value.as<float>();
-        char buf[24];
-        snprintf(buf, sizeof(buf), "%g", value.as<double>());
-        text = buf;
+    } else if (value.isBool()) {
+        text = value.asBool() ? "true" : "false";
+    } else if (value.isNumber()) {
+        number = value.asDouble();
+        // the number as it came (no printf of a float)
+        const auto raw = value.raw();
+        text = espurna::string(raw);
     } else {
         return false; // object, array or null
     }
@@ -397,11 +390,10 @@ bool extract(JsonVariant root, const Span<Str>& path, String& text, float& numbe
 }
 
 void process(Pending& entry) {
-    DynamicJsonBuffer buffer(512);
-    // parses in place: the strings stay in entry.payload, nothing is copied
-    JsonVariant root = buffer.parse(entry.payload.begin());
+    // read in place: the strings stay in entry.payload, nothing is copied
+    const auto root = espurna::json::parse(espurna::StringView(entry.payload));
     systemHeapStep("nspanel json parsed");
-    if (!root.is<JsonObject>() && !root.is<JsonArray>()) {
+    if (!root.isObject() && !root.isArray()) {
         ++failed;
         return;
     }
@@ -414,7 +406,7 @@ void process(Pending& entry) {
             continue;
         }
 
-        String text;
+        espurna::string text;
         float number = NAN;
         if (!extract(root, entity.path, text, number)) {
             continue; // not in this message (z2m sends partial updates too)
@@ -465,8 +457,8 @@ Stats stats() {
 namespace history {
 namespace {
 
-String topic;               // subscribed while a chart is open, empty otherwise
-String payload;             // the last message, parsed in loop()
+espurna::string topic;               // subscribed while a chart is open, empty otherwise
+espurna::string payload;             // the last message, parsed in loop()
 bool is_fresh { false };
 bool subscribed { false };
 
@@ -481,31 +473,31 @@ void loop() {
 
 // MQTT callback: only keep the text
 void message(StringView name, StringView body) {
-    if (topic.length() && name.equals(StringView(topic)) && (body.length() < PayloadMax)) {
+    if (topic.length() && name.equals(espurna::StringView(topic)) && (body.length() < PayloadMax)) {
         payload = body.toString();
         is_fresh = true;
         systemHeapStep("nspanel history kept");
     }
 }
 
-void read(JsonVariant values, std::vector<int16_t>& out) {
+void read(espurna::json::Value values, std::vector<int16_t>& out) {
     out.clear();
-    JsonArray& array = values;
-    if (!array.success()) {
+    if (!values.isArray()) {
         return;
     }
-    out.reserve(std::min(array.size(), PointsMax));
-    for (auto value : array) {
+    out.reserve(std::min(values.size(), PointsMax));
+    values.items([&](espurna::json::Value value) {
         if (out.size() >= PointsMax) {
-            break;
+            return false;
         }
-        if (value.is<long>() || value.is<double>()) {
-            const long number = lroundf(value.as<float>());
+        if (value.isNumber()) {
+            const long number = lroundf(value.asDouble());
             out.push_back(static_cast<int16_t>(std::max(-32000L, std::min(32000L, number))));
         } else {
             out.push_back(Missing);
         }
-    }
+        return true;
+    });
 }
 
 } // namespace
@@ -516,14 +508,14 @@ void close() {
         mqttUnsubscribeRaw(topic.c_str());
     }
 #endif
-    topic = String();
-    payload = String();
+    topic = espurna::string();
+    payload = espurna::string();
     is_fresh = false;
     subscribed = false;
 }
 
 // the broker sends the retained message right after the subscription
-void open(const String& name) {
+void open(const espurna::string& name) {
     close();
     topic = name;
 #if MQTT_SUPPORT
@@ -544,14 +536,13 @@ bool take(Series& out) {
 
     systemHeapStep("nspanel history take");
     ESPURNA_TRY {
-        DynamicJsonBuffer buffer(4096);
-        JsonObject& root = buffer.parseObject(payload.c_str());
+        const auto root = espurna::json::parse(espurna::StringView(payload));
         systemHeapStep("nspanel history parsed");
-        if (!root.success()) {
+        if (!root.isObject()) {
             return false;
         }
-        out.from = root["from"].as<unsigned long>();
-        out.step = root["step"].as<unsigned long>();
+        out.from = root["from"].asULong();
+        out.step = root["step"].asULong();
         read(root["t"], out.temperature);
         read(root["s"], out.setpoint);
         read(root["h"], out.humidity);
@@ -599,7 +590,7 @@ void subscribeLoop() {
         return;
     }
 
-    const auto now = millis();
+    const auto now = espurna::time::ms();
     if (now - subscribe_last < build::SubscribeStepMs) {
         return;
     }
@@ -663,7 +654,7 @@ void mqttCallback(unsigned int type, StringView topic, StringView payload) {
         bool parse = false;
         for (size_t index = 0; index < cfg.entities.size(); ++index) {
             const auto& entity = cfg.entities[index];
-            if (!entity.topic.length() || !topic.equals(StringView(entity.topic.c_str()))) {
+            if (!entity.topic.length() || !topic.equals(espurna::StringView(entity.topic.c_str()))) {
                 continue;
             }
 
@@ -675,11 +666,11 @@ void mqttCallback(unsigned int type, StringView topic, StringView payload) {
 
             const char* on = entity.on.length() ? entity.on.c_str() : cfg.on.c_str();
             const char* off = entity.off.length() ? entity.off.c_str() : cfg.off.c_str();
-            const int state = payload.equals(StringView(on)) ? 1
-                : payload.equals(StringView(off)) ? 0
+            const int state = payload.equals(espurna::StringView(on)) ? 1
+                : payload.equals(espurna::StringView(off)) ? 0
                 : -1;
 
-            String value = payload.toString();
+            espurna::string value = payload.toString();
             utf8Truncate(value, 32);
 
             auto& live = cfg.live[index];

@@ -37,8 +37,8 @@ class MICS5525Sensor : public AnalogSensor {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("MICS-5525 @ TOUT");
+        espurna::string description() const override {
+            return "MICS-5525 @ TOUT";
         }
 
         // Type for slot # index

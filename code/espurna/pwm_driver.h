@@ -19,7 +19,6 @@ pwm.cpp keeps the channels (pin and duty), the settings, the duty limit and the 
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -29,19 +28,20 @@ namespace driver {
 namespace pwm {
 
 using StopPwmFunc = void(*)(uint8_t);
+using DutyPwmFunc = void(*)(uint8_t, uint32_t);
 
 // Arduino API analogWrite() (the esp8266 Core or LibreTiny): the pin is updated right away.
 // Zero and full duty explicitly stop the PWM of the pin (b/c of a weird dependency on ::digitalWrite implementation),
-// the pin simply goes LOW or HIGH
-inline void arduino_write(StopPwmFunc stop, uint8_t pin, uint32_t duty, uint32_t full) {
+// the pin simply goes false or true
+inline void arduino_write(StopPwmFunc stop, DutyPwmFunc write, uint8_t pin, uint32_t duty, uint32_t full) {
     if (duty == 0) {
         stop(pin);
-        digitalWrite(pin, LOW);
+        espurna::pins::write(pin, false);
     } else if (duty == full) {
         stop(pin);
-        digitalWrite(pin, HIGH);
+        espurna::pins::write(pin, true);
     } else {
-        ::analogWrite(pin, duty);
+        write(pin, duty);
     }
 }
 

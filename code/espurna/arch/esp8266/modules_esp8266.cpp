@@ -1,12 +1,14 @@
 /*
 
-PROTOTYPE: what the ESP8266 gives the module loader (modules_core.h; the loader is modules.cpp; docs/modules.md)
+PROTOTYPE: what the ESP8266 on ESP8266_RTOS_SDK gives the module loader (modules_core.h; the loader is modules.cpp;
+docs/modules.md)
 
-Flash: modules lie under the directory sector (the sector under the settings), placed from the top down; the head
-grows from 0x0 up. A module runs from the flash mapped at 0x40200000, 32-bit reads only. The IRAM after the head's code
-(48 KB IRAM, 16 KB flash cache) is the fixed pool: the Apply puts the IRAM code of the modules at its start, then their
-statics, largest first (32-bit access only: the core's non32xfer handler emulates bytes, not from an interrupt, so a
-module whose statics take byte access from an interrupt goes to the heap block).
+Flash: the 'factory' partition of arch/esp8266/partitions.csv holds the head at its start and the modules behind it up
+to the directory sector (0xF9000, its second copy 0xF8000), under the settings in sectors 250/251 - the same places as
+the NONOS build had. A module runs from the flash the cache maps at 0x40200000 + offset (32-bit reads; the SDK's
+LoadStoreError handler takes byte reads, slowly), the code and the read-only data in that one view.
+RAM: the heap block only, as on ESP32 (one model for the FreeRTOS chips): the IRAM tail of the NONOS build is not
+taken, IRAM_ATTR code of a module runs from flash.
 
 */
 
@@ -16,14 +18,12 @@ module whose statics take byte access from an interrupt goes to the heap block).
 #if MODULES_SUPPORT
 
 #include "espurna_ota.h"
-#include "storage_eeprom.h"
 #include "modules_core.h"
+#include "rbl_esp8266.h"
 
-#include <osapi.h>
-
-#include <Updater.h>
+#include <esp_ota_ops.h>
+#include <esp_system.h>
 #include <spi_flash.h>
-#include <umm_malloc/umm_malloc.h>
 
 #include <cstring>
 
@@ -36,144 +36,53 @@ namespace espurna {
 namespace modules {
 namespace {
 
+// the cache maps the first 1 MB of the flash here
 constexpr uint32_t FlashMapped { 0x40200000 };
 
-// the IRAM after the head's code, with the 48 KB IRAM layout (flash cache 16 KB)
-extern "C" void _text_end(void);
+// the directory: the sector under the settings (250/251, storage_flash_esp8266.cpp), its second copy under it
+constexpr uint32_t DirectoryOffset { 0xF9000 };
 
-uint32_t iramTailStart() {
-    return (reinterpret_cast<uint32_t>(&_text_end) + 32 + 7) & ~7u;
-}
+struct Region {
+    uint32_t start { 0 };
+    uint32_t lo { 0 };
+    uint32_t hi { 0 };
+    bool valid { false };
+};
 
-uint32_t iramTailSize() {
-#if defined(MMU_IRAM_SIZE) && (MMU_IRAM_SIZE > 0x8000) && defined(NON32XFER_HANDLER)
-    const uint32_t end = 0x40100000 + MMU_IRAM_SIZE;
-    return (end > iramTailStart()) ? (end - iramTailStart()) : 0;
-#else
-    return 0;
-#endif
-}
+Region region;
 
-// the sector under the settings: EEPROM_Rotate keeps them in its base sector and the pool under it (251 and 250 on a
-// 1 MB chip, 8 sectors on 4 MB); the directory at 0xFA000 was in that pool and the settings writes erased it
-uint32_t directoryOffset() {
-    static uint32_t offset { 0 };
-    if (!offset) {
-        auto& eeprom = eepromInstance();
-        offset = (eeprom.base() - eeprom.size()) * SectorSize;
-    }
-
-    return offset;
-}
-
-uint32_t headEnd() {
-    return roundUp(ESP.getSketchSize(), SectorSize);
-}
-
-// --- settings of the old 4 MB layout -------------------------------------------------------------------------------
-// EEPROM_Rotate keeps the settings in a pool of sectors under the SDK's 4 at the end of the flash the image header
-// names: the 1 MB head reads sectors 251 and 250, an image of the 4 MB layout wrote 1019..1012 of the real chip. A
-// sector is a copy when its sum of bytes (but the CRC and the counter at EepromRotateOffset) is the stored CRC; the
-// newest copy has the highest counter (mod 256). Copied once: only when the head's own pool has no valid copy. The SDK
-// refuses reads past the size in the image header (1 MB): the size is raised for the read
-
-bool readPastHeader(uint32_t address, uint32_t* data, size_t size) {
-    const uint32_t real = ESP.getFlashChipRealSize();
-    if ((address + size) > real) {
+bool findArea() {
+    const auto* running = esp_ota_get_running_partition();
+    const uint32_t head = espurna::core::chip::sketch_size();
+    if (!running || !head) {
         return false;
     }
 
-    const uint32_t saved = flashchip->chip_size;
-    flashchip->chip_size = real;
-    const bool ok = (spi_flash_read(address, data, size) == SPI_FLASH_RESULT_OK);
-    flashchip->chip_size = saved;
-    return ok;
+    region.start = running->address;
+    region.lo = roundUp(running->address + head, SectorSize);
+    region.hi = DirectoryOffset;
+    region.valid = (region.hi > region.lo) && (region.hi <= (running->address + running->size));
+    return region.valid;
 }
 
-uint16_t settingsCrc(const uint8_t* data) {
-    uint16_t crc = 0;
-    for (size_t address = 0; address < EepromSize; ++address) {
-        if ((address >= EepromRotateOffset) && (address <= EepromRotateOffset + 2)) {
-            continue;
+bool areaReady() {
+    static bool tried { false };
+    if (!tried) {
+        tried = true;
+        if (!findArea()) {
+            DEBUG_MSG_P(PSTR("[MODULES] No module area\n"));
         }
-        crc += data[address];
     }
-    return crc;
-}
 
-bool settingsValid(const uint8_t* data) {
-    const uint16_t stored = (data[EepromRotateOffset] << 8) | data[EepromRotateOffset + 1];
-    return stored == settingsCrc(data);
-}
-
-size_t settingsPool(uint32_t last) {
-    return (last > 4000) ? 32 : (last > 2000) ? 16 : (last > 1000) ? 8 : (last > 500) ? 4 : 2;
+    return region.valid;
 }
 
 } // namespace
-} // namespace modules
-} // namespace espurna
 
-void modulesMigrateSettings() {
-    using namespace espurna::modules;
-    const uint32_t real = ESP.getFlashChipRealSize();
-    const uint32_t mapped = ESP.getFlashChipSize();
-    if (real <= mapped) {
-        return;
-    }
-
-    auto* data = static_cast<uint8_t*>(malloc(EepromSize));
-    if (!data) {
-        return;
-    }
-
-    // the head's pool first: any valid copy there, nothing to do
-    const uint32_t head_last = (mapped / SectorSize) - 5;
-    for (size_t index = 0; index < settingsPool(head_last); ++index) {
-        if (ESP.flashRead((head_last - index) * SectorSize, reinterpret_cast<uint32_t*>(data), EepromSize)
-            && settingsValid(data))
-        {
-            free(data);
-            return;
-        }
-    }
-
-    // the newest valid copy of the old layout's pool
-    const uint32_t old_last = (real / SectorSize) - 5;
-    bool found = false;
-    uint32_t best_sector = 0;
-    uint8_t best_value = 0;
-    for (size_t index = 0; index < settingsPool(old_last); ++index) {
-        const uint32_t sector = old_last - index;
-        if (!readPastHeader(sector * SectorSize, reinterpret_cast<uint32_t*>(data), EepromSize) || !settingsValid(data)) {
-            continue;
-        }
-        const uint8_t value = data[EepromRotateOffset + 2];
-        const bool newer = !found || ((value < best_value) && ((best_value - value) > 128))
-            || ((value > best_value) && ((value - best_value) < 128));
-        if (newer) {
-            found = true;
-            best_sector = sector;
-            best_value = value;
-        }
-    }
-
-    if (found && readPastHeader(best_sector * SectorSize, reinterpret_cast<uint32_t*>(data), EepromSize)
-        && ESP.flashEraseSector(head_last))
-    {
-        ESP.flashWrite(head_last * SectorSize, reinterpret_cast<const uint32_t*>(data), EepromSize);
-    }
-
-    free(data);
-}
-
-namespace espurna {
-namespace modules {
 namespace arch {
 
-// the SDK reserve and the TCP accept gate (arch/esp8266/heap_reserve_esp8266.cpp)
 void setup() {
-    modulesHeapSetup();
+    areaReady();
 }
 
 // the flash API takes every offset of the chip
@@ -181,143 +90,84 @@ uint32_t flashReach() {
     return 0xFFFFFFFF;
 }
 
-// the Flash meter from 0: the head, then the modules up to the directory
+// the flash over 1 MB of a bigger chip (core_esp8266.cpp: its size from the JEDEC id) without its last 64 KB: there the
+// 4 MB layout of the old NONOS builds kept the settings (sectors 1012-1019, carried over once) and the SDK its own
+// sectors. The cache maps the first MB alone: data modules and the data of the modules only (regress-todo.md item 22)
+constexpr uint32_t UpperStart { 0x100000 };
+constexpr uint32_t UpperTail { 0x10000 };
+
+// the Flash meter from the start of 'factory' (the head) to the directory
 Area area() {
-    return Area{0, headEnd(), directoryOffset()};
+    if (!areaReady()) {
+        return Area{0, 0, 0};
+    }
+
+    Area out{region.start, region.lo, region.hi};
+    const uint32_t chip = spi_flash_get_chip_size();
+    // the package of a new head takes the top ESPURNA_RBL_TOP_ZONE under the tail (rbl_esp8266.h, item 22 stage 2)
+    if (chip >= (UpperStart + UpperTail + ESPURNA_RBL_TOP_ZONE + SectorSize)) {
+        out.upper = Area::Range{UpperStart, chip - UpperTail - ESPURNA_RBL_TOP_ZONE - UpperStart};
+    }
+
+    return out;
 }
 
 bool rawRead(uint32_t offset, void* data, size_t size) {
-    return ESP.flashRead(offset, static_cast<uint8_t*>(data), size);
+    return spi_flash_read(offset, data, size) == ESP_OK;
 }
 
 bool rawErase(uint32_t offset, uint32_t size) {
-    for (uint32_t done = 0; done < size; done += SectorSize) {
-        if (!ESP.flashEraseSector((offset + done) / SectorSize)) {
-            return false;
-        }
-    }
-
-    return true;
+    return spi_flash_erase_range(offset, size) == ESP_OK;
 }
 
-// the callers' buffers are word aligned
 bool rawWrite(uint32_t offset, const void* data, size_t size) {
-    return ESP.flashWrite(offset, static_cast<const uint32_t*>(data), size);
+    return spi_flash_write(offset, data, size) == ESP_OK;
 }
 
+// over 1 MB a view the cache does not map (0x40300000 on): a data module's addresses there are read with viewRead()
 uint32_t flashView(uint32_t slot) {
     return FlashMapped + slot;
 }
 
-// the code runs from the data view, IRAM code from the fixed pool
+// the bytes of a view: through the cache in the first MB, over it with the flash API
+bool viewRead(const void* view, void* out, size_t size) {
+    const auto at = reinterpret_cast<uintptr_t>(view);
+    if ((at >= (FlashMapped + UpperStart)) && (at < (FlashMapped + 0x1000000))) {
+        return rawRead(at - FlashMapped, out, size);
+    }
+
+    memcpy_P(out, view, size);
+    return true;
+}
+
+// the code runs from the data view
 uint32_t codeView(uint32_t) {
     return 0;
 }
 
+// heap only, as on ESP32
 void pools(Pools& out) {
-    // the free heap the loop sees (not inside this request, whose buffers take a part of it): the block comes out of
-    // it at the next boot, the head keeps MODULES_HEAP_KEEP of it
-    const uint32_t free = modulesHeapLoop();
+    const uint32_t free = esp_get_free_heap_size();
     out.heap = heapBlockSize() + ((free > MODULES_HEAP_KEEP) ? (free - MODULES_HEAP_KEEP) : 0);
-    out.fixed = iramTailSize();
-    out.fixed_base = iramTailStart();
-    out.fixed_words = true;
-    out.code_in_fixed = true;
+    out.fixed = 0;
+    out.fixed_base = 0;
+    out.fixed_words = false;
+    out.code_in_fixed = false;
     out.words = true;
-    out.name = "IRAM";
+    out.name = nullptr;
 }
 
-void statusJson(String& out) {
-    jsonField(out, F("reserve"), modulesHeapReserve());
-    jsonField(out, F("reserve_used"), modulesHeapReserveUsed());
-    jsonField(out, F("refused"), modulesAcceptRefused());
-    // the free heap the loop sees, outside this request ("heap" is measured inside it)
-    jsonField(out, F("heap_loop"), modulesHeapLoop());
-    jsonField(out, F("heap_low"), modulesHeapLow());
-    jsonField(out, F("chip"), ESP.getFlashChipRealSize());
+void statusJson(espurna::string& out) {
+    jsonField(out, "chip", spi_flash_get_chip_size());
 }
 
-uint32_t failedAllocations() {
-    return umm_get_oom_count();
-}
-
-// the web upload, and ArduinoOTA (Update) too
-bool otaBusy() {
-    return otaWebUploading() || Update.isRunning();
+void listHead(::espurna::Output& out) {
+    out.printf_P(PSTR("esp8266: factory 0x%06x, modules 0x%06x..0x%06x, map %08x\n"),
+        region.start, region.lo, region.hi, FlashMapped);
 }
 
 } // namespace arch
 } // namespace modules
 } // namespace espurna
 
-namespace espurna {
-namespace modules {
-namespace arch {
-namespace {
-
-os_timer_t guard_timer;
-
-void guardTimerCallback(void*) {
-    guardTick();
-}
-
-} // namespace
-
-void guardTimerStart() {
-    os_timer_setfn(&guard_timer, guardTimerCallback, nullptr);
-    os_timer_arm(&guard_timer, 1000, true);
-}
-
-void guardTimerStop() {
-    os_timer_disarm(&guard_timer);
-}
-
-} // namespace arch
-} // namespace modules
-} // namespace espurna
-
-// Update writes the new image into the free flash after the head: where the modules are, while their code runs from
-// there (W58: espota stalled after the first block, the next call into a module ran erased flash). The head links
-// UpdaterClass::begin and printError with --wrap (custom_head_wraps): with the modules running nothing is written, the
-// uploader gets the reason, the modules stay off from the next boot and the board restarts - the same upload then
-// goes through (ArduinoOTA calls begin before its start callback, so the refusal has to be here)
-namespace {
-
-bool update_refused { false };
-
-constexpr char UpdateRefused[] PROGMEM =
-    "the modules run where the image goes: restarting without them, upload again";
-
-// what espota gets: its stock espota.py reads 32 bytes of the answer, "ERR: " + this fits (a longer one raised on
-// Windows and showed as "No Answer to our Authentication")
-constexpr char UpdateRefusedShort[] PROGMEM = "modules stopped, retry";
-
-} // namespace
-
-extern "C" bool __real__ZN12UpdaterClass5beginEjiih(UpdaterClass*, size_t, int, int, uint8_t);
-extern "C" void __real__ZN12UpdaterClass10printErrorER5Print(UpdaterClass*, Print&);
-
-extern "C" bool __wrap__ZN12UpdaterClass5beginEjiih(UpdaterClass* self, size_t size, int command, int led, uint8_t on) {
-    update_refused = false;
-    if ((command == U_FLASH) && modulesRunning()) {
-        update_refused = true;
-        DEBUG_MSG_P(PSTR("[OTA] Refused: %s\n"), UpdateRefused);
-        if (modulesOffMark("an update over the network")) {
-            prepareReset(CustomResetReason::Modules);
-        }
-        return false;
-    }
-
-    return __real__ZN12UpdaterClass5beginEjiih(self, size, command, led, on);
-}
-
-extern "C" void __wrap__ZN12UpdaterClass10printErrorER5Print(UpdaterClass* self, Print& out) {
-    if (update_refused) {
-        out.print(FPSTR(UpdateRefusedShort));
-        return;
-    }
-
-    __real__ZN12UpdaterClass10printErrorER5Print(self, out);
-}
-
-#endif // MODULES_SUPPORT && ESP8266
+#endif // MODULES_SUPPORT

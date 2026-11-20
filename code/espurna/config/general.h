@@ -79,7 +79,7 @@
 #endif
 
 #ifndef DEBUG_UDP_IP
-#define DEBUG_UDP_IP            IPAddress(192, 168, 1, 100)
+#define DEBUG_UDP_IP            espurna::Ip4(192, 168, 1, 100)
 #endif
 
 #ifndef DEBUG_UDP_PORT
@@ -137,38 +137,7 @@
 #define MATTER_SUPPORT          0
 #endif
 
-//------------------------------------------------------------------------------
-// SAFEBOOT
-// ESP32 with the asymmetric flash layout (esp32_4mb_safeboot.csv): `safeboot` command, crash-loop guard, web /upgrade
-// guard (arch/esp32/safeboot_esp32.cpp), on by default for ESP32 (harmless on other layouts: no factory partition, no
-// guard), web /safeboot (migration, update from the release list). On for every ESP32 image, the NSPanel as well
-// (harmless on other layouts: no factory partition, no guard)
-//------------------------------------------------------------------------------
-
-#ifndef SAFEBOOT_SUPPORT
-#if defined(ESP32)
-#define SAFEBOOT_SUPPORT        1
-#else
-#define SAFEBOOT_SUPPORT        0
-#endif
-#endif
-
-#if SAFEBOOT_SUPPORT && !defined(ESP32)
-#error "SAFEBOOT_SUPPORT is for ESP32 only"
-#endif
-
-// Unstable boots in a row (crashes, watchdogs, restarts ESPurna did not ask for) that switch to the ESPurna safeboot.
-// The NSPanel sits in a wall: it goes at the 3rd one, the same boot that would start the unstable mode
-// (SYSTEM_CHECK_MAX), so the image can be replaced over Wi-Fi instead
-#ifndef SAFEBOOT_CRASH_LOOP_MAX
-#if NSPANEL_SUPPORT
-#define SAFEBOOT_CRASH_LOOP_MAX 3
-#else
-#define SAFEBOOT_CRASH_LOOP_MAX 5
-#endif
-#endif
-
-#if MATTER_SUPPORT && !defined(LIBRETINY) && !defined(ESP32)
+#if MATTER_SUPPORT && !defined(BK72XX) && !defined(ESP32)
 #error "MATTER_SUPPORT needs Beken (LibreTiny) or ESP32 (Arduino-ESP32 core 3.x)"
 #endif
 
@@ -586,7 +555,7 @@
 #define BUTTON_PROVIDER_GPIO_SUPPORT                1
 #endif
 
-// Resistor ladder support. Poll analog pin and return digital LOW when analog reading is in a certain range
+// Resistor ladder support. Poll analog pin and return digital false when analog reading is in a certain range
 // ref. https://github.com/bxparks/AceButton/tree/develop/docs/resistor_ladder
 // Uses BUTTON#_ANALOG_LEVEL for the individual button level configuration
 
@@ -845,7 +814,7 @@
 // -----------------------------------------------------------------------------
 
 #ifndef MDNS_SERVER_SUPPORT
-#if defined(LIBRETINY) && MATTER_SUPPORT
+#if defined(BK72XX) && MATTER_SUPPORT
 // Beken: the LibreTiny responder is a second one next to the Matter stack's own (both on 5353) and lives in the small
 // lwIP heap the Matter traffic needs. On the ESP32 both share the IDF mdns component, so it stays there
 #define MDNS_SERVER_SUPPORT         0
@@ -908,12 +877,12 @@
 
 
 #ifndef OTA_PORT
-#define OTA_PORT                    8266        // Port for ArduinoOTA
+#define OTA_PORT                    8266        // Port for espota (libs/espota.h)
 #endif
 
 // ArduinoOTA (espota) in the head of the ESP8266 and the Beken: the update of a board in the unstable mode, which has
 // no web server (main.cpp: the web starts after systemCheck()), over its access point as well (D390FC, TERRACE1).
-// Owner 2026-11-14: «возвращай ArduinoOTA в голову». The ESP32 updates through its safeboot (platformio_esp32.ini)
+// Owner 2026-11-14: «возвращай ArduinoOTA в голову». Not on the ESP32: its head is not replaced over the network
 #ifndef OTA_ARDUINOOTA_SUPPORT
 #define OTA_ARDUINOOTA_SUPPORT      1
 #endif
@@ -1554,7 +1523,7 @@
 
 #ifndef RFB_PROVIDER
 // generic esp8266 images take both, the EFM8BB1 co-MCU exists only on an esp8266 board (Sonoff RF Bridge)
-#if GENERIC_IMAGE && defined(ESP8266)
+#if GENERIC_IMAGE && defined(ESP8266_GENERIC)
 #define RFB_PROVIDER                RFB_PROVIDER_ANY
 #else
 #define RFB_PROVIDER                RFB_PROVIDER_RCSWITCH
@@ -1599,11 +1568,11 @@
 // -----------------------------------------------------------------------------
 
 #ifndef IR_SUPPORT
-#define IR_SUPPORT                  0               // (boolean) Do not build with IR support by default
+#define IR_SUPPORT                  0               // (bool) Do not build with IR support by default
 #endif
 
 #ifndef IR_RX_SUPPORT
-#define IR_RX_SUPPORT               1               // (boolean) IR receiver support in the build (~30Kb, enabled by default)
+#define IR_RX_SUPPORT               1               // (bool) IR receiver support in the build (~30Kb, enabled by default)
 #endif
 
 #ifndef IR_RX_PIN
@@ -1611,11 +1580,11 @@
 #endif
 
 #ifndef IR_RX_PULLUP
-#define IR_RX_PULLUP                0               // (boolean) whether the IR receiver pin is setup with INPUT_PULLUP
+#define IR_RX_PULLUP                0               // (bool) whether the IR receiver pin is setup with espurna::pins::InputPullup
 #endif
 
 #ifndef IR_TX_SUPPORT
-#define IR_TX_SUPPORT               1               // (boolean) IR transmitter support in the build (~8Kb, enabled by default)
+#define IR_TX_SUPPORT               1               // (bool) IR transmitter support in the build (~8Kb, enabled by default)
 #endif
 
 #ifndef IR_TX_PIN
@@ -1623,7 +1592,7 @@
 #endif
 
 #ifndef IR_TX_INVERTED
-#define IR_TX_INVERTED              0               // By default, turn LED ON when GPIO is HIGH and OFF when it's LOW
+#define IR_TX_INVERTED              0               // By default, turn LED ON when GPIO is true and OFF when it's false
 #endif
 
 #ifndef IR_TX_MODULATION
@@ -1640,15 +1609,15 @@
 #endif
 
 #ifndef IR_RX_SIMPLE_MQTT
-#define IR_RX_SIMPLE_MQTT           1               // (boolean) Report simple protocols
+#define IR_RX_SIMPLE_MQTT           1               // (bool) Report simple protocols
 #endif
 
 #ifndef IR_RX_RAW_MQTT
-#define IR_RX_RAW_MQTT              0               // (boolean) Report RAW payload for everything received (even unknown protocols)
+#define IR_RX_RAW_MQTT              0               // (bool) Report RAW payload for everything received (even unknown protocols)
 #endif
 
 #ifndef IR_RX_STATE_MQTT
-#define IR_RX_STATE_MQTT            0               // (boolean) Report state payload for supported protocols
+#define IR_RX_STATE_MQTT            0               // (bool) Report state payload for supported protocols
 #endif
 
 #ifndef IR_RX_SIMPLE_MQTT_TOPIC
@@ -1706,12 +1675,12 @@
 #endif
 
 #ifndef IR_RX_UNKNOWN
-#define IR_RX_UNKNOWN               1               // (boolean) do not discard unknown (-1) protocols by default
+#define IR_RX_UNKNOWN               1               // (bool) do not discard unknown (-1) protocols by default
                                                     // *ATTENTION* - this will cause RAW output to stop working
 #endif
 
 #ifndef IR_TEST_SUPPORT
-#define IR_TEST_SUPPORT             0               // (boolean) perform extra integration & sanity checks on boot
+#define IR_TEST_SUPPORT             0               // (bool) perform extra integration & sanity checks on boot
                                                     // disabled by default, should only be enabled for development
 #endif
 
@@ -1858,7 +1827,7 @@
 #ifndef PWM_PROVIDER
 #if defined(ESP32)
 #define PWM_PROVIDER                PWM_PROVIDER_ESP32
-#elif defined(LIBRETINY)
+#elif defined(BK72XX)
 #define PWM_PROVIDER                PWM_PROVIDER_ARDUINO    // Beken: the core's analogWrite()
 #else
 #define PWM_PROVIDER                PWM_PROVIDER_GENERIC // Currently, two software PWM providers are supported

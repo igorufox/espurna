@@ -144,25 +144,25 @@ bool tryParseIdPath(espurna::StringView value, size_t limit, size_t& out) {
     return tryParseId(try_path, limit, out);
 }
 
-static void prettyDurationImpl(char suffix, String& out, espurna::duration::rep_type value) {
+static void prettyDurationImpl(char suffix, espurna::string& out, espurna::duration::rep_type value) {
     if (value > 0) {
         if (out.length()) {
             out += ' ';
         }
 
-        out += String(value) + suffix;
+        out += espurna::string(value) + suffix;
     }
 }
 
 template <typename T>
-static void prettyDurationAppend(char suffix, String& out, espurna::duration::Seconds& seconds) {
+static void prettyDurationAppend(char suffix, espurna::string& out, espurna::duration::Seconds& seconds) {
     const auto value = std::chrono::duration_cast<T>(seconds);
     prettyDurationImpl(suffix, out, value.count());
     seconds -= value;
 }
 
-String prettyDuration(espurna::duration::Seconds seconds) {
-    String out;
+espurna::string prettyDuration(espurna::duration::Seconds seconds) {
+    espurna::string out;
 
     if (seconds > seconds.zero())  {
         using namespace espurna::duration;
@@ -330,10 +330,10 @@ ParseUnsignedResult parseUnsigned(espurna::StringView value) {
 // ipToString() and equalsConstantTime() are per chip, ref. arch/<chip>/chip_<chip>.cpp (LibreTiny's core defines
 // ipToString() itself, wiring_compat.h)
 
-String formatUnsigned(uint32_t value, int base) {
+espurna::string formatUnsigned(uint32_t value, int base) {
     constexpr size_t BufferSize { 8 * sizeof(decltype(value)) };
 
-    String result;
+    espurna::string result;
     if (base == 2) {
         result += "0b";
     } else if (base == 8) {
@@ -342,9 +342,7 @@ String formatUnsigned(uint32_t value, int base) {
         result += "0x";
     }
 
-    char buffer[BufferSize + 1] = {0};
-    ultoa(value, buffer, base);
-    result += buffer;
+    result += espurna::string(static_cast<unsigned long>(value), static_cast<unsigned char>(base));
 
     return result;
 }
@@ -392,8 +390,8 @@ char* hexEncode(const uint8_t* in_begin, const uint8_t* in_end, char* out_begin,
     return out_ptr;
 }
 
-String hexEncode(const uint8_t* in_begin, const uint8_t* in_end) {
-    String out;
+espurna::string hexEncode(const uint8_t* in_begin, const uint8_t* in_end) {
+    espurna::string out;
     out.reserve(in_end - in_begin);
 
     hexEncodeImpl(in_begin, in_end, [&](const char (&byte)[2]) {
@@ -452,7 +450,7 @@ size_t hexDecode(const char* in, size_t in_size, uint8_t* out, size_t out_size) 
 
 namespace {
 
-size_t consumeAvailableReadBytes(Stream& stream, size_t available) {
+size_t consumeAvailableReadBytes(::espurna::ByteStream& stream, size_t available) {
     size_t size = 0;
     uint8_t buf[64];
     do {
@@ -464,7 +462,7 @@ size_t consumeAvailableReadBytes(Stream& stream, size_t available) {
     return size;
 }
 
-size_t consumeAvailableImpl(Stream& stream, size_t size) {
+size_t consumeAvailableImpl(::espurna::ByteStream& stream, size_t size) {
     if (streamPeekConsume(stream, size)) {
         return size;
     }
@@ -474,7 +472,7 @@ size_t consumeAvailableImpl(Stream& stream, size_t size) {
 
 } // namespace
 
-size_t consumeAvailable(Stream& stream) {
+size_t consumeAvailable(::espurna::ByteStream& stream) {
     const auto result = stream.available();
     if (result <= 0) {
         return 0;

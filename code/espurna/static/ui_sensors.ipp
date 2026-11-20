@@ -1,5 +1,5 @@
 #pragma once
-#include <pgmspace.h>
+#include "../progmem.h"
 #include <cstdint>
 // the WebUI part of the sensors module (html/parts.mjs), gzip: gulp build
 alignas(4) static const uint8_t ui_sensors_data[] PROGMEM = {

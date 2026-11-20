@@ -8,14 +8,25 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 Modified for ESPurna
 Copyright (C) 2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
+Simplified (owner 2026-11-18): the SDK picks the AP and roams (802.11k/v), no action queue and state machine of the
+NONOS era, no roaming scans of ESPurna's own:
+- networks wifi0..N are tried in their order, each WIFI_CONNECT_RETRIES times WIFI_CONNECT_INTERVAL apart; the SDK
+  scans every channel and joins the strongest AP of the network (the arch driver)
+- a round without a connection: the fallback AP (wifiApMode fallback) and a new round after WIFI_RECONNECT_INTERVAL
+- a lost connection: a new round after WIFI_CONNECT_INTERVAL
+- an attempt the SDK never reports the end of times out (Beken, ESP32 seen)
+Every request comes from the loop context (terminal, WebUI, buttons, the driver's events) and is done right there
+
 */
 
 #include "espurna.h"
 
 #include "espurna_wifi.h"
 #include "wifi_driver.h"
+#include "rtcmem.h"
+#include <wifi_sdk.h>
 
-#include <IPAddress.h>
+#include "ip4.h"
 
 #include <lwip/etharp.h>
 #include <lwip/netif.h>
@@ -26,9 +37,8 @@ Copyright (C) 2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #include <algorithm>
 #include <array>
-#include <list>
-#include <queue>
-#include <vector>
+#include <forward_list>
+#include <functional>
 
 #if WEB_SUPPORT
 #include "ws.h"
@@ -43,21 +53,13 @@ namespace wifi {
 namespace {
 
 namespace build {
-namespace compat {
-
-[[gnu::unused]]
-constexpr sleep_type_t arduino_sleep(sleep_type_t type) {
-    return type;
-}
-
-} // namespace compat
 
 constexpr float txPower() {
     return WIFI_OUTPUT_POWER_DBM;
 }
 
 constexpr sleep_type_t sleep() {
-    return compat::arduino_sleep(WIFI_SLEEP_MODE);
+    return WIFI_SLEEP_MODE;
 }
 
 constexpr BootMode bootMode() {
@@ -114,109 +116,90 @@ namespace settings {
 namespace internal {
 
 template<>
-wifi::BootMode convert(const String& value) {
+wifi::BootMode convert(const espurna::string& value) {
     return convert<bool>(value)
         ? wifi::BootMode::Enabled
         : wifi::BootMode::Disabled;
 }
 
-String serialize(wifi::BootMode mode) {
+espurna::string serialize(wifi::BootMode mode) {
     return serialize(mode == wifi::BootMode::Enabled);
 }
 
 template<>
-wifi::StaMode convert(const String& value) {
+wifi::StaMode convert(const espurna::string& value) {
     return convert<bool>(value)
         ? wifi::StaMode::Enabled
         : wifi::StaMode::Disabled;
 }
 
-String serialize(wifi::StaMode mode) {
+espurna::string serialize(wifi::StaMode mode) {
     return serialize(mode == wifi::StaMode::Enabled);
 }
 
 template<>
-wifi::ApMode convert(const String& value) {
+wifi::ApMode convert(const espurna::string& value) {
     return convert(wifi::ap::settings::options::ApModeOptions, value, wifi::ApMode::Fallback);
 }
 
-String serialize(wifi::ApMode mode) {
+espurna::string serialize(wifi::ApMode mode) {
     return serialize(wifi::ap::settings::options::ApModeOptions, mode);
 }
 
 template <>
-sleep_type_t convert(const String& value) {
+sleep_type_t convert(const espurna::string& value) {
     return convert(wifi::settings::options::SleepTypeOptions, value, wifi::build::sleep());
 }
 
-String serialize(sleep_type_t sleep) {
+espurna::string serialize(sleep_type_t sleep) {
     return serialize(wifi::settings::options::SleepTypeOptions, sleep);
 }
 
 template <>
-IPAddress convert(const String& value) {
-    IPAddress out;
-    out.fromString(value);
+espurna::Ip4 convert(const espurna::string& value) {
+    espurna::Ip4 out;
+    out.fromString(value.c_str());
     return out;
 }
 
+// xxxxxxxxxxxx or xx:xx:xx:xx:xx:xx
 template <>
-wifi::Mac convert(const String& value) {
+wifi::Mac convert(const espurna::string& value) {
     wifi::Mac out{};
 
     static constexpr size_t Min { 12 };
     static constexpr size_t Max { 17 };
 
-    switch (value.length()) {
-    // xxxxxxxxxx
-    case Min:
-        hexDecode(value.c_str(), value.length(), out.data(), out.size());
-        break;
-
-    // xx:xx:xx:xx:xx:xx
-    case Max: {
-        String buffer;
-        buffer.reserve(value.length());
-
-        for (auto it = value.begin(); it != value.end(); ++it) {
+    char buffer[Min + 1];
+    size_t length { 0 };
+    if (value.length() == Min) {
+        memcpy(buffer, value.c_str(), Min);
+        length = Min;
+    } else if (value.length() == Max) {
+        for (auto it = value.begin(); (it != value.end()) && (length < Min); ++it) {
             if ((*it) != ':') {
-                buffer += *it;
+                buffer[length++] = *it;
             }
         }
-        if (buffer.length() == Min) {
-            hexDecode(buffer.c_str(), buffer.length(), out.data(), out.size());
-        }
-        break;
     }
 
+    if (length == Min) {
+        hexDecode(buffer, length, out.data(), out.size());
     }
 
     return out;
 }
 
-// XXX: "(IP unset)" when not set, no point saving these :/
-// XXX: both 0.0.0.0 and 255.255.255.255 will be saved as empty string
-
-String serialize(const IPAddress& ip) {
-    return wifi::driver::ip_set(ip) ? ipToString(ip) : emptyString;
+// both 0.0.0.0 and 255.255.255.255 are saved as an empty string
+espurna::string serialize(const espurna::Ip4& ip) {
+    return wifi::driver::ip_set(ip) ? ipToString(ip) : espurna::empty_string;
 }
 
-String serialize(wifi::Mac mac) {
-    String out;
-    out.reserve(18);
-
-    bool delim { false };
-    char buffer[3] = {0};
-    for (auto& byte : mac) {
-        hexEncode(&byte, 1, buffer, sizeof(buffer));
-        if (delim) {
-            out += ':';
-        }
-        out += buffer;
-        delim = true;
-    }
-
-    return out;
+espurna::string serialize(wifi::Mac mac) {
+    char buffer[18];
+    snprintf(buffer, sizeof(buffer), "%02x:%02x:%02x:%02x:%02x:%02x",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return espurna::string(buffer);
 }
 
 } // namespace internal
@@ -225,66 +208,24 @@ String serialize(wifi::Mac mac) {
 namespace wifi {
 namespace {
 
-// Use SDK constants directly. Provide a constexpr version of the Core enum, since the code never
-// actually uses `WiFi::mode(...)` directly, *but* opmode is retrieved using the SDK function.
-
 static constexpr uint8_t OpmodeNull { driver::OpmodeNull };
 static constexpr uint8_t OpmodeSta { driver::OpmodeSta };
 static constexpr uint8_t OpmodeAp { driver::OpmodeAp };
 static constexpr uint8_t OpmodeApSta { driver::OpmodeApSta };
 
-enum class ScanError {
-    None,
-    AlreadyScanning,
-    Busy,
-    NoNetworks,
-    System,
-};
-
-enum class Action {
-    AccessPointFallback,
-    AccessPointFallbackCheck,
-    AccessPointStart,
-    AccessPointStop,
-    Boot,
-    StationConnect,
-    StationContinueConnect,
-    StationDisconnect,
-    StationTryConnectBetter,
-    TurnOff,
-    TurnOn,
-};
-
-using Actions = std::list<Action>;
-using ActionsQueue = std::queue<Action, Actions>;
-
-enum class State {
-    Boot,
-    Connect,
-    TryConnectBetter,
-    Connected,
-    Idle,
-    Init,
-    Timeout,
-    Fallback,
-    WaitScan,
-    WaitScanWithoutCurrent,
-    WaitConnected
-};
-
 namespace internal {
 
-// Module actions are controled in a serialzed manner, when internal loop is done with the
-// current task and is free to take up another one. Allow to toggle OFF for the whole module,
-// discarding any actions involving an active WiFi. Default is ON
-
 bool enabled { false };
-ActionsQueue actions;
 
-State state { State::Boot };
-State last_state { state };
+std::forward_list<EventCallback> callbacks;
 
 } // namespace internal
+
+void publish(Event event) {
+    for (auto& callback : internal::callbacks) {
+        callback(event);
+    }
+}
 
 void tx_power(float dbm) {
     if (std::isinf(dbm) || std::isnan(dbm)) {
@@ -306,14 +247,11 @@ uint8_t opmode() {
     return driver::opmode();
 }
 
+// the mode really changes or the board restarts: every later step depends on it
 void ensure_opmode(uint8_t mode) {
     const auto is_set = [&]() {
         return (opmode() == mode);
     };
-
-    // `std::abort()` calls are the to ensure the mode actually changes, but it should be extremely rare
-    // it may be also wise to add these for when the mode is already the expected one,
-    // since we should enforce mode changes to happen *only* through the configuration loop
 
     if (!is_set()) {
         const auto current = opmode();
@@ -335,107 +273,30 @@ void ensure_opmode(uint8_t mode) {
     }
 }
 
-bool enabled() {
-    return internal::enabled;
-}
-
-void enable() {
-    internal::enabled = true;
-}
-
-void disable() {
-    internal::enabled = false;
-}
-
-void action(Action value) {
-    switch (value) {
-    case Action::StationConnect:
-    case Action::StationTryConnectBetter:
-    case Action::StationContinueConnect:
-    case Action::StationDisconnect:
-    case Action::AccessPointFallback:
-    case Action::AccessPointFallbackCheck:
-    case Action::AccessPointStart:
-    case Action::AccessPointStop:
-        if (!enabled()) {
-            return;
-        }
-        break;
-    case Action::TurnOff:
-    case Action::TurnOn:
-    case Action::Boot:
-        break;
-    }
-
-    internal::actions.push(value);
-}
-
-template <typename T>
-State handle_action(State state, T&& handler) {
-    if (!internal::actions.empty()) {
-        state = handler(state, internal::actions.front());
-        internal::actions.pop();
-    }
-
-    return state;
-}
-
 namespace debug {
 
-String error(ScanError error) {
-    StringView out;
-
-    switch (error) {
-    case ScanError::None:
-        out = STRING_VIEW("OK");
-        break;
-    case ScanError::AlreadyScanning:
-        out = STRING_VIEW("Scan already in progress");
-        break;
-    case ScanError::Busy:
-        out = STRING_VIEW("State machine is busy");
-        break;
-    case ScanError::NoNetworks:
-        out = STRING_VIEW("No networks");
-        break;
-    case ScanError::System:
-        out = STRING_VIEW("System unable to start the scan");
-        break;
-    }
-
-    return out.toString();
-}
-
-String mac(Mac mac) {
+espurna::string mac(Mac mac) {
     return espurna::settings::internal::serialize(mac);
 }
 
-String authmode(AUTH_MODE mode) {
+espurna::string authmode(AUTH_MODE mode) {
     return driver::authmode(mode);
 }
 
-String opmode(uint8_t mode) {
-    StringView out;
-
+const char* opmode(uint8_t mode) {
     switch (mode) {
     case OpmodeApSta:
-        out = STRING_VIEW("AP+STA");
-        break;
+        return "AP+STA";
     case OpmodeSta:
-        out = STRING_VIEW("STA");
-        break;
+        return "STA";
     case OpmodeAp:
-        out = STRING_VIEW("AP");
-        break;
-    case OpmodeNull:
-        out = STRING_VIEW("NULL");
-        break;
+        return "AP";
     }
 
-    return out.toString();
+    return "NULL";
 }
 
-String sleep_type(sleep_type_t type) {
+espurna::string sleep_type(sleep_type_t type) {
     return espurna::settings::internal::serialize(type);
 }
 
@@ -466,12 +327,12 @@ namespace query {
 namespace internal {
 
 #define EXACT_VALUE(NAME, FUNC)\
-String NAME () {\
+espurna::string NAME () {\
     return espurna::settings::internal::serialize(FUNC());\
 }
 
 #define ID_VALUE(NAME, FUNC)\
-String NAME (size_t id) {\
+espurna::string NAME (size_t id) {\
     return espurna::settings::internal::serialize(FUNC(id));\
 }
 
@@ -485,237 +346,18 @@ EXACT_VALUE(bootMode, settings::bootMode)
 
 // Scan results are byte arrays, not C strings (ref. driver::ScanResult)
 
-String convertSsid(const driver::ScanResult& info) {
-    String ssid;
+espurna::string convertSsid(const driver::ScanResult& info) {
+    espurna::string ssid;
     ssid.concat(reinterpret_cast<const char*>(info.ssid), info.ssid_len);
     return ssid;
 }
 
-template <typename T, size_t MacSize = sizeof(T::bssid)>
-Mac convertBssid(const T& info) {
-    static_assert(MacSize == 6, "");
+Mac convertBssid(const driver::ScanResult& info) {
+    static_assert(sizeof(info.bssid) == 6, "");
     Mac mac;
-    std::copy(info.bssid, info.bssid + MacSize, mac.begin());
+    std::copy(info.bssid, info.bssid + sizeof(info.bssid), mac.begin());
     return mac;
 }
-
-struct Info {
-    Info() = default;
-    Info(const Info&) = default;
-    Info(Info&&) = default;
-
-    Info(Mac&& bssid, AUTH_MODE authmode, int8_t rssi, uint8_t channel) :
-        _bssid(std::move(bssid)),
-        _authmode(authmode),
-        _rssi(rssi),
-        _channel(channel)
-    {}
-
-    explicit Info(const driver::ScanResult& info) :
-        _bssid(convertBssid(info)),
-        _authmode(info.authmode),
-        _rssi(info.rssi),
-        _channel(info.channel)
-    {}
-
-    Info& operator=(const Info&) = default;
-    Info& operator=(Info&&) = default;
-
-    Info& operator=(const driver::ScanResult& info) {
-        _bssid = convertBssid(info);
-        _authmode = info.authmode;
-        _channel = info.channel;
-        _rssi = info.rssi;
-        return *this;
-    }
-
-    explicit operator bool() const {
-        return _rssi != 0 && _channel != 0;
-    }
-
-    bool operator<(const Info& rhs) const {
-        return _rssi < rhs._rssi;
-    }
-
-    bool operator>(const Info& rhs) const {
-        return _rssi > rhs._rssi;
-    }
-
-    const Mac& bssid() const {
-        return _bssid;
-    }
-
-    AUTH_MODE authmode() const {
-        return _authmode;
-    }
-
-    int8_t rssi() const {
-        return _rssi;
-    }
-
-    uint8_t channel() const {
-        return _channel;
-    }
-
-private:
-    Mac _bssid{};
-    AUTH_MODE _authmode { driver::AuthOpen };
-    int8_t _rssi { 0 };
-    uint8_t _channel { 0u };
-};
-
-struct SsidInfo {
-    SsidInfo() = delete;
-
-    explicit SsidInfo(const driver::ScanResult& info) :
-        _ssid(convertSsid(info)),
-        _info(info)
-    {}
-
-    SsidInfo(String&& ssid, Info&& info) :
-        _ssid(std::move(ssid)),
-        _info(std::move(info))
-    {}
-
-    const String& ssid() const {
-        return _ssid;
-    }
-
-    const Info& info() const {
-        return _info;
-    }
-
-    // decreasing order by rssi (default sort() order is increasing)
-    bool operator<(const SsidInfo& rhs) const {
-        if (!_info.rssi()) {
-            return false;
-        }
-
-        return info() > rhs.info();
-    }
-
-private:
-    String _ssid;
-    Info _info;
-};
-
-using SsidInfos = std::forward_list<SsidInfo>;
-
-// Note that lwip config allows up to 3 DNS servers. But, most of the time we use DHCP.
-// TODO: ::dns(size_t index)? how'd that look with settings?
-
-struct IpSettings {
-    IpSettings() = default;
-    IpSettings(const IpSettings&) = default;
-    IpSettings(IpSettings&&) = default;
-
-    IpSettings& operator=(const IpSettings&) = default;
-    IpSettings& operator=(IpSettings&&) = default;
-
-    template <typename Ip, typename Netmask, typename Gateway, typename Dns>
-    IpSettings(Ip&& ip, Netmask&& netmask, Gateway&& gateway, Dns&& dns) :
-        _ip(std::forward<Ip>(ip)),
-        _netmask(std::forward<Netmask>(netmask)),
-        _gateway(std::forward<Gateway>(gateway)),
-        _dns(std::forward<Dns>(dns))
-    {}
-
-    const IPAddress& ip() const {
-        return _ip;
-    }
-
-    const IPAddress& netmask() const {
-        return _netmask;
-    }
-
-    const IPAddress& gateway() const {
-        return _gateway;
-    }
-
-    const IPAddress& dns() const {
-        return _dns;
-    }
-
-    explicit operator bool() const {
-        return driver::ip_set(_ip)
-            && driver::ip_set(_netmask)
-            && driver::ip_set(_gateway);
-    }
-
-private:
-    IPAddress _ip;
-    IPAddress _netmask;
-    IPAddress _gateway;
-    IPAddress _dns;
-};
-
-struct Network {
-    Network() = delete;
-    Network(const Network&) = default;
-    Network(Network&&) = default;
-
-    Network& operator=(Network&&) = default;
-
-    explicit Network(String&& ssid) :
-        _ssid(std::move(ssid))
-    {}
-
-    Network(String&& ssid, String&& passphrase) :
-        _ssid(std::move(ssid)),
-        _passphrase(std::move(passphrase))
-    {}
-
-    Network(String&& ssid, String&& passphrase, IpSettings&& settings) :
-        _ssid(std::move(ssid)),
-        _passphrase(std::move(passphrase)),
-        _ipSettings(std::move(settings))
-    {}
-
-    // TODO(?): in case SDK API is used directly, this also could use an authmode field
-    // Arduino wrapper sets WPAPSK minimum by default, so one use-case is to set it to WPA2PSK
-
-    Network(Network other, Mac bssid, uint8_t channel) :
-        _ssid(std::move(other._ssid)),
-        _passphrase(std::move(other._passphrase)),
-        _ipSettings(std::move(other._ipSettings)),
-        _bssid(bssid),
-        _channel(channel)
-    {}
-
-    bool dhcp() const {
-        return !_ipSettings;
-    }
-
-    const String& ssid() const {
-        return _ssid;
-    }
-
-    const String& passphrase() const {
-        return _passphrase;
-    }
-
-    const IpSettings& ipSettings() const {
-        return _ipSettings;
-    }
-
-    const Mac& bssid() const {
-        return _bssid;
-    }
-
-    uint8_t channel() const {
-        return _channel;
-    }
-
-private:
-    String _ssid;
-    String _passphrase;
-    IpSettings _ipSettings;
-
-    Mac _bssid {};
-    uint8_t _channel { 0u };
-};
-
-using Networks = std::list<Network>;
 
 // -----------------------------------------------------------------------------
 // STATION
@@ -726,14 +368,9 @@ namespace build {
 
 static constexpr size_t NetworksMax { WIFI_MAX_NETWORKS };
 
-// aka short interval
 static constexpr auto ConnectionInterval = duration::Milliseconds{ WIFI_CONNECT_INTERVAL };
-
-// aka long interval
 static constexpr auto ReconnectionInterval = duration::Milliseconds{ WIFI_RECONNECT_INTERVAL };
-
 static constexpr int ConnectionRetries { WIFI_CONNECT_RETRIES };
-static constexpr auto RecoveryInterval = ConnectionInterval * ConnectionRetries;
 
 constexpr StaMode mode() {
     return WIFI_STA_MODE;
@@ -747,73 +384,31 @@ constexpr StaMode mode() {
     (index == 4) ? STRING_VIEW_SETTING(FIFTH) : StringView()
 
 StringView ssid(size_t index) {
-    return WIFI_SETTING_STRING_RESULT(
-        WIFI1_SSID,
-        WIFI2_SSID,
-        WIFI3_SSID,
-        WIFI4_SSID,
-        WIFI5_SSID
-    );
+    return WIFI_SETTING_STRING_RESULT(WIFI1_SSID, WIFI2_SSID, WIFI3_SSID, WIFI4_SSID, WIFI5_SSID);
 }
 
 StringView passphrase(size_t index) {
-    return WIFI_SETTING_STRING_RESULT(
-        WIFI1_PASS,
-        WIFI2_PASS,
-        WIFI3_PASS,
-        WIFI4_PASS,
-        WIFI5_PASS
-    );
+    return WIFI_SETTING_STRING_RESULT(WIFI1_PASS, WIFI2_PASS, WIFI3_PASS, WIFI4_PASS, WIFI5_PASS);
 }
 
 StringView ip(size_t index) {
-    return WIFI_SETTING_STRING_RESULT(
-        WIFI1_IP,
-        WIFI2_IP,
-        WIFI3_IP,
-        WIFI4_IP,
-        WIFI5_IP
-    );
+    return WIFI_SETTING_STRING_RESULT(WIFI1_IP, WIFI2_IP, WIFI3_IP, WIFI4_IP, WIFI5_IP);
 }
 
 StringView gateway(size_t index) {
-    return WIFI_SETTING_STRING_RESULT(
-        WIFI1_GW,
-        WIFI2_GW,
-        WIFI3_GW,
-        WIFI4_GW,
-        WIFI5_GW
-    );
+    return WIFI_SETTING_STRING_RESULT(WIFI1_GW, WIFI2_GW, WIFI3_GW, WIFI4_GW, WIFI5_GW);
 }
 
 StringView netmask(size_t index) {
-    return WIFI_SETTING_STRING_RESULT(
-        WIFI1_MASK,
-        WIFI2_MASK,
-        WIFI3_MASK,
-        WIFI4_MASK,
-        WIFI5_MASK
-    );
+    return WIFI_SETTING_STRING_RESULT(WIFI1_MASK, WIFI2_MASK, WIFI3_MASK, WIFI4_MASK, WIFI5_MASK);
 }
 
 StringView dns(size_t index) {
-    return WIFI_SETTING_STRING_RESULT(
-        WIFI1_DNS,
-        WIFI2_DNS,
-        WIFI3_DNS,
-        WIFI4_DNS,
-        WIFI5_DNS
-    );
+    return WIFI_SETTING_STRING_RESULT(WIFI1_DNS, WIFI2_DNS, WIFI3_DNS, WIFI4_DNS, WIFI5_DNS);
 }
 
 StringView bssid(size_t index) {
-    return WIFI_SETTING_STRING_RESULT(
-        WIFI1_BSSID,
-        WIFI2_BSSID,
-        WIFI3_BSSID,
-        WIFI4_BSSID,
-        WIFI5_BSSID
-    );
+    return WIFI_SETTING_STRING_RESULT(WIFI1_BSSID, WIFI2_BSSID, WIFI3_BSSID, WIFI4_BSSID, WIFI5_BSSID);
 }
 
 #undef WIFI_SETTING_STRING_RESULT
@@ -843,17 +438,14 @@ PROGMEM_STRING(Gateway, "gw");
 PROGMEM_STRING(Netmask, "mask");
 PROGMEM_STRING(Dns, "dns");
 
+// a network pinned to one AP: the SDK joins only this BSSID (on this channel)
 PROGMEM_STRING(Bssid, "bssid");
 PROGMEM_STRING(Channel, "chan");
 
 } // namespace keys
 
-String from_string(espurna::settings::Key key, StringView defaultValue) {
-    return getSetting(key, defaultValue);
-}
-
-IPAddress from_ipaddress(espurna::settings::Key key, StringView defaultValue) {
-    return espurna::settings::internal::convert<IPAddress>(
+espurna::Ip4 from_ipaddress(espurna::settings::Key key, StringView defaultValue) {
+    return espurna::settings::internal::convert<espurna::Ip4>(
         getSetting(key, defaultValue));
 }
 
@@ -861,27 +453,27 @@ StaMode mode() {
     return getSetting(keys::Mode, build::mode());
 }
 
-String ssid(size_t index) {
-    return from_string({keys::Ssid, index}, build::ssid(index));
+espurna::string ssid(size_t index) {
+    return getSetting({keys::Ssid, index}, build::ssid(index));
 }
 
-String passphrase(size_t index) {
-    return from_string({keys::Passphrase, index}, build::passphrase(index));
+espurna::string passphrase(size_t index) {
+    return getSetting({keys::Passphrase, index}, build::passphrase(index));
 }
 
-IPAddress ip(size_t index) {
+espurna::Ip4 ip(size_t index) {
     return from_ipaddress({keys::Ip, index}, build::ip(index));
 }
 
-IPAddress gateway(size_t index) {
+espurna::Ip4 gateway(size_t index) {
     return from_ipaddress({keys::Gateway, index}, build::gateway(index));
 }
 
-IPAddress netmask(size_t index) {
+espurna::Ip4 netmask(size_t index) {
     return from_ipaddress({keys::Netmask, index}, build::netmask(index));
 }
 
-IPAddress dns(size_t index) {
+espurna::Ip4 dns(size_t index) {
     return from_ipaddress({keys::Dns, index}, build::dns(index));
 }
 
@@ -922,87 +514,50 @@ static constexpr std::array<espurna::settings::query::IndexedSetting, 8> Setting
 } // namespace query
 } // namespace settings
 
-IPAddress ip() {
+espurna::Ip4 ip() {
     return driver::sta_ip();
 }
 
-uint8_t channel() {
-    return driver::sta_channel();
-}
-
-int8_t rssi() {
-    return driver::sta_rssi();
-}
-
-Networks networks() {
-    Networks out;
-
+size_t countNetworks() {
+    size_t out { 0 };
     for (size_t id = 0; id < build::NetworksMax; ++id) {
-        auto ssid = settings::ssid(id);
-        if (!ssid.length()) {
+        if (!settings::ssid(id).length()) {
             break;
         }
 
-        auto pass = settings::passphrase(id);
-
-        auto ip = settings::ip(id);
-        auto ipSettings = driver::ip_set(ip)
-            ? IpSettings{
-                std::move(ip),
-                settings::netmask(id),
-                settings::gateway(id),
-                settings::dns(id)}
-            : IpSettings{};
-
-        Network network(std::move(ssid), settings::passphrase(id), std::move(ipSettings));
-        auto channel = settings::channel(id);
-        if (channel) {
-            out.emplace_back(std::move(network), settings::bssid(id), channel);
-        } else {
-            out.push_back(std::move(network));
-        }
+        ++out;
     }
 
     return out;
-}
-
-size_t countNetworks() {
-    size_t networks { 0 };
-
-    for (size_t id = 0; id < build::NetworksMax; ++id) {
-        auto ssid = settings::ssid(id);
-        if (!ssid.length()) {
-            break;
-        }
-
-        ++networks;
-    }
-
-    return networks;
-}
-
-// Note that authmode field is a our threshold, not the one selected by an AP
-
-Info info() {
-    Mac bssid{};
-    AUTH_MODE authmode{};
-    driver::sta_info(bssid, authmode);
-
-    return Info{
-        std::move(bssid),
-        authmode,
-        rssi(),
-        channel()};
 }
 
 StaNetwork current() {
     return driver::sta_current();
 }
 
+bool enabled() {
+    return opmode() & OpmodeSta;
+}
+
+void disconnect() {
+    if (enabled()) {
+        driver::sta_disconnect();
+    }
+}
+
+void enable() {
+    ensure_opmode(opmode() | OpmodeSta);
+    driver::sta_prepare();
+}
+
+void disable() {
+    ensure_opmode(opmode() & ~OpmodeSta);
+}
+
 // --- lwIP, the same on every chip ----------------------------------------------------------------------------------
 //
-// lwIP is called in its own context: directly without an OS (the ESP8266 NONOS SDK, NO_SYS), else through the tcpip
-// thread (the loop would race with it). A full tcpip mailbox drops the call: the next one comes on the next tick
+// lwIP is called in its own context: directly without an OS (NO_SYS), else through the tcpip thread (the loop would
+// race with it). A full tcpip mailbox drops the call: the next one comes on the next tick
 namespace lwip {
 
 void call(void (*func)(void*)) {
@@ -1013,7 +568,8 @@ void call(void (*func)(void*)) {
 #endif
 }
 
-// gratuitous ARP on every interface that is up with an address (the ESP8266 code of upstream)
+// gratuitous ARP on every interface that is up with an address
+[[gnu::unused]]
 void gratuitous(void*) {
     for (netif* interface = netif_list; interface != nullptr; interface = interface->next) {
         if ((interface->flags & NETIF_FLAG_ETHARP)
@@ -1028,6 +584,7 @@ void gratuitous(void*) {
 }
 
 // an ARP request to the gateway of the default interface
+[[gnu::unused]]
 void probe(void*) {
     auto* netif = netif_default;
     if (netif && netif_is_up(netif) && !ip4_addr_isany_val(*netif_ip4_gw(netif))) {
@@ -1037,538 +594,283 @@ void probe(void*) {
 
 } // namespace lwip
 
-// The Wi-Fi link can stay associated while the IP stack receives nothing at all: 10.0.5.116 (Beken) 2026-11-07, first
-// boot after the Matter code was written by an install, DHCP done, then no ARP / ping answers for 28 min. The loop kept
-// running and feeding the watchdog, so nothing reset it; a deauth from the AP did. Every Interval, while connected with
-// an address, whatever arrived (ARP + IPv4 + IPv6 packets) is compared with the last check. Nothing new => an ARP
-// request goes to the gateway (answers within ms, so a healthy stack always sees traffic by the next check); Misses
-// checks in a row without a single received packet => restart. The same on every chip; it needs lwIP's receive
-// counters (LWIP_STATS): an lwIP built without them has no netwatch
-namespace netwatch {
-
-#if LWIP_STATS && (ETHARP_STATS || IP_STATS || IP6_STATS)
-constexpr auto Interval = espurna::duration::Seconds(20);
-constexpr int Misses = 6;
-
-uint32_t last_rx { 0 };
-int misses { 0 };
-timer::SystemTimer timer;
-
-uint32_t received() {
-    uint32_t out { 0 };
-#if ETHARP_STATS
-    out += lwip_stats.etharp.recv;
-#endif
-#if IP_STATS
-    out += lwip_stats.ip.recv;
-#endif
-#if IP6_STATS
-    out += lwip_stats.ip6.recv;
-#endif
-    return out;
-}
-
-bool addressed() {
-    const auto* netif = netif_default;
-    return netif && netif_is_up(netif) && !ip4_addr_isany_val(*netif_ip4_addr(netif));
-}
-
-void check();
-
-void setup() {
-    last_rx = received();
-    timer.repeat(Interval, check);
-}
-#else
-void setup() {
-}
-#endif
-
-} // namespace netwatch
-
-#if WIFI_GRATUITOUS_ARP_SUPPORT
-namespace garp {
-namespace build {
-
-static constexpr auto IntervalMin = duration::Milliseconds{ WIFI_GRATUITOUS_ARP_INTERVAL_MIN };
-static constexpr auto IntervalMax = duration::Milliseconds{ WIFI_GRATUITOUS_ARP_INTERVAL_MAX };
-
-} // namespace build
-
-namespace settings {
-namespace internal {
-
-template <typename T>
-T randomInterval(T minimum, T maximum) {
-    return T(::randomNumber(minimum.count(), maximum.count()));
-}
-
-duration::Milliseconds randomInterval() {
-    return randomInterval(build::IntervalMin, build::IntervalMax);
-}
-
-} // namespace internal
-
-duration::Milliseconds interval() {
-    static const auto defaultInterval = internal::randomInterval();
-    return getSetting("wifiGarpIntvl", defaultInterval);
-}
-
-} // namespace settings
-
-namespace internal {
-
-timer::SystemTimer timer;
-bool wait { false };
-
-} // namespace internal
-
-bool send() {
-    lwip::call(lwip::gratuitous);
-    return true;
-}
-
-bool wait() {
-    if (internal::wait) {
-        return true;
-    }
-
-    internal::wait = true;
-    return false;
-}
-
-void stop() {
-    internal::timer.stop();
-}
-
-void reset() {
-    internal::wait = false;
-}
-
-void start(duration::Milliseconds next) {
-    internal::timer.repeat(next, reset);
-}
-
-} // namespace garp
-#endif
-
-namespace scan {
-namespace settings {
-namespace keys {
-
-PROGMEM_STRING(Enabled, "wifiScan");
-
-} // namespace keys
-} // namespace settings
-
-using SsidInfosPtr = std::shared_ptr<SsidInfos>;
-
-using Success = std::function<void(const driver::ScanResult*)>;
-using Error = std::function<void(ScanError)>;
-
-struct Task {
-    Task() = delete;
-
-    Task(Success&& success, Error&& error) :
-        _success(std::move(success)),
-        _error(std::move(error))
-    {}
-
-    void success(const driver::ScanResult* info) {
-        _success(info);
-    }
-
-    void error(ScanError error) {
-        _error(error);
-    }
-
-private:
-    Success _success;
-    Error _error;
-};
-
-using TaskPtr = std::unique_ptr<Task>;
-
-namespace internal {
-
-bool flag { false };
-TaskPtr task;
-
-void stop() {
-    flag = false;
-    task = nullptr;
-}
-
-// Driver reports every network found, then the end of the scan (ref. driver::on_scan_result & on_scan_done)
-
-void result(const driver::ScanResult& info) {
-    if (task) {
-        task->success(&info);
-    }
-}
-
-void done(bool ok, size_t networks) {
-    if (!task) {
-        stop();
-        return;
-    }
-
-    if (!ok) {
-        task->error(ScanError::System);
-        stop();
-        return;
-    }
-
-    if (!networks) {
-        task->error(ScanError::NoNetworks);
-    }
-
-    stop();
-}
-
-} // namespace internal
-
-bool start(Success&& success, Error&& error) {
-    if (internal::flag) {
-        error(ScanError::Busy);
-        return false;
-    }
-
-    if (internal::task) {
-        error(ScanError::AlreadyScanning);
-        return false;
-    }
-
-    // scan parameters are the chip's, ref. driver::scan_start()
-    if (driver::scan_start()) {
-        internal::task = std::make_unique<Task>(std::move(success), std::move(error));
-        internal::flag = true;
-        return true;
-    }
-
-    error(ScanError::System);
-    return false;
-}
-
-// Alternative to the stock WiFi method, where we wait for the task to finish before returning
-bool wait(Success&& success, Error&& error) {
-    auto result = start(std::move(success), std::move(error));
-    while (internal::task) {
-        time::delay(duration::Milliseconds(100));
-        driver::loop();
-    }
-
-    return result;
-}
-
-// Another alternative to the stock WiFi method, return a shared Info list
-// Caller is expected to wait for the scan to complete before using the contents
-SsidInfosPtr ssidinfos() {
-    auto infos = std::make_shared<SsidInfos>();
-
-    start(
-        [infos](const driver::ScanResult* found) {
-            infos->emplace_front(*found);
-        },
-        [infos](ScanError) {
-            infos->clear();
-        });
-
-    return infos;
-}
-
-} // namespace scan
-
-bool enabled() {
-    return wifi::opmode() & wifi::OpmodeSta;
-}
-
-// XXX: WiFi.disconnect() also implicitly disables STA mode *and* erases the current STA config
-
-void disconnect() {
-    if (enabled()) {
-        driver::sta_disconnect();
-    }
-}
-
-// Some workarounds for built-in WiFi management:
-// - don't *intentionally* perist current SSID & PASS even when persistance is disabled from the Arduino Core side.
-// while this seems like a good idea in theory, we end up with a bunch of async actions coming our way.
-// - station disconnect events are linked with the connection routine as well, single WiFi::begin() may trigger up to
-// 3 events (as observed with `WiFi::waitForConnectResult()`) before the connection loop stops further attempts
-// - explicit OPMODE changes to both notify the userspace when the change actually happens (alternative is SDK event, but it is SYS context),
-// since *all* STA & AP start-up methods will implicitly change the mode (`WiFi.begin()`, `WiFi.softAP()`, `WiFi.config()`)
-
-void enable() {
-    ensure_opmode(opmode() | OpmodeSta);
-    driver::sta_prepare();
-}
-
-void disable() {
-    ensure_opmode(opmode() & ~OpmodeSta);
-}
-
 namespace connection {
 namespace internal {
 
-struct Task {
-    using Iterator = Networks::iterator;
-
-    Task() = delete;
-    Task(const Task&) = delete;
-    Task(Task&&) = delete;
-
-    Task(String hostname, Networks networks, int retries) :
-        _hostname(std::move(hostname)),
-        _networks(std::move(networks)),
-        _begin(_networks.begin()),
-        _end(_networks.end()),
-        _current(_begin),
-        _retries(retries),
-        _retry(_retries)
-    {}
-
-    bool empty() const {
-        return _networks.empty();
-    }
-
-    size_t count() const {
-        return _networks.size();
-    }
-
-    bool done() const {
-        return _current == _end;
-    }
-
-    bool next() {
-        if (!done()) {
-            if (--_retry < 0) {
-                _retry = _retries;
-                _current = std::next(_current);
-            }
-            return !done();
-        }
-
-        return false;
-    }
-
-    bool connect() const {
-        if (!done() && sta::enabled()) {
-            // Need to call this to cancel SDK tasks (previous scan, connection, etc.)
-            // Otherwise, it will fail the initial attempt and force a retry.
-            sta::disconnect();
-
-            // SDK sends EVENT_STAMODE_DISCONNECTED right after the disconnect() call, which is likely to happen
-            // after being connected and disconnecting for the first time. Not doing this will cause the connection loop
-            // to cancel the `wait` lock too early, forcing the Timeout state despite the EVENT_STAMODE_GOTIP coming in later.
-            // Allow the event to come in right now to allow `wifi_station_connect()` down below trigger a real one.
-            yield();
-
-            auto& network = *_current;
-            auto& ipsettings = network.ipSettings();
-
-            // what the SDK station config can hold, same limits on every chip
-            const auto& ssid = network.ssid();
-            if (!ssid.length() || (ssid.length() > driver::SsidMax)) {
-                return false;
-            }
-
-            const auto& passphrase = network.passphrase();
-            if (passphrase.length()
-                && ((passphrase.length() < driver::PassphraseMin)
-                 || (passphrase.length() > driver::PassphraseMax)))
-            {
-                return false;
-            }
-
-            return driver::sta_connect(driver::StaConnect{
-                .hostname = _hostname,
-                .ssid = network.ssid(),
-                .passphrase = network.passphrase(),
-                .dhcp = network.dhcp(),
-                .ip = ipsettings.ip(),
-                .netmask = ipsettings.netmask(),
-                .gateway = ipsettings.gateway(),
-                .dns = ipsettings.dns(),
-                .bssid = network.bssid(),
-                .channel = network.channel(),
-            });
-        }
-
-        return false;
-    }
-
-    Networks& networks() {
-        return _networks;
-    }
-
-private:
-    String _hostname;
-
-    Networks _networks;
-    Iterator _begin;
-    Iterator _end;
-    Iterator _current;
-
-    const int _retries;
-    int _retry;
-};
-
-using ActionPtr = void(*)();
-
-void action_next() {
-    action(Action::StationContinueConnect);
-}
-
-void action_new() {
-    action(Action::StationConnect);
-}
-
-sta::scan::SsidInfosPtr scanResults;
-Networks preparedNetworks;
+// the round: the networks in their order, ConnectionRetries attempts each
+size_t network { 0 };
+int retry { 0 };
+bool round { false };
 
 bool connected { false };
-bool wait { false };
+bool waiting { false };
 time::SystemClock::time_point attempt_at{};
 
-// the AP that dropped us (deauth / disassoc from its side, e.g. a usteer kick), not a lost signal or our own leave.
-// The SDK cannot answer 802.11v requests, so a steering AP kicks the station, and the next scan most likely finds
-// the same AP the strongest again: try it last for a while, so the station goes to another one instead of a kick loop
-static constexpr auto KickedTime = duration::Minutes{ WIFI_KICKED_TIME };
-Mac kicked{};
-time::SystemClock::time_point kicked_at;
+// this attempt went to the AP of the last connection (last_ap)
+bool fast { false };
 
 timer::SystemTimer timer;
+
+// the station is wanted (wifiStaMode on, WIFI.STA): a lost connection starts a new round
 bool persist { false };
 
-using TaskPtr = std::unique_ptr<Task>;
-TaskPtr task;
-
 } // namespace internal
-
-void persist(bool value) {
-    internal::persist = value;
-}
-
-bool persist() {
-    return internal::persist;
-}
-
-void stop() {
-    scan::internal::flag = false;
-    internal::scanResults = nullptr;
-    internal::preparedNetworks.clear();
-    internal::timer.stop();
-    internal::task.reset();
-}
-
-bool start(String&& hostname) {
-    if (!internal::task) {
-        internal::task = std::make_unique<internal::Task>(
-            std::move(hostname),
-            std::move(internal::preparedNetworks),
-            build::ConnectionRetries);
-        internal::timer.stop();
-        return true;
-    }
-
-    internal::preparedNetworks.clear();
-    return false;
-}
-
-void schedule(duration::Milliseconds next, internal::ActionPtr ptr) {
-    internal::timer.once(next, ptr);
-    DEBUG_MSG_P(PSTR("[WIFI] Next connection attempt in %u (ms)\n"), next.count());
-}
-
-void schedule_next() {
-    schedule(build::ConnectionInterval, internal::action_next);
-}
-
-void schedule_new(duration::Milliseconds next) {
-    schedule(next, internal::action_new);
-}
-
-void schedule_new() {
-    schedule_new(build::ReconnectionInterval);
-}
-
-bool next() {
-    return internal::task->next();
-}
-
-// the SDK does not always report the end of an attempt (Beken, ESP32 seen; the ESP8266 SDK may stall too): the
-// attempt ends here after this long, on every chip
-constexpr auto AttemptTimeout = duration::Milliseconds{ 15000 };
-
-bool connect() {
-    scan::internal::flag = true;
-    if (internal::task->connect()) {
-        internal::wait = true;
-        internal::attempt_at = time::SystemClock::now();
-        return true;
-    }
-
-    scan::internal::flag = false;
-
-    return false;
-}
-
-// Note that `wifi_station_get_connect_status()` may never actually change the state from CONNECTING when AP is not available.
-// Wait for the WiFi stack event instead (handled on setup with a static object) and continue after it is either connected or disconnected
-
-bool wait() {
-    if (internal::wait && ((time::SystemClock::now() - internal::attempt_at) >= AttemptTimeout)) {
-        DEBUG_MSG_P(PSTR("[WIFI] Connection attempt timed out\n"));
-        driver::sta_disconnect();
-        internal::wait = false;
-    }
-
-    return internal::wait;
-}
-
-// TODO(Core 2.7.4): `WiFi.isConnected()` is a simple `wifi_station_get_connect_status() == STATION_GOT_IP`,
-// Meaning, it will never detect link up / down updates when AP silently kills the connection or something else unexpected happens.
-// Running JustWiFi with autoconnect + reconnect enabled, it silently avoided the issue b/c the SDK reconnect routine disconnected the STA,
-// causing our state machine to immediately cancel it (since `WL_CONNECTED != WiFi.status()`) and then try to connect again using it's own loop.
-// We could either (* is used currently):
-// - (*) listen for the SDK event through the `WiFi.onStationModeDisconnected()`
-// - ( ) poll NETIF_FLAG_LINK_UP for the lwip's netif, since the SDK will bring the link down on disconnection
-//   find the `interface` in the `netif_list`, where `interface->num == STATION_IF`
-// - ( ) use lwip's netif event system from the recent Core, track UP and DOWN for a specific interface number
-//   this one is probably only used internally, thus should be treated as a private API
-// - ( ) poll whether `wifi_get_ip_info(STATION_IF, &ip);` is set to something valid
-//   (tuple of ip, gw and mask)
-// - ( ) poll `WiFi.localIP().isSet()`
-//   (will be unset when the link is down)
-
-// placing status into a simple bool to avoid extracting ip info every time someone needs to check the connection
 
 bool connected() {
     return internal::connected;
 }
 
 bool connecting() {
-    return static_cast<bool>(internal::task);
+    return internal::round;
 }
 
-bool lost() {
-    static bool last { internal::connected };
+namespace internal {
 
-    if (internal::connected != last) {
-        last = internal::connected;
-        return !last;
+// WIFI.DEBUG
+struct State {
+    bool round;
+    size_t network;
+    int retry;
+    bool waiting;
+    uint32_t waited;
+    bool connected;
+    bool persist;
+};
+
+State state() {
+    return State{
+        .round = round,
+        .network = network,
+        .retry = retry,
+        .waiting = waiting,
+        .waited = waiting ? static_cast<uint32_t>((time::SystemClock::now() - attempt_at).count()) : 0u,
+        .connected = connected,
+        .persist = persist,
+    };
+}
+
+} // namespace internal
+
+// the SDK does not always report the end of an attempt (Beken, ESP32 seen; the ESP8266 SDK may stall too): the
+// attempt ends here after this long, on every chip
+constexpr auto AttemptTimeout = duration::Milliseconds{ 15000 };
+
+void stop() {
+    internal::timer.stop();
+    internal::round = false;
+    internal::waiting = false;
+}
+
+void schedule(duration::Milliseconds next, void (*callback)()) {
+    internal::timer.once(next, callback);
+    DEBUG_MSG_P(PSTR("[WIFI] Next connection attempt in %u (ms)\n"),
+        static_cast<unsigned>(next.count()));
+}
+
+void start();
+
+// the AP of the last connection in the RTC memory (it survives a reset, not a power cut): the first attempt of the
+// network goes straight to its BSSID and channel, no scan of every channel; a failed one forgets it
+namespace last_ap {
+
+uint32_t hash(StringView ssid) {
+    uint32_t out = 2166136261u;
+    for (const auto c : ssid) {
+        out = (out ^ static_cast<uint8_t>(c)) * 16777619u;
+    }
+    return out ? out : 1u;
+}
+
+bool take(StringView ssid, Mac& bssid, uint8_t& channel) {
+    if (!rtcmemStatus() || (Rtcmem->wifi.ssid != hash(ssid))) {
+        return false;
+    }
+    const uint32_t lo = Rtcmem->wifi.bssid_lo;
+    const uint32_t hi = Rtcmem->wifi.bssid_hi;
+    if ((hi & 0x80000000u) || !((hi >> 16) & 0xffu)) {
+        return false;
+    }
+    for (size_t index = 0; index < 4; ++index) {
+        bssid[index] = static_cast<uint8_t>(lo >> (index * 8));
+    }
+    bssid[4] = static_cast<uint8_t>(hi);
+    bssid[5] = static_cast<uint8_t>(hi >> 8);
+    channel = static_cast<uint8_t>(hi >> 16);
+    return true;
+}
+
+void keep(StringView ssid) {
+    Mac bssid{};
+    AUTH_MODE authmode{};
+    driver::sta_info(bssid, authmode);
+    const auto channel = driver::sta_channel();
+    if (!channel) {
+        return;
+    }
+    uint32_t lo = 0;
+    for (size_t index = 0; index < 4; ++index) {
+        lo |= static_cast<uint32_t>(bssid[index]) << (index * 8);
+    }
+    Rtcmem->wifi.ssid = hash(ssid);
+    Rtcmem->wifi.bssid_lo = lo;
+    Rtcmem->wifi.bssid_hi = static_cast<uint32_t>(bssid[4]) | (static_cast<uint32_t>(bssid[5]) << 8)
+        | (static_cast<uint32_t>(channel) << 16);
+}
+
+void forget() {
+    Rtcmem->wifi.ssid = 0;
+    Rtcmem->wifi.bssid_hi = 0x80000000u;
+}
+
+} // namespace last_ap
+
+// the attempt failed: the same network again, the next one, or the end of the round
+void failed();
+
+// one attempt with the current network of the round, the result is the driver's event
+void attempt() {
+    if (!internal::round || internal::connected) {
+        return;
     }
 
-    return false;
+    const auto id = internal::network;
+    const auto ssid = settings::ssid(id);
+    const auto passphrase = settings::passphrase(id);
+
+    // what the SDK station config can hold, same limits on every chip
+    const bool valid = ssid.length() && (ssid.length() <= driver::SsidMax)
+        && (!passphrase.length()
+            || ((passphrase.length() >= driver::PassphraseMin)
+             && (passphrase.length() <= driver::PassphraseMax)));
+
+    if (valid) {
+        // cancel what the SDK still does (a scan, an attempt): its disconnect event comes before the new attempt
+        driver::sta_disconnect();
+        espurna::time::yield();
+
+        const auto ip = settings::ip(id);
+        const bool dhcp = !driver::ip_set(ip);
+        const auto netmask = dhcp ? espurna::Ip4() : settings::netmask(id);
+        const auto gateway = dhcp ? espurna::Ip4() : settings::gateway(id);
+        const auto dns = dhcp ? espurna::Ip4() : settings::dns(id);
+
+        auto channel = static_cast<uint8_t>(settings::channel(id));
+        auto bssid = channel ? settings::bssid(id) : Mac{};
+        internal::fast = false;
+        if (!channel && !internal::retry && last_ap::take(ssid, bssid, channel)) {
+            internal::fast = true;
+        }
+
+        const auto hostname = espurna::string(systemHostname());
+        if (driver::sta_connect(driver::StaConnect{
+                .hostname = hostname,
+                .ssid = ssid,
+                .passphrase = passphrase,
+                .dhcp = dhcp,
+                .ip = ip,
+                .netmask = netmask,
+                .gateway = gateway,
+                .dns = dns,
+                .bssid = bssid,
+                .channel = channel,
+            }))
+        {
+            internal::waiting = true;
+            internal::attempt_at = time::SystemClock::now();
+            publish(Event::StationConnecting);
+            return;
+        }
+    }
+
+    // a network that cannot be tried is passed at once
+    internal::retry = build::ConnectionRetries;
+    failed();
 }
 
-void prepare(Networks&& networks) {
-    std::swap(internal::preparedNetworks, networks);
+void failed() {
+    if (internal::fast) {
+        internal::fast = false;
+        last_ap::forget();
+    }
+
+    if (internal::round) {
+        if (++internal::retry < build::ConnectionRetries) {
+            schedule(build::ConnectionInterval, attempt);
+            publish(Event::StationTimeout);
+            return;
+        }
+
+        internal::retry = 0;
+        if (++internal::network < countNetworks()) {
+            schedule(build::ConnectionInterval, attempt);
+            publish(Event::StationTimeout);
+            return;
+        }
+    }
+
+    // no connection after the round: the fallback AP (StationReconnect), another round later
+    stop();
+    if (internal::persist && enabled()) {
+        schedule(build::ReconnectionInterval, start);
+    }
+
+    publish(Event::StationReconnect);
 }
 
-bool prepared() {
-    return internal::preparedNetworks.size() > 0;
+// a new round from the first network
+void start() {
+    if (!enabled() || !countNetworks()) {
+        stop();
+        publish(Event::StationReconnect);
+        return;
+    }
+
+    internal::network = 0;
+    internal::retry = 0;
+    internal::round = true;
+    attempt();
+}
+
+void persist(bool value) {
+    internal::persist = value;
+}
+
+// the driver's events, always from the loop context
+
+void disconnected() {
+    const bool was = internal::connected;
+    internal::connected = false;
+
+    if (internal::waiting) {
+        internal::waiting = false;
+        failed();
+        return;
+    }
+
+    if (was) {
+        publish(Event::StationDisconnected);
+        if (internal::persist && enabled()) {
+            schedule(build::ConnectionInterval, start);
+        }
+    }
+}
+
+void got_ip() {
+    internal::waiting = false;
+    internal::connected = true;
+    internal::fast = false;
+    last_ap::keep(settings::ssid(internal::network));
+    stop();
+    publish(Event::StationConnected);
+}
+
+void loop() {
+    if (internal::waiting && ((time::SystemClock::now() - internal::attempt_at) >= AttemptTimeout)) {
+        DEBUG_MSG_P(PSTR("[WIFI] Connection attempt timed out\n"));
+        internal::waiting = false;
+        driver::sta_disconnect();
+        failed();
+    }
 }
 
 } // namespace connection
@@ -1581,9 +883,57 @@ bool connecting() {
     return connection::connecting();
 }
 
-#if LWIP_STATS && (ETHARP_STATS || IP_STATS || IP6_STATS)
-void netwatch::check() {
-    const auto now = received();
+// The Wi-Fi link can stay associated while the IP stack receives nothing at all: 10.0.5.116 (Beken) 2026-11-07, first
+// boot after the Matter code was written by an install, DHCP done, then no ARP / ping answers for 28 min. The loop kept
+// running and feeding the watchdog, so nothing reset it; a deauth from the AP did. Every Interval, while connected with
+// an address, whatever arrived (ARP + IPv4 + IPv6 packets) is compared with the last check. Nothing new => an ARP
+// request goes to the gateway (answers within ms, so a healthy stack always sees traffic by the next check); Misses
+// checks in a row without a single received packet => restart. The packets are counted at the input of the default
+// interface (its netif->input wrapped, every driver hands frames through it): lwIP's own counters (LWIP_STATS) are off
+// in the ESP8266 / ESP32 SDK configs, and this costs 8 bytes instead of their table
+namespace netwatch {
+
+constexpr auto Interval = espurna::duration::Seconds(20);
+constexpr int Misses = 6;
+
+volatile uint32_t rx { 0 };
+netif_input_fn original { nullptr };
+
+uint32_t last_rx { 0 };
+int misses { 0 };
+timer::SystemTimer timer;
+
+// the driver's context (Wi-Fi task / tcpip thread): one aligned word, read by the loop
+err_t counted(pbuf* p, netif* interface) {
+    rx = rx + 1;
+    return original(p, interface);
+}
+
+// lwIP context: the default interface gets the wrapper (again after the SDK re-adds it); another input function than
+// the one already wrapped is left alone
+void wrap(void*) {
+    auto* interface = netif_default;
+    if (!interface || !interface->input || (interface->input == counted)) {
+        return;
+    }
+
+    if (original && (interface->input != original)) {
+        return;
+    }
+
+    original = interface->input;
+    interface->input = counted;
+}
+
+bool addressed() {
+    const auto* netif = netif_default;
+    return netif && netif_is_up(netif) && !ip4_addr_isany_val(*netif_ip4_addr(netif));
+}
+
+void check() {
+    lwip::call(wrap);
+
+    const uint32_t now = rx;
     if (!connected() || !addressed() || (now != last_rx)) {
         last_rx = now;
         misses = 0;
@@ -1603,324 +953,159 @@ void netwatch::check() {
         static_cast<unsigned long>(Interval.count() * misses));
     lwip::call(lwip::probe);
 }
+
+void setup() {
+    timer.repeat(Interval, check);
+}
+
+} // namespace netwatch
+
+#if WIFI_GRATUITOUS_ARP_SUPPORT
+// ref: https://github.com/xoseperez/espurna/pull/1877#issuecomment-525612546
+// Periodically send out ARP, even if no one asked
+namespace garp {
+namespace build {
+
+static constexpr auto IntervalMin = duration::Milliseconds{ WIFI_GRATUITOUS_ARP_INTERVAL_MIN };
+static constexpr auto IntervalMax = duration::Milliseconds{ WIFI_GRATUITOUS_ARP_INTERVAL_MAX };
+
+} // namespace build
+
+duration::Milliseconds interval() {
+    static const auto defaultInterval = duration::Milliseconds(
+        ::randomNumber(build::IntervalMin.count(), build::IntervalMax.count()));
+    return getSetting("wifiGarpIntvl", defaultInterval);
+}
+
+timer::SystemTimer timer;
+
+void send() {
+    if (connected()) {
+        lwip::call(lwip::gratuitous);
+    }
+}
+
+void configure() {
+    const auto value = interval();
+    if (value.count()) {
+        timer.repeat(value, send);
+    } else {
+        timer.stop();
+    }
+}
+
+} // namespace garp
 #endif
 
-bool scanning() {
-    return static_cast<bool>(scan::internal::task);
-}
-
-// 802.11 reason codes, same values with every SDK
-static constexpr int ReasonUnspecified { 1 };
-static constexpr int ReasonAssocTooMany { 5 };
-
-// note that pass a simple request for state change, not the reason behind it
-// TODO 'lock' / 'trigger' object instead of multiple flags
-void disconnected(const Mac& bssid, int reason) {
-    // only an intentional drop by the AP counts. usteer kicks with 'AP busy' (its default load_kick_reason_code 5),
-    // manual hostapd del_client is 'unspecified'. AP restart (not authed / not assoced / leaving), inactivity and
-    // handshake failures say nothing about the AP itself
-    if (connection::internal::connected
-        && ((reason == ReasonAssocTooMany)
-         || (reason == ReasonUnspecified)))
-    {
-        connection::internal::kicked = bssid;
-        connection::internal::kicked_at = time::SystemClock::now();
-        DEBUG_MSG_P(PSTR("[WIFI] Dropped by %s (reason %u), tried last for %u min\n"),
-            debug::mac(connection::internal::kicked).c_str(), static_cast<unsigned>(reason),
-            static_cast<unsigned>(connection::internal::KickedTime.count()));
-    }
-    connection::internal::wait = false;
-    connection::internal::connected = false;
-}
-
-void got_ip() {
-    connection::internal::wait = false;
-    connection::internal::connected = true;
-}
-
-void init() {
-    // event handlers, ref. driver::on_station_disconnected & on_station_got_ip
-    disconnect();
-    disable();
-    yield();
-}
-
-void toggle() {
-    auto current = enabled();
-    connection::persist(!current);
-    action(current
-        ? Action::StationDisconnect
-        : Action::StationConnect);
-}
-
+// on demand only (WebUI, terminal, the setup page): the connection itself needs no scan of ours
 namespace scan {
-namespace build {
 
-constexpr bool enabled() {
-    return 1 == WIFI_SCAN_NETWORKS;
-}
-
-} // namespace build
-
-namespace settings {
-
-bool enabled() {
-    return getSetting(keys::Enabled, build::enabled());
-}
-
-namespace query {
-
-EXACT_VALUE(enabled, settings::enabled)
-
-} // namespace query
-} // namespace settings
-
-namespace periodic {
-namespace build {
-
-static constexpr auto Interval = duration::Milliseconds{ WIFI_SCAN_RSSI_CHECK_INTERVAL };
-static constexpr auto Checks = int8_t{ WIFI_SCAN_RSSI_CHECKS };
-
-constexpr int8_t threshold() {
-    return WIFI_SCAN_RSSI_THRESHOLD;
-}
-
-constexpr int8_t delta() {
-    return WIFI_ROAM_RSSI_DELTA;
-}
-
-} // namespace build
-
-namespace settings {
-namespace keys {
-
-PROGMEM_STRING(Threshold, "wifiScanRssi");
-PROGMEM_STRING(Delta, "wifiRoamDelta");
-
-} // namespace keys
-
-int8_t threshold() {
-    return getSetting(FPSTR(keys::Threshold), build::threshold());
-}
-
-int8_t delta() {
-    return std::clamp(
-        getSetting(FPSTR(keys::Delta), build::delta()),
-        int8_t{ 1 }, int8_t{ 40 });
-}
-
-namespace query {
-
-EXACT_VALUE(threshold, settings::threshold)
-EXACT_VALUE(delta, settings::delta)
-
-} // namespace query
-} // namespace settings
+using Found = std::function<void(const driver::ScanResult&)>;
+using Done = std::function<void(const char* error)>;
 
 namespace internal {
 
-int8_t threshold { build::threshold() };
-int8_t counter { build::Checks };
-timer::SystemTimer timer;
-
-// every scan that found nothing better makes the next one come later, up to MaxStays times the usual
-// (3, 6, ... 15 min with the defaults). weak link with no better AP around should not keep scanning
-uint8_t stays { 0 };
-constexpr uint8_t MaxStays { 4 };
-
-int8_t checks() {
-    return build::Checks * (1 + stays);
-}
-
-void task() {
-    if (!sta::connected()) {
-        counter = checks();
-        return;
-    }
-
-    auto rssi = sta::rssi();
-    if (rssi > threshold) {
-        counter = checks();
-    } else if (rssi < threshold) {
-        if (counter < 0) {
-            return;
-        }
-
-        if (!--counter) {
-            action(Action::StationTryConnectBetter);
-        }
-    }
-}
-
-void start() {
-    counter = checks();
-    timer.repeat(build::Interval, task);
-}
-
-void stop() {
-    counter = checks();
-    timer.stop();
-}
+Found found;
+Done done;
 
 } // namespace internal
 
-void threshold(int8_t value) {
-    internal::threshold = value;
+bool scanning() {
+    return static_cast<bool>(internal::done);
 }
 
-void stop() {
-    internal::stop();
-}
-
-// new connection
-void start() {
-    internal::stays = 0;
-    internal::start();
-}
-
-// still on the same AP after looking for a better one
-void stayed() {
-    if (internal::stays < internal::MaxStays) {
-        ++internal::stays;
+bool start(Found&& found, Done&& done) {
+    if (scanning()) {
+        done(PSTR("Scan already in progress"));
+        return false;
     }
 
-    internal::start();
-}
-
-bool check() {
-    if (internal::counter <= 0) {
-        internal::counter = internal::checks();
-        return true;
+    if (!enabled()) {
+        done(PSTR("Station is off"));
+        return false;
     }
 
-    return false;
+    if (!driver::scan_start()) {
+        done(PSTR("System unable to start the scan"));
+        return false;
+    }
+
+    internal::found = std::move(found);
+    internal::done = std::move(done);
+    return true;
 }
 
-} // namespace periodic
+// waits for the end of the scan (the terminal command)
+bool wait(Found&& found, Done&& done) {
+    const auto out = start(std::move(found), std::move(done));
+    while (scanning()) {
+        time::delay(duration::Milliseconds(100));
+        driver::loop();
+    }
+
+    return out;
+}
+
+void result(const driver::ScanResult& info) {
+    if (internal::found) {
+        internal::found(info);
+    }
+}
+
+void finished(bool ok, size_t count) {
+    auto done = std::move(internal::done);
+    internal::found = nullptr;
+    internal::done = nullptr;
+    if (done) {
+        done(!ok ? PSTR("System unable to complete the scan")
+            : !count ? PSTR("No networks")
+            : nullptr);
+    }
+}
+
 } // namespace scan
 
-namespace connection {
-
-// After scan attempt, generate a new networks list based on the results sorted by the rssi value.
-// For the initial connection, add every matching network with the scan result bssid and channel info.
-// For the attempt to find a better network, filter out every network with worse than the current network's rssi
-
-void scanNetworks() {
-    internal::scanResults = sta::scan::ssidinfos();
+void stop() {
+    connection::stop();
+    if (enabled()) {
+        disconnect();
+        disable();
+        publish(Event::Mode);
+    }
 }
 
-bool suitableNetwork(const Network& network, const SsidInfo& ssidInfo) {
-    return (ssidInfo.ssid() == network.ssid())
-        && ((ssidInfo.info().authmode() != driver::AuthOpen)
-                ? network.passphrase().length()
-                : !network.passphrase().length());
-}
-
-bool kicked(const Mac& bssid) {
-    return (internal::KickedTime.count() > 0)
-        && (bssid == internal::kicked)
-        && (time::SystemClock::now() - internal::kicked_at < internal::KickedTime);
-}
-
-bool scanProcessResults(int8_t threshold) {
-    if (internal::scanResults) {
-        decltype(internal::scanResults) results;
-        std::swap(results, internal::scanResults);
-        results->sort();
-
-        if (threshold < 0) {
-            results->remove_if(
-                [threshold](const SsidInfo& result) {
-                    return result.info().rssi() < threshold;
-                });
-        }
-
-        decltype(internal::preparedNetworks) networks;
-        std::swap(networks, internal::preparedNetworks);
-
-        // strongest first. The AP that kicked us goes behind the other usable ones, but not behind the ones weaker than
-        // the roaming threshold (wifiScanRssi): a kick (or, on Beken, any drop by the AP: its SDK gives no reason) must not
-        // send the station from a -30 dBm AP to a -84 dBm one (10.0.5.139, 2026-11-09), it tries the kicker first then
-        const auto usable = scan::periodic::settings::threshold();
-
-        decltype(internal::preparedNetworks) sortedNetworks;
-        decltype(internal::preparedNetworks) kickedNetworks;
-        decltype(internal::preparedNetworks) weakNetworks;
-
-        for (auto& result : *results) {
-            for (auto& network : networks) {
-                if (suitableNetwork(network, result)) {
-                    const auto& info = result.info();
-                    auto& out = kicked(info.bssid())
-                        ? kickedNetworks
-                        : (info.rssi() < usable)
-                            ? weakNetworks
-                            : sortedNetworks;
-                    out.emplace_back(network, info.bssid(), info.channel());
-                    break;
-                }
-            }
-        }
-
-        for (auto* list : {&kickedNetworks, &weakNetworks}) {
-            for (auto& network : *list) {
-                sortedNetworks.push_back(std::move(network));
-            }
-        }
-
-        std::swap(sortedNetworks, internal::preparedNetworks);
-        internal::scanResults.reset();
+void begin() {
+    if (!enabled()) {
+        enable();
+        publish(Event::Mode);
     }
 
-    return internal::preparedNetworks.size() > 0;
-}
-
-// Looking for a better network while connected. Only another AP at least wifiRoamDelta stronger
-// is worth the reconnection, current one (or a similarly weak one) would make us reconnect on every check.
-// Neither is the AP that recently kicked us, it would most likely do that again
-bool scanProcessResults(const Info& info) {
-    if (internal::scanResults) {
-        internal::scanResults->remove_if(
-            [&](const SsidInfo& result) {
-                return (result.info().bssid() == info.bssid())
-                    || kicked(result.info().bssid());
-            });
+    if (!connected() && !connecting()) {
+        connection::start();
     }
+}
 
-    const auto threshold = std::min(
-        info.rssi() + scan::periodic::settings::delta(), -1);
-    if (scanProcessResults(static_cast<int8_t>(threshold))) {
-        return true;
+void toggle() {
+    const bool on = enabled();
+    connection::persist(!on);
+    if (on) {
+        stop();
+    } else {
+        begin();
     }
-
-    DEBUG_MSG_P(PSTR("[WIFI] No other AP with RSSI %d or better (current %d), staying\n"),
-        threshold, info.rssi());
-    return false;
 }
-
-bool scanProcessResults() {
-    return scanProcessResults(0);
-}
-
-} // namespace connection
 
 void configure() {
-    auto enabled = (StaMode::Enabled == sta::settings::mode());
-    connection::persist(enabled);
-    action(enabled
-        ? Action::StationConnect
-        : Action::StationDisconnect);
-
-    scan::periodic::threshold(
-        scan::periodic::settings::threshold());
+    const bool on = (StaMode::Enabled == settings::mode());
+    connection::persist(on);
+    if (on) {
+        begin();
+    } else {
+        stop();
+    }
 
 #if WIFI_GRATUITOUS_ARP_SUPPORT
-    auto interval = garp::settings::interval();
-    if (interval.count()) {
-        garp::start(interval);
-    } else {
-        garp::stop();
-    }
+    garp::configure();
 #endif
 }
 
@@ -1944,18 +1129,10 @@ constexpr StringView ssid() {
     return ApSsid;
 }
 
-constexpr bool hasSsid() {
-    return ssid().length() > 0;
-}
-
 PROGMEM_STRING(ApPass, WIFI_AP_PASS);
 
 constexpr StringView passphrase() {
     return ApPass;
-}
-
-constexpr bool hasPassphrase() {
-    return passphrase().length() > 0;
 }
 
 constexpr bool captive() {
@@ -1970,49 +1147,43 @@ constexpr uint8_t channel() {
     return WIFI_AP_CHANNEL;
 }
 
+constexpr auto FallbackTimeout = duration::Milliseconds{ WIFI_FALLBACK_TIMEOUT };
+
 } // namespace build
 
 namespace settings {
 namespace keys {
 
 PROGMEM_STRING(Mode, "wifiApMode");
-
 PROGMEM_STRING(Ssid, "wifiApSsid");
 PROGMEM_STRING(Passphrase, "wifiApPass");
-
 PROGMEM_STRING(Channel, "wifiApChan");
-
-[[gnu::unused]] PROGMEM_STRING(Captive, "wifiApCaptive");
+PROGMEM_STRING(Captive, "wifiApCaptive");
 
 } // namespace keys
 
 ApMode mode() {
-    return getSetting(FPSTR(keys::Mode), build::mode());
+    return getSetting(keys::Mode, build::mode());
 }
 
-String defaultSsid() {
-    return String(systemIdentifier());
-}
-
-String ssid() {
-    return getSetting(FPSTR(keys::Ssid), build::hasSsid()
+espurna::string ssid() {
+    return getSetting(keys::Ssid, build::ssid().length()
         ? build::ssid()
-        : StringView(systemHostname()));
+        : espurna::StringView(systemHostname()));
 }
 
-String passphrase() {
-    return getSetting(FPSTR(keys::Passphrase), build::hasPassphrase()
+espurna::string passphrase() {
+    return getSetting(keys::Passphrase, build::passphrase().length()
         ? build::passphrase()
-        : StringView(systemPassword()));
+        : espurna::StringView(systemPassword()));
 }
 
 int8_t channel() {
-    return getSetting(FPSTR(keys::Channel), build::channel());
+    return getSetting(keys::Channel, build::channel());
 }
 
-[[gnu::unused]]
 bool captive() {
-    return getSetting(FPSTR(keys::Captive), build::captive());
+    return getSetting(keys::Captive, build::captive());
 }
 
 namespace query {
@@ -2031,142 +1202,112 @@ EXACT_VALUE(mode, ap::settings::mode)
 
 namespace internal {
 
-// when the AP was started, ref. fallback::check()
+// when the AP was started, ref. check()
 time::SystemClock::time_point started_at{};
-
-void start(String&& defaultSsid, String&& ssid, String&& passphrase, uint8_t channel) {
-    // Always generate valid AP config, even when user-provided credentials fail to comply with the requirements
-    // TODO: configuration routine depends on a lwip dhcpserver, which is a custom module made specifically for the ESP.
-    // while it's possible to hijack this and control the process manually, right now it's easier to delegate this to the Core helpers
-    // (plus, it makes it not compatible with the esp-idf stack anyway, since wifi_softap_dhcps_... calls don't do anything here)
-
-    const char* apSsid {
-        (ssid.length() && (ssid.length() < build::SsidMax))
-        ? ssid.c_str() : defaultSsid.c_str() };
-
-    const char* apPass {
-        (passphrase.length() \
-         && (passphrase.length() >= build::PassphraseMin) \
-         && (passphrase.length() < build::PassphraseMax))
-        ? passphrase.c_str() : nullptr };
-
-    driver::ap_start(apSsid, apPass, channel);
-    started_at = time::SystemClock::now();
-}
 
 } // namespace internal
 
-IPAddress ip() {
+espurna::Ip4 ip() {
     return driver::ap_ip();
-}
-
-void enable() {
-    ensure_opmode(opmode() | OpmodeAp);
-}
-
-void disable() {
-    ensure_opmode(opmode() & ~OpmodeAp);
 }
 
 bool enabled() {
     return opmode() & OpmodeAp;
 }
 
-void toggle() {
-    action(ap::enabled()
-        ? Action::AccessPointStop
-        : Action::AccessPointStart);
-}
-
-// the captive portal DNS is the captive module's (captive.cpp), it follows the AP through Event::Mode
-void stop() {
-    driver::ap_stop();
-}
-
-void start(String&& defaultSsid, String&& ssid, String&& passphrase, uint8_t channel) {
-    internal::start(std::move(defaultSsid), std::move(ssid),
-        std::move(passphrase), channel);
+size_t stations() {
+    return driver::ap_stations();
 }
 
 SoftApNetwork current() {
     return driver::ap_current();
 }
 
-void init() {
-    disable();
+// Always a valid AP config, even when the configured credentials do not fit the SDK limits
+void start() {
+    if (enabled()) {
+        return;
+    }
+
+    ensure_opmode(opmode() | OpmodeAp);
+
+    const auto ssid = settings::ssid();
+    const auto defaultSsid = espurna::string(systemIdentifier());
+    const auto passphrase = settings::passphrase();
+
+    const char* apSsid {
+        (ssid.length() && (ssid.length() < build::SsidMax))
+        ? ssid.c_str() : defaultSsid.c_str() };
+
+    const char* apPass {
+        (passphrase.length()
+         && (passphrase.length() >= build::PassphraseMin)
+         && (passphrase.length() < build::PassphraseMax))
+        ? passphrase.c_str() : nullptr };
+
+    driver::ap_start(apSsid, apPass, settings::channel());
+    internal::started_at = time::SystemClock::now();
+    publish(Event::Mode);
 }
 
-size_t stations() {
-    return driver::ap_stations();
+// the captive portal DNS is the captive module's (captive.cpp), it follows the AP through Event::Mode
+void stop() {
+    if (!enabled()) {
+        return;
+    }
+
+    driver::ap_stop();
+    ensure_opmode(opmode() & ~OpmodeAp);
+    publish(Event::Mode);
+}
+
+void toggle() {
+    if (enabled()) {
+        stop();
+    } else {
+        start();
+    }
+}
+
+// The fallback AP goes away once the station is connected and nobody uses the AP: not sooner than one timeout after
+// its start (nobody had a chance to join it yet; the check also runs on every WebSocket disconnect, ws_server.cpp)
+void check() {
+    if (enabled()
+        && (ApMode::Fallback == settings::mode())
+        && sta::connected()
+        && !stations()
+        && (time::SystemClock::now() - internal::started_at >= build::FallbackTimeout))
+    {
+        stop();
+    }
 }
 
 namespace fallback {
-namespace build {
 
-constexpr auto Timeout = duration::Milliseconds{ WIFI_FALLBACK_TIMEOUT };
-
-} // namespace build
-
-namespace internal {
-
-auto timeout = build::Timeout;
-bool enabled { false };
 timer::SystemTimer timer;
-
-} // namespace internal
-
-void enable() {
-    internal::enabled = true;
-}
-
-void disable() {
-    internal::enabled = false;
-}
-
-bool enabled() {
-    return internal::enabled;
-}
-
-void remove() {
-    internal::timer.stop();
-}
-
-void check();
-
-void schedule() {
-    internal::timer.repeat(
-        internal::timeout,
-        []() {
-            action(Action::AccessPointFallbackCheck);
-        });
-}
-
-// Nobody had a chance to join an AP that just started: the check also runs on every WebSocket disconnect (ws.cpp),
-// e.g. right after WIFI.AP was typed into a WebUI terminal, and the AP start itself drops the STA side clients of some
-// chips. The AP stays at least one fallback interval
-void check() {
-    if (ap::enabled()
-        && sta::connected()
-        && !ap::stations()
-        && (time::SystemClock::now() - ap::internal::started_at >= build::Timeout))
-    {
-        action(Action::AccessPointStop);
-        return;
-    }
-}
 
 } // namespace fallback
 
 void configure() {
-    auto current = settings::mode();
-    if (ApMode::Fallback == current) {
-        fallback::enable();
-    } else {
-        fallback::disable();
-        fallback::remove();
-        action((ApMode::Enabled == current)
-                ? Action::AccessPointStart
-                : Action::AccessPointStop);
+    switch (settings::mode()) {
+    case ApMode::Enabled:
+        fallback::timer.stop();
+        start();
+        break;
+    case ApMode::Disabled:
+        fallback::timer.stop();
+        stop();
+        break;
+    case ApMode::Fallback:
+        fallback::timer.repeat(build::FallbackTimeout, check);
+        break;
+    }
+}
+
+// the station got no connection in a whole round
+void station_lost() {
+    if (ApMode::Fallback == settings::mode()) {
+        start();
     }
 }
 
@@ -2182,16 +1323,13 @@ STRING_VIEW_INLINE(Prefix, "wifi");
 
 namespace query {
 
-static constexpr std::array<espurna::settings::query::Setting, 12> Settings PROGMEM {
+static constexpr std::array<espurna::settings::query::Setting, 9> Settings PROGMEM {
     {{ap::settings::keys::Ssid, ap::settings::ssid},
      {ap::settings::keys::Passphrase, ap::settings::passphrase},
      {ap::settings::keys::Captive, ap::settings::query::internal::captive},
      {ap::settings::keys::Channel, ap::settings::query::internal::channel},
      {ap::settings::keys::Mode, ap::settings::query::internal::mode},
      {sta::settings::keys::Mode, sta::settings::query::internal::mode},
-     {sta::scan::settings::keys::Enabled, sta::scan::settings::query::enabled},
-     {sta::scan::periodic::settings::keys::Threshold, sta::scan::periodic::settings::query::threshold},
-     {sta::scan::periodic::settings::keys::Delta, sta::scan::periodic::settings::query::delta},
      {settings::keys::TxPower, query::internal::txPower},
      {settings::keys::Sleep, query::internal::sleep},
      {settings::keys::Boot, query::internal::bootMode},
@@ -2233,15 +1371,60 @@ void setup() {
 
 } // namespace query
 
+void migrate(int version) {
+    if (version < 5) {
+        moveSetting("apmode", ap::settings::keys::Mode);
+    }
+}
+
 void configure() {
+    if (!internal::enabled) {
+        return;
+    }
+
     ap::configure();
     sta::configure();
+
+    // the station is off or has no networks to try: the fallback AP right away
+    if (!sta::connected() && !sta::connecting()) {
+        ap::station_lost();
+    }
 
     sleep_type(settings::sleep());
     tx_power(settings::txPower());
 }
 
 } // namespace settings
+
+void turn_on(bool boot) {
+    if (internal::enabled) {
+        return;
+    }
+
+    internal::enabled = true;
+#if SYSTEM_CHECK_ENABLED
+    // the board restarted several times in a row: only the AP, the station could be the cause
+    if (boot && !systemCheck()) {
+        ap::start();
+        return;
+    }
+#endif
+    settings::configure();
+}
+
+void turn_off() {
+    if (!internal::enabled) {
+        return;
+    }
+
+    ap::fallback::timer.stop();
+    sta::connection::stop();
+    sta::disconnect();
+    ap::stop();
+    ensure_opmode(OpmodeNull);
+    internal::enabled = false;
+    publish(Event::Mode);
+}
 
 // -----------------------------------------------------------------------------
 // TERMINAL
@@ -2254,9 +1437,8 @@ namespace commands {
 PROGMEM_STRING(Stations, "WIFI.STATIONS");
 
 void stations(::terminal::CommandContext&& ctx) {
-    const auto stations = driver::print_stations(ctx.output);
-    if (!stations) {
-        terminalError(ctx, F("No stations connected"));
+    if (!driver::print_stations(ctx.output)) {
+        terminalError(ctx, "No stations connected");
         return;
     }
 
@@ -2280,34 +1462,25 @@ void wifi(::terminal::CommandContext&& ctx) {
             return;
         }
 
-        terminalError(ctx, F("Network ID out of configurable range"));
+        terminalError(ctx, "Network ID out of configurable range");
         return;
     }
 
     const auto mode = wifi::opmode();
-    ctx.output.printf_P(PSTR("OPMODE: %s\n"),
-            debug::opmode(mode).c_str());
+    ctx.output.printf_P(PSTR("OPMODE: %s\n"), debug::opmode(mode));
 
     const auto sleep = wifi::sleep_type();
     if (sleep != NONE_SLEEP_T) {
-        ctx.output.printf_P(PSTR("SLEEP: %s\n"),
-            debug::sleep_type(sleep).c_str());
+        ctx.output.printf_P(PSTR("SLEEP: %s\n"), debug::sleep_type(sleep).c_str());
     }
-
 
     if (mode & OpmodeAp) {
         auto current = ap::current();
-
         ctx.output.printf_P(PSTR("SoftAP: bssid %s channel %hhu auth %s ssid \"%s\"\n"),
             debug::mac(current.bssid).c_str(),
             current.channel,
             debug::authmode(current.authmode).c_str(),
             current.ssid.c_str());
-
-        if (ap::fallback::enabled() && ap::fallback::internal::timer) {
-            ctx.output.printf_P(PSTR("fallback check every %u ms\n"),
-                ap::fallback::build::Timeout.count());
-        }
     }
 
     if (mode & OpmodeSta) {
@@ -2318,7 +1491,7 @@ void wifi(::terminal::CommandContext&& ctx) {
                 network.rssi, network.channel, network.ssid.c_str());
         } else {
             ctx.output.printf_P(PSTR("STA: %s\n"),
-                    sta::connecting() ? "connecting" : "disconnected");
+                sta::connecting() ? "connecting" : "disconnected");
         }
     }
 
@@ -2329,6 +1502,7 @@ void wifi(::terminal::CommandContext&& ctx) {
 PROGMEM_STRING(Reset, "WIFI.RESET");
 
 void reset(::terminal::CommandContext&& ctx) {
+    sta::connection::stop();
     sta::disconnect();
     settings::configure();
     terminalOK(ctx);
@@ -2351,44 +1525,58 @@ void access_point(::terminal::CommandContext&& ctx) {
 PROGMEM_STRING(Off, "WIFI.OFF");
 
 void off(::terminal::CommandContext&& ctx) {
-    action(Action::TurnOff);
+    turn_off();
     terminalOK(ctx);
 }
 
 PROGMEM_STRING(On, "WIFI.ON");
 
 void on(::terminal::CommandContext&& ctx) {
-    action(Action::TurnOn);
+    turn_on(false);
     terminalOK(ctx);
 }
 
 PROGMEM_STRING(Scan, "WIFI.SCAN");
 
 void scan(::terminal::CommandContext&& ctx) {
-    bool failed { false };
+    const char* failed { nullptr };
     sta::scan::wait(
-        [&](const driver::ScanResult* info) {
+        [&](const driver::ScanResult& info) {
             ctx.output.printf_P(PSTR("BSSID: %s AUTH: %11s RSSI: %3hhd CH: %2hhu SSID: %s\n"),
-                debug::mac(convertBssid(*info)).c_str(),
-                debug::authmode(info->authmode).c_str(),
-                info->rssi,
-                info->channel,
-                convertSsid(*info).c_str()
-            );
+                debug::mac(convertBssid(info)).c_str(),
+                debug::authmode(info.authmode).c_str(),
+                info.rssi,
+                info.channel,
+                convertSsid(info).c_str());
         },
-        [&](ScanError error) {
-            failed = true;
-            terminalError(ctx, debug::error(error));
-        }
-    );
+        [&](const char* error) {
+            failed = error;
+        });
 
-    if (!failed) {
-        terminalOK(ctx);
+    if (failed) {
+        terminalError(ctx, espurna::StringView(failed));
+        return;
     }
+
+    terminalOK(ctx);
+}
+
+PROGMEM_STRING(Debug, "WIFI.DEBUG");
+
+// why the station does (not) connect: the round of the attempts, the driver, the last disconnects of the SDK
+void debug(::terminal::CommandContext&& ctx) {
+    const auto& c = sta::connection::internal::state();
+    ctx.output.printf_P(PSTR("round: %s network %u of %u retry %u of %u, waiting %s (%u ms), connected %s, persist %s\n"),
+        c.round ? "yes" : "no", static_cast<unsigned>(c.network), static_cast<unsigned>(sta::countNetworks()),
+        static_cast<unsigned>(c.retry), static_cast<unsigned>(sta::build::ConnectionRetries),
+        c.waiting ? "yes" : "no", static_cast<unsigned>(c.waited), c.connected ? "yes" : "no", c.persist ? "yes" : "no");
+    driver::print_debug(ctx.output);
+    terminalOK(ctx);
 }
 
 static constexpr ::terminal::Command List[] PROGMEM {
     {Stations, commands::stations},
+    {Debug, commands::debug},
     {Network, commands::network},
     {Wifi, commands::wifi},
     {Reset, commands::reset},
@@ -2415,46 +1603,75 @@ void init() {
 #if WEB_SUPPORT
 namespace web {
 
-void onConnected(JsonObject& root) {
+void onConnected(espurna::json::Writer& root) {
     for (const auto& setting : settings::query::Settings) {
-        root[FPSTR(setting.key().c_str())] = setting.value();
+        root.field(setting.key().c_str(), setting.value());
     }
 
-    espurna::web::ws::EnumerableConfig config{root, STRING_VIEW("wifiConfig")};
-    config(STRING_VIEW("networks"), sta::countNetworks(), sta::settings::query::Settings);
+    // {"networks": [[<values of network 0>], ...], "schema": [<the key prefixes>], "max": N} (EnumerableConfig of the
+    // tools module, written here: the head links nothing of it)
+    root.object(STRING_VIEW("wifiConfig"));
+    root.array(STRING_VIEW("networks"));
+    const auto networks = sta::countNetworks();
+    for (size_t index = 0; index < networks; ++index) {
+        root.beginArray();
+        for (const auto& setting : sta::settings::query::Settings) {
+            root.value(setting.value(index));
+        }
+        root.end();
+    }
+    root.end();
 
-    auto& container = config.root();
-    container[F("max")] = sta::build::NetworksMax;
+    root.array(STRING_VIEW("schema"));
+    for (const auto& setting : sta::settings::query::Settings) {
+        root.value(setting.prefix());
+    }
+    root.end();
+
+    root.field(STRING_VIEW("max"), sta::build::NetworksMax);
+    root.end();
 }
 
-bool onKeyCheck(StringView key, const JsonVariant&) {
+bool onKeyCheck(StringView key, espurna::json::Value) {
     return settings::query::checkExactPrefix(key)
         || settings::query::checkIndexedPrefix(key);
 }
 
+struct ScanFound {
+    Mac bssid;
+    AUTH_MODE authmode;
+    int8_t rssi;
+    uint8_t channel;
+    espurna::string ssid;
+};
+
 void onScan(uint32_t client_id) {
-    sta::scan::start([client_id](const driver::ScanResult* found) {
-        SsidInfo result(*found);
-        wsPost(client_id, [result](JsonObject& root) {
-            JsonArray& scan = root.createNestedArray("scanResult");
+    sta::scan::start(
+        [client_id](const driver::ScanResult& found) {
+            ScanFound result{convertBssid(found), found.authmode, found.rssi, found.channel, convertSsid(found)};
+            wsPost(client_id, [result](espurna::json::Writer& root) {
+                root.array(STRING_VIEW("scanResult"));
+                root.value(debug::mac(result.bssid));
+                root.value(debug::authmode(result.authmode));
+                root.value(result.rssi);
+                root.value(result.channel);
+                root.value(result.ssid);
+                root.end();
+            });
+        },
+        [client_id](const char* error) {
+            if (!error) {
+                return;
+            }
 
-            auto& info = result.info();
-            scan.add(debug::mac(info.bssid()));
-            scan.add(debug::authmode(info.authmode()));
-            scan.add(info.rssi());
-            scan.add(info.channel());
-
-            scan.add(result.ssid());
+            const espurna::string text(error);
+            wsPost(client_id, [text](espurna::json::Writer& root) {
+                root.field("scanError", text);
+            });
         });
-    },
-    [client_id](ScanError error) {
-        wsPost(client_id, [error](JsonObject& root) {
-            root["scanError"] = debug::error(error);
-        });
-    });
 }
 
-void onAction(uint32_t client_id, const char* action, JsonObject&) {
+void onAction(uint32_t client_id, const char* action, espurna::json::Value) {
     if (STRING_VIEW("scan") == action) {
         onScan(client_id);
     }
@@ -2467,103 +1684,45 @@ void onAction(uint32_t client_id, const char* action, JsonObject&) {
 // INITIALIZATION
 // -----------------------------------------------------------------------------
 
-namespace settings {
-
-void migrate(int version) {
-    if (version < 5) {
-        moveSetting(F("apmode"), ap::settings::keys::Mode);
-    }
-}
-
-} // namespace settings
-
 namespace debug {
 
 [[gnu::unused]]
-String event(Event value) {
-    String out;
+espurna::string event(Event value) {
+    espurna::string out;
 
     switch (value) {
     case Event::Initial:
-        out = F("Initial");
+        out = "Initial";
         break;
-    case Event::Mode: {
-        const auto mode = wifi::opmode();
-        out = F("Mode changed to ");
-        out += debug::opmode(mode);
+    case Event::Mode:
+        out = "Mode changed to ";
+        out += opmode(wifi::opmode());
         break;
-    }
     case Event::StationInit:
-        out = F("Station init");
+        out = "Station init";
         break;
     case Event::StationScan:
-        out = F("Scanning");
+        out = "Scanning";
         break;
     case Event::StationConnecting:
-        out = F("Connecting");
+        out = "Connecting";
         break;
     case Event::StationConnected: {
         auto current = sta::current();
-        out += F("Connected to BSSID ");
-        out += debug::mac(current.bssid);
-        out += F(" SSID ");
+        out = "Connected to BSSID ";
+        out += mac(current.bssid);
+        out += " SSID ";
         out += current.ssid;
         break;
     }
     case Event::StationTimeout:
-        out = F("Connection timeout");
+        out = "Connection attempt failed";
         break;
-    case Event::StationDisconnected: {
-        auto current = sta::current();
-        out += F("Disconnected from ");
-        out += current.ssid;
+    case Event::StationDisconnected:
+        out = "Disconnected";
         break;
-    }
     case Event::StationReconnect:
-        out = F("Reconnecting");
-        break;
-    }
-
-    return out;
-}
-
-[[gnu::unused]]
-const char* state(State value) {
-    const char* out = "?";
-
-    switch (value) {
-    case State::Boot:
-        out = PSTR("Boot");
-        break;
-    case State::Connect:
-        out = PSTR("Connect");
-        break;
-    case State::TryConnectBetter:
-        out = PSTR("TryConnectBetter");
-        break;
-    case State::Fallback:
-        out = PSTR("Fallback");
-        break;
-    case State::Connected:
-        out = PSTR("Connected");
-        break;
-    case State::Idle:
-        out = PSTR("Idle");
-        break;
-    case State::Init:
-        out = PSTR("Init");
-        break;
-    case State::Timeout:
-        out = PSTR("Timeout");
-        break;
-    case State::WaitScan:
-        out = PSTR("WaitScan");
-        break;
-    case State::WaitScanWithoutCurrent:
-        out = PSTR("WaitScanWithoutCurrent");
-        break;
-    case State::WaitConnected:
-        out = PSTR("WaitConnected");
+        out = "No connection, next round later";
         break;
     }
 
@@ -2572,371 +1731,36 @@ const char* state(State value) {
 
 } // namespace debug
 
-namespace internal {
-
-// STA + AP FALLBACK:
-// - try connection
-// - if ok, stop existing AP
-// - if not, keep / start AP
-//
-// STA:
-// - try connection
-// - don't do anything on completion
-//
-// TODO? WPS / SMARTCONFIG + STA + AP FALLBACK
-// - same as above
-// - when requested, make sure there are no active connections
-//   abort when sta connected or ap is connected
-// - run autoconf, receive credentials and store in a free settings slot
-
-// TODO: provide a clearer 'unroll' of the current state?
-
-using EventCallbacks = std::forward_list<EventCallback>;
-EventCallbacks callbacks;
-
-void publish(Event event) {
-    for (auto& callback : callbacks) {
-        callback(event);
-    }
-}
-
-void subscribe(EventCallback callback) {
-    callbacks.push_front(callback);
-}
-
-State handle_action(State state, Action action) {
-    switch (action) {
-    case Action::StationConnect:
-        if (!sta::enabled()) {
-            sta::enable();
-            publish(Event::Mode);
-        }
-
-        if (!sta::connected()) {
-            if (sta::connecting()) {
-                sta::connection::schedule_next();
-            } else {
-                state = State::Init;
-            }
-        }
-        break;
-
-    case Action::StationContinueConnect:
-        if (sta::connecting()) {
-            state = State::Connect;
-        }
-        break;
-
-    case Action::StationDisconnect:
-        if (sta::connected()) {
-            ap::fallback::remove();
-            sta::disconnect();
-        }
-
-        sta::connection::stop();
-
-        if (sta::enabled()) {
-            sta::disable();
-            publish(Event::Mode);
-        }
-        break;
-
-    case Action::StationTryConnectBetter:
-        if (!sta::connected() || sta::connecting()) {
-            sta::scan::periodic::stop();
-            break;
-        }
-
-        if (sta::scan::periodic::check()) {
-            state = State::TryConnectBetter;
-        }
-        break;
-
-    case Action::AccessPointFallback:
-    case Action::AccessPointStart:
-        if (!ap::enabled()) {
-            ap::enable();
-            ap::start(
-                ap::settings::defaultSsid(),
-                ap::settings::ssid(),
-                ap::settings::passphrase(),
-                ap::settings::channel());
-            publish(Event::Mode);
-            if ((Action::AccessPointFallback == action)
-                    && ap::fallback::enabled()) {
-                ap::fallback::schedule();
-            }
-        }
-        break;
-
-    case Action::AccessPointFallbackCheck:
-        if (ap::fallback::enabled()) {
-            ap::fallback::check();
-        }
-        break;
-
-    case Action::AccessPointStop:
-        if (ap::enabled()) {
-            ap::fallback::remove();
-            ap::stop();
-            ap::disable();
-            publish(Event::Mode);
-        }
-        break;
-
-    case Action::TurnOff:
-        if (wifi::enabled()) {
-            ap::fallback::remove();
-            ap::stop();
-            ap::disable();
-            sta::scan::periodic::stop();
-            sta::connection::stop();
-            sta::disconnect();
-            sta::disable();
-            wifi::disable();
-            publish(Event::Mode);
-            break;
-        }
-        break;
-
-    case Action::Boot:
-    case Action::TurnOn:
-        if (!wifi::enabled()) {
-            wifi::enable();
-#if SYSTEM_CHECK_ENABLED
-            if ((action == Action::Boot) && !systemCheck()) {
-                wifi::action(Action::AccessPointStart);
-                break;
-            }
-#endif
-            settings::configure();
-        }
-        break;
-
-    }
-
-    return state;
-}
-
-bool prepareConnection() {
-    if (sta::enabled()) {
-        sta::connection::prepare(sta::networks());
-        return sta::connection::prepared();
-    }
-
-    return false;
-}
-
 void loop() {
     driver::loop();
-
-    if (last_state != state) {
-        DEBUG_MSG_P(PSTR("[WIFI] State %s -> %s\n"),
-            debug::state(last_state),
-            debug::state(state));
-        last_state = state;
-    }
-
-    switch (state) {
-
-    case State::Boot:
-        state = State::Idle;
-        publish(Event::Initial);
-        break;
-
-    case State::Init: {
-        if (!prepareConnection()) {
-            state = State::Fallback;
-            break;
-        }
-
-        sta::scan::periodic::stop();
-        if (sta::scan::settings::enabled()) {
-            if (sta::scanning()) {
-                break;
-            }
-            sta::connection::scanNetworks();
-            state = State::WaitScan;
-            break;
-        }
-
-        state = State::Connect;
-        break;
-    }
-
-    case State::TryConnectBetter:
-        if (sta::scan::settings::enabled()) {
-            if (sta::scanning()) {
-                break;
-            }
-
-            if (!prepareConnection()) {
-                state = State::Idle;
-                break;
-            }
-
-            sta::scan::periodic::stop();
-            sta::connection::scanNetworks();
-            state = State::WaitScanWithoutCurrent;
-            break;
-        }
-        state = State::Idle;
-        break;
-
-    case State::Fallback:
-        state = State::Idle;
-        sta::connection::schedule_new();
-        if (ApMode::Fallback == ap::settings::mode()) {
-            action(Action::AccessPointFallback);
-        }
-        publish(Event::StationReconnect);
-        break;
-
-    case State::WaitScan:
-        if (sta::scanning()) {
-            break;
-        }
-
-        sta::connection::scanProcessResults();
-        state = State::Connect;
-        break;
-
-    case State::WaitScanWithoutCurrent:
-        if (sta::scanning()) {
-            break;
-        }
-
-        if (sta::connection::scanProcessResults(sta::info())) {
-            sta::disconnect();
-            state = State::Connect;
-            break;
-        }
-
-        // still connected to the same AP, keep checking (less often)
-        if (sta::connected() && sta::scan::settings::enabled()) {
-            sta::scan::periodic::stayed();
-        }
-
-        state = State::Idle;
-        break;
-
-    case State::Connect: {
-        if (!sta::connecting()) {
-            if (!sta::connection::start(systemHostname())) {
-                state = State::Timeout;
-                break;
-            }
-        }
-
-        if (sta::connection::connect()) {
-            state = State::WaitConnected;
-            publish(Event::StationConnecting);
-        } else {
-            state = State::Timeout;
-        }
-        break;
-    }
-
-    case State::WaitConnected:
-        if (sta::connection::wait()) {
-            break;
-        }
-
-        if (sta::connected()) {
-            state = State::Connected;
-            break;
-        }
-
-        state = State::Timeout;
-        break;
-
-    // Current logic closely follows the SDK connection routine with reconnect enabled,
-    // and will retry the same network multiple times before giving up.
-    case State::Timeout:
-        if (sta::connecting() && sta::connection::next()) {
-            state = State::Idle;
-            sta::connection::schedule_next();
-            publish(Event::StationTimeout);
-        } else {
-            sta::connection::stop();
-            state = State::Fallback;
-        }
-        break;
-
-    case State::Connected:
-        sta::connection::stop();
-        if (sta::scan::settings::enabled()) {
-            sta::scan::periodic::start();
-        }
-        state = State::Idle;
-        publish(Event::StationConnected);
-        break;
-
-    case State::Idle: {
-        state = wifi::handle_action(
-            state, internal::handle_action);
-        break;
-    }
-
-    }
-
-    // SDK disconnection event is specific to the phy layer. i.e. it will happen all the same
-    // when trying to connect and being unable to find the AP, being forced out by the AP with bad credentials
-    // or being disconnected when the wireless signal is lost.
-    // Thus, provide a specific connected -> disconnected event specific to the IP network availability.
-    if (sta::connection::lost()) {
-        sta::scan::periodic::stop();
-        if (sta::connection::persist()) {
-            sta::connection::schedule_new(sta::build::RecoveryInterval);
-        }
-        publish(Event::StationDisconnected);
-    }
-
-#if WIFI_GRATUITOUS_ARP_SUPPORT
-    // ref: https://github.com/xoseperez/espurna/pull/1877#issuecomment-525612546
-    // Periodically send out ARP, even if no one asked
-    if (sta::connected() && !sta::garp::wait()) {
-        sta::garp::send();
-    }
-#endif
+    sta::connection::loop();
 }
-
-// XXX: With Arduino Core 3.0.0, WiFi is asleep on boot
-// It will wake up when calling WiFi::mode(...):
-// - WiFi.begin(...)
-// - WiFi.softAP(...)
-// - WiFi.enableSTA(...)
-// - WiFi.enableAP(...)
-// ref. https://github.com/esp8266/Arduino/pull/7902
-
-void init() {
-    driver::init();
-    ap::init();
-    sta::init();
-}
-
-} // namespace internal
 
 void setup() {
     if (!driver::setup()) {
         return;
     }
 
-    internal::init();
+    driver::init();
+    sta::disconnect();
+    ensure_opmode(OpmodeNull);
     sta::netwatch::setup();
 
     migrateVersion(settings::migrate);
     settings::query::setup();
-
-    if (BootMode::Enabled == settings::bootMode()) {
-        action(Action::Boot);
-    }
 
 #if DEBUG_SUPPORT
     wifiRegister([](Event event) {
         DEBUG_MSG_P(PSTR("[WIFI] %s\n"), debug::event(event).c_str());
     });
 #endif
+
+    // the fallback AP comes up when a round of the station ends without a connection
+    wifiRegister([](Event event) {
+        if (Event::StationReconnect == event) {
+            ap::station_lost();
+        }
+    });
 
 #if WEB_SUPPORT
     wsRegister()
@@ -2949,7 +1773,12 @@ void setup() {
     terminal::init();
 #endif
 
-    espurnaRegisterLoop(internal::loop);
+    publish(Event::Initial);
+    if (BootMode::Enabled == settings::bootMode()) {
+        turn_on(true);
+    }
+
+    espurnaRegisterLoop(loop);
     espurnaRegisterReload(settings::configure);
 }
 
@@ -2966,19 +1795,19 @@ namespace wifi {
 namespace driver {
 
 void on_scan_result(const ScanResult& info) {
-    sta::scan::internal::result(info);
+    sta::scan::result(info);
 }
 
 void on_scan_done(bool ok, size_t count) {
-    sta::scan::internal::done(ok, count);
+    sta::scan::finished(ok, count);
 }
 
-void on_station_disconnected(const Mac& bssid, int reason) {
-    sta::disconnected(bssid, reason);
+void on_station_disconnected(const Mac&, int) {
+    sta::connection::disconnected();
 }
 
 void on_station_got_ip() {
-    sta::got_ip();
+    sta::connection::got_ip();
 }
 
 } // namespace driver
@@ -2990,7 +1819,7 @@ void on_station_got_ip() {
 // -----------------------------------------------------------------------------
 
 void wifiRegister(espurna::wifi::EventCallback callback) {
-    espurna::wifi::internal::subscribe(callback);
+    espurna::wifi::internal::callbacks.push_front(callback);
 }
 
 bool wifiConnectable() {
@@ -3002,28 +1831,60 @@ bool wifiConnected() {
 }
 
 espurna::wifi::StaNetwork wifiStaInfo() {
-    if (espurna::wifi::opmode() & espurna::wifi::OpmodeSta) {
+    if (espurna::wifi::sta::enabled()) {
         return espurna::wifi::sta::current();
     }
 
     return {};
 }
 
-IPAddress wifiStaIp() {
-    if (espurna::wifi::opmode() & espurna::wifi::OpmodeSta) {
+espurna::Ip4 wifiStaIp() {
+    if (espurna::wifi::sta::enabled()) {
         return espurna::wifi::sta::ip();
     }
 
     return {};
 }
 
-String wifiStaSsid() {
-    if (espurna::wifi::opmode() & espurna::wifi::OpmodeSta) {
-        auto current = espurna::wifi::sta::current();
-        return current.ssid;
+namespace {
+
+espurna::string mac_upper(const espurna::wifi::Mac& mac) {
+    char buffer[18];
+    snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return espurna::string(buffer);
+}
+
+} // namespace
+
+espurna::string wifiStaMac() {
+    espurna::wifi::Mac mac{};
+    ::espurna::core::chip::wifi_mac(false, mac.data());
+    return mac_upper(mac);
+}
+
+espurna::string wifiStaBssid() {
+    return wifiConnected()
+        ? mac_upper(wifiStaInfo().bssid)
+        : espurna::string();
+}
+
+const char* wifiStaSecurity() {
+    return wifiConnected() ? espurna::wifi::driver::sta_security() : "";
+}
+
+int8_t wifiStaRssi() {
+    return wifiConnected()
+        ? wifiStaInfo().rssi
+        : 0;
+}
+
+espurna::string wifiStaSsid() {
+    if (espurna::wifi::sta::enabled()) {
+        return espurna::wifi::sta::current().ssid;
     }
 
-    return emptyString;
+    return espurna::empty_string;
 }
 
 void wifiDisconnect() {
@@ -3043,35 +1904,29 @@ void wifiToggleSta() {
 }
 
 void wifiStartAp() {
-    espurna::wifi::action(
-        espurna::wifi::Action::AccessPointStart);
+    espurna::wifi::ap::start();
 }
 
 bool wifiDisabled() {
-    return espurna::wifi::opmode()
-        == espurna::wifi::OpmodeNull;
+    return espurna::wifi::opmode() == espurna::wifi::OpmodeNull;
 }
 
 void wifiDisable() {
-    espurna::wifi::ap::fallback::remove();
-    espurna::wifi::sta::scan::periodic::stop();
-    espurna::wifi::ensure_opmode(
-        espurna::wifi::OpmodeNull);
+    espurna::wifi::ap::fallback::timer.stop();
+    espurna::wifi::sta::connection::stop();
+    espurna::wifi::ensure_opmode(espurna::wifi::OpmodeNull);
 }
 
 void wifiTurnOff() {
-    espurna::wifi::action(
-        espurna::wifi::Action::TurnOff);
+    espurna::wifi::turn_off();
 }
 
 void wifiTurnOn() {
-    espurna::wifi::action(
-        espurna::wifi::Action::TurnOn);
+    espurna::wifi::turn_on(false);
 }
 
 void wifiApCheck() {
-    espurna::wifi::action(
-        espurna::wifi::Action::AccessPointFallbackCheck);
+    espurna::wifi::ap::check();
 }
 
 size_t wifiApStations() {
@@ -3083,14 +1938,14 @@ size_t wifiApStations() {
 }
 
 espurna::wifi::SoftApNetwork wifiApInfo() {
-    if (espurna::wifi::opmode() & espurna::wifi::OpmodeAp) {
+    if (espurna::wifi::ap::enabled()) {
         return espurna::wifi::ap::current();
     }
 
     return {};
 }
 
-IPAddress wifiApIp() {
+espurna::Ip4 wifiApIp() {
     return espurna::wifi::ap::ip();
 }
 
@@ -3101,16 +1956,18 @@ bool wifiApCaptive() {
 bool wifiScanStart(WifiScanFound found, WifiScanError error) {
     namespace wifi = espurna::wifi;
     return wifi::sta::scan::start(
-        [found](const wifi::driver::ScanResult* info) {
-            found(wifi::convertSsid(*info), info->rssi, info->authmode == wifi::driver::AuthOpen);
+        [found](const wifi::driver::ScanResult& info) {
+            found(wifi::convertSsid(info), info.rssi, info.authmode == wifi::driver::AuthOpen);
         },
-        [error](wifi::ScanError code) {
-            error(wifi::debug::error(code));
+        [error](const char* text) {
+            if (text) {
+                error(espurna::string(text));
+            }
         });
 }
 
 bool wifiScanning() {
-    return espurna::wifi::sta::scanning();
+    return espurna::wifi::sta::scan::scanning();
 }
 
 void wifiSetup() {

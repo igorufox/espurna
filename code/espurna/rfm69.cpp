@@ -38,8 +38,8 @@ struct Message {
     unsigned char packetID;
     unsigned char senderID;
     unsigned char targetID;
-    String key;
-    String value;
+    espurna::string key;
+    espurna::string value;
     int16_t rssi;
 };
 
@@ -52,8 +52,8 @@ struct Node {
 
 struct Mapping {
     size_t node;
-    String key;
-    String topic;
+    espurna::string key;
+    espurna::string topic;
 };
 
 namespace build {
@@ -151,7 +151,7 @@ uint8_t gatewayId() {
     return getSetting("rfm69GwId", build::gatewayId());
 }
 
-String encryptionKey() {
+espurna::string encryptionKey() {
     return getSetting("rfm69EncKey", build::encryptionKey());
 }
 
@@ -163,15 +163,15 @@ bool promiscuousSends() {
     return getSetting("rfm69PromiscSends", build::promiscuousSends());
 }
 
-String rootTopic() {
+espurna::string rootTopic() {
     return getSetting("rfm69Topic", build::RootTopic);
 }
 
-String topic(size_t index) {
+espurna::string topic(size_t index) {
     return getSetting(espurna::settings::Key{"rfm69Topic", index});
 }
 
-String key(size_t index) {
+espurna::string key(size_t index) {
     return getSetting(espurna::settings::Key{"rfm69Key", index});
 }
 
@@ -234,7 +234,7 @@ protected:
 
         SPI.setClockDivider(espurna::driver::spi::Rfm69Divider);
 
-        digitalWrite(_slaveSelectPin, LOW);
+        espurna::pins::write(_slaveSelectPin, false);
     }
 };
 
@@ -266,37 +266,42 @@ void _rfm69Clear() {
 
 STRING_VIEW_INLINE(Rfm69Prefix, "rfm69");
 
-void _rfm69WebSocketOnVisible(JsonObject& root) {
+void _rfm69WebSocketOnVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, Rfm69Prefix);
 }
 
-void _rfm69WebSocketOnConnected(JsonObject& root) {
-    root["rfm69Topic"] = rfm69::settings::rootTopic();
-
-    JsonObject& rfm69 = root.createNestedObject("rfm69");
-    rfm69["packets"] = _rfm69_packet_count; // TODO: unused?
-    rfm69["nodes"] = _rfm69_node_count; // TODO: unused?
+void _rfm69WebSocketOnConnected(espurna::json::Writer& root) {
+    root.field("rfm69Topic", rfm69::settings::rootTopic());
+    root.object(STRING_VIEW("rfm69"));
+    root.field(STRING_VIEW("packets"), _rfm69_packet_count); // TODO: unused?
+    root.field(STRING_VIEW("nodes"), _rfm69_node_count); // TODO: unused?
 
     static const char* const keys[] {
         "rfm69Node", "rfm69Key", "rfm69Topic"
     };
-    JsonArray& schema = rfm69.createNestedArray("schema");
-    schema.copyFrom(keys, sizeof(keys) / sizeof(*keys));
-
-    JsonArray& mappings = rfm69.createNestedArray("mapping");
-    for (auto& mapping : rfm69::settings::mapping()) {
-        JsonArray& entry = mappings.createNestedArray();
-        entry.add(mapping.node);
-        entry.add(mapping.key);
-        entry.add(mapping.topic);
+    root.array(STRING_VIEW("schema"));
+    for (const auto* key : keys) {
+        root.value(key);
     }
+    root.end();
+
+    root.array(STRING_VIEW("mapping"));
+    for (auto& mapping : rfm69::settings::mapping()) {
+        root.beginArray();
+        root.value(mapping.node);
+        root.value(mapping.key);
+        root.value(mapping.topic);
+        root.end();
+    }
+    root.end();
+    root.end();
 }
 
-bool _rfm69WebSocketOnKeyCheck(espurna::StringView key, const JsonVariant& value) {
+bool _rfm69WebSocketOnKeyCheck(espurna::StringView key, espurna::json::Value value) {
     return key.startsWith(Rfm69Prefix);
 }
 
-void _rfm69WebSocketOnAction(uint32_t client_id, const char* action, JsonObject& data) {
+void _rfm69WebSocketOnAction(uint32_t client_id, const char* action, espurna::json::Value data) {
     if (strcmp(action, "rfm69Clear") == 0) {
         _rfm69Clear();
     }
@@ -379,20 +384,22 @@ void _rfm69Process(const rfm69::Message& message) {
         auto duplicates = info.duplicates;
         auto missing = info.missing;
 
-        wsPost([message, duplicates, missing](JsonObject& root) {
-            JsonObject& rfm69 = root.createNestedObject("rfm69");
-            rfm69["packets"] = _rfm69_packet_count; // TODO: unused?
-            rfm69["nodes"] = _rfm69_node_count; // TODO: unused?
+        wsPost([message, duplicates, missing](espurna::json::Writer& root) {
+            root.object(STRING_VIEW("rfm69"));
+            root.field(STRING_VIEW("packets"), _rfm69_packet_count); // TODO: unused?
+            root.field(STRING_VIEW("nodes"), _rfm69_node_count); // TODO: unused?
 
-            JsonArray& msg = rfm69.createNestedArray("message");
-            msg.add(message.packetID);
-            msg.add(message.senderID);
-            msg.add(message.targetID);
-            msg.add(message.key);
-            msg.add(message.value);
-            msg.add(message.rssi);
-            msg.add(duplicates);
-            msg.add(missing);
+            root.array(STRING_VIEW("message"));
+            root.value(message.packetID);
+            root.value(message.senderID);
+            root.value(message.targetID);
+            root.value(message.key);
+            root.value(message.value);
+            root.value(message.rssi);
+            root.value(duplicates);
+            root.value(missing);
+            root.end();
+            root.end();
         });
     }
 #endif
@@ -419,7 +426,7 @@ void _rfm69Process(const rfm69::Message& message) {
     if (!found) {
         auto topic = rfm69::settings::rootTopic();
         if (topic.length() > 0) {
-            topic.replace("{node}", String(message.senderID, 10));
+            topic.replace("{node}", espurna::string(message.senderID, 10));
             topic.replace("{key}", message.key);
             mqttSendRaw(topic.c_str(), message.value.c_str());
         }
@@ -509,7 +516,7 @@ void rfm69Setup() {
         return;
     }
 
-    delay(10);
+    espurna::time::sleep(10);
     _rfm69Configure();
 
     const auto hardware = rfm69::settings::hardware();

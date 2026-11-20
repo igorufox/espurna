@@ -18,7 +18,7 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "rtcmem.h"
 #include "ws.h"
 
-#include <ArduinoJson.h>
+#include "json.h"
 
 #include <array>
 #include <cstring>
@@ -220,7 +220,7 @@ void brightness(long input) {
     setSetting("brightness", input);
 }
 
-String mqttGroup() {
+espurna::string mqttGroup() {
     return getSetting("mqttGroupColor");
 }
 
@@ -535,7 +535,7 @@ namespace settings {
 namespace internal {
 
 template <>
-light::Mireds convert(const String& value) {
+light::Mireds convert(const espurna::string& value) {
     return light::Mireds{ .value = convert<long>(value) };
 }
 
@@ -552,7 +552,7 @@ static constexpr std::array<espurna::settings::options::Enumeration<LightProvide
 };
 
 template <>
-LightProviderType convert(const String& value) {
+LightProviderType convert(const espurna::string& value) {
     return convert(LightProviderOptions, value, espurna::light::build::provider());
 }
 
@@ -662,8 +662,8 @@ struct LightBrightness {
         return (input * _value) / espurna::light::BrightnessMax;
     }
 
-    String toString() const {
-        return String(_value, 10);
+    espurna::string toString() const {
+        return espurna::string(_value, 10);
     }
 
 private:
@@ -1321,7 +1321,7 @@ espurna::light::Rgb _lightToInputRgb() {
 
 // instead of falling back to scale, use channels as reference in simple modes
 
-String _lightRgbHexPayload(espurna::light::Rgb rgb) {
+espurna::string _lightRgbHexPayload(espurna::light::Rgb rgb) {
     static_assert(espurna::light::Rgb::Min == 0, "");
     static_assert(espurna::light::Rgb::Max == 255, "");
 
@@ -1330,7 +1330,7 @@ String _lightRgbHexPayload(espurna::light::Rgb rgb) {
         static_cast<uint8_t>(rgb.green()),
         static_cast<uint8_t>(rgb.blue())};
 
-    String out;
+    espurna::string out;
 
     char buffer[8] {0};
     if (hexEncode(values, sizeof(values), buffer, sizeof(buffer))) {
@@ -1342,8 +1342,8 @@ String _lightRgbHexPayload(espurna::light::Rgb rgb) {
     return out;
 }
 
-String _lightRgbPayload(espurna::light::Rgb rgb) {
-    String out;
+espurna::string _lightRgbPayload(espurna::light::Rgb rgb) {
+    espurna::string out;
     out.reserve(12);
 
     out += rgb.red();
@@ -1357,13 +1357,13 @@ String _lightRgbPayload(espurna::light::Rgb rgb) {
     return out;
 }
 
-String _lightRgbPayload() {
+espurna::string _lightRgbPayload() {
     return _lightRgbPayload(_lightToInputRgb());
 }
 
 // HSV to RGB transformation
 //
-// INPUT: [0,100,57]
+// espurna::pins::Input: [0,100,57]
 // IS: [145,0,0]
 // SHOULD: [255,0,0]
 
@@ -1468,8 +1468,8 @@ espurna::light::Hsv _lightHsv(espurna::light::Rgb rgb) {
     return Hsv(Hsv::HueMin, Hsv::SaturationMin, v);
 }
 
-String _lightHsvPayload(espurna::light::Hsv hsv) {
-    String out;
+espurna::string _lightHsvPayload(espurna::light::Hsv hsv) {
+    espurna::string out;
 
     auto values = hsv.asArray();
     for (const auto& value : values) {
@@ -1482,25 +1482,25 @@ String _lightHsvPayload(espurna::light::Hsv hsv) {
     return out;
 }
 
-String _lightHsvPayload(espurna::light::Rgb rgb) {
+espurna::string _lightHsvPayload(espurna::light::Rgb rgb) {
     return _lightHsvPayload(_lightHsv(rgb));
 }
 
-String _lightHsvPayload() {
+espurna::string _lightHsvPayload() {
     return _lightHsvPayload(_lightToTargetRgb());
 }
 
-String _lightGroupPayload() {
+espurna::string _lightGroupPayload() {
     const auto Channels = _light_channels.size();
 
-    String result;
+    espurna::string result;
     result.reserve(4 * Channels);
 
     for (const auto& channel : _light_channels) {
         if (result.length()) {
             result += ',';
         }
-        result += String(channel.inputValue);
+        result += espurna::string(channel.inputValue);
     }
 
     return result;
@@ -1785,8 +1785,8 @@ struct LightUpdateHandler {
     LightUpdateHandler& operator=(const LightUpdateHandler&) = delete;
     LightUpdateHandler& operator=(LightUpdateHandler&&) = delete;
 
-    // TODO: (esp8266) there is only a single thread, and explicit context switch via yield()
-    //       callback() below is allowed to yield() and possibly reset the values, but we already have a copy
+    // TODO: (esp8266) there is only a single thread, and explicit context switch via espurna::time::yield()
+    //       callback() below is allowed to espurna::time::yield() and possibly reset the values, but we already have a copy
     // TODO: (esp32?) set() and run() need locking, in case there are multiple threads *and* set() may be called outside of the main one
 
     explicit operator bool() const {
@@ -1979,9 +1979,9 @@ void _lightProviderUpdate() {
 //
 // union light_rtcmem_t {
 //     struct {
-//         uint8_t channels[espurna::light::ChannelsMax];
-//         uint8_t brightness;
-//         uint16_t mired;
+//         byte channels[espurna::light::ChannelsMax];
+//         byte brightness;
+//         word mired;
 //     } __attribute__((packed)) packed;
 //     uint64_t value;
 // };
@@ -2204,7 +2204,7 @@ bool _lightMqttHeartbeat(espurna::heartbeat::Mask mask) {
 }
 
 void _lightMqttCallback(unsigned int type, espurna::StringView topic, espurna::StringView payload) {
-    String mqtt_group_color = espurna::light::settings::mqttGroup();
+    espurna::string mqtt_group_color = espurna::light::settings::mqttGroup();
 
     if (type == MQTT_CONNECT_EVENT) {
 
@@ -2318,11 +2318,11 @@ void lightMQTT() {
 
     if (_light_has_color || _light_has_cold_white) {
         const auto mireds = _light_temperature.mireds();
-        mqttSend(MQTT_TOPIC_MIRED, String(mireds.value, 10).c_str());
+        mqttSend(MQTT_TOPIC_MIRED, espurna::string(mireds.value, 10).c_str());
     }
 
     for (size_t channel = 0; channel < _light_channels.size(); ++channel) {
-        mqttSend(MQTT_TOPIC_CHANNEL, channel, String(_light_channels[channel].target, 10).c_str());
+        mqttSend(MQTT_TOPIC_CHANNEL, channel, espurna::string(_light_channels[channel].target, 10).c_str());
     }
 
     mqttSend(MQTT_TOPIC_BRIGHTNESS, _light_brightness.toString().c_str());
@@ -2359,14 +2359,14 @@ bool _lightApiTryHandle(ApiRequest& request, T&& callback) {
 }
 
 bool _lightApiRgbSetter(ApiRequest& request) {
-    lightParseRgb(request.param(F("value")));
+    lightParseRgb(request.param("value"));
     lightUpdate();
     return true;
 }
 
 void _lightApiSetup() {
     if (_light_has_color) {
-        apiRegister(F(MQTT_TOPIC_COLOR_RGB),
+        apiRegister(MQTT_TOPIC_COLOR_RGB,
             [](ApiRequest& request) {
                 request.send(_lightRgbPayload(_lightToTargetRgb()));
                 return true;
@@ -2374,7 +2374,7 @@ void _lightApiSetup() {
             _lightApiRgbSetter
         );
 
-        apiRegister(F(MQTT_TOPIC_COLOR_HEX),
+        apiRegister(MQTT_TOPIC_COLOR_HEX,
             [](ApiRequest& request) {
                 request.send(_lightRgbHexPayload(_lightToTargetRgb()));
                 return true;
@@ -2382,13 +2382,13 @@ void _lightApiSetup() {
             _lightApiRgbSetter
         );
 
-        apiRegister(F(MQTT_TOPIC_COLOR_HSV),
+        apiRegister(MQTT_TOPIC_COLOR_HSV,
             [](ApiRequest& request) {
                 request.send(_lightHsvPayload());
                 return true;
             },
             [](ApiRequest& request) {
-                lightParseHsv(request.param(F("value")));
+                lightParseHsv(request.param("value"));
                 lightUpdate();
                 return true;
             }
@@ -2396,78 +2396,78 @@ void _lightApiSetup() {
     }
 
     if (_light_has_color || _light_has_cold_white || _light_has_warm_white) {
-        apiRegister(F(MQTT_TOPIC_MIRED),
+        apiRegister(MQTT_TOPIC_MIRED,
             [](ApiRequest& request) {
                 const auto mireds = _light_temperature.mireds();
-                request.send(String(mireds.value, 10));
+                request.send(espurna::string(mireds.value, 10));
                 return true;
             },
             [](ApiRequest& request) {
-                _lightAdjustMireds(request.param(F("value")));
+                _lightAdjustMireds(request.param("value"));
                 lightUpdate();
                 return true;
             }
         );
 
-        apiRegister(F(MQTT_TOPIC_KELVIN),
+        apiRegister(MQTT_TOPIC_KELVIN,
             [](ApiRequest& request) {
                 const auto kelvin = _light_temperature.kelvin();
-                request.send(String(kelvin.value, 10));
+                request.send(espurna::string(kelvin.value, 10));
                 return true;
             },
             [](ApiRequest& request) {
-                _lightAdjustKelvin(request.param(F("value")));
+                _lightAdjustKelvin(request.param("value"));
                 lightUpdate();
                 return true;
             }
         );
     }
 
-    apiRegister(F(MQTT_TOPIC_TRANSITION),
+    apiRegister(MQTT_TOPIC_TRANSITION,
         [](ApiRequest& request) {
-            request.send(String(lightTransitionTime().count()));
+            request.send(espurna::string(lightTransitionTime().count()));
             return true;
         },
         [](ApiRequest& request) {
-            return _lightApiTransition(request.param(F("value")));
+            return _lightApiTransition(request.param("value"));
         }
     );
 
-    apiRegister(F(MQTT_TOPIC_BRIGHTNESS),
+    apiRegister(MQTT_TOPIC_BRIGHTNESS,
         [](ApiRequest& request) {
             request.send(_light_brightness.toString());
             return true;
         },
         [](ApiRequest& request) {
-            _lightAdjustBrightness(request.param(F("value")));
+            _lightAdjustBrightness(request.param("value"));
             lightUpdate();
             return true;
         }
     );
 
-    apiRegister(F(MQTT_TOPIC_CHANNEL "/+"),
+    apiRegister(MQTT_TOPIC_CHANNEL "/+",
         [](ApiRequest& request) {
             return _lightApiTryHandle(request, [&](size_t id) {
-                request.send(String(_light_channels[id].target));
+                request.send(espurna::string(_light_channels[id].target));
                 return true;
             });
         },
         [](ApiRequest& request) {
             return _lightApiTryHandle(request, [&](size_t id) {
-                _lightAdjustChannel(id, request.param(F("value")));
+                _lightAdjustChannel(id, request.param("value"));
                 lightUpdate();
                 return true;
             });
         }
     );
 
-    apiRegister(F(MQTT_TOPIC_LIGHT),
+    apiRegister(MQTT_TOPIC_LIGHT,
         [](ApiRequest& request) {
             request.send(lightState() ? "1" : "0");
             return true;
         },
         [](ApiRequest& request) {
-            _lightParsePayload(request.param(F("value")));
+            _lightParsePayload(request.param("value"));
             lightUpdate();
             return true;
         }
@@ -2486,76 +2486,80 @@ STRING_VIEW_INLINE(PrefixLightLong, "light");
 STRING_VIEW_INLINE(PrefixLightShort, "lt");
 STRING_VIEW_INLINE(PrefixLightUse, "use");
 
-bool _lightWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool _lightWebSocketOnKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(PrefixLightLong)
         || key.startsWith(PrefixLightShort)
         || key.startsWith(PrefixLightUse);
 }
 
-void _lightWebSocketStatus(JsonObject& root) {
-    JsonObject& light = root.createNestedObject("light");
+void _lightWebSocketStatus(espurna::json::Writer& root) {
+    root.object(STRING_VIEW("light"));
 
     if (_light_use_color) {
         const auto rgb = _lightToInputRgb();
         if (_light_use_rgb) {
-            light["rgb"] = _lightRgbHexPayload(rgb);
+            root.field(STRING_VIEW("rgb"), _lightRgbHexPayload(rgb));
         } else {
             const auto hsv = _lightHsv(rgb);
-            light["hsv"] = _lightHsvPayload(espurna::light::Hsv(
-                hsv.hue(), hsv.saturation(), _lightBrightnessPercent()));
+            root.field(STRING_VIEW("hsv"), _lightHsvPayload(espurna::light::Hsv(
+                hsv.hue(), hsv.saturation(), _lightBrightnessPercent())));
         }
     }
 
     if (_light_use_cct) {
-        light["mireds"] = _light_temperature.mireds().value;
+        root.field(STRING_VIEW("mireds"), _light_temperature.mireds().value);
     }
 
-    JsonArray& values = light.createNestedArray("values");
+    root.array(STRING_VIEW("values"));
     for (auto& channel : _light_channels) {
-        values.add(channel.inputValue);
+        root.value(channel.inputValue);
     }
+    root.end();
 
-    light["brightness"] = _light_brightness.value();
-    light["state"] = _light_state;
+    root.field(STRING_VIEW("brightness"), _light_brightness.value());
+    root.field(STRING_VIEW("state"), _light_state);
+    root.end();
 }
 
-void _lightWebSocketOnVisible(JsonObject& root) {
+void _lightWebSocketOnVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, PrefixLightLong);
 
-    JsonObject& light = root.createNestedObject("light");
+    root.object(STRING_VIEW("light"));
 #if RELAY_SUPPORT
-    light["state_relay_id"] = _light_state_relay_id;
+    root.field(STRING_VIEW("state_relay_id"), _light_state_relay_id);
 #endif
 
-    JsonArray& channels = light.createNestedArray("channels");
-
+    root.array(STRING_VIEW("channels"));
     const auto Channels = _light_channels.size();
     for (size_t index = 0; index < Channels; ++index) {
-        channels.add(String(_lightTag(Channels, index)));
+        root.value(espurna::string(_lightTag(Channels, index)));
     }
+    root.end();
 
     if (_light_use_cct) {
-        JsonObject& cct = light.createNestedObject("cct");
-        cct["cold"] = _light_temperature.cold();
-        cct["warm"] = _light_temperature.warm();
+        root.object(STRING_VIEW("cct"));
+        root.field(STRING_VIEW("cold"), _light_temperature.cold());
+        root.field(STRING_VIEW("warm"), _light_temperature.warm());
+        root.end();
     }
+    root.end();
 }
 
-void _lightWebSocketOnConnected(JsonObject& root) {
-    root["mqttGroupColor"] = espurna::light::settings::mqttGroup();
-    root["useWhite"] = _light_use_white;
-    root["useCCT"] = _light_use_cct;
-    root["useColor"] = _light_use_color;
-    root["useGamma"] = _light_use_gamma;
-    root["useRGB"] = _light_use_rgb;
-    root["useTransitions"] = _light_use_transitions;
-    root["ltSave"] = _light_save;
-    root["ltSaveDelay"] = _light_save_delay.count();
-    root["ltTime"] = _light_transition_time.count();
-    root["ltStep"] = _light_transition_step.count();
+void _lightWebSocketOnConnected(espurna::json::Writer& root) {
+    root.field("mqttGroupColor", espurna::light::settings::mqttGroup());
+    root.field("useWhite", _light_use_white);
+    root.field("useCCT", _light_use_cct);
+    root.field("useColor", _light_use_color);
+    root.field("useGamma", _light_use_gamma);
+    root.field("useRGB", _light_use_rgb);
+    root.field("useTransitions", _light_use_transitions);
+    root.field("ltSave", _light_save);
+    root.field("ltSaveDelay", _light_save_delay.count());
+    root.field("ltTime", _light_transition_time.count());
+    root.field("ltStep", _light_transition_step.count());
 }
 
-void _lightWebSocketOnAction(uint32_t client_id, const char* action, JsonObject& data) {
+void _lightWebSocketOnAction(uint32_t client_id, const char* action, espurna::json::Value data) {
     STRING_VIEW_INLINE(Light, "light");
     if (Light != action) {
         return;
@@ -2564,51 +2568,48 @@ void _lightWebSocketOnAction(uint32_t client_id, const char* action, JsonObject&
     bool update { false };
 
     STRING_VIEW_INLINE(State, "state");
-    if (data.containsKey(State)) {
-        lightState(data[State].as<bool>());
+    if (data.has(State)) {
+        lightState(data[State].asBool());
         update = true;
     }
 
     STRING_VIEW_INLINE(Brightness, "brightness");
-    if (data.containsKey(Brightness)) {
-        lightBrightness(data[Brightness].as<long>());
+    if (data.has(Brightness)) {
+        lightBrightness(data[Brightness].asLong());
         update = true;
     }
 
     STRING_VIEW_INLINE(Rgb, "rgb");
-    if (data.containsKey(Rgb)) {
-        _lightFromRgbPayload(data[Rgb].as<String>());
+    if (data.has(Rgb)) {
+        _lightFromRgbPayload(espurna::string(data[Rgb].asString().c_str()));
         update = true;
     }
 
     STRING_VIEW_INLINE(Hsv, "hsv");
-    if (data.containsKey(Hsv)) {
-        lightHsv(_lightHsvFromPayload(data[Hsv].as<String>()));
+    if (data.has(Hsv)) {
+        lightHsv(_lightHsvFromPayload(espurna::string(data[Hsv].asString().c_str())));
         update = true;
     }
 
     STRING_VIEW_INLINE(Mireds, "mireds");
-    if (data.containsKey(Mireds)) {
+    if (data.has(Mireds)) {
         _lightTemperature(espurna::light::Mireds{
-            .value = data[Mireds].as<long>()
+            .value = data[Mireds].asLong()
         });
         update = true;
     }
 
     STRING_VIEW_INLINE(Channel, "channel");
-    JsonObject& channel = data[Channel];
-
-    if (channel.success()) {
-        for (auto& kv : channel) {
-            size_t id;
-            if (!_lightTryParseChannel(kv.key, id)) {
-                break;
-            }
-
-            _lightAdjustChannel(id, kv.value.as<String>());
-            update = true;
+    data[Channel].members([&](espurna::StringView key, espurna::json::Value value) {
+        size_t id;
+        if (!_lightTryParseChannel(espurna::string(key).c_str(), id)) {
+            return false;
         }
-    }
+
+        _lightAdjustChannel(id, espurna::string(value.asString().c_str()));
+        update = true;
+        return true;
+    });
 
     if (update) {
         lightUpdate();
@@ -2679,13 +2680,13 @@ static void _lightCommandNotify(::terminal::CommandContext&& ctx) {
     };
 
     if ((ctx.argv.size() < 2) || (ctx.argv.size() > 5)) {
-        terminalError(ctx, F("NOTIFY <CHANNEL> [<REPEATS>] [<TIME>] [<STEP>]"));
+        terminalError(ctx, "NOTIFY <CHANNEL> [<REPEATS>] [<TIME>] [<STEP>]");
         return;
     }
 
     size_t channel;
     if (!_lightTryParseChannel(ctx.argv[1], channel)) {
-        terminalError(ctx, F("Invalid channel ID"));
+        terminalError(ctx, "Invalid channel ID");
         return;
     }
 
@@ -2744,7 +2745,7 @@ PROGMEM_STRING(LightCommand, "LIGHT");
 static void _lightCommand(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() > 1) {
         if (!_lightParsePayload(ctx.argv[1])) {
-            terminalError(ctx, F("Invalid payload"));
+            terminalError(ctx, "Invalid payload");
             return;
         }
         lightUpdate();
@@ -2771,7 +2772,7 @@ PROGMEM_STRING(LightCommandChannel, "CHANNEL");
 static void _lightCommandChannel(::terminal::CommandContext&& ctx) {
     const size_t Channels { _light_channels.size() };
     if (!Channels) {
-        terminalError(ctx, F("No channels configured"));
+        terminalError(ctx, "No channels configured");
         return;
     }
 
@@ -2782,13 +2783,13 @@ static void _lightCommandChannel(::terminal::CommandContext&& ctx) {
                 _light_channels[channel].inputValue,
                 _light_channels[channel].value,
                 _light_channels[channel].target,
-                String(_light_channels[channel].current, 2).c_str());
+                formatDecimalString(_light_channels[channel].current, 2).c_str());
     };
 
     if (ctx.argv.size() > 2) {
         size_t id;
         if (!_lightTryParseChannel(ctx.argv[1], id)) {
-            terminalError(ctx, F("Invalid channel ID"));
+            terminalError(ctx, "Invalid channel ID");
             return;
         }
 
@@ -2862,7 +2863,7 @@ static void _lightCommandMired(::terminal::CommandContext&& ctx) {
     const auto warm = _light_temperature.warm();
     ctx.output.printf_P(PSTR("mireds %ld range %ld...%ld (factor %s%)\n"),
         mireds.value, cold, warm,
-        String(_light_temperature.factor(), 1).c_str());
+        formatDecimalString(_light_temperature.factor(), 1).c_str());
     terminalOK(ctx);
 }
 
@@ -2983,8 +2984,8 @@ void _lightUpdateDebug(const LightTransitionHandler& handler) {
     for (auto& transition : handler.prepared()) {
         if (transition.count > 1) {
             DEBUG_MSG_P(PSTR("[LIGHT] Transition from %s to %ld (step %s, %u times)\n"),
-                    String(transition.value, 2).c_str(), transition.target,
-                    String(transition.step, 2).c_str(), transition.count);
+                    formatDecimalString(transition.value, 2).c_str(), transition.target,
+                    formatDecimalString(transition.step, 2).c_str(), transition.count);
         }
     }
 }
@@ -3163,15 +3164,15 @@ void lightParseRgb(espurna::StringView value) {
     _lightFromRgbPayload(value);
 }
 
-String lightRgbPayload() {
+espurna::string lightRgbPayload() {
     return _lightRgbPayload();
 }
 
-String lightHsvPayload() {
+espurna::string lightHsvPayload() {
     return _lightHsvPayload();
 }
 
-String lightColor() {
+espurna::string lightColor() {
     return _light_use_rgb ? lightRgbPayload() : lightHsvPayload();
 }
 
@@ -3554,7 +3555,7 @@ void _lightSettingsMigrate(int version) {
     }
 
     if (version < 14) {
-        delSetting(F("ltRelay"));
+        delSetting("ltRelay");
     }
 }
 
@@ -3582,8 +3583,8 @@ void lightSetup() {
 
     const auto enable_pin = espurna::light::settings::enablePin();
     if (enable_pin != GPIO_NONE) {
-        pinMode(enable_pin, OUTPUT);
-        digitalWrite(enable_pin, HIGH);
+        espurna::pins::mode(enable_pin, espurna::pins::Output);
+        espurna::pins::write(enable_pin, true);
     }
 
     _light_channels.reserve(espurna::light::ChannelsMax);

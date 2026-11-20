@@ -8,11 +8,11 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #pragma once
 
-#include <Arduino.h>
 
 // SDK, lwIP and WiFi class headers, AUTH_MODE, driver::AuthOpen and driver::ScanResult
 // arch/esp8266/wifi_types_chip.h, arch/rtos/wifi_types_chip.h (ESP32, Beken): the chip's folder (-I of its ini)
 #include "wifi_types_chip.h"
+#include "ip4.h"
 
 namespace espurna {
 namespace wifi {
@@ -21,16 +21,16 @@ using Mac = std::array<uint8_t, 6>;
 
 struct StaNetwork {
     Mac bssid;
-    String ssid;
-    String passphrase;
+    espurna::string ssid;
+    espurna::string passphrase;
     int8_t rssi;
     uint8_t channel;
 };
 
 struct SoftApNetwork {
     Mac bssid;
-    String ssid;
-    String passphrase;
+    espurna::string ssid;
+    espurna::string passphrase;
     uint8_t channel;
     AUTH_MODE authmode;
 };
@@ -70,7 +70,7 @@ enum class ApMode {
 namespace settings {
 namespace internal {
 
-String serialize(wifi::Mac);
+espurna::string serialize(wifi::Mac);
 
 } // namespace internal
 } // namespace settings
@@ -88,21 +88,26 @@ bool wifiConnected();
 espurna::wifi::SoftApNetwork wifiApInfo();
 bool wifiConnectable();
 size_t wifiApStations();
-IPAddress wifiApIp();
+espurna::Ip4 wifiApIp();
 // the wifiApCaptive setting, for the captive module (captive.cpp): DNS + connectivity check redirects while the AP is on
 bool wifiApCaptive();
 
 // The networks around, without the ws module (head_setup.cpp, the setup form of the head page): found - every network,
 // error - the scan failed or found nothing. true - started, wifiScanning() until it ends. Needs the station on
-using WifiScanFound = void(*)(const String& ssid, int8_t rssi, bool open);
-using WifiScanError = void(*)(const String& error);
+using WifiScanFound = void(*)(const espurna::string& ssid, int8_t rssi, bool open);
+using WifiScanError = void(*)(const espurna::string& error);
 bool wifiScanStart(WifiScanFound, WifiScanError);
 bool wifiScanning();
 
 // Current STA connection
 espurna::wifi::StaNetwork wifiStaInfo();
-String wifiStaSsid();
-IPAddress wifiStaIp();
+espurna::string wifiStaSsid();
+// what the WiFi class of the cores said: AA:BB:CC:DD:EE:FF of the station and of its AP, the signal of the AP
+espurna::string wifiStaMac();
+espurna::string wifiStaBssid();
+int8_t wifiStaRssi();
+const char* wifiStaSecurity();
+espurna::Ip4 wifiStaIp();
 
 // Request to change the current STA / AP status
 // Current state persists until reset or configuration reload

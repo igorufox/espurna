@@ -170,7 +170,7 @@ bool imageJson(const uint8_t* data, std::unique_ptr<char[]>& text, size_t& size)
 }
 
 // the text of a half (the old format, or an older image written back): compiled and saved as an image
-bool rebuild(std::unique_ptr<char[]> text, size_t size, String& error, String& warnings) {
+bool rebuild(std::unique_ptr<char[]> text, size_t size, espurna::string& error, espurna::string& warnings) {
     return ParseResult::Ok == save(text.get(), size, error, warnings);
 }
 
@@ -182,19 +182,19 @@ constexpr size_t FlashChunk { 512 };
 // CRC is written last, so a failure or a power cut leaves the current half as the valid one
 class FlashImage : public ImageSink {
 public:
-    bool begin(size_t size, String& error) override {
+    bool begin(size_t size, espurna::string& error) override {
         if (!is_mounted) {
-            error = F("no flash data of the module");
+            error = "no flash data of the module";
             return false;
         }
         if (!size || (size > build::ConfigMax)) {
-            error = F("config too large for the flash data of the module");
+            error = "config too large for the flash data of the module";
             return false;
         }
 
         _buffer.reset(new (std::nothrow) uint8_t[FlashChunk]);
         if (!_buffer) {
-            error = F("out of memory (flash buffer), retry");
+            error = "out of memory (flash buffer), retry";
             return false;
         }
 
@@ -209,7 +209,7 @@ public:
         _crc = 0;
 
         if (!modulesDataErase(Module, _target * Half, Half)) {
-            error = F("cannot erase the flash data of the module");
+            error = "cannot erase the flash data of the module";
             return false;
         }
 
@@ -236,15 +236,15 @@ public:
         return true;
     }
 
-    bool end(String& error) override {
+    bool end(espurna::string& error) override {
         if (!_buffer || !flush() || (_done != _size)) {
-            error = F("cannot write the compiled config");
+            error = "cannot write the compiled config";
             return false;
         }
 
         alignas(4) Header out { ImageMagic, _sequence, static_cast<uint32_t>(_size), _crc };
         if (!modulesDataWrite(Module, _target * Half, &out, sizeof(out))) {
-            error = F("cannot write the compiled config");
+            error = "cannot write the compiled config";
             return false;
         }
 
@@ -300,9 +300,9 @@ bool exists() {
 
 // the newest usable half bound to 'out'. A half of the old format (JSON text) or an image of an older layout is
 // compiled once and saved as an image, then that is opened
-bool open(Config& out, String& error, String& warnings) {
+bool open(Config& out, espurna::string& error, espurna::string& warnings) {
     if (!is_mounted) {
-        error = F("no flash data of the module");
+        error = "no flash data of the module";
         return false;
     }
 
@@ -311,7 +311,7 @@ bool open(Config& out, String& error, String& warnings) {
         Header found[2];
         const size_t count = halves(order, found);
         if (!count) {
-            error = F("no saved config");
+            error = "no saved config";
             return false;
         }
 
@@ -323,7 +323,7 @@ bool open(Config& out, String& error, String& warnings) {
             std::unique_ptr<uint8_t[]> owned;
             const auto* data = dataOf(half, head, owned);
             if (!data) {
-                error = F("the saved config is damaged (CRC)");
+                error = "the saved config is damaged (CRC)";
                 DEBUG_MSG_P(PSTR("[NSPANEL] Config half %u damaged\n"), half);
                 continue;
             }
@@ -334,7 +334,7 @@ bool open(Config& out, String& error, String& warnings) {
                     return true;
                 }
                 if (!treeReadable(data, head.size)) {
-                    error = F("the saved config is of an unknown layout");
+                    error = "the saved config is of an unknown layout";
                     continue;
                 }
 
@@ -342,7 +342,7 @@ bool open(Config& out, String& error, String& warnings) {
                 std::unique_ptr<char[]> text;
                 size_t size = 0;
                 if (!imageJson(data, text, size)) {
-                    error = F("out of memory while converting the saved config");
+                    error = "out of memory while converting the saved config";
                     return false;
                 }
                 owned.reset();
@@ -357,7 +357,7 @@ bool open(Config& out, String& error, String& warnings) {
             // the JSON text of the old format: compiled once, the image kept from now on
             std::unique_ptr<char[]> text(new (std::nothrow) char[head.size + 1]);
             if (!text) {
-                error = F("out of memory while converting the saved config");
+                error = "out of memory while converting the saved config";
                 return false;
             }
             std::memcpy(text.get(), data, head.size);
@@ -379,9 +379,9 @@ bool open(Config& out, String& error, String& warnings) {
 }
 
 // the text compiled straight into the half the running config is not read from (FlashImage)
-ParseResult save(char* text, size_t length, String& error, String& warnings) {
+ParseResult save(char* text, size_t length, espurna::string& error, espurna::string& warnings) {
     if (!is_mounted) {
-        error = F("no flash data of the module");
+        error = "no flash data of the module";
         return ParseResult::WriteFailed;
     }
 
@@ -389,17 +389,17 @@ ParseResult save(char* text, size_t length, String& error, String& warnings) {
     return compileText(text, length, image, error, warnings);
 }
 
-void info(Print& out) {
+void info(::espurna::Output& out) {
     uint32_t half;
     Header found;
     if (!is_mounted) {
-        out.print(F("Config: no flash data of the module\n"));
+        out.print("Config: no flash data of the module\n");
     } else if (current(half, found)) {
         out.printf_P(PSTR("Config: %s of %u bytes in the flash data of the module (half %u, #%u), %s\n"),
             (found.magic == ImageMagic) ? "image" : "JSON text", found.size, half, found.sequence,
             modulesDataView(Module) ? "read in place" : "a heap copy");
     } else {
-        out.print(F("Config: none saved, the built-in one\n"));
+        out.print("Config: none saved, the built-in one\n");
     }
 }
 
@@ -434,7 +434,7 @@ Limits parseLimits() {
 // Free heap a compile needs: the JSON nodes (in blocks, +1/32) plus the draft (build::ConfigDraftPerKb per KB of text
 // and build::ConfigDraftFixed) plus what WiFi / lwIP must keep. The image is not in the heap (it goes to its sink as it
 // is laid out), no block above build::CompileBlock is taken
-bool heapAvailable(size_t json_size, size_t length, String& error) {
+bool heapAvailable(size_t json_size, size_t length, espurna::string& error) {
     const size_t need = json_size + (json_size / 32)
         + ((length * build::ConfigDraftPerKb) / 1024) + build::ConfigDraftFixed
         + build::ConfigHeapReserve;
@@ -454,7 +454,7 @@ bool heapAvailable(size_t json_size, size_t length, String& error) {
 }
 
 // heap check + compile, for text the caller does not need afterwards
-ParseResult compileText(char* text, size_t length, ImageSink& out, String& error, String& warnings) {
+ParseResult compileText(char* text, size_t length, ImageSink& out, espurna::string& error, espurna::string& warnings) {
     const size_t json_size = jsonBufferSize(text, length);
     if (!heapAvailable(json_size, length, error)) {
         return ParseResult::LowMemory;
@@ -464,11 +464,11 @@ ParseResult compileText(char* text, size_t length, ImageSink& out, String& error
 }
 
 // built-in config, compiled from a heap copy into a heap image (nothing is written to the flash)
-ParseResult parseDefault(Config& out, String& error, String& warnings) {
+ParseResult parseDefault(Config& out, espurna::string& error, espurna::string& warnings) {
     const size_t length = strlen_P(DefaultConfig);
     std::unique_ptr<char[]> text(new (std::nothrow) char[length + 1]);
     if (!text) {
-        error = F("out of memory");
+        error = "out of memory";
         return ParseResult::LowMemory;
     }
 
@@ -482,7 +482,7 @@ ParseResult parseDefault(Config& out, String& error, String& warnings) {
 
     const auto* data = image.data.get();
     if (!::espurna::nspanel::bind(out, data, image.size, image.data)) {
-        error = F("built-in config: bad image");
+        error = "built-in config: bad image";
         return ParseResult::Invalid;
     }
 

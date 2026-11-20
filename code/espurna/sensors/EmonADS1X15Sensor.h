@@ -180,7 +180,7 @@ public:
             if (_type == ADS1X15_CHIP_ADS1015) {
                 value >>= ADS1015_BIT_SHIFT;
             }
-            delayMicroseconds(500);
+            espurna::time::sleep_us(500);
             return value;
         }
 
@@ -238,32 +238,32 @@ public:
     }
 
     // Descriptive name of the sensor
-    String description() const override {
+    espurna::string description() const override {
         char buffer[30];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("EMON @ ADS1%c15 @ I2C (0x%02X)"),
             _port->type() == ADS1X15_CHIP_ADS1015 ? '0' : '1',
             _port->address());
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
     // Descriptive name of the slot # index
-    String description(unsigned char) const override {
+    espurna::string description(unsigned char) const override {
         char buffer[35];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("EMON @ ADS1%c15 (A%hhu) @ I2C (0x%02X)"),
             _port->type() == ADS1X15_CHIP_ADS1015 ? '0' : '1',
             _channel, _port->address());
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
     // Address of the sensor (it could be the GPIO or I2C address)
-    String address(unsigned char) const override {
+    espurna::string address(unsigned char) const override {
         char buffer[18];
         snprintf_P(buffer, sizeof(buffer),
             PSTR("A%hhu @ I2C (0x%02X)"),
             _channel, _port->address());
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
     unsigned int analogRead() override {

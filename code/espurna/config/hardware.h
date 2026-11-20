@@ -13,8 +13,8 @@
 // BUTTON[1-8]_CONFIG: Configuration mask (note that BUTTON_PUSHBUTTON and BUTTON_SWITCH cannot be together)
 //   - BUTTON_PUSHBUTTON: button event is fired when released
 //   - BUTTON_SWITCH: button event is fired when pressed or released
-//   - BUTTON_DEFAULT_HIGH: there is a pull up in place, HIGH is default state
-//   - BUTTON_DEFAULT_LOW: there is a pull down in place, LOW is default state
+//   - BUTTON_DEFAULT_HIGH: there is a pull up in place, true is default state
+//   - BUTTON_DEFAULT_LOW: there is a pull down in place, false is default state
 //   - BUTTON_DEFAULT_BOOT: use state that we read on firmware boot
 //   - BUTTON_SET_PULLUP: set pullup by software
 //   - BUTTON_SET_PULLDOWN: set pulldown by software (esp8266: only GPIO16)
@@ -357,7 +357,7 @@
 
 #elif defined(SONOFF_NSPANEL)
 
-    // Sonoff NSPanel gen1 (EU), ESP32-D0WD-V3 4MB, safeboot flash layout (esp32_4mb_safeboot.csv, Tasmota's offsets)
+    // Sonoff NSPanel gen1 (EU), ESP32-D0WD-V3 4MB, the ESP32 flash layout (esp32_4mb.csv)
     // Display (Lovelace UI TFT) and buzzer are handled by the nspanel module, the NTC is an ESPurna sensor
 
     // Info
@@ -371,7 +371,7 @@
     // the unstable mode (WiFi + telnet only, no web), and `reboot` over telnet is then the only way out without power
     #define TELNET_STA              1
 
-    // Buttons (active LOW). Left one toggles relay 1, right one runs the nspanel.json button action
+    // Buttons (active false). Left one toggles relay 1, right one runs the nspanel.json button action
     #define BUTTON1_PIN             14
     #define BUTTON1_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH | BUTTON_SET_PULLUP
     #define BUTTON1_RELAY           1
@@ -402,8 +402,7 @@
     #define NTC_BETA                3950
     #define NTC_SAMPLES             8
 
-    // No second OTA app slot on the safeboot layout, the image is updated through safeboot
-    // (ESPurna web /upgrade is answered with an error by arch/esp32/safeboot_esp32.cpp)
+    // One application partition, no second OTA slot: the head is not replaced over the network
     #ifndef OTA_ARDUINOOTA_SUPPORT
     #define OTA_ARDUINOOTA_SUPPORT  0
     #endif
@@ -1194,7 +1193,7 @@
     //    and you click on another relay button, the STM32 sends a "press"
     //    event for the button of the first relay (to turn it OFF) but it
     //    does not send a "release" event. It's like it's holding the
-    //    button down since you can see it is still LOW.
+    //    button down since you can see it is still false.
     //    Whatever reason the result is that it may actually perform a
     //    long click or long-long click.
     // The configuration below make the button toggle the relay on press events
@@ -2936,11 +2935,11 @@
     #define HLW8012_CF1_PIN             14
     #define HLW8012_CF_PIN              5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       24380
     #define HLW8012_VOLTAGE_RATIO       32048
     #define HLW8012_POWER_RATIO         3509285
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // Oukitel P1 Smart Plug
@@ -3009,11 +3008,11 @@
     #define HLW8012_CF1_PIN     14
     #define HLW8012_CF_PIN      5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // TONBUX XS-SSA01
@@ -3279,7 +3278,7 @@
     #define DIGITAL_SUPPORT      1
     #endif
     #define DIGITAL1_PIN          16
-    #define DIGITAL1_PIN_MODE     INPUT
+    #define DIGITAL1_PIN_MODE     espurna::pins::Input
     #define DIGITAL1_DEFAULT_STATE 0
 
 // -----------------------------------------------------------------------------
@@ -3510,11 +3509,11 @@
     #define HLW8012_CF1_PIN             5
     #define HLW8012_CF_PIN              4
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // NEO Coolcam NAS-WR01W Wifi Smart Power Plug
@@ -3719,11 +3718,11 @@
     #define HLW8012_CF1_PIN             14
     #define HLW8012_CF_PIN              5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // Same as the above but new board version marked V2.3
@@ -3762,11 +3761,11 @@
     #define HLW8012_CF1_PIN             5
     #define HLW8012_CF_PIN              4
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
     // BUTTON1 and LED1 are using Serial pins
     #define UART_SUPPORT                0
@@ -3876,11 +3875,11 @@
     #define HLW8012_CF1_PIN             5
     #define HLW8012_CF_PIN              4
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       20730
     #define HLW8012_VOLTAGE_RATIO       264935
     #define HLW8012_POWER_RATIO         2533110
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
     // BUTTON1 and LED1 are using Serial pins
     #define UART_SUPPORT                0
@@ -3923,11 +3922,11 @@
     #define HLW8012_CF1_PIN             14
     #define HLW8012_CF_PIN              5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       23324
     #define HLW8012_VOLTAGE_RATIO       324305
     #define HLW8012_POWER_RATIO         3580841
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // The Gosund WP3 is based on ESP8285, so 1 MB internal flash (DOUT required)
@@ -4039,11 +4038,11 @@
     #define HLW8012_CF1_PIN             4
     #define HLW8012_CF_PIN              5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // ----------------------------------------------------------------------------------------
 //  Power strip 15A - 3 Sockets + 3 USB ports
@@ -4157,11 +4156,11 @@
     #define HLW8012_CF1_PIN             14
     #define HLW8012_CF_PIN              5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // VANZAVANZU Smart Outlet Socket (based on BL0937 or HJL-01)
@@ -4202,11 +4201,11 @@
     // Disable UART noise
     #define UART_SUPPORT                0
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 
@@ -4374,11 +4373,11 @@
     #define HLW8012_CF1_PIN             13
     #define HLW8012_CF_PIN              5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
     //Temperature
      #define NTC_SUPPORT        1
@@ -4873,11 +4872,11 @@
     #define HLW8012_CF1_PIN             14
     #define HLW8012_CF_PIN              5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // ----------------------------------------------------------------------------------------
 // Hama WiFi Steckdose (00176533)
@@ -4942,11 +4941,11 @@
     #define HLW8012_CF1_PIN             5
     #define HLW8012_CF_PIN              4
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       23296
     #define HLW8012_VOLTAGE_RATIO       310085
     #define HLW8012_POWER_RATIO         3368471
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // Foxel's LightFox dual
@@ -5021,11 +5020,11 @@
     #define HLW8012_CF1_PIN             14
     #define HLW8012_CF_PIN              5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // Charging Essentials / LITESUN LA-WF3
@@ -5199,11 +5198,11 @@
     #define HLW8012_CF1_PIN             12
     #define HLW8012_CF_PIN              13
 
-    #define HLW8012_SEL_CURRENT         HIGH    // SEL pin to HIGH to measure current
+    #define HLW8012_SEL_CURRENT         true    // SEL pin to true to measure current
     #define HLW8012_CURRENT_R           0.001   // Current resistor
     #define HLW8012_VOLTAGE_R_UP        ( 4 * 470000 )  // Upstream voltage resistor
     #define HLW8012_VOLTAGE_R_DOWN      ( 1000 )        // Downstream voltage resistor
-    #define HLW8012_INTERRUPT_ON        CHANGE
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Change
 
 // -----------------------------------------------------------------------------
 // FS UAP1
@@ -5273,11 +5272,11 @@
     #define HLW8012_CF1_PIN             14
     #define HLW8012_CF_PIN              5
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       632
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3711185
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // MUVIT_IO_MIOBULB001
@@ -5337,11 +5336,11 @@
     #define HLW8012_CF1_PIN             5
     #define HLW8012_CF_PIN              4
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       282060
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // Kogan Smarter Home Plug with Energy Meter (Australia)
@@ -5382,11 +5381,11 @@
     #define HLW8012_CF1_PIN             5
     #define HLW8012_CF_PIN              4
 
-    #define HLW8012_SEL_CURRENT         LOW
+    #define HLW8012_SEL_CURRENT         false
     #define HLW8012_CURRENT_RATIO       25740
     #define HLW8012_VOLTAGE_RATIO       282060
     #define HLW8012_POWER_RATIO         3414290
-    #define HLW8012_INTERRUPT_ON        FALLING
+    #define HLW8012_INTERRUPT_ON        espurna::pins::Falling
 
 // -----------------------------------------------------------------------------
 // KINGART_CURTAIN_SWITCH
@@ -5845,7 +5844,7 @@
 // BK72xx through LibreTiny, any board
 // -----------------------------------------------------------------------------
 
-#if defined(LIBRETINY)
+#if defined(BK72XX)
 
 
     // UART1 (P11 TX, P10 RX), same pads as for flashing

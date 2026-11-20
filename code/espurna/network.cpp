@@ -61,11 +61,11 @@ void dns_found_callback_impl(const char*, const ip_addr_t* addr, void* arg) {
         });
 }
 
-HostPtr resolve_impl(String hostname, HostCallback callback) {
+HostPtr resolve_impl(espurna::string hostname, HostCallback callback) {
     auto host = std::make_shared<Host>(
         Host{
             .name = std::move(hostname),
-            .addr = IPAddress{},
+            .addr = espurna::Ip4{},
             .err = ERR_INPROGRESS,
         });
 
@@ -99,11 +99,11 @@ HostPtr resolve_impl(String hostname, HostCallback callback) {
 
 } // namespace
 
-HostPtr resolve(String hostname) {
+HostPtr resolve(espurna::string hostname) {
     return resolve_impl(hostname, nullptr);
 }
 
-void resolve(String hostname, HostCallback callback) {
+void resolve(espurna::string hostname, HostCallback callback) {
     if (!callback) {
         return;
     }
@@ -130,8 +130,8 @@ bool wait_for(HostPtr ptr, duration::Milliseconds timeout) {
     return ptr->err == ERR_OK;
 }
 
-IPAddress gethostbyname(String hostname, duration::Milliseconds timeout) {
-    IPAddress out;
+espurna::Ip4 gethostbyname(espurna::string hostname, duration::Milliseconds timeout) {
+    espurna::Ip4 out;
 
     auto result = resolve(hostname);
     if (wait_for(result, timeout)) {
@@ -141,7 +141,7 @@ IPAddress gethostbyname(String hostname, duration::Milliseconds timeout) {
     return out;
 }
 
-IPAddress gethostbyname(String hostname) {
+espurna::Ip4 gethostbyname(espurna::string hostname) {
     return gethostbyname(hostname, duration::Seconds{ 3 });
 }
 
@@ -157,7 +157,7 @@ PROGMEM_STRING(Host, "HOST");
 
 void host(::terminal::CommandContext&& ctx) {
     if (ctx.argv.size() != 2) {
-        terminalError(ctx, F("HOST <hostname>"));
+        terminalError(ctx, "HOST <hostname>");
         return;
     }
 
@@ -170,7 +170,7 @@ void host(::terminal::CommandContext&& ctx) {
     }
 
     ctx.output.printf_P(PSTR("%s not found\n"), ctx.argv[1].c_str());
-    terminalError(ctx, F("Host not found"));
+    terminalError(ctx, "Host not found");
 }
 
 PROGMEM_STRING(Netstat, "NETSTAT");
@@ -178,7 +178,7 @@ PROGMEM_STRING(Netstat, "NETSTAT");
 void netstat(::terminal::CommandContext&& ctx) {
     // lwIP pcb lists may belong to the tcpip task, can't be walked from loop() safely then
     if (!chip::netstat(ctx.output)) {
-        terminalError(ctx, F("NETSTAT is not implemented for ESP32"));
+        terminalError(ctx, "NETSTAT is not implemented for ESP32");
     }
 }
 

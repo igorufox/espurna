@@ -19,7 +19,7 @@ public:
         bool status { false };
     };
 
-    static ValueResult readCo2(Stream& stream) {
+    static ValueResult readCo2(::espurna::ByteStream& stream) {
         return sendFrame(stream, buildFrame(0xFE, 0x04, 0x03, 1));
     }
 
@@ -68,7 +68,7 @@ private:
         return out;
     }
 
-    static void discardData(Stream& stream) {
+    static void discardData(::espurna::ByteStream& stream) {
         while (stream.available() > 0) {
             stream.read();
         }
@@ -81,9 +81,9 @@ private:
     // - unexpected value length, in case address / register numbers change
     // - invalid crc due to faulty transmission
 
-    static ValueResult sendFrame(Stream& stream, const Frame& frame) {
+    static ValueResult sendFrame(::espurna::ByteStream& stream, const Frame& frame) {
         stream.write(frame.data(), frame.size());
-        delay(50);
+        espurna::time::sleep(50);
 
         ValueResult out;
 
@@ -123,7 +123,7 @@ private:
 class SenseAirSensor : public BaseSensor, SenseAir {
     public:
 
-        void setPort(Stream* port) {
+        void setPort(::espurna::ByteStream* port) {
             _serial = port;
             _dirty = true;
         }
@@ -152,12 +152,12 @@ class SenseAirSensor : public BaseSensor, SenseAir {
         }
 
         // Descriptive name of the sensor
-        String description() const override {
-            return F("SenseAir");
+        espurna::string description() const override {
+            return "SenseAir";
         }
 
         // Address of the sensor (it could be the GPIO or I2C address)
-        String address(unsigned char) const override {
+        espurna::string address(unsigned char) const override {
             return STRING_VIEW("0xFE").toString();
         }
 
@@ -211,7 +211,7 @@ class SenseAirSensor : public BaseSensor, SenseAir {
         }
 
     private:
-        Stream* _serial;
+        ::espurna::ByteStream* _serial;
 
         using TimeSource = espurna::time::CoreClock;
         TimeSource::time_point _startTime;

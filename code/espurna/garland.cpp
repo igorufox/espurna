@@ -113,9 +113,9 @@ bool          _garland_enabled          = true;
 unsigned long _lastTimeUpdate           = 0;
 unsigned long _currentDuration          = ULONG_MAX;
 unsigned int  _currentCommandInSequence = 0;
-String        _immediate_command;
-std::queue<String>  _command_queue;
-std::vector<String> _command_sequence;
+espurna::string        _immediate_command;
+std::queue<espurna::string>  _command_queue;
+std::vector<espurna::string> _command_sequence;
 
 // Palette should
 std::array<Palette, 14> pals {
@@ -206,14 +206,14 @@ void _garlandCreateAnims() {
 //------------------------------------------------------------------------------
 void _garlandConfigure() {
     _garland_enabled = getSetting(NAME_GARLAND_ENABLED, true);
-    byte brightness = getSetting(NAME_GARLAND_BRIGHTNESS, 255);
+    uint8_t brightness = getSetting(NAME_GARLAND_BRIGHTNESS, 255);
     scene.setBrightness(brightness);
 
     float speed = getSetting(NAME_GARLAND_SPEED, 50);
     scene.setSpeed(speed);
 
     DEBUG_MSG_P(PSTR("[GARLAND] enabled %s brightness %d speed %s\n"),
-            _garland_enabled ? "YES" : "NO", brightness, String(speed).c_str());
+            _garland_enabled ? "YES" : "NO", brightness, formatDecimalString(speed, 2).c_str());
 }
 
 //------------------------------------------------------------------------------
@@ -224,56 +224,56 @@ void _garlandReload() {
 //------------------------------------------------------------------------------
 void setDefault() {
     scene.setDefault();
-    byte brightness = scene.getBrightness();
+    uint8_t brightness = scene.getBrightness();
     setSetting(NAME_GARLAND_BRIGHTNESS, brightness);
-    byte speed = scene.getSpeed();
+    uint8_t speed = scene.getSpeed();
     setSetting(NAME_GARLAND_SPEED, speed);
 #if WEB_SUPPORT
-    wsPost([brightness, speed](JsonObject& root) {
-        root["garlandBrightness"] = brightness;
-        root["garlandSpeed"] = speed;
+    wsPost([brightness, speed](espurna::json::Writer& root) {
+        root.field("garlandBrightness", brightness);
+        root.field("garlandSpeed", speed);
     });
 #endif
 }
 
 #if WEB_SUPPORT
 //------------------------------------------------------------------------------
-void _garlandWebSocketOnVisible(JsonObject& root) {
+void _garlandWebSocketOnVisible(espurna::json::Writer& root) {
     wsPayloadModule(root, STRING_VIEW("garland"));
 }
 
-void _garlandWebSocketOnConnected(JsonObject& root) {
-    root[NAME_GARLAND_ENABLED] = garlandEnabled();
-    root[NAME_GARLAND_BRIGHTNESS] = scene.getBrightness();
-    root[NAME_GARLAND_SPEED] = scene.getSpeed();
+void _garlandWebSocketOnConnected(espurna::json::Writer& root) {
+    root.field(NAME_GARLAND_ENABLED, garlandEnabled());
+    root.field(NAME_GARLAND_BRIGHTNESS, scene.getBrightness());
+    root.field(NAME_GARLAND_SPEED, scene.getSpeed());
 }
 
 //------------------------------------------------------------------------------
-bool _garlandWebSocketOnKeyCheck(espurna::StringView key, const JsonVariant&) {
+bool _garlandWebSocketOnKeyCheck(espurna::StringView key, espurna::json::Value) {
     return key.equals(NAME_GARLAND_ENABLED)
         || key.equals(NAME_GARLAND_BRIGHTNESS)
         || key.equals(NAME_GARLAND_SPEED);
 }
 
 //------------------------------------------------------------------------------
-void _garlandWebSocketOnAction(uint32_t client_id, const char* action, JsonObject& data) {
+void _garlandWebSocketOnAction(uint32_t client_id, const char* action, espurna::json::Value data) {
     if (strcmp(action, NAME_GARLAND_SWITCH) == 0) {
-        if (data.containsKey("status") && data.is<int>("status")) {
-            garlandEnabled(1 == data["status"].as<int>());
+        if (data.has("status") && data["status"].isNumber()) {
+            garlandEnabled(1 == static_cast<int>(data["status"].asLong()));
         }
     }
 
     if (strcmp(action, NAME_GARLAND_SET_BRIGHTNESS) == 0) {
-        if (data.containsKey("brightness")) {
-            byte new_brightness = data.get<byte>("brightness");
+        if (data.has("brightness")) {
+            uint8_t new_brightness = static_cast<uint8_t>(data["brightness"].asULong());
             setSetting(NAME_GARLAND_BRIGHTNESS, new_brightness);
             scene.setBrightness(new_brightness);
         }
     }
 
     if (strcmp(action, NAME_GARLAND_SET_SPEED) == 0) {
-        if (data.containsKey("speed")) {
-            byte new_speed = data.get<byte>("speed");
+        if (data.has("speed")) {
+            uint8_t new_speed = static_cast<uint8_t>(data["speed"].asULong());
             setSetting(NAME_GARLAND_SPEED, new_speed);
             scene.setSpeed(new_speed);
         }
@@ -287,13 +287,13 @@ void _garlandWebSocketOnAction(uint32_t client_id, const char* action, JsonObjec
 
 //------------------------------------------------------------------------------
 void setupScene(Anim* new_anim, Palette* new_palette, unsigned long new_duration) {
-    unsigned long currentAnimRunTime = millis() - _lastTimeUpdate;
-    _lastTimeUpdate = millis();
+    unsigned long currentAnimRunTime = espurna::time::ms() - _lastTimeUpdate;
+    _lastTimeUpdate = espurna::time::ms();
 
     int numShows = scene.getNumShows();
     int frameRate = currentAnimRunTime > 0 ? numShows * 1000 / currentAnimRunTime : 0;
 
-    static String palette_name = "Start";
+    static espurna::string palette_name = "Start";
     DEBUG_MSG_P(PSTR("[GARLAND] Anim: %-10s Pal: %-8s timings: calc: %4d pixl: %3d show: %4d frate: %d\n"),
                 scene.getAnim()->name(), palette_name.c_str(),
                 scene.getAvgCalcTime(), scene.getAvgPixlTime(), scene.getAvgShowTime(), frameRate);
@@ -309,36 +309,36 @@ void setupScene(Anim* new_anim, Palette* new_palette, unsigned long new_duration
 }
 
 //------------------------------------------------------------------------------
-bool executeCommand(const String& command) {
+bool executeCommand(const espurna::string& command) {
     DEBUG_MSG_P(PSTR("[GARLAND] Executing command \"%s\"\n"), command.c_str());
     // Parse JSON input
-    DynamicJsonBuffer jsonBuffer;
-    JsonObject& root = jsonBuffer.parseObject(command);
-    if (!root.success()) {
+    const auto root = espurna::json::parse(espurna::StringView(command));
+    if (!root.isObject()) {
         DEBUG_MSG_P(PSTR("[GARLAND] Error parsing command\n"));
         return false;
     }
 
     bool scene_setup_required = false;
 
-    if (root.containsKey(MQTT_PAYLOAD_ENABLE)) {
-        auto enable = root[MQTT_PAYLOAD_ENABLE].as<String>();
+    if (root.has(MQTT_PAYLOAD_ENABLE)) {
+        auto enable = espurna::string(root[MQTT_PAYLOAD_ENABLE].asString().c_str());
         garlandEnabled(enable != "false");
     }
 
-    if (root.containsKey(MQTT_PAYLOAD_BRIGHTNESS)) {
-        auto brightness = root[MQTT_PAYLOAD_BRIGHTNESS].as<byte>();
+    if (root.has(MQTT_PAYLOAD_BRIGHTNESS)) {
+        auto brightness = static_cast<uint8_t>(root[MQTT_PAYLOAD_BRIGHTNESS].asULong());
         scene.setBrightness(brightness);
     }
 
-    if (root.containsKey(MQTT_PAYLOAD_ANIM_SPEED)) {
-        auto speed = root[MQTT_PAYLOAD_ANIM_SPEED].as<byte>();
+    if (root.has(MQTT_PAYLOAD_ANIM_SPEED)) {
+        auto speed = static_cast<uint8_t>(root[MQTT_PAYLOAD_ANIM_SPEED].asULong());
         scene.setSpeed(speed);
     }
 
     Anim* newAnim = anims[0];
-    if (root.containsKey(MQTT_PAYLOAD_ANIMATION)) {
-        auto animation = root[MQTT_PAYLOAD_ANIMATION].as<const char*>();
+    if (root.has(MQTT_PAYLOAD_ANIMATION)) {
+        const auto animation_text = root[MQTT_PAYLOAD_ANIMATION].asString();
+        const char* animation = animation_text.c_str();
         for (size_t i = 0; i < anims.size(); ++i) {
             auto anim_name = anims[i]->name();
             if (strcmp(animation, anim_name) == 0) {
@@ -350,12 +350,12 @@ bool executeCommand(const String& command) {
     }
 
     Palette* newPalette = &pals[0];
-    if (root.containsKey(MQTT_PAYLOAD_PALETTE)) {
-        if (root.is<int>(MQTT_PAYLOAD_PALETTE)) {
-            one_color_palette.reset(new Palette("Color", true, {root[MQTT_PAYLOAD_PALETTE].as<uint32_t>()}));
+    if (root.has(MQTT_PAYLOAD_PALETTE)) {
+        if (root[MQTT_PAYLOAD_PALETTE].isNumber()) {
+            one_color_palette.reset(new Palette("Color", true, {static_cast<uint32_t>(root[MQTT_PAYLOAD_PALETTE].asULong())}));
             newPalette = one_color_palette.get();
         } else {
-            auto palette = root[MQTT_PAYLOAD_PALETTE].as<String>();
+            auto palette = espurna::string(root[MQTT_PAYLOAD_PALETTE].asString().c_str());
             bool palette_found = false;
             for (size_t i = 0; i < pals.size(); ++i) {
                 auto pal_name = pals[i].name();
@@ -377,8 +377,8 @@ bool executeCommand(const String& command) {
     }
 
     unsigned long newAnimDuration = LONG_MAX;
-    if (root.containsKey(MQTT_PAYLOAD_DURATION)) {
-        newAnimDuration = root[MQTT_PAYLOAD_DURATION].as<unsigned long>();
+    if (root.has(MQTT_PAYLOAD_DURATION)) {
+        newAnimDuration = root[MQTT_PAYLOAD_DURATION].asULong();
         scene_setup_required = true;
     }
 
@@ -395,7 +395,7 @@ bool executeCommand(const String& command) {
 void garlandLoop(void) {
     if (_immediate_command.length()) {
         executeCommand(_immediate_command);
-        _immediate_command = String();
+        _immediate_command = espurna::string();
     }
 
     if (!garlandEnabled())
@@ -403,7 +403,7 @@ void garlandLoop(void) {
 
     scene.run();
 
-    unsigned long currentAnimRunTime = millis() - _lastTimeUpdate;
+    unsigned long currentAnimRunTime = espurna::time::ms() - _lastTimeUpdate;
     if (currentAnimRunTime > _currentDuration && scene.finishedAnimCycle()) {
         bool scene_setup_done = false;
         if (!_command_queue.empty()) {
@@ -443,26 +443,25 @@ void garlandMqttCallback(unsigned int type, espurna::StringView topic, espurna::
     if (type == MQTT_MESSAGE_EVENT) {
         auto t = mqttMagnitude(topic);
         if (t.equals(MQTT_TOPIC_GARLAND)) {
-            DynamicJsonBuffer jsonBuffer;
-            JsonObject& root = jsonBuffer.parseObject(payload.begin());
-            if (!root.success()) {
+            const auto root = espurna::json::parse(espurna::StringView(payload));
+            if (!root.isObject()) {
                 DEBUG_MSG_P(PSTR("[GARLAND] Error parsing mqtt data\n"));
                 return;
             }
 
-            String command = MQTT_COMMAND_IMMEDIATE;
-            if (root.containsKey(MQTT_PAYLOAD_COMMAND)) {
-                command = root[MQTT_PAYLOAD_COMMAND].as<String>();
+            espurna::string command = MQTT_COMMAND_IMMEDIATE;
+            if (root.has(MQTT_PAYLOAD_COMMAND)) {
+                command = espurna::string(root[MQTT_PAYLOAD_COMMAND].asString().c_str());
             }
 
             if (command == MQTT_COMMAND_IMMEDIATE) {
                 _immediate_command = payload.toString();
             } else if (command == MQTT_COMMAND_RESET) {
-                std::queue<String> empty_queue;
+                std::queue<espurna::string> empty_queue;
                 std::swap(_command_queue, empty_queue);
-                std::vector<String> empty_sequence;
+                std::vector<espurna::string> empty_sequence;
                 std::swap(_command_sequence, empty_sequence);
-                _immediate_command = String();
+                _immediate_command = espurna::string();
                 _currentDuration = 0;
                 setDefault();
                 garlandEnabled(true);
@@ -494,13 +493,13 @@ void Scene::setPalette(Palette* palette) {
     }
 }
 
-void Scene::setBrightness(byte value) {
+void Scene::setBrightness(uint8_t value) {
     DEBUG_MSG_P(PSTR("[GARLAND] new brightness = %d\n"), value);
     brightness = value;
 }
 
 // Speed is reverse to cycleFactor and 10x
-void Scene::setSpeed(byte speed) {
+void Scene::setSpeed(uint8_t speed) {
     DEBUG_MSG_P(PSTR("[GARLAND] new speed = %d\n"), speed);
     this->speed = speed;
     cycleFactor = (float)(GARLAND_SCENE_SPEED_MAX - speed) / GARLAND_SCENE_SPEED_FACTOR;
@@ -513,7 +512,7 @@ void Scene::setDefault() {
 }
 
 void Scene::run() {
-    unsigned long iteration_start_time = micros();
+    unsigned long iteration_start_time = espurna::time::us();
 
     if (state == Calculate || cyclesRemain < 1) {
         // Calculate number of cycles for this animation iteration
@@ -531,8 +530,8 @@ void Scene::run() {
             _anim->Run();
         }
 
-        sum_calc_time += (micros() - iteration_start_time);
-        iteration_start_time = micros();
+        sum_calc_time += (espurna::time::us() - iteration_start_time);
+        iteration_start_time = espurna::time::us();
         ++calc_num;
         state = Transition;
     }
@@ -541,30 +540,30 @@ void Scene::run() {
         // transition coef, if within 0..1 - transition is active
         // changes from 1 to 0 during transition, so we interpolate from current
         // color to previous
-        float transc = (float)((long)transms - (long)millis()) / GARLAND_SCENE_TRANSITION_MS;
+        float transc = (float)((long)transms - (long)espurna::time::ms()) / GARLAND_SCENE_TRANSITION_MS;
         Color* leds_prev = (_leds == &_leds1[0]) ? &_leds2[0] : &_leds1[0];
 
         if (transc > 0) {
             for (int i = 0; i < _numLeds; i++) {
                 // transition is in progress
                 Color c = _leds[i].interpolate(leds_prev[i], transc);
-                byte r = (int)(bri_lvl[c.r]) * brightness / 256;
-                byte g = (int)(bri_lvl[c.g]) * brightness / 256;
-                byte b = (int)(bri_lvl[c.b]) * brightness / 256;
+                uint8_t r = (int)(bri_lvl[c.r]) * brightness / 256;
+                uint8_t g = (int)(bri_lvl[c.g]) * brightness / 256;
+                uint8_t b = (int)(bri_lvl[c.b]) * brightness / 256;
                 _pixels->setPixelColor(i, _pixels->Color(r, g, b));
             }
         } else {
             for (int i = 0; i < _numLeds; i++) {
                 // regular operation
-                byte r = (int)(bri_lvl[_leds[i].r]) * brightness / 256;
-                byte g = (int)(bri_lvl[_leds[i].g]) * brightness / 256;
-                byte b = (int)(bri_lvl[_leds[i].b]) * brightness / 256;
+                uint8_t r = (int)(bri_lvl[_leds[i].r]) * brightness / 256;
+                uint8_t g = (int)(bri_lvl[_leds[i].g]) * brightness / 256;
+                uint8_t b = (int)(bri_lvl[_leds[i].b]) * brightness / 256;
                 _pixels->setPixelColor(i, _pixels->Color(r, g, b));
             }
         }
 
-        sum_pixl_time += (micros() - iteration_start_time);
-        iteration_start_time = micros();
+        sum_pixl_time += (espurna::time::us() - iteration_start_time);
+        iteration_start_time = espurna::time::us();
         ++pixl_num;
         state = Show;
     }
@@ -584,7 +583,7 @@ void Scene::run() {
         if (_numLeds > NUMLEDS_CAN_CAUSE_WDT_RESET) {
             espurna::chip::wdt_resume();
         }
-        sum_show_time += (micros() - iteration_start_time);
+        sum_show_time += (espurna::time::us() - iteration_start_time);
         ++show_num;
         state = Calculate;
         ++numShows;
@@ -593,7 +592,7 @@ void Scene::run() {
 }
 
 void Scene::setupImpl() {
-    transms = millis() + GARLAND_SCENE_TRANSITION_MS;
+    transms = espurna::time::ms() + GARLAND_SCENE_TRANSITION_MS;
 
     // switch operation buffers (for transition to operate)
     if (_leds == &_leds1[0]) {
@@ -632,7 +631,7 @@ void Scene::setup() {
 
 Anim::Anim(const char* name) : _name(name) {}
 
-void Anim::Setup(Palette* palette, Palette* pals, size_t palsNum, uint16_t numLeds, Color* leds, Color* ledstmp, byte* seq) {
+void Anim::Setup(Palette* palette, Palette* pals, size_t palsNum, uint16_t numLeds, Color* leds, Color* ledstmp, uint8_t* seq) {
     this->palette = palette;
     this->pals = pals;
     this->palsNum = palsNum;
@@ -651,7 +650,7 @@ void Anim::initSeq() {
 
 void Anim::shuffleSeq() {
     for (int i = 0; i < numLeds; ++i) {
-        byte ind = (unsigned int)(rngb() * numLeds / 256);
+        uint8_t ind = (unsigned int)(rngb() * numLeds / 256);
         if (ind != i) {
             std::swap(seq[ind], seq[i]);
         }
@@ -686,7 +685,7 @@ void Anim::flashRandomLeds(uint16_t deciPercent) {
 
 unsigned int Anim::rng() {
     static unsigned int y = 0;
-    y += micros();  // seeded with changing number
+    y += espurna::time::us();  // seeded with changing number
     y ^= y << 2;
     y ^= y >> 7;
     y ^= y << 7;
@@ -695,8 +694,8 @@ unsigned int Anim::rng() {
 
 // Random numbers generator in byte range (256) much faster than secureRandom.
 // For usage in time-critical places.
-byte Anim::rngb() {
-    return static_cast<byte>(rng());
+uint8_t Anim::rngb() {
+    return static_cast<uint8_t>(rng());
 }
 
 bool fiftyFifty() {
@@ -723,8 +722,8 @@ void garlandEnabled(bool enabled) {
     _garland_enabled = enabled;
 
 #if WEB_SUPPORT
-    wsPost([enabled](JsonObject& root) {
-        root["garlandEnabled"] = enabled;
+    wsPost([enabled](espurna::json::Writer& root) {
+        root.field("garlandEnabled", enabled);
     });
 #endif
 }

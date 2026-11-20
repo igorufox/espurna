@@ -35,9 +35,9 @@ int version() {
 namespace migrate {
 
 void deletePrefixes(query::StringViewIterator prefixes) {
-    std::vector<String> to_purge;
+    std::vector<espurna::string> to_purge;
 
-    foreach_prefix([&](StringView, String key, const kvs_type::ReadResult&) {
+    foreach_prefix([&](StringView, espurna::string key, const kvs_type::ReadResult&) {
         to_purge.push_back(std::move(key));
     }, prefixes);
 
@@ -63,19 +63,19 @@ void run(MigrateVersionCallback callback) {
 }
 
 void run() {
-    setSetting(FPSTR(schema::Key), schema::Version);
+    setSetting(schema::Key, schema::Version);
 
     if (currentVersion() < 4) {
-        delSetting(F("board"));
+        delSetting("board");
     }
 
     if (currentVersion() < 12) {
         const auto hostname = systemHostname();
         if (systemIdentifier() == hostname) {
-            delSetting(F("hostname"));
+            delSetting("hostname");
         }
 
-        delSetting(F("boardName"));
+        delSetting("boardName");
     }
 
     saveSettings();

@@ -13,7 +13,7 @@ A module of its own (sensors/driver.h): needs the sensors module
 using namespace espurna::sensor::module;
 
 ESPURNA_SENSOR_DRIVER(guvas12sd, "guvas12sdPin|adc|Pin|") {
-    const auto pin = getSetting(F("guvas12sdPin"), uint8_t{ GPIO_NONE });
+    const auto pin = getSetting("guvas12sdPin", uint8_t{ GPIO_NONE });
     if (pin_set(pin)) {
         auto* sensor = new GUVAS12SDSensor();
         sensor->setGPIO(pin);

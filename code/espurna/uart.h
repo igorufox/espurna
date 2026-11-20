@@ -8,7 +8,8 @@ Copyright (C) 2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 #pragma once
 
-#include <Arduino.h>
+
+#include "byte_stream.h"
 
 #include <memory>
 
@@ -27,7 +28,7 @@ struct Port {
     Type type;
     bool tx;
     bool rx;
-    Stream* stream;
+    ByteStream* stream;
 };
 
 using PortPtr = std::unique_ptr<Port>;
@@ -45,10 +46,10 @@ void uartSetup();
 // Returns false when the port is not set up or is already claimed by another owner.
 using UartClaimRelease = const char* (*)(size_t index);
 void uartOnClaim(UartClaimRelease);
-bool uartClaim(size_t index, const __FlashStringHelper* owner);
+bool uartClaim(size_t index, const char* owner);
 
 // Owner of the port, nullptr when it is free
-const __FlashStringHelper* uartClaimed(size_t index);
+const char* uartClaimed(size_t index);
 
 // The port of these settings opened now when it is not yet (a module that set the uartTx<n> / uartRx<n> keys after
 // the boot), and another speed for an open hardware port (false: none there, or a software port)

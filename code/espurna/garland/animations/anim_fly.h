@@ -19,7 +19,7 @@ class AnimFly : public Anim {
     }
 
     void Run() override {
-        byte launchpos;
+        uint8_t launchpos;
         if (inc > 0) {
             launchpos = numLeds - 1;
             for (auto i = 1; i < numLeds; i++) {

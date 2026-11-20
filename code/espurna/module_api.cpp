@@ -25,10 +25,10 @@ ESPURNA_MODULE(api, "api", 4) {
 
     using espurna::modules::Api;
 
-    modulesProvide(Api::ApiRegisterBasic, static_cast<void(*)(String, espurna::api::BasicHandler&&,
+    modulesProvide(Api::ApiRegisterBasic, static_cast<void(*)(espurna::string, espurna::api::BasicHandler&&,
         espurna::api::BasicHandler&&)>(&apiRegister));
-    modulesProvide(Api::ApiRegisterJson, static_cast<void(*)(String, espurna::api::JsonHandler&&,
-        espurna::api::JsonHandler&&)>(&apiRegister));
+    modulesProvide(Api::ApiRegisterJson, static_cast<void(*)(espurna::string, espurna::api::JsonHandler&&,
+        espurna::api::JsonPutHandler&&)>(&apiRegister));
 
     apiCommonSetup();
     apiSetup();

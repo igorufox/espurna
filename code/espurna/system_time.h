@@ -8,7 +8,6 @@ Copyright (C) 2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstdint>
 
@@ -40,7 +39,7 @@ inline uint32_t cycle_count() {
 
 // 64bit, never overflows in practice
 inline uint64_t micros64() {
-    return ::micros64();
+    return ::espurna::core::chip::micros();
 }
 
 // busy wait, *without* using SDK or Core timers
@@ -55,6 +54,29 @@ inline void delay(uint32_t ms) {
 }
 
 } // namespace chip
+
+// ms since the boot, 32 bit: wraps after 49 days, differences of two of them stay right
+inline uint32_t ms() {
+    return static_cast<uint32_t>(chip::micros64() / 1000ULL);
+}
+
+// us since the boot, 32 bit (wraps after 71 minutes)
+inline uint32_t us() {
+    return static_cast<uint32_t>(chip::micros64());
+}
+
+// sleep (the network runs meantime), busy wait, let the other tasks run
+inline void sleep(uint32_t value) {
+    chip::delay(value);
+}
+
+inline void sleep_us(uint32_t value) {
+    chip::delay_us(value);
+}
+
+inline void yield() {
+    ::espurna::core::chip::yield();
+}
 } // namespace time
 
 namespace duration {
@@ -135,7 +157,7 @@ struct CoreClock {
     static constexpr bool is_steady { true };
 
     static time_point now() noexcept {
-        return time_point(duration(::millis()));
+        return time_point(duration(ms()));
     }
 };
 
@@ -151,6 +173,10 @@ inline CoreClock::time_point millis() {
 
 // Attempt to sleep for N milliseconds, but this is allowed to be woken up at any point by the SDK
 inline void delay(CoreClock::duration value) {
+    chip::delay(value.count());
+}
+
+inline void sleep(CoreClock::duration value) {
     chip::delay(value.count());
 }
 

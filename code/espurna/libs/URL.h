@@ -4,7 +4,6 @@
 
 #pragma once
 
-#include <Arduino.h>
 
 #include <cstdint>
 #include <utility>
@@ -31,8 +30,8 @@ public:
         }
     }
 
-    String protocol;
-    String host;
-    String path;
+    espurna::string protocol;
+    espurna::string host;
+    espurna::string path;
     uint16_t port { 0 };
 };

@@ -16,11 +16,11 @@ ESPURNA_SENSOR_DRIVER(vl53l1x, "vl53l1xMode|select|Distance mode|2|0=Short,1=Med
     if (i2c_bus()) {
         auto* sensor = new VL53L1XSensor();
         sensor->setInterMeasurementPeriod(VL53L1XSensor::InterMeasurementPeriod{
-            getSetting(F("vl53l1xPeriod"), static_cast<uint32_t>(VL53L1X_INTER_MEASUREMENT_PERIOD))});
+            getSetting("vl53l1xPeriod", static_cast<uint32_t>(VL53L1X_INTER_MEASUREMENT_PERIOD))});
         sensor->setMeasurementTimingBudget(VL53L1XSensor::MeasurementTimingBudget{
-            getSetting(F("vl53l1xBudget"), static_cast<uint32_t>(VL53L1X_MEASUREMENT_TIMING_BUDGET))});
+            getSetting("vl53l1xBudget", static_cast<uint32_t>(VL53L1X_MEASUREMENT_TIMING_BUDGET))});
         sensor->setDistanceMode(static_cast<VL53L1X::DistanceMode>(
-            getSetting(F("vl53l1xMode"), static_cast<int>(VL53L1X_DISTANCE_MODE))));
+            getSetting("vl53l1xMode", static_cast<int>(VL53L1X_DISTANCE_MODE))));
         sensorAdd(sensor);
     }
 }

@@ -18,7 +18,7 @@ namespace espurna {
 namespace terminal {
 namespace parser {
 
-String error(Error value) {
+espurna::string error(Error value) {
     StringView out;
 
     switch (value) {
@@ -127,7 +127,7 @@ struct Values {
     size_t span_len { 0 };
 
     // temporary for 'buffer' when escaped data appears and part of the string is copied here
-    String token;
+    espurna::string token;
     char byte_lhs { 0 };
 
     Tokens tokens;
@@ -713,7 +713,7 @@ void DelimiterBuffer::append(const char* data, size_t length) {
     }
 }
 
-void DelimiterBuffer::append(Stream& stream, size_t length) {
+void DelimiterBuffer::append(::espurna::ByteStream& stream, size_t length) {
     auto output = &_storage[_size];
     auto capacity = _capacity - _size;
 

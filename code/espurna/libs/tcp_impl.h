@@ -25,6 +25,12 @@ TCP - the implementation (libs/tcp.h), part of libs/net_impl.h. Needs, defined b
 #if !NO_SYS
 #include <lwip/tcpip.h>
 #include <lwip/priv/tcpip_priv.h>
+#include <lwip/priv/tcp_priv.h>
+#endif
+
+// the free system heap, ESP8266_RTOS_SDK and ESP-IDF (queueRoom())
+#if MEM_LIBC_MALLOC
+extern "C" uint32_t esp_get_free_heap_size(void);
 #endif
 
 namespace espurna {
@@ -42,6 +48,19 @@ using ::espurna::lwip::lwipCall;
 
 } // namespace
 
+bool sending() {
+    bool out { false };
+    lwipCall([&]() {
+        for (const auto* pcb = tcp_active_pcbs; pcb; pcb = pcb->next) {
+            if (pcb->unsent || pcb->unacked) {
+                out = true;
+                break;
+            }
+        }
+    });
+    return out;
+}
+
 // --- a connection --------------------------------------------------------------------------------------------------
 
 namespace {
@@ -50,20 +69,26 @@ namespace {
 // every frame received. Parallel answers (the 96 KB page, the WebSocket, MQTT) filled it: no frame could be received,
 // so no ACK either, so the queued data was never freed - the stack stopped receiving for good and netwatch restarted
 // the board after 2 min (10.0.5.139 11-14 08:33, W35: lwip max 16360 of 16384, 99 errors). Sending leaves RxReserve of
-// that heap free; with the system heap (MEM_LIBC_MALLOC 1: ESP8266, ESP32) nothing is held back here
+// that heap free. The system heap (MEM_LIBC_MALLOC 1: ESP8266, ESP32) the same: the Wi-Fi driver takes its receive
+// buffers from it (20.11 COM3 ESP8266, full module set: the WebUI page took the heap from 12.8 to 4.6 KB, no ACK came in,
+// the page stopped and the web server with it)
 constexpr size_t RxReserve { 6144 };
 
 // lwIP's context
 size_t queueRoom() {
-#if !MEM_LIBC_MALLOC && LWIP_STATS && MEM_STATS
+#if MEM_LIBC_MALLOC
+    const size_t free = esp_get_free_heap_size();
+#elif LWIP_STATS && MEM_STATS
     const size_t avail = lwip_stats.mem.avail;
     const size_t used = lwip_stats.mem.used;
     const size_t free = (avail > used) ? (avail - used) : 0;
+#else
+    return static_cast<size_t>(-1);
+#endif
+#if MEM_LIBC_MALLOC || (LWIP_STATS && MEM_STATS)
     // a segment costs its header and the pbuf besides the data
     constexpr size_t Overhead { 256 };
     return (free > (RxReserve + Overhead)) ? (free - RxReserve - Overhead) : 0;
-#else
-    return static_cast<size_t>(-1);
 #endif
 }
 
@@ -75,6 +100,10 @@ public:
     // sends no more than the window until the loop takes it; a segment that does not fit waits in lwIP (refused, given
     // again). Not more: it is per connection, 8 KB each left the ESP8266 head without heap for an Apply (W22, 11-13)
     static constexpr size_t RingSize { (static_cast<size_t>(TCP_WND) > 2048) ? static_cast<size_t>(TCP_WND) : 2048 };
+    // what a connection starts with: a request head, an MQTT or WebSocket message, one whole segment. The ring grows to
+    // RingSize when a stream fills it (an upload) and goes back once the loop emptied it (20.11 COM3: 5760 bytes taken
+    // at every accept - the WebUI page, its WebSocket and MQTT held ~17 KB of the ESP8266's 15 KB headroom)
+    static constexpr size_t RingStart { (static_cast<size_t>(TCP_MSS) + 96 > 1536) ? static_cast<size_t>(TCP_MSS) + 96 : 1536 };
 
     Impl() = default;
     Impl(const Impl&) = delete;
@@ -86,7 +115,8 @@ public:
 
     bool allocate() {
         if (!_ring) {
-            _ring.reset(new (std::nothrow) uint8_t[RingSize]);
+            _ring.reset(new (std::nothrow) uint8_t[RingStart]);
+            _ring_size = _ring ? RingStart : 0;
         }
         return static_cast<bool>(_ring);
     }
@@ -95,6 +125,9 @@ public:
     void attach(tcp_pcb* pcb) {
         _pcb = pcb;
         _connected = true;
+        // no Nagle on the server's side: an answer goes out as its head and its body, the body waited for the ACK of
+        // the head, and the client delays its ACKs (Windows ~200 ms) - 140..720 ms a small WebUI part (20.11)
+        tcp_nagle_disable(pcb);
         tcp_arg(pcb, this);
         tcp_err(pcb, onErr);
         tcp_recv(pcb, onRecv);
@@ -158,6 +191,7 @@ public:
             return 0;
         }
         std::lock_guard<NET_LOCK> lock(_lock);
+        shrink();
         return _ring_head - _ring_tail;
     }
 
@@ -171,9 +205,11 @@ public:
             std::lock_guard<NET_LOCK> lock(_lock);
             size = std::min(len, _ring_head - _ring_tail);
             for (size_t index = 0; index < size; ++index) {
-                out[index] = _ring[(_ring_tail + index) % RingSize];
+                out[index] = _ring[(_ring_tail + index) % _ring_size];
             }
             _ring_tail += size;
+
+            shrink();
         }
 
         // the loop took them: the window opens again, in steps (one call into lwIP per ~half a KB)
@@ -195,9 +231,20 @@ public:
         size_t out { 0 };
         lwipCall([&]() {
             if (_pcb) {
-                out = std::min<size_t>(tcp_sndbuf(_pcb), queueRoom());
+                out = std::min<size_t>(tcp_sndbuf(_pcb), room(_pcb));
             }
         });
+        return out;
+    }
+
+    // lwIP's context. What the reserve of the heap leaves; a connection with nothing in flight sends one segment anyway:
+    // its ACK frees memory, while waiting for room would never end when the answer itself holds the heap (20.11 COM3:
+    // /modules held ~10 KB, 5.5 KB free < the reserve, nothing went out until the 30 s idle timeout closed it)
+    static size_t room(const tcp_pcb* pcb) {
+        const size_t out = queueRoom();
+        if (!out && !pcb->unsent && !pcb->unacked) {
+            return TCP_MSS;
+        }
         return out;
     }
 
@@ -208,7 +255,7 @@ public:
                 return;
             }
 
-            const size_t size = std::min<size_t>(std::min<size_t>(len, tcp_sndbuf(_pcb)), queueRoom());
+            const size_t size = std::min<size_t>(std::min<size_t>(len, tcp_sndbuf(_pcb)), room(_pcb));
             if (size && (tcp_write(_pcb, data, size, TCP_WRITE_FLAG_COPY) == ERR_OK)) {
                 tcp_output(_pcb);
                 out = size;
@@ -328,17 +375,18 @@ private:
             std::lock_guard<NET_LOCK> lock(self->_lock);
             const size_t used = self->_ring_head - self->_ring_tail;
             const size_t len = p->tot_len;
-            if (len > RingSize - used) {
+            if ((len > self->_ring_size - used) && !self->grow(used + len)) {
                 return ERR_MEM; // refused: lwIP keeps it and gives it again
             }
 
-            const size_t at = self->_ring_head % RingSize;
-            const size_t first = std::min(len, RingSize - at);
+            const size_t at = self->_ring_head % self->_ring_size;
+            const size_t first = std::min(len, self->_ring_size - at);
             pbuf_copy_partial(p, self->_ring.get() + at, first, 0);
             if (first < len) {
                 pbuf_copy_partial(p, self->_ring.get(), len - first, first);
             }
             self->_ring_head += len;
+            self->_last_rx = sys_now();
         }
 
         pbuf_free(p);
@@ -380,7 +428,45 @@ private:
     tcp_pcb* _pcb { nullptr };          // lwIP's context only
     int _dns_slot { -1 };               // lwIP's context only
     uint16_t _port { 0 };
+    // under the lock: emptied after a stream, nothing received for a second (not between the segments of an upload):
+    // back to the small ring (kept as it is when that one cannot be had)
+    void shrink() {
+        if ((_ring_head == _ring_tail) && (_ring_size > RingStart) && ((sys_now() - _last_rx) > 1000)) {
+            std::unique_ptr<uint8_t[]> small(new (std::nothrow) uint8_t[RingStart]);
+            if (small) {
+                _ring = std::move(small);
+                _ring_size = RingStart;
+                _ring_head = 0;
+                _ring_tail = 0;
+            }
+        }
+    }
+
+    // under the lock: the ring to RingSize (once), what it holds in order at its start
+    bool grow(size_t need) {
+        if ((_ring_size >= RingSize) || (need > RingSize)) {
+            return false;
+        }
+
+        std::unique_ptr<uint8_t[]> big(new (std::nothrow) uint8_t[RingSize]);
+        if (!big) {
+            return false;
+        }
+
+        const size_t used = _ring_head - _ring_tail;
+        for (size_t index = 0; index < used; ++index) {
+            big[index] = _ring[(_ring_tail + index) % _ring_size];
+        }
+        _ring = std::move(big);
+        _ring_size = RingSize;
+        _ring_tail = 0;
+        _ring_head = used;
+        return true;
+    }
+
     std::unique_ptr<uint8_t[]> _ring;
+    size_t _ring_size { 0 };
+    uint32_t _last_rx { 0 };            // sys_now() of the last data, under the lock
     NET_LOCK _lock;
     size_t _ring_head { 0 };            // written by lwIP's callback, under the lock
     size_t _ring_tail { 0 };            // written by the loop, under the lock

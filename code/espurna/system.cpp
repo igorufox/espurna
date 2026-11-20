@@ -12,9 +12,11 @@ in arch/<arch>/system_<arch>.cpp (ref. espurna::system::chip in system.h)
 #include "espurna.h"
 
 #include "rtcmem.h"
+#include "espurna_ota.h"
 #include "espurna_tasks.h"
 
 #if WEB_SUPPORT
+#include "web.h"
 #include "ws.h"
 #endif
 
@@ -33,6 +35,8 @@ in arch/<arch>/system_<arch>.cpp (ref. espurna::system::chip in system.h)
 #if MODULES_SUPPORT
 #include "modules.h"
 #endif
+
+#include "libs/tcp.h"
 
 #include <cstdint>
 #include <cstring>
@@ -183,20 +187,20 @@ namespace settings {
 namespace internal {
 
 template <>
-espurna::sleep::Interrupt convert(const String& value) {
+espurna::sleep::Interrupt convert(const espurna::string& value) {
     return convert(system::settings::options::SleepInterruptOptions, value, sleep::Interrupt::Low);
 }
 
-String serialize(espurna::sleep::Interrupt value) {
+espurna::string serialize(espurna::sleep::Interrupt value) {
     return serialize(system::settings::options::SleepInterruptOptions, value);
 }
 
 template <>
-espurna::heartbeat::Mode convert(const String& value) {
+espurna::heartbeat::Mode convert(const espurna::string& value) {
     return convert(system::settings::options::HeartbeatModeOptions, value, heartbeat::Mode::Repeat);
 }
 
-String serialize(espurna::heartbeat::Mode mode) {
+espurna::string serialize(espurna::heartbeat::Mode mode) {
     return serialize(system::settings::options::HeartbeatModeOptions, mode);
 }
 
@@ -246,17 +250,17 @@ STRING_VIEW_INLINE(Password, ADMIN_PASS);
 
 } // namespace internal
 
-String manufacturer() {
+espurna::string manufacturer() {
     return getSetting(settings::keys::Manufacturer, buildHardware().manufacturer);
 }
 
-String device_name() {
+espurna::string device_name() {
     return getSetting(settings::keys::Device, buildHardware().device);
 }
 
 // settings are only read once, the name stays the same until reboot
 StringView device() {
-    static String out;
+    static espurna::string out;
     if (!out.length()) {
         out = manufacturer();
         out += '_';
@@ -267,8 +271,8 @@ StringView device() {
 }
 
 StringView identifier() {
-    const static String out = ([]() {
-        String out;
+    const static espurna::string out = ([]() {
+        espurna::string out;
 
         const auto app = buildApp();
         out.concat(app.name.c_str(), app.name.length());
@@ -284,11 +288,11 @@ StringView identifier() {
     return out;
 }
 
-String description() {
+espurna::string description() {
     return getSetting(settings::keys::Description);
 }
 
-String hostname() {
+espurna::string hostname() {
     const auto defaultValue = (internal::Hostname.length() > 0)
         ? internal::Hostname
         : identifier();
@@ -300,7 +304,7 @@ StringView default_password() {
     return internal::Password;
 }
 
-String password() {
+espurna::string password() {
     return getSetting(settings::keys::Password, default_password());
 }
 
@@ -313,7 +317,7 @@ namespace settings {
 namespace query {
 
 #define EXACT_VALUE(NAME, FUNC)\
-String NAME () {\
+espurna::string NAME () {\
     return espurna::settings::internal::serialize(FUNC());\
 }
 
@@ -360,7 +364,7 @@ namespace time {
 bool tryDelay(CoreClock::time_point start, CoreClock::duration timeout, CoreClock::duration interval) {
     auto elapsed = CoreClock::now() - start;
     if (elapsed < timeout) {
-        delay(std::min((timeout - elapsed), interval));
+        espurna::time::sleep(std::min((timeout - elapsed), interval));
         return false;
     }
 
@@ -468,7 +472,7 @@ namespace {
 
 namespace boot {
 
-String serialize(CustomResetReason reason) {
+espurna::string serialize(CustomResetReason reason) {
     const char* ptr { PSTR("None") };
 
     switch (reason) {
@@ -522,8 +526,8 @@ String serialize(CustomResetReason reason) {
 // Default CT input (pin B, solder jumper B)
 void hardware() {
 #if defined(MANCAVEMADE_ESPLIVE)
-    pinMode(16, OUTPUT);
-    digitalWrite(16, HIGH);
+    espurna::pins::mode(16, espurna::pins::Output);
+    espurna::pins::write(16, true);
 #endif
 }
 
@@ -733,7 +737,7 @@ void init() {
 // the device with no network services until a manual reboot. Once it ran ExitTime without a crash, reboot into
 // the normal mode; a real crash loop comes back here after ChecksMax crashes. Not while an OTA is being written
 void exit_unstable() {
-    if (Update.isRunning()) {
+    if (otaRunning()) {
         exit_timer.once(build::ExitRetry, exit_unstable);
         return;
     }
@@ -1097,17 +1101,17 @@ namespace {
 #if WEB_SUPPORT
 namespace web {
 
-void onConnected(JsonObject& root) {
-  root[FPSTR(heartbeat::settings::keys::Report)] = heartbeat::settings::value();
-  root[FPSTR(heartbeat::settings::keys::Interval)] =
-      heartbeat::settings::interval().count();
-  root[FPSTR(heartbeat::settings::keys::Mode)] =
-      espurna::settings::internal::serialize(heartbeat::settings::mode());
+void onConnected(espurna::json::Writer& root) {
+  root.field(heartbeat::settings::keys::Report, heartbeat::settings::value());
+  root.field(heartbeat::settings::keys::Interval, heartbeat::settings::interval().count());
+  root.field(heartbeat::settings::keys::Mode, espurna::settings::internal::serialize(heartbeat::settings::mode()));
 }
 
-bool onKeyCheck(StringView key, const JsonVariant& value) {
+bool onKeyCheck(StringView key, espurna::json::Value value) {
     if (key == system::settings::keys::Password) {
-        return !equalsConstantTime(system::password(), value.as<String>());
+        // the password as it came (one with a quote or a backslash in it counts as changed, the ws module stores it
+        // without the escapes)
+        return !equalsConstantTime(system::password(), espurna::string(value.view()));
     }
 
     return (key == system::settings::keys::Description)
@@ -1157,7 +1161,7 @@ bool held() {
             continue;
         }
 
-        const auto now = millis();
+        const auto now = espurna::time::ms();
         if (!since) {
             since = now | 1;
             DEBUG_MSG_P(PSTR("[MAIN] Reset waits: a Matter controller is pairing\n"));
@@ -1166,6 +1170,7 @@ bool held() {
         return (now - since) < LimitMs;
     }
 
+    since = 0;
     return false;
 }
 
@@ -1180,8 +1185,31 @@ void add(SystemResetHold hold) {
 
 } // namespace hold
 
+// the answer of the request that asked for the restart (OTA, Apply, settings) still on the way: a segment of it lost
+// once is retransmitted only while the board runs (20.11 COM3: 5 of 20 OTA and 3 Apply with no answer, the work done
+// all the same), at most AnswerWaitMs after the restart is due
+constexpr uint32_t AnswerWaitMs { 5000 };
+uint32_t due_at { 0 };
+
+bool answer_on_the_way() {
+    const auto now = espurna::time::ms();
+    if (!due_at) {
+        due_at = now | 1;
+    }
+    if ((now - due_at) >= AnswerWaitMs) {
+        return false;
+    }
+#if WEB_SUPPORT
+    // the request that asked for it is not done yet (its head went out, the body not: 20.11 /modules/on)
+    if (webServer().active()) {
+        return true;
+    }
+#endif
+    return espurna::tcp::sending();
+}
+
 void pending_reset_loop() {
-    if ((internal::reset_reason != CustomResetReason::None) && !hold::held()) {
+    if ((internal::reset_reason != CustomResetReason::None) && !hold::held() && !answer_on_the_way()) {
         system::chip::restart();
     }
 }
@@ -1260,7 +1288,7 @@ uint32_t randomNumber() {
 
 // 'total stack size' minus 'un-painted area' of the loop task (esp8266 CONT)
 unsigned long systemFreeStack() {
-    return ESP.getFreeContStack();
+    return ESP_COMPAT.getFreeContStack();
 }
 
 unsigned long systemLoadAverage() {
@@ -1297,13 +1325,13 @@ void systemHeapStepAt(uintptr_t address) {
 }
 
 espurna::StringView systemChipId() {
-    static const String out = ([]() {
+    static const espurna::string out = ([]() {
         uint8_t mac[6];
         if (espurna::system::chip::mac(mac)) {
             return hexEncode(mac);
         }
 
-        return String(F("000000000000"));
+        return espurna::string("000000000000");
     })();
 
     return out;
@@ -1390,7 +1418,7 @@ void customResetReason(CustomResetReason reason) {
     espurna::boot::customReason(reason);
 }
 
-String customResetReasonToPayload(CustomResetReason reason) {
+espurna::string customResetReasonToPayload(CustomResetReason reason) {
     return espurna::boot::serialize(reason);
 }
 
@@ -1463,7 +1491,7 @@ espurna::StringView systemDefaultPassword() {
     return espurna::system::default_password();
 }
 
-String systemPassword() {
+espurna::string systemPassword() {
     return espurna::system::password();
 }
 
@@ -1474,23 +1502,23 @@ bool systemPasswordEquals(espurna::StringView other) {
 // the default password is still on: the WebUI (ws_server.cpp) and the head page (head_setup.cpp) ask for a new one first
 bool systemPasswordMustChange() {
     return (USE_PASSWORD && WEB_FORCE_PASS_CHANGE)
-        ? equalsConstantTime(systemPassword(), String(systemDefaultPassword()))
+        ? equalsConstantTime(systemPassword(), espurna::string(systemDefaultPassword()))
         : false;
 }
 
-String systemHostname() {
+espurna::string systemHostname() {
     return espurna::system::hostname();
 }
 
-String systemDescription() {
+espurna::string systemDescription() {
     return espurna::system::description();
 }
 
-String systemManufacturer() {
+espurna::string systemManufacturer() {
     return espurna::system::manufacturer();
 }
 
-String systemDeviceName() {
+espurna::string systemDeviceName() {
     return espurna::system::device_name();
 }
 

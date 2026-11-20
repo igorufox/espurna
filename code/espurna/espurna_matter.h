@@ -22,7 +22,12 @@ Matter On/Off plug endpoints for the relays. One Matter layer for both chips:
 
 #pragma once
 
-#include <Arduino.h>
+
+// the chip's options of the Matter library that its SDK configuration does not have (ESP32: matter_config_chip.h),
+// before any header of the library
+#if __has_include(<matter_config_chip.h>)
+#include <matter_config_chip.h>
+#endif
 
 #include <cstddef>
 #include <cstdint>
@@ -101,12 +106,12 @@ void commissioning(bool active);
 
 // Where the device attestation comes from, no secrets
 struct Identity {
-    String vendor;
+    espurna::string vendor;
     uint16_t vendor_id { 0 };
-    String product;
+    espurna::string product;
     uint16_t product_id { 0 };
-    String source;
-    String details;
+    espurna::string source;
+    espurna::string details;
 };
 
 void describe(Identity& out);
@@ -127,6 +132,10 @@ void heap_step(const char* step, bool from_loop = false);
 void matterSetup();
 
 bool matterStarted();
+// the matter_ble module: start Matter without a Wi-Fi network, its window advertises on BLE
+bool matterStartForBle();
+// both chips: the Wi-Fi network a controller gave over BLE becomes ESPurna's first network
+bool matterWifiFromController(const char* ssid, size_t ssid_length, const char* pass, size_t pass_length);
 
 // For the other modules (the nspanel module: the pairing QR), through the head (modules_api.cpp): false / nothing
 // without the matter module. The pairing window is open

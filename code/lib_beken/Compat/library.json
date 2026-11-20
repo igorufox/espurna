@@ -1,7 +1,0 @@
-{
-    "name": "Compat",
-    "version": "1.0.0",
-    "description": "Headers the ESP cores have and LibreTiny not, which libraries of ESPurna's modules include (BK7231N)",
-    "frameworks": "arduino",
-    "platforms": "libretiny"
-}

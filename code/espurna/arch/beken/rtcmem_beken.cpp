@@ -1,17 +1,18 @@
 /*
 
-RTMEM MODULE FOR BEKEN (LibreTiny)
+RTMEM MODULE FOR BEKEN (BDK)
 
 */
 
-#include "espurna.h"
-#include "rtcmem.h"
-#include "crash.h"
-#include "build.h"
+#include "../../espurna.h"
+#include "../../rtcmem.h"
+#include "../../crash.h"
+#include "../../build.h"
 #include "layout_beken.h"
+#include "beken_api.h"
 
 #if MQTT_SUPPORT
-#include "mqtt.h"
+#include "../../mqtt.h"
 #endif
 
 #include <lwip/tcpip.h>
@@ -200,7 +201,7 @@ void crash_flash_write(size_t offset, const void* data, size_t size) {
     if (!CrashRecordOffset) {
         return;
     }
-    lt_flash_write(CrashRecordOffset + offset, static_cast<const uint8_t*>(data), size);
+    ::espurna::beken::flash_write(CrashRecordOffset + offset, static_cast<const uint8_t*>(data), size);
 }
 
 // Written field by field straight from where the data is, no copy of the whole record in RAM. What is not
@@ -234,7 +235,7 @@ void crash_record_write(const uint32_t* frame, RtcmemCrash kind) {
     const uint32_t head[] {
         CrashRecordMagic,
         static_cast<uint32_t>(kind),
-        static_cast<uint32_t>(millis()),
+        espurna::time::ms(),
     };
 
     static_assert(offsetof(CrashRecord, magic) == 0, "");
@@ -243,7 +244,7 @@ void crash_record_write(const uint32_t* frame, RtcmemCrash kind) {
     if (!CrashRecordOffset) {
         return;
     }
-    lt_flash_erase(CrashRecordOffset, FLASH_SECTOR_SIZE);
+    ::espurna::beken::flash_erase(CrashRecordOffset, FLASH_SECTOR_SIZE);
     crash_flash_write(offsetof(CrashRecord, magic), head, sizeof(head));
     crash_flash_write(offsetof(CrashRecord, regs), regs, sizeof(regs));
     crash_flash_write(offsetof(CrashRecord, insn), &insn, sizeof(insn));
@@ -259,18 +260,18 @@ void crash_record_write(const uint32_t* frame, RtcmemCrash kind) {
 }
 
 bool crash_record_read(CrashRecord& out) {
-    return CrashRecordOffset && (lt_flash_read(CrashRecordOffset, reinterpret_cast<uint8_t*>(&out), sizeof(out)) == sizeof(out))
+    return CrashRecordOffset && (::espurna::beken::flash_read(CrashRecordOffset, reinterpret_cast<uint8_t*>(&out), sizeof(out)) == sizeof(out))
         && (out.magic == CrashRecordMagic);
 }
 
-String crash_summary(const CrashRecord& record) {
+espurna::string crash_summary(const CrashRecord& record) {
     char buffer[224];
     if (record.kind == static_cast<uint32_t>(RtcmemCrash::Stall)) {
         snprintf_P(buffer, sizeof(buffer),
-            PSTR("%s for %u ms of %u, %u tasks, free=%u uptime=%u build=%.32s"),
-            crash_name(record.kind), record.regs[0], record.regs[1], record.regs[2], record.regs[3],
-            record.uptime, record.build);
-        return String(buffer);
+            PSTR("%s for %u ms of %u, loop in 0x%08x, %u tasks, free=%u uptime=%u build=%.32s"),
+            crash_name(record.kind), record.regs[0], record.regs[1], record.regs[CrashRegisterPc], record.regs[2],
+            record.regs[3], record.uptime, record.build);
+        return espurna::string(buffer);
     }
 
     if (record.kind == static_cast<uint32_t>(RtcmemCrash::MallocFailed)) {
@@ -278,7 +279,7 @@ String crash_summary(const CrashRecord& record) {
             PSTR("%s free=%u lowest=%u in=0x%08x sp=0x%08x task=%.16s uptime=%u build=%.32s"),
             crash_name(record.kind), record.regs[0], record.regs[1], record.regs[CrashRegisterPc],
             record.regs[CrashRegisterSp], record.task, record.uptime, record.build);
-        return String(buffer);
+        return espurna::string(buffer);
     }
 
     snprintf_P(buffer, sizeof(buffer),
@@ -287,16 +288,16 @@ String crash_summary(const CrashRecord& record) {
         record.regs[CrashRegisterPc], record.insn, record.regs[CrashRegisterLr], record.regs[CrashRegisterSp],
         record.regs[CrashRegisterSpsr] & 0xff, record.task, record.uptime, record.build);
 
-    return String(buffer);
+    return espurna::string(buffer);
 }
 
 #if MQTT_SUPPORT
-String _crash_mqtt;
+espurna::string _crash_mqtt;
 #endif
 
 } // namespace
 
-// Same as the SDK handlers (LibreTiny fixups/intc.c), except for the value left in the register and the record.
+// Same as the SDK handlers (the SDK glue fixups/intc.c), except for the value left in the register and the record.
 // Called from the exception vectors (boot_handlers.S), linked with --wrap (ref. platformio_beken.ini).
 // Vectors run them in the exception mode, whose stack is only 16 bytes (_UND_STACK_SIZE_, _ABT_STACK_SIZE_) and
 // already overflown by the 72-byte register frame. Anything deeper, like printf or the flash driver, writes over
@@ -382,7 +383,7 @@ void __wrap_vApplicationMallocFailedHook(void) {
     // (10.0.5.139 2026-11-15, the regress round 49)
     if (CrashRecordOffset) {
         uint32_t head[2] {};
-        lt_flash_read(CrashRecordOffset, reinterpret_cast<uint8_t*>(head), sizeof(head));
+        ::espurna::beken::flash_read(CrashRecordOffset, reinterpret_cast<uint8_t*>(head), sizeof(head));
         if ((head[0] == CrashRecordMagic) && (head[1] != static_cast<uint32_t>(RtcmemCrash::MallocFailed))) {
             return;
         }
@@ -425,11 +426,11 @@ void __wrap_vApplicationMallocFailedHook(void) {
 } // extern "C"
 
 // A chip that hangs without a fault (two tasks waiting for each other, a task that never gives the CPU back) is only
-// reset by the watchdog, and the reset leaves nothing behind. The watcher task runs above every other task and keeps
-// an eye on the feeding (lt_wdt_* linked with --wrap, ref. platformio_beken.ini). When the watchdog is about to fire it
-// writes a record with the saved context of every task: name, state, priority and the words at its saved stack
-// pointer, i.e. the registers the scheduler saved (pc and lr included) and the frames of the calls it waits in.
-// Once per boot, the watchdog resets the chip right after
+// reset by the watchdog, and the reset leaves nothing behind. The common stall watcher (arch/rtos/system_rtos.cpp) keeps
+// an eye on the feeding (beken::wdt_* below tell it). When the watchdog is about to
+// fire, the record here gets the saved context of every task: name, state, priority and the words at its saved stack
+// pointer, i.e. the registers the scheduler saved (pc and lr included) and the frames of the calls it waits in; pc of
+// the record is the loop callback the loop task stood in. The watchdog resets the chip right after
 namespace {
 
 namespace stall {
@@ -446,7 +447,7 @@ struct Entry {
     uint8_t number;
     uint32_t top;
     // what a blocked task waits on: the event list of its TCB (xEventListItem.pvContainer), the mutex behind it
-    // (a mutex has pcHead 0, its holder in pcTail) and the number of the holding task (0: none, or not a mutex)
+    // (a mutex has pcHead 0, its holder in u.xSemaphore.xMutexHolder) and the number of the holding task (0: none, or not a mutex)
     uint32_t waits;
     uint32_t mutex;
     uint8_t holder;
@@ -454,12 +455,15 @@ struct Entry {
     uint32_t words[Words];
 };
 
-// FreeRTOS V9.0.0 of the BDK: TCB { pxTopOfStack; ListItem_t xStateListItem; ListItem_t xEventListItem; ... }, a
-// ListItem_t is 5 words (no integrity check), pvContainer the last one; Queue_t { pcHead (0 for a mutex: uxQueueType),
-// pcTail (pxMutexHolder), pcWriteTo, u, List_t xTasksWaitingToSend, List_t xTasksWaitingToReceive, ... }, a List_t
-// is 5 words. A task taking a mutex waits in xTasksWaitingToReceive
+// FreeRTOS-Kernel V11.1.0 (the offsets are checked by the kernel package, portable/GCC/ARM968/freertos_tasks_c_additions.h): TCB {
+// pxTopOfStack; ListItem_t xStateListItem; ListItem_t xEventListItem; ... }, a ListItem_t is 5 words (no integrity
+// check), pxContainer the last one; Queue_t { pcHead (NULL for a mutex: queueQUEUE_IS_MUTEX), pcWriteTo, u { xQueue,
+// xSemaphore { xMutexHolder, uxRecursiveCallCount } }, List_t xTasksWaitingToSend, List_t xTasksWaitingToReceive, ... },
+// a List_t is 7 words (its end is a full ListItem_t: configUSE_MINI_LIST_ITEM 0, GCC 14 strict aliasing). A task taking a
+// mutex waits in xTasksWaitingToReceive
 constexpr size_t TcbEventContainer { 4 + 20 + 16 };
-constexpr size_t QueueReceiveList { 16 + 20 };
+constexpr size_t QueueReceiveList { 16 + 28 };
+constexpr size_t QueueMutexHolder { 8 };
 
 // the handle of the lwIP core lock (tcpip.c, LWIP_TCPIP_CORE_LOCKING): created once at the start of lwIP, the
 // same every boot, compared against the mutex a task waited for
@@ -470,31 +474,22 @@ uint32_t lwip_core_lock() {
 static_assert((TableOffset + Tasks * sizeof(Entry)) <= FLASH_SECTOR_SIZE, "");
 static_assert(sizeof(CrashRecord) <= TableOffset, "");
 
-// periods below this are restart() and its 5 ms reset, not a loop that should feed
-constexpr uint32_t PeriodMin { 3000 };
-// written that much before the watchdog fires (a sector erase and a few writes take well below it)
-constexpr uint32_t Margin { 1500 };
-constexpr uint32_t Interval { 250 };
-
-volatile uint32_t period { 0 };
-volatile TickType_t fed { 0 };
-
 TaskStatus_t statuses[24];
 
-void write() {
-    const auto since = (xTaskGetTickCount() - fed) * portTICK_PERIOD_MS;
+void write(const espurna::system::stall::Report& report) {
     const auto count = uxTaskGetSystemState(statuses, sizeof(statuses) / sizeof(statuses[0]), nullptr);
 
     uint32_t regs[CrashRegisters] {};
-    regs[0] = since;
-    regs[1] = period;
+    regs[0] = report.since;
+    regs[1] = report.period;
     regs[2] = count;
     regs[3] = xPortGetFreeHeapSize();
+    regs[CrashRegisterPc] = report.callback;
 
     const uint32_t head[] {
         CrashRecordMagic,
         static_cast<uint32_t>(RtcmemCrash::Stall),
-        static_cast<uint32_t>(millis()),
+        espurna::time::ms(),
     };
 
     char task[sizeof(CrashRecord::task)] {};
@@ -503,7 +498,7 @@ void write() {
     if (!CrashRecordOffset) {
         return;
     }
-    lt_flash_erase(CrashRecordOffset, FLASH_SECTOR_SIZE);
+    ::espurna::beken::flash_erase(CrashRecordOffset, FLASH_SECTOR_SIZE);
     crash_flash_write(offsetof(CrashRecord, magic), head, sizeof(head));
     crash_flash_write(offsetof(CrashRecord, regs), regs, sizeof(regs));
     crash_flash_write(offsetof(CrashRecord, task), task, sizeof(task));
@@ -529,7 +524,7 @@ void write() {
             entry.waits = container;
             const auto queue = container - QueueReceiveList;
             const auto head = *reinterpret_cast<const volatile uint32_t*>(queue);
-            const auto holder = *reinterpret_cast<const volatile uint32_t*>(queue + 4);
+            const auto holder = *reinterpret_cast<const volatile uint32_t*>(queue + QueueMutexHolder);
             if (head == 0) {
                 entry.mutex = queue;
                 for (size_t other = 0; other < count; ++other) {
@@ -552,38 +547,11 @@ void write() {
     }
 }
 
-void task(void*) {
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(Interval));
-
-        const auto limit = period;
-        if (limit < PeriodMin) {
-            continue;
-        }
-
-        const auto since = (xTaskGetTickCount() - fed) * portTICK_PERIOD_MS;
-        if ((since + Margin) < limit) {
-            continue;
-        }
-
-        write();
-        // the reset that follows is ours, not the SDK's watchdog: the register keeps the kind until then (a feed
-        // that still comes in time writes the whole register over, and that boot has no stall to report)
-        retention() = rtcmemRetention() | static_cast<uint32_t>(RtcmemCrash::Stall);
-        vTaskDelete(nullptr);
-    }
-}
-
-void start() {
-    fed = xTaskGetTickCount();
-    xTaskCreate(task, "stall", 512, nullptr, configMAX_PRIORITIES - 1, nullptr);
-}
-
-void dump(Print& print) {
-    print.print(F("tasks (state 0 running 1 ready 2 blocked 3 suspended), words at the saved sp:\n"));
+void dump(::espurna::Output& print) {
+    print.print("tasks (state 0 running 1 ready 2 blocked 3 suspended), words at the saved sp:\n");
     for (size_t index = 0; index < Tasks; ++index) {
         Entry entry;
-        lt_flash_read(CrashRecordOffset + TableOffset + index * sizeof(Entry),
+        ::espurna::beken::flash_read(CrashRecordOffset + TableOffset + index * sizeof(Entry),
             reinterpret_cast<uint8_t*>(&entry), sizeof(entry));
         if (static_cast<uint8_t>(entry.name[0]) == 0xff) {
             break;
@@ -611,33 +579,64 @@ void dump(Print& print) {
 } // namespace stall
 } // namespace
 
-extern "C" {
+// the watchdog of beken_api.h: the stall watcher learns its period and its feeds, then the BDK (core_beken.cpp)
+namespace espurna {
+namespace beken {
 
-bool __real_lt_wdt_enable(uint32_t);
-void __real_lt_wdt_disable();
-void __real_lt_wdt_feed();
-
-bool __wrap_lt_wdt_enable(uint32_t timeout) {
-    stall::fed = xTaskGetTickCount();
-    stall::period = timeout;
-    return __real_lt_wdt_enable(timeout);
+void wdt_enable(uint32_t timeout) {
+    espurna::system::stall::period(timeout);
+    raw::wdt_enable(timeout);
 }
 
-void __wrap_lt_wdt_disable() {
-    stall::period = 0;
-    __real_lt_wdt_disable();
+void wdt_disable() {
+    espurna::system::stall::period(0);
+    raw::wdt_disable();
 }
 
-void __wrap_lt_wdt_feed() {
-    stall::fed = xTaskGetTickCount();
-    __real_lt_wdt_feed();
+void wdt_feed() {
+    espurna::system::stall::fed();
+    raw::wdt_feed();
 }
 
-} // extern "C"
+} // namespace beken
+} // namespace espurna
+
+// the common stall watcher, ref. system_chip.h
+namespace espurna {
+namespace system {
+namespace stall {
+namespace chip {
+
+// the reset that follows is ours, not the SDK's watchdog: the register keeps the kind until then (a feed that still
+// comes in time writes the whole register over, and that boot has no stall to report)
+void record(const Report& report) {
+    ::stall::write(report);
+    retention() = rtcmemRetention() | static_cast<uint32_t>(RtcmemCrash::Stall);
+}
+
+// the SDK's next feed has written the register over already
+void cancel() {
+}
+
+[[noreturn]] void reset(const Report& report) {
+    ::stall::write(report);
+
+    portDISABLE_INTERRUPTS();
+    retention() = rtcmemRetention() | static_cast<uint32_t>(RtcmemCrash::Stall);
+    ::espurna::beken::raw::wdt_disable();
+    ::espurna::beken::raw::wdt_enable(5);
+    for (;;) {
+    }
+}
+
+} // namespace chip
+} // namespace stall
+} // namespace system
+} // namespace espurna
 
 // Also used before setup(), by the reset reason
 bool rtcmemSysStatus() {
-    return (lt_get_reboot_reason() != REBOOT_REASON_POWER)
+    return (::espurna::beken::reboot_reason() != ::espurna::beken::Reboot::Power)
         && ((_rtcmem_retention_at_boot & RetentionMarkerMask) == RetentionMarker);
 }
 
@@ -663,8 +662,6 @@ void rtcmemCrashSetup() {
     const auto build = buildTime();
     std::memcpy(_crash_build, build.data(), std::min(build.length(), sizeof(_crash_build) - 1));
 
-    stall::start();
-
     CrashRecord record;
     if (!crash_record_read(record) || (record.pending != CrashRecordPending)) {
         return;
@@ -682,21 +679,17 @@ void rtcmemCrashSetup() {
     _crash_mqtt = summary;
     mqttRegister([](unsigned int type, espurna::StringView, espurna::StringView) {
         if ((type == MQTT_CONNECT_EVENT) && _crash_mqtt.length()) {
-            mqttSendRaw(mqttTopic(F("crash")).c_str(), _crash_mqtt.c_str(), false);
-            _crash_mqtt = String();
+            mqttSendRaw(mqttTopic("crash").c_str(), _crash_mqtt.c_str(), false);
+            _crash_mqtt = espurna::string();
         }
     });
 #endif
 }
 
-void rtcmemStallSnapshot() {
-    stall::write();
-}
-
-void rtcmemCrashDump(Print& print) {
+void rtcmemCrashDump(::espurna::Output& print) {
     CrashRecord record;
     if (!crash_record_read(record)) {
-        print.print(F("No crash recorded\n"));
+        print.print("No crash recorded\n");
         return;
     }
 
@@ -736,11 +729,12 @@ void rtcmemCrashCause(CrashCause& out) {
 
     snprintf_P(out.text, sizeof(out.text), PSTR("%s in task %.16s, pc 0x%08x, %u ms after boot"),
         crash_name(record->kind), record->task, record->regs[CrashRegisterPc], record->uptime);
+    // a stall: pc is the loop callback the loop task stood in
+    out.addresses[out.count++] = record->regs[CrashRegisterPc];
     if (record->kind == static_cast<uint32_t>(RtcmemCrash::Stall)) {
         return;
     }
 
-    out.addresses[out.count++] = record->regs[CrashRegisterPc];
     out.addresses[out.count++] = record->regs[CrashRegisterLr];
     for (size_t index = 0; (index < CrashStackWords) && (out.count < std::size(out.addresses)); ++index) {
         const auto word = record->stack[index];

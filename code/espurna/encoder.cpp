@@ -102,7 +102,7 @@ void _encoderConfigure() {
     // TODO: manage buttons through debounceevent?
     for (auto& encoder : _encoders) {
         if (GPIO_NONE != encoder.button_pin) {
-            pinMode(encoder.button_pin, encoder.button_mode);
+            espurna::pins::mode(encoder.button_pin, encoder.button_mode);
         }
     }
 
@@ -125,7 +125,7 @@ void _encoderLoop() {
         } else {
 
             // otherwise, use button based on encoder mode
-            bool pressed = (digitalRead(encoder.button_pin) != encoder.button_logic);
+            bool pressed = (espurna::pins::read(encoder.button_pin) != encoder.button_logic);
 
             if (ENCODER_MODE_CHANNEL == encoder.mode) {
 

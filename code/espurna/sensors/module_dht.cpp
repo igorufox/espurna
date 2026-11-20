@@ -42,11 +42,11 @@ DHTChipType dht_type(int number) {
 } // namespace
 
 ESPURNA_SENSOR_DRIVER(dht, "dhtPin|gpio|GPIO|;dhtType|select|Type|22|11=DHT11,12=DHT12,21=DHT21,22=DHT22,2301=AM2301,7021=SI7021") {
-    const auto pin = getSetting(F("dhtPin"), uint8_t{ DHT_PIN });
+    const auto pin = getSetting("dhtPin", uint8_t{ DHT_PIN });
     if (pin_set(pin)) {
         auto* sensor = new DHTSensor();
         sensor->setGPIO(pin);
-        sensor->setType(dht_type(getSetting(F("dhtType"), dht_type_number(DHT_TYPE))));
+        sensor->setType(dht_type(getSetting("dhtType", dht_type_number(DHT_TYPE))));
         sensorAdd(sensor);
     }
 }
