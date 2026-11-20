@@ -609,6 +609,9 @@ time::SystemClock::time_point attempt_at{};
 // this attempt went to the AP of the last connection (last_ap)
 bool fast { false };
 
+// the quick attempts after an AP rejected the association, in this round (ref. AssocRetries)
+int assoc_retry { 0 };
+
 timer::SystemTimer timer;
 
 // the station is wanted (wifiStaMode on, WIFI.STA): a lost connection starts a new round
@@ -643,7 +646,8 @@ State state() {
         .network = network,
         .retry = retry,
         .waiting = waiting,
-        .waited = waiting ? static_cast<uint32_t>((time::SystemClock::now() - attempt_at).count()) : 0u,
+        .waited = waiting ? static_cast<uint32_t>(std::chrono::duration_cast<duration::Milliseconds>(
+            time::SystemClock::now() - attempt_at).count()) : 0u,
         .connected = connected,
         .persist = persist,
     };
@@ -669,9 +673,14 @@ void schedule(duration::Milliseconds next, void (*callback)()) {
 
 void start();
 
-// the AP of the last connection in the RTC memory (it survives a reset, not a power cut): the first attempt of the
-// network goes straight to its BSSID and channel, no scan of every channel; a failed one forgets it
+// the AP of the last connection of each network, in the settings (flash; owner 20.11: the board learns it itself and
+// keeps it with the network): the first attempt of the network goes straight to its BSSID and channel, no scan of every
+// channel (2 s of every connect, 19.11). The first connection of a network goes by the SDK's scan of every channel and
+// is kept then; a failed attempt to the kept AP forgets it, the next one scans again. Written only when it changes.
+// lastApN = "<ssid hash, 8 hex> <bssid, 12 hex> <channel, 2 hex>"
 namespace last_ap {
+
+PROGMEM_STRING(Key, "lastAp");
 
 uint32_t hash(StringView ssid) {
     uint32_t out = 2166136261u;
@@ -681,25 +690,51 @@ uint32_t hash(StringView ssid) {
     return out ? out : 1u;
 }
 
-bool take(StringView ssid, Mac& bssid, uint8_t& channel) {
-    if (!rtcmemStatus() || (Rtcmem->wifi.ssid != hash(ssid))) {
-        return false;
+bool hex(const char* in, size_t digits, uint32_t& out) {
+    out = 0;
+    for (size_t index = 0; index < digits; ++index) {
+        const char c = in[index];
+        uint32_t value;
+        if ((c >= '0') && (c <= '9')) {
+            value = c - '0';
+        } else if ((c >= 'a') && (c <= 'f')) {
+            value = c - 'a' + 10;
+        } else {
+            return false;
+        }
+        out = (out << 4) | value;
     }
-    const uint32_t lo = Rtcmem->wifi.bssid_lo;
-    const uint32_t hi = Rtcmem->wifi.bssid_hi;
-    if ((hi & 0x80000000u) || !((hi >> 16) & 0xffu)) {
-        return false;
-    }
-    for (size_t index = 0; index < 4; ++index) {
-        bssid[index] = static_cast<uint8_t>(lo >> (index * 8));
-    }
-    bssid[4] = static_cast<uint8_t>(hi);
-    bssid[5] = static_cast<uint8_t>(hi >> 8);
-    channel = static_cast<uint8_t>(hi >> 16);
     return true;
 }
 
-void keep(StringView ssid) {
+bool take(size_t id, StringView ssid, Mac& bssid, uint8_t& channel) {
+    const auto value = getSetting({Key, id});
+    if (value.length() != 24) {
+        return false;
+    }
+
+    const char* in = value.c_str();
+    uint32_t number;
+    if (!hex(in, 8, number) || (number != hash(ssid))) {
+        return false;
+    }
+
+    for (size_t index = 0; index < bssid.size(); ++index) {
+        if (!hex(in + 9 + (index * 2), 2, number)) {
+            return false;
+        }
+        bssid[index] = static_cast<uint8_t>(number);
+    }
+
+    if (!hex(in + 22, 2, number) || !number || (number > 14)) {
+        return false;
+    }
+    channel = static_cast<uint8_t>(number);
+
+    return true;
+}
+
+void keep(size_t id, StringView ssid) {
     Mac bssid{};
     AUTH_MODE authmode{};
     driver::sta_info(bssid, authmode);
@@ -707,25 +742,32 @@ void keep(StringView ssid) {
     if (!channel) {
         return;
     }
-    uint32_t lo = 0;
-    for (size_t index = 0; index < 4; ++index) {
-        lo |= static_cast<uint32_t>(bssid[index]) << (index * 8);
+
+    char value[25];
+    snprintf_P(value, sizeof(value), PSTR("%08x %02x%02x%02x%02x%02x%02x %02x"),
+        static_cast<unsigned>(hash(ssid)),
+        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+        static_cast<unsigned>(channel));
+
+    const espurna::settings::Key key{Key, id};
+    const espurna::string text(value);
+    if (getSetting(key) != text) {
+        setSetting(key, text);
+        saveSettings();
     }
-    Rtcmem->wifi.ssid = hash(ssid);
-    Rtcmem->wifi.bssid_lo = lo;
-    Rtcmem->wifi.bssid_hi = static_cast<uint32_t>(bssid[4]) | (static_cast<uint32_t>(bssid[5]) << 8)
-        | (static_cast<uint32_t>(channel) << 16);
 }
 
-void forget() {
-    Rtcmem->wifi.ssid = 0;
-    Rtcmem->wifi.bssid_hi = 0x80000000u;
+void forget(size_t id) {
+    if (delSetting(espurna::settings::Key{Key, id})) {
+        saveSettings();
+    }
 }
 
 } // namespace last_ap
 
-// the attempt failed: the same network again, the next one, or the end of the round
-void failed();
+// the attempt failed: the same network again, the next one, or the end of the round. `reason` is the 802.11 reason
+// of the SDK's disconnect (0: no disconnect, the attempt timed out or could not start)
+void failed(int reason);
 
 // one attempt with the current network of the round, the result is the driver's event
 void attempt() {
@@ -757,7 +799,7 @@ void attempt() {
         auto channel = static_cast<uint8_t>(settings::channel(id));
         auto bssid = channel ? settings::bssid(id) : Mac{};
         internal::fast = false;
-        if (!channel && !internal::retry && last_ap::take(ssid, bssid, channel)) {
+        if (!channel && !internal::retry && last_ap::take(id, ssid, bssid, channel)) {
             internal::fast = true;
         }
 
@@ -784,13 +826,37 @@ void attempt() {
 
     // a network that cannot be tried is passed at once
     internal::retry = build::ConnectionRetries;
-    failed();
+    failed(0);
 }
 
-void failed() {
+// The AP rejected the association (WIFI_REASON_ASSOC_FAIL, the same code in the three SDKs): with PMF (foxy
+// ieee80211w) it answers "rejected temporarily" (status 30) while it still holds the previous association of this
+// station - after a restart or wifi.reset the station has no keys for it - and drops that one by its SA Query within
+// about a second. So the next attempt goes soon and is not counted against the round, a few times per round; ending
+// the round there meant the next one only after WIFI_RECONNECT_INTERVAL (regress-todo 40: 37 of 40 wifi.reset back
+// after 144 s, COM3 20.11)
+constexpr int AssocFail { 203 };
+
+// attempt() cancels whatever the SDK still does (driver::sta_disconnect()), and the driver reports that cancel as a
+// disconnect (WIFI_REASON_ASSOC_LEAVE of the three SDKs) from the loop - after this attempt already began. Counted as
+// this attempt's failure, it scheduled the next attempt, whose cancel then cut the real SAE of this one (5 s): every
+// attempt after a wifi.reset "failed" at 2.7 s and the round ended (regress-todo 40, COM3 20.11)
+constexpr int AssocLeave { 8 };
+constexpr auto CancelWindow = duration::Milliseconds{ 500 };
+constexpr auto AssocRetryInterval = duration::Milliseconds{ 1500 };
+constexpr int AssocRetries { 3 };
+
+void failed(int reason) {
     if (internal::fast) {
         internal::fast = false;
-        last_ap::forget();
+        last_ap::forget(internal::network);
+    }
+
+    if (internal::round && (AssocFail == reason) && (internal::assoc_retry < AssocRetries)) {
+        ++internal::assoc_retry;
+        schedule(AssocRetryInterval, attempt);
+        publish(Event::StationTimeout);
+        return;
     }
 
     if (internal::round) {
@@ -825,8 +891,14 @@ void start() {
         return;
     }
 
+    // a round started by hand (WIFI.RESET, settings) while the timer holds another start or attempt: that one would
+    // begin the round again a few seconds later and cut the attempt in progress (20.11: wifi.reset right after the
+    // disconnect of the station, which schedules a start in WIFI_CONNECT_INTERVAL)
+    internal::timer.stop();
+
     internal::network = 0;
     internal::retry = 0;
+    internal::assoc_retry = 0;
     internal::round = true;
     attempt();
 }
@@ -837,13 +909,17 @@ void persist(bool value) {
 
 // the driver's events, always from the loop context
 
-void disconnected() {
+void disconnected(int reason) {
     const bool was = internal::connected;
     internal::connected = false;
 
     if (internal::waiting) {
+        if ((AssocLeave == reason) && ((time::SystemClock::now() - internal::attempt_at) < CancelWindow)) {
+            return;
+        }
+
         internal::waiting = false;
-        failed();
+        failed(reason);
         return;
     }
 
@@ -859,7 +935,7 @@ void got_ip() {
     internal::waiting = false;
     internal::connected = true;
     internal::fast = false;
-    last_ap::keep(settings::ssid(internal::network));
+    last_ap::keep(internal::network, settings::ssid(internal::network));
     stop();
     publish(Event::StationConnected);
 }
@@ -869,7 +945,7 @@ void loop() {
         DEBUG_MSG_P(PSTR("[WIFI] Connection attempt timed out\n"));
         internal::waiting = false;
         driver::sta_disconnect();
-        failed();
+        failed(0);
     }
 }
 
@@ -1802,8 +1878,8 @@ void on_scan_done(bool ok, size_t count) {
     sta::scan::finished(ok, count);
 }
 
-void on_station_disconnected(const Mac&, int) {
-    sta::connection::disconnected();
+void on_station_disconnected(const Mac&, int reason) {
+    sta::connection::disconnected(reason);
 }
 
 void on_station_got_ip() {
