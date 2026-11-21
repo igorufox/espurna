@@ -3,7 +3,9 @@
 OTA MODULE, ESP8266 on ESP8266_RTOS_SDK: a new head and the bootloader over the network (owner 2026-11-18: the Tuya
 bootloader's scheme, and the bootloader may be flashed explicitly)
 
-/upgrade with the RBL of a new head (espurna-esp8266.ota, rbl_esp8266.h): ota.cpp hands it to own_*() here. The modules
+/upgrade with the RBL of a new head (espurna-esp8266.ota, rbl_esp8266.h): ota.cpp hands it to own_*() here. The same
+route takes an RBL of an image of the flash from 0x0 (scripts/esp8266_rbl.py --flash: ESPurna 1.15 / 1.22 of the Arduino
+core back, owner 21.11) - the bootloader writes it over itself, no rollback. The modules
 are off (ota_web.cpp refuses the upload while they run: the package goes where they are). The package is written right
 under the header sector, read back for its CRC, and the 96 bytes of the header go last: before that the bootloader
 finds nothing to install. The restart (ota_web.cpp) lets the bootloader install it (bootloader/espurna_rbl.c).
@@ -172,15 +174,22 @@ const char* own_begin(const uint8_t* data, size_t len) {
     auto& rbl = *current;
     std::memcpy(&rbl.header, data, ESPURNA_RBL_SIZE);
 
-    const char* error = espurna_rbl_check(&rbl.header);
-    if (error) {
-        return error;
+    // a chip of 2 MB and more: the top of the flash (out of the modules' area), named in the header - before the check,
+    // which tells whether the image and the package fit where the package goes (21.11: an image of the flash of 585 KB
+    // was refused by the 1 MB place of its package). The header's own CRC is checked first: naming the place signs it
+    // again
+    if (espurna_rbl_crc32(0, &rbl.header, ESPURNA_RBL_SIZE - 4u) != rbl.header.info_crc) {
+        return PSTR("ERROR: RBL header CRC");
     }
 
-    // a chip of 2 MB and more: the top of the flash (out of the modules' area), named in the header
     const uint32_t top_at = espurna_rbl_top_at(spi_flash_get_chip_size(), rbl.header.data_size);
     if (top_at) {
         espurna_rbl_set_package_at(&rbl.header, top_at);
+    }
+
+    const char* error = espurna_rbl_check(&rbl.header);
+    if (error) {
+        return error;
     }
 
     const uint32_t package_at = espurna_rbl_package_at(&rbl.header);
@@ -255,7 +264,8 @@ const char* own_end() {
         return PSTR("ERROR: Flash write failed");
     }
 
-    DEBUG_MSG_P(PSTR("[OTA] RBL of the head %u bytes (package %u) at 0x%06X, the bootloader installs it\n"),
+    DEBUG_MSG_P(PSTR("[OTA] RBL of %s %u bytes (package %u) at 0x%06X, the bootloader installs it\n"),
+        (rbl.header.compression == ESPURNA_RBL_FLASH) ? "an image of the flash from 0x0" : "the head",
         rbl.header.raw_size, rbl.header.data_size, espurna_rbl_package_at(&rbl.header));
     rblDrop();
     return nullptr;
@@ -528,3 +538,51 @@ void otaBootloaderSetup() {
 }
 
 #endif
+
+// The new head confirms itself (rbl_esp8266.h, owner 20.11): the bootloader swapped the heads and keeps the old one
+// compressed; 60 s of running with Wi-Fi and the header sector is erased - the swap is final. Without that the
+// bootloader counts the starts and puts the old head back after ESPURNA_RBL_STARTS of them
+namespace espurna {
+namespace ota {
+namespace confirm {
+namespace {
+
+constexpr uint32_t AfterMs { 60000 };
+bool pending { false };
+
+void check() {
+    if (!pending || (espurna::time::ms() < AfterMs) || !wifiConnected()) {
+        return;
+    }
+
+    pending = false;
+    if (spi_flash_erase_sector(ESPURNA_RBL_HEADER_AT / ESPURNA_RBL_SECTOR) == ESP_OK) {
+        DEBUG_MSG_P(PSTR("[OTA] The new head is confirmed, the old one is no longer kept\n"));
+    }
+}
+
+} // namespace
+} // namespace confirm
+} // namespace ota
+} // namespace espurna
+
+void otaConfirmSetup() {
+    espurna_rbl_t rbl;
+    if ((spi_flash_read(ESPURNA_RBL_HEADER_AT, reinterpret_cast<uint32_t*>(&rbl), sizeof(rbl)) != ESP_OK)
+        || (rbl.magic != ESPURNA_RBL_MAGIC))
+    {
+        return;
+    }
+
+    espurna_rbl_swap_t record;
+    uint32_t done { 0xFFFFFFFF };
+    spi_flash_read(ESPURNA_RBL_SWAP_AT, reinterpret_cast<uint32_t*>(&record), sizeof(record));
+    spi_flash_read(ESPURNA_RBL_DONE_AT, &done, sizeof(done));
+    if ((record.magic != ESPURNA_RBL_SWAP_MAGIC) || done) {
+        return;
+    }
+
+    espurna::ota::confirm::pending = true;
+    DEBUG_MSG_P(PSTR("[OTA] A new head: it confirms itself after 60 s with Wi-Fi, else the old one comes back\n"));
+    espurnaRegisterLoop(espurna::ota::confirm::check);
+}

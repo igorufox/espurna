@@ -2,13 +2,28 @@
 
 The ESPurna step of the SDK's bootloader: bootloader_after_init() of the SDK's bootloader_hooks.h (bootloader_start.c
 calls it right after bootloader_init(), this one replaces the weak one): a new head left by the head as an RBL package
-(../rbl_esp8266.h) goes onto 'factory'. Owner 2026-11-18: the Tuya bootloader's scheme.
+(../rbl_esp8266.h) goes onto 'factory'. Owner 2026-11-18: the Tuya bootloader's scheme; owner 20.11: the heads swap
+places («поменять местами»), the old one kept compressed for a rollback, one bootloader on every chip size.
 
 1. no valid header at ESPURNA_RBL_HEADER_AT - nothing to do, the head boots as always
 2. the CRC32 of the whole package is checked BEFORE anything is erased: a bad package is left alone, the old head boots
-3. the package is inflated sector by sector onto 0x10000 (raw deflate, 4 KB window = the one sector buffer in RAM)
-4. the FNV-1a and the size of what was written are compared with the header; only then the header sector is erased
-   A power cut in 3 or 4: the header and the package are untouched, the next boot does it all again
+3. a dry run: the running head (its length by esp_image_load) deflated sector by sector, the sizes counted against the
+   zone - the free bottom of the package's zone, which grows as the package is read. It fits: the swap record goes to
+   the header sector and the heads swap a sector at a time - the old sector deflated into the zone, the new one inflated
+   in its place, a bit for each step in the header sector (a power cut resumes there). It does not fit (or the running
+   head is no valid image): the new head is installed without a rollback, as before
+4. the FNV-1a of the new head is read back; the first start of it is counted. The head confirms itself after 60 s with
+   Wi-Fi by erasing the header sector (ota_esp8266.cpp); ESPURNA_RBL_STARTS starts without that - the old head goes
+   back (its chunks inflated and checked against its FNV-1a BEFORE anything is erased; a broken backup - the new head
+   stays)
+
+5. an image of the flash (compression ESPURNA_RBL_FLASH, owner 21.11: ESPurna 1.15 back over the air): the CRC and a
+   dry inflate against the FNV-1a first, then the image from 0x0, from the top sector down - this bootloader last (a
+   power cut before that starts it over). No swap, no rollback; the header erased, the chip reset as eboot does it
+
+The package and the backup are the same chunks (u16 length, raw deflate of one 4 KB sector, padding to 4 bytes): one
+inflate for both. The bootloader deflates with the fixed Huffman codes of RFC 1951 (LZ77 inside the sector, hash chains),
+a stored block when that is not smaller.
 
 Linked into the bootloader only (scripts/esp8266_rtos_sdk.py, before the bootloader's archives of the SDK package),
 never into the head.
@@ -21,6 +36,7 @@ never into the head.
 #include <string.h>
 
 #include "esp_err.h"
+#include "esp_image_format.h"
 #include "rom/ets_sys.h"
 
 /* bootloader_support/src/bootloader_flash.c (its header is private to that component) */
@@ -46,23 +62,59 @@ static void chip_size_from_id(void) {
 
 #include "../rbl_esp8266.h"
 
-/* --- the input: the package in the flash ---------------------------------------------------------------------- */
+#define SECTOR ESPURNA_RBL_SECTOR
 
+/* the host test (test/unit/src/rbl_swap) prints where a step fails; nothing in the bootloader */
+#ifndef RBL_TRACE
+#define RBL_TRACE(...)
+#endif
 #define INPUT_SIZE 4096u
 
-/* the ROM's erase of a 64 KB block (esp8266.rom.ld: SPIEraseSector 0x40004a00, SPIEraseBlock 0x400049b4): ~150 ms where
-   16 sectors take ~720 ms; where the head is 64 KB aligned and at least that much is left */
-#define BLOCK_SIZE 0x10000u
-typedef int (*rom_erase_block_t)(uint32_t block);
-#define ROM_ERASE_BLOCK ((rom_erase_block_t)0x400049b4u)
-
-/* the CPU at 160 MHz while installing (DPORT_CTL_DOUBLE_CLK, as bootloader_start.c with CONFIG_BOOTLOADER_FAST_BOOT) */
+/* the CPU at 160 MHz while installing (DPORT_CTL_DOUBLE_CLK, as bootloader_start.c with CONFIG_BOOTLOADER_FAST_BOOT);
+   ets_printf() only at 80 MHz (the UART divider) */
+#ifndef DPORT_CTL
 #define DPORT_CTL (*(volatile uint32_t*)0x3FF00014u)
+#endif
 
-static uint32_t s_erased_to;        /* the flash offset erased up to */
+static uint32_t round_up(uint32_t value) {
+    return (value + SECTOR - 1u) & ~(SECTOR - 1u);
+}
+
+/* --- the flash: words and bits of the header sector ------------------------------------------------------------ */
+
+static uint32_t word_get(uint32_t at) {
+    uint32_t value = 0;
+    bootloader_flash_read(at, &value, sizeof(value), false);
+    return value;
+}
+
+static void word_put(uint32_t at, uint32_t value) {
+    bootloader_flash_write(at, &value, sizeof(value), false);
+}
+
+static bool bit_done(uint32_t base, uint32_t index) {
+    return !(word_get(base + (4u * (index / 32u))) & (1u << (index % 32u)));
+}
+
+static void bit_mark(uint32_t base, uint32_t index) {
+    const uint32_t at = base + (4u * (index / 32u));
+    word_put(at, word_get(at) & ~(1u << (index % 32u)));
+}
+
+/* the u16 tables of chunk sizes: two per word, the other half written as 0xFFFF (a write only clears bits) */
+static uint32_t size_get(uint32_t base, uint32_t index) {
+    const uint32_t word = word_get(base + (4u * (index / 2u)));
+    return (index & 1u) ? (word >> 16) : (word & 0xFFFFu);
+}
+
+static void size_put(uint32_t base, uint32_t index, uint32_t size) {
+    word_put(base + (4u * (index / 2u)), (index & 1u) ? ((size << 16) | 0xFFFFu) : (0xFFFF0000u | size));
+}
+
+/* --- the input: a chunk in the flash ---------------------------------------------------------------------------- */
 
 static uint32_t s_in_at;            /* the next flash offset to read */
-static uint32_t s_in_left;          /* package bytes not read yet */
+static uint32_t s_in_left;          /* chunk bytes not read yet */
 static uint8_t s_in[INPUT_SIZE] __attribute__((aligned(4)));
 static uint32_t s_in_len;
 static uint32_t s_in_pos;
@@ -106,43 +158,21 @@ static uint32_t bits(uint32_t count) {
     return out;
 }
 
-/* --- the output: the head, a sector at a time ----------------------------------------------------------------- */
-
-static uint8_t s_out[ESPURNA_RBL_WINDOW] __attribute__((aligned(4)));
-static uint32_t s_out_len;          /* bytes written in all */
-static uint32_t s_out_max;          /* the size of the head (header raw_size) */
-static uint32_t s_hash;
-static bool s_out_error;
-
-static void out_flush(uint32_t size) {
-    const uint32_t sector = (s_out_len - 1u) / ESPURNA_RBL_SECTOR;
-    const uint32_t offset = ESPURNA_RBL_HEAD_AT + (sector * ESPURNA_RBL_SECTOR);
-
-    if (size < ESPURNA_RBL_SECTOR) {
-        memset(&s_out[size], 0xFF, ESPURNA_RBL_SECTOR - size);
-    }
-
-    while (s_erased_to <= offset) {
-        const uint32_t left = (ESPURNA_RBL_HEAD_AT + s_out_max) - s_erased_to;
-        if (!(s_erased_to & (BLOCK_SIZE - 1u)) && (left >= BLOCK_SIZE)) {
-            if (ROM_ERASE_BLOCK(s_erased_to / BLOCK_SIZE) != 0) {
-                s_out_error = true;
-                return;
-            }
-            s_erased_to += BLOCK_SIZE;
-        } else {
-            if (bootloader_flash_erase_sector(s_erased_to / ESPURNA_RBL_SECTOR) != ESP_OK) {
-                s_out_error = true;
-                return;
-            }
-            s_erased_to += ESPURNA_RBL_SECTOR;
-        }
-    }
-
-    if (bootloader_flash_write(offset, s_out, (size + 3u) & ~3u, false) != ESP_OK) {
-        s_out_error = true;
-    }
+/* the chunk at 'at' (4 byte aligned): its deflate size, where the next one starts */
+static uint32_t chunk_size(uint32_t at) {
+    return word_get(at) & 0xFFFFu;
 }
+
+static uint32_t chunk_next(uint32_t at) {
+    return at + ((2u + chunk_size(at) + 3u) & ~3u);
+}
+
+/* --- the output: one sector in RAM ----------------------------------------------------------------------------- */
+
+static uint8_t s_out[SECTOR] __attribute__((aligned(4)));
+static uint32_t s_out_len;
+static uint32_t s_out_max;
+static bool s_out_error;
 
 static void out_byte(uint8_t value) {
     if (s_out_len >= s_out_max) {
@@ -150,24 +180,18 @@ static void out_byte(uint8_t value) {
         return;
     }
 
-    s_out[s_out_len & (ESPURNA_RBL_WINDOW - 1u)] = value;
-    s_hash = (s_hash ^ value) * 0x01000193u;
-    ++s_out_len;
-
-    if (!(s_out_len & (ESPURNA_RBL_WINDOW - 1u))) {
-        out_flush(ESPURNA_RBL_WINDOW);
-    }
+    s_out[s_out_len++] = value;
 }
 
-/* a back reference: the window is the sector buffer (distance <= 4096, zlib wbits -12) */
+/* a back reference inside the sector (each chunk is a deflate of its own sector) */
 static void out_copy(uint32_t distance, uint32_t length) {
-    if (!distance || (distance > ESPURNA_RBL_WINDOW) || (distance > s_out_len)) {
+    if (!distance || (distance > s_out_len)) {
         s_out_error = true;
         return;
     }
 
     while (length-- && !s_out_error) {
-        out_byte(s_out[(s_out_len - distance) & (ESPURNA_RBL_WINDOW - 1u)]);
+        out_byte(s_out[s_out_len - distance]);
     }
 }
 
@@ -364,7 +388,22 @@ static bool block_stored(void) {
     return true;
 }
 
-static bool inflate(void) {
+/* the chunk at 'at' into s_out: true when it gives exactly 'size' bytes */
+static bool inflate_chunk(uint32_t at, uint32_t size) {
+    s_in_at = at;
+    s_in_left = 2u + chunk_size(at);
+    s_in_len = 0;
+    s_in_pos = 0;
+    s_in_error = false;
+    s_bits = 0;
+    s_bit_count = 0;
+    in_byte();
+    in_byte();
+
+    s_out_len = 0;
+    s_out_max = size;
+    s_out_error = false;
+
     uint32_t last = 0;
     while (!last) {
         last = bits(1);
@@ -391,16 +430,236 @@ static bool inflate(void) {
         }
     }
 
-    /* what is left in the buffer: the last, partial sector */
-    const uint32_t tail = s_out_len & (ESPURNA_RBL_WINDOW - 1u);
-    if (tail) {
-        out_flush(tail);
-    }
-
-    return !s_out_error;
+    return s_out_len == size;
 }
 
-/* --- the step ------------------------------------------------------------------------------------------------- */
+/* --- deflate: fixed Huffman codes, LZ77 inside the sector ------------------------------------------------------ */
+
+#define HASH_BITS 10u
+#define CHAIN 16u
+#define MATCH_MAX 258u
+
+static uint16_t s_hash_head[1u << HASH_BITS];
+static uint16_t s_hash_prev[SECTOR];
+
+static uint8_t s_cmp[SECTOR + 16u] __attribute__((aligned(4)));   /* u16 length, the deflate, padding */
+static uint32_t s_cmp_pos;
+static uint32_t s_cmp_acc;
+static uint32_t s_cmp_count;
+static bool s_cmp_over;
+
+static void put(uint32_t value, uint32_t count) {
+    s_cmp_acc |= value << s_cmp_count;
+    s_cmp_count += count;
+    while (s_cmp_count >= 8) {
+        if (s_cmp_pos < sizeof(s_cmp)) {
+            s_cmp[s_cmp_pos++] = (uint8_t)s_cmp_acc;
+        } else {
+            s_cmp_over = true;
+        }
+        s_cmp_acc >>= 8;
+        s_cmp_count -= 8;
+    }
+}
+
+/* a Huffman code goes MSB first */
+static void put_code(uint32_t code, uint32_t length) {
+    uint32_t reversed = 0;
+    for (uint32_t index = 0; index < length; ++index) {
+        reversed = (reversed << 1) | ((code >> index) & 1u);
+    }
+    put(reversed, length);
+}
+
+static void put_literal(uint32_t value) {
+    if (value < 144) {
+        put_code(0x30u + value, 8);
+    } else {
+        put_code(0x190u + (value - 144u), 9);
+    }
+}
+
+static void put_match(uint32_t length, uint32_t distance) {
+    uint32_t index = 28;
+    while (s_len_base[index] > length) {
+        --index;
+    }
+
+    const uint32_t symbol = 257u + index;
+    if (symbol < 280) {
+        put_code(symbol - 256u, 7);
+    } else {
+        put_code(0xC0u + (symbol - 280u), 8);
+    }
+    put(length - s_len_base[index], s_len_extra[index]);
+
+    uint32_t dist = 29;
+    while (s_dist_base[dist] > distance) {
+        --dist;
+    }
+    put_code(dist, 5);
+    put(distance - s_dist_base[dist], s_dist_extra[dist]);
+}
+
+static uint32_t hash3(const uint8_t* data) {
+    return ((((uint32_t)data[0] << 10) ^ ((uint32_t)data[1] << 5) ^ data[2]) * 2654435761u) >> (32u - HASH_BITS);
+}
+
+/* 'data' of 'size' bytes into s_cmp as a chunk; its padded size */
+static uint32_t deflate_chunk(const uint8_t* data, uint32_t size) {
+    s_cmp_pos = 2;
+    s_cmp_acc = 0;
+    s_cmp_count = 0;
+    s_cmp_over = false;
+
+    memset(s_hash_head, 0xFF, sizeof(s_hash_head));
+
+    put(1, 1);      /* the last block */
+    put(1, 2);      /* fixed Huffman codes */
+
+    uint32_t pos = 0;
+    while ((pos < size) && !s_cmp_over) {
+        uint32_t best = 0;
+        uint32_t best_dist = 0;
+
+        if ((pos + 3u) <= size) {
+            const uint32_t hash = hash3(&data[pos]);
+            uint32_t candidate = s_hash_head[hash];
+            uint32_t chain = CHAIN;
+            const uint32_t limit = ((size - pos) < MATCH_MAX) ? (size - pos) : MATCH_MAX;
+
+            while ((candidate != 0xFFFFu) && chain--) {
+                uint32_t length = 0;
+                while ((length < limit) && (data[candidate + length] == data[pos + length])) {
+                    ++length;
+                }
+                if (length > best) {
+                    best = length;
+                    best_dist = pos - candidate;
+                    if (length == limit) {
+                        break;
+                    }
+                }
+                candidate = s_hash_prev[candidate];
+            }
+
+            s_hash_prev[pos] = (uint16_t)s_hash_head[hash];
+            s_hash_head[hash] = (uint16_t)pos;
+        }
+
+        if (best >= 3) {
+            put_match(best, best_dist);
+            for (uint32_t step = 1; step < best; ++step) {
+                const uint32_t at = pos + step;
+                if ((at + 3u) <= size) {
+                    const uint32_t hash = hash3(&data[at]);
+                    s_hash_prev[at] = (uint16_t)s_hash_head[hash];
+                    s_hash_head[hash] = (uint16_t)at;
+                }
+            }
+            pos += best;
+        } else {
+            put_literal(data[pos]);
+            ++pos;
+        }
+    }
+
+    put_code(0, 7);     /* the end of the block */
+    if (s_cmp_count) {
+        put(0, 8u - s_cmp_count);
+    }
+
+    uint32_t length = s_cmp_pos - 2u;
+    if (s_cmp_over || (length > (size + 5u))) {
+        /* a stored block: the header byte (last, type 0), the length and its complement, the bytes */
+        s_cmp[2] = 0x01;
+        s_cmp[3] = (uint8_t)size;
+        s_cmp[4] = (uint8_t)(size >> 8);
+        s_cmp[5] = (uint8_t)~size;
+        s_cmp[6] = (uint8_t)(~size >> 8);
+        memcpy(&s_cmp[7], data, size);
+        length = size + 5u;
+    }
+
+    s_cmp[0] = (uint8_t)length;
+    s_cmp[1] = (uint8_t)(length >> 8);
+
+    const uint32_t padded = (2u + length + 3u) & ~3u;
+    memset(&s_cmp[2u + length], 0xFF, padded - (2u + length));
+    return padded;
+}
+
+/* --- the heads ----------------------------------------------------------------------------------------------- */
+
+static uint8_t s_old[SECTOR] __attribute__((aligned(4)));
+
+/* sector 'index' of the area at 'base' (the head's place, or 0x0 for an image of the flash) into s_old */
+static bool area_sector_read(uint32_t base, uint32_t index, uint32_t size) {
+    return bootloader_flash_read(base + (index * SECTOR), s_old, (size + 3u) & ~3u, false) == ESP_OK;
+}
+
+static bool head_sector_read(uint32_t index, uint32_t size) {
+    return area_sector_read(ESPURNA_RBL_HEAD_AT, index, size);
+}
+
+/* s_out (its first 'size' bytes, the rest 0xFF) onto sector 'index' of the area at 'base' */
+static bool area_sector_write(uint32_t base, uint32_t index, uint32_t size) {
+    if (size < SECTOR) {
+        memset(&s_out[size], 0xFF, SECTOR - size);
+    }
+
+    const uint32_t at = base + (index * SECTOR);
+    return (bootloader_flash_erase_sector(at / SECTOR) == ESP_OK)
+        && (bootloader_flash_write(at, s_out, SECTOR, false) == ESP_OK);
+}
+
+static bool head_sector_write(uint32_t index, uint32_t size) {
+    return area_sector_write(ESPURNA_RBL_HEAD_AT, index, size);
+}
+
+static uint32_t sector_size(uint32_t total, uint32_t index) {
+    const uint32_t left = total - (index * SECTOR);
+    return (left < SECTOR) ? left : SECTOR;
+}
+
+static uint32_t sectors_of(uint32_t size) {
+    return (size + SECTOR - 1u) / SECTOR;
+}
+
+/* the FNV-1a of what the area at 'base' holds now */
+static uint32_t area_hash(uint32_t base, uint32_t size) {
+    uint32_t hash = ESPURNA_RBL_FNV_START;
+    for (uint32_t index = 0; index < sectors_of(size); ++index) {
+        const uint32_t take = sector_size(size, index);
+        if (!area_sector_read(base, index, take)) {
+            return 0;
+        }
+        hash = espurna_rbl_fnv(hash, s_old, take);
+    }
+
+    return hash;
+}
+
+static uint32_t head_hash(uint32_t size) {
+    return area_hash(ESPURNA_RBL_HEAD_AT, size);
+}
+
+/* the length of the running head (esp_image_load checks it: segments, checksum), 0 - no valid image */
+static uint32_t running_head(void) {
+    const esp_partition_pos_t part = {
+        .offset = ESPURNA_RBL_HEAD_AT,
+        .size = ESPURNA_RBL_HEADER_AT - ESPURNA_RBL_HEAD_AT,
+    };
+    esp_image_metadata_t data;
+    memset(&data, 0, sizeof(data));
+    if (esp_image_load(ESP_IMAGE_VERIFY_SILENT, &part, &data) != ESP_OK) {
+        return 0;
+    }
+
+    return data.image_len;
+}
+
+/* --- the backup zone ------------------------------------------------------------------------------------------- */
 
 static bool package_crc_ok(const espurna_rbl_t* rbl) {
     uint32_t at = espurna_rbl_package_at(rbl);
@@ -421,27 +680,305 @@ static bool package_crc_ok(const espurna_rbl_t* rbl) {
     return crc == rbl->data_crc;
 }
 
-/* the head as it is in the flash now: its FNV-1a read back (the hash of the inflate is over what went to the writes,
-   an erase or a write the flash did not take passed it: 18.11 the head after an install reported the size of the head
-   before it, regress-todo.md item 23) */
-static bool written_ok(const espurna_rbl_t* rbl) {
-    uint32_t at = ESPURNA_RBL_HEAD_AT;
-    uint32_t left = rbl->raw_size;
-    uint32_t hash = ESPURNA_RBL_FNV_START;
+/* the bottom of the zone: on 1 MB above both heads, on 2 MB and more the top zone (the package lies at its top) */
+static uint32_t zone_bottom(const espurna_rbl_t* rbl, uint32_t old_size) {
+    if (memcmp(rbl->sn, ESPURNA_RBL_AT_TAG, 4) == 0) {
+        return espurna_rbl_package_at(rbl) + espurna_rbl_round(rbl->data_size) - ESPURNA_RBL_TOP_ZONE;
+    }
 
-    while (left) {
-        const uint32_t take = (left < INPUT_SIZE) ? left : INPUT_SIZE;
-        if (bootloader_flash_read(at, s_in, (take + 3u) & ~3u, false) != ESP_OK) {
+    const uint32_t larger = (old_size > rbl->raw_size) ? old_size : rbl->raw_size;
+    return round_up(ESPURNA_RBL_HEAD_AT + larger);
+}
+
+static uint32_t zone_top(const espurna_rbl_t* rbl) {
+    return espurna_rbl_package_at(rbl) + espurna_rbl_round(rbl->data_size);
+}
+
+/* bytes of the flash that are all 0xFF */
+static bool all_ff(uint32_t at, uint32_t size) {
+    while (size) {
+        const uint32_t take = (size < INPUT_SIZE) ? size : INPUT_SIZE;
+        if (bootloader_flash_read(at, s_in, take, false) != ESP_OK) {
             return false;
         }
         for (uint32_t index = 0; index < take; ++index) {
-            hash = (hash ^ s_in[index]) * 0x01000193u;
+            if (s_in[index] != 0xFF) {
+                return false;
+            }
         }
         at += take;
-        left -= take;
+        size -= take;
+    }
+
+    return true;
+}
+
+/* the chunk of s_cmp at 'at' of the zone: a sector it reaches into is erased first unless it is blank there; the
+   sector it starts in keeps the chunks before it (a power cut left half a chunk: that sector is written again) */
+static bool backup_write(uint32_t at, uint32_t size) {
+    const uint32_t end = at + size;
+    for (uint32_t sector = at & ~(SECTOR - 1u); sector < end; sector += SECTOR) {
+        const uint32_t from = (at > sector) ? at : sector;
+        const uint32_t to = (end < (sector + SECTOR)) ? end : (sector + SECTOR);
+        if (all_ff(from, to - from)) {
+            continue;
+        }
+
+        const uint32_t keep = (at > sector) ? (at - sector) : 0;
+        if (keep && (bootloader_flash_read(sector, s_in, keep, false) != ESP_OK)) {
+            return false;
+        }
+        if (bootloader_flash_erase_sector(sector / SECTOR) != ESP_OK) {
+            return false;
+        }
+        if (keep && (bootloader_flash_write(sector, s_in, keep, false) != ESP_OK)) {
+            return false;
+        }
+    }
+
+    return bootloader_flash_write(at, s_cmp, size, false) == ESP_OK;
+}
+
+/* the dry run: the old head deflated a sector at a time, its chunks must stay under the package that is not read yet
+   (a sector of the zone is erased only below the sector the unread package starts in) and inside the zone. Its FNV-1a
+   on the way */
+static bool backup_fits(const espurna_rbl_t* rbl, uint32_t old_size, uint32_t* old_hash) {
+    const uint32_t old_sectors = sectors_of(old_size);
+    const uint32_t new_sectors = sectors_of(rbl->raw_size);
+    const uint32_t count = (old_sectors > new_sectors) ? old_sectors : new_sectors;
+
+    uint32_t out = zone_bottom(rbl, old_size);
+    uint32_t package = espurna_rbl_package_at(rbl);
+    uint32_t hash = ESPURNA_RBL_FNV_START;
+
+    for (uint32_t index = 0; index < count; ++index) {
+        if (index < old_sectors) {
+            const uint32_t take = sector_size(old_size, index);
+            if (!head_sector_read(index, take)) {
+                return false;
+            }
+            hash = espurna_rbl_fnv(hash, s_old, take);
+            out += deflate_chunk(s_old, take);
+            if (out > (package & ~(SECTOR - 1u))) {
+                return false;
+            }
+        }
+        if (index < new_sectors) {
+            package = chunk_next(package);
+        }
+    }
+
+    *old_hash = hash;
+    return out <= zone_top(rbl);
+}
+
+/* --- install, swap, rollback ----------------------------------------------------------------------------------- */
+
+/* without a rollback: the new head sector by sector */
+static bool install_plain(const espurna_rbl_t* rbl) {
+    uint32_t package = espurna_rbl_package_at(rbl);
+    for (uint32_t index = 0; index < sectors_of(rbl->raw_size); ++index) {
+        const uint32_t size = sector_size(rbl->raw_size, index);
+        if (!inflate_chunk(package, size) || !head_sector_write(index, size)) {
+            return false;
+        }
+        package = chunk_next(package);
+    }
+
+    return true;
+}
+
+/* the swap, from where the bits say it stopped */
+static bool swap(const espurna_rbl_t* rbl, const espurna_rbl_swap_t* record) {
+    const uint32_t old_sectors = sectors_of(record->old_size);
+    const uint32_t new_sectors = sectors_of(rbl->raw_size);
+
+    uint32_t out = record->backup_at;
+    uint32_t package = espurna_rbl_package_at(rbl);
+
+    for (uint32_t index = 0; index < record->sectors; ++index) {
+        if (index < old_sectors) {
+            if (!bit_done(ESPURNA_RBL_SAVED_AT, index)) {
+                const uint32_t take = sector_size(record->old_size, index);
+                if (!head_sector_read(index, take)) {
+                    RBL_TRACE("swap %u: old sector read\n", index);
+                    return false;
+                }
+                const uint32_t size = deflate_chunk(s_old, take);
+                if (!backup_write(out, size)) {
+                    RBL_TRACE("swap %u: backup write at 0x%06x size %u\n", index, out, size);
+                    return false;
+                }
+                size_put(ESPURNA_RBL_BACKUP_SIZES_AT, index, size);
+                bit_mark(ESPURNA_RBL_SAVED_AT, index);
+            }
+            out += size_get(ESPURNA_RBL_BACKUP_SIZES_AT, index);
+        }
+
+        if (!bit_done(ESPURNA_RBL_WRITTEN_AT, index)) {
+            if (index < new_sectors) {
+                const uint32_t size = sector_size(rbl->raw_size, index);
+                if (!inflate_chunk(package, size) || !head_sector_write(index, size)) {
+                    RBL_TRACE("swap %u: new sector from the package at 0x%06x\n", index, package);
+                    return false;
+                }
+            }
+            bit_mark(ESPURNA_RBL_WRITTEN_AT, index);
+        }
+
+        if (index < new_sectors) {
+            package += size_get(ESPURNA_RBL_PACKAGE_SIZES_AT, index);
+        }
+    }
+
+    return true;
+}
+
+/* the backup inflates into the old head: checked whole before anything is written */
+static bool backup_ok(const espurna_rbl_swap_t* record) {
+    uint32_t at = record->backup_at;
+    uint32_t hash = ESPURNA_RBL_FNV_START;
+    for (uint32_t index = 0; index < sectors_of(record->old_size); ++index) {
+        const uint32_t size = sector_size(record->old_size, index);
+        if (!inflate_chunk(at, size)) {
+            return false;
+        }
+        hash = espurna_rbl_fnv(hash, s_out, size);
+        at += size_get(ESPURNA_RBL_BACKUP_SIZES_AT, index);
+    }
+
+    return hash == record->old_hash;
+}
+
+static bool rollback(const espurna_rbl_swap_t* record) {
+    uint32_t at = record->backup_at;
+    for (uint32_t index = 0; index < sectors_of(record->old_size); ++index) {
+        if (!bit_done(ESPURNA_RBL_BACK_AT, index)) {
+            const uint32_t size = sector_size(record->old_size, index);
+            if (!inflate_chunk(at, size) || !head_sector_write(index, size)) {
+                return false;
+            }
+            bit_mark(ESPURNA_RBL_BACK_AT, index);
+        }
+        at += size_get(ESPURNA_RBL_BACKUP_SIZES_AT, index);
+    }
+
+    return head_hash(record->old_size) == record->old_hash;
+}
+
+static bool swap_record_ok(const espurna_rbl_swap_t* record) {
+    return (record->magic == ESPURNA_RBL_SWAP_MAGIC)
+        && (espurna_rbl_crc32(0, record, sizeof(*record) - 4u) == record->crc);
+}
+
+static void header_erase(void) {
+    bootloader_flash_erase_sector(ESPURNA_RBL_HEADER_AT / SECTOR);
+}
+
+/* the starts of a new head not confirmed yet: bits cleared from the lowest one */
+static uint32_t starts(void) {
+    const uint32_t word = word_get(ESPURNA_RBL_BOOTS_AT);
+    uint32_t count = 0;
+    while ((count < 32u) && !(word & (1u << count))) {
+        ++count;
+    }
+    return count;
+}
+
+static void start_count(void) {
+    const uint32_t count = starts();
+    if (count < 32u) {
+        bit_mark(ESPURNA_RBL_BOOTS_AT, count);
+    }
+}
+
+/* --- an image of the flash from 0x0 (ESPURNA_RBL_FLASH: another firmware with its own bootloader) -------------- */
+
+#ifndef RBL_RESET
+/* the chip's reset by the hardware watchdog, as the head's restart (core_esp8266.cpp chip::restart()), after the UART had
+   its time. Not eboot's SWRST (the RTC's system reset): 21.11 the image of 1.15 was written whole and read back, the
+   SWRST that followed left the board silent until a power cycle (the SPI flash controller as the SDK's bootloader set
+   it, as after a jump to the ROM's reset vector, 19.11) */
+#define RBL_RESET() do { \
+        for (volatile uint32_t wait = 0; wait < 200000u; ++wait) {} \
+        volatile uint32_t* const wdt = (volatile uint32_t*)0x60000900u; \
+        wdt[0] &= ~1u;                                  /* WDT_CTL: off while it is set up */ \
+        wdt[1] = 1;                                     /* WDT_OP: the shortest stage */ \
+        wdt[2] = 1;                                     /* WDT_OP_ND */ \
+        wdt[0] = (wdt[0] & ~0x3Fu) | (7u << 3) | 1u;    /* RSTLEN 7, RSPMOD 0 (reset at once), EN */ \
+        for (;;) {} \
+    } while (0)
+#endif
+
+/* where the chunk of sector 'index' starts: counted from the package's start (the package lies above the image and is
+   never written here, so this holds after a power cut too) */
+static uint32_t chunk_of(const espurna_rbl_t* rbl, uint32_t index) {
+    uint32_t at = espurna_rbl_package_at(rbl);
+    while (index--) {
+        at = chunk_next(at);
+    }
+    return at;
+}
+
+/* every chunk inflates and the image they give has the FNV-1a of the header: checked before anything is erased */
+static bool package_inflates(const espurna_rbl_t* rbl) {
+    uint32_t at = espurna_rbl_package_at(rbl);
+    uint32_t hash = ESPURNA_RBL_FNV_START;
+    for (uint32_t index = 0; index < sectors_of(rbl->raw_size); ++index) {
+        const uint32_t size = sector_size(rbl->raw_size, index);
+        if (!inflate_chunk(at, size)) {
+            RBL_TRACE("flash image: chunk %u at 0x%06x does not inflate\n", index, at);
+            return false;
+        }
+        hash = espurna_rbl_fnv(hash, s_out, size);
+        at = chunk_next(at);
     }
 
     return hash == rbl->data_hash;
+}
+
+/* from the top sector down: this bootloader (the first sectors) goes last. A power cut before them boots this
+   bootloader again, the header is still there and it starts over */
+static bool install_flash(const espurna_rbl_t* rbl) {
+    for (uint32_t index = sectors_of(rbl->raw_size); index--; ) {
+        const uint32_t size = sector_size(rbl->raw_size, index);
+        if (!inflate_chunk(chunk_of(rbl, index), size) || !area_sector_write(0, index, size)) {
+            RBL_TRACE("flash image: sector %u\n", index);
+            return false;
+        }
+    }
+
+    return area_hash(0, rbl->raw_size) == rbl->data_hash;
+}
+
+static void flash_image(const espurna_rbl_t* rbl) {
+    const uint32_t clock = DPORT_CTL;
+
+    DPORT_CTL = clock | 1u;
+    const bool good = package_crc_ok(rbl) && package_inflates(rbl);
+    DPORT_CTL = clock;
+    if (!good) {
+        ets_printf("ESPURNA RBL: the image of the flash does not check out, the head stays\n");
+        return;
+    }
+
+    ets_printf("ESPURNA RBL: writing an image of the flash, %u bytes (package %u at 0x%06x) from 0x0\n",
+        rbl->raw_size, rbl->data_size, espurna_rbl_package_at(rbl));
+
+    DPORT_CTL = clock | 1u;
+    bool ok = false;
+    for (uint32_t attempt = 0; (attempt < 3u) && !ok; ++attempt) {
+        ok = install_flash(rbl);
+    }
+    DPORT_CTL = clock;
+
+    /* this bootloader is gone from 0x0 now whatever happened: the chip starts over from the new image */
+    if (ok) {
+        header_erase();
+    }
+    ets_printf(ok ? "ESPURNA RBL: the image of the flash is written (read back), reset\n"
+        : "ESPURNA RBL: the flash differs from the image, reset\n");
+    RBL_RESET();
 }
 
 void bootloader_after_init(void) {
@@ -462,10 +999,45 @@ void bootloader_after_init(void) {
         return;
     }
 
-    /* 160 MHz for the CRC, the inflate and the read back; ets_printf() only at 80 MHz (the UART divider) */
+    if (rbl.compression == ESPURNA_RBL_FLASH) {
+        flash_image(&rbl);
+        return;
+    }
+
     const uint32_t clock = DPORT_CTL;
+
+    espurna_rbl_swap_t record;
+    bootloader_flash_read(ESPURNA_RBL_SWAP_AT, &record, sizeof(record), false);
+    const bool swapping = swap_record_ok(&record);
+
+    /* a swap done: count the starts of the new head, its confirmation erases all this */
+    if (swapping && !word_get(ESPURNA_RBL_DONE_AT)) {
+        const bool rolling = !word_get(ESPURNA_RBL_ROLLBACK_AT);
+        if (!rolling && (starts() < ESPURNA_RBL_STARTS)) {
+            start_count();
+            return;
+        }
+
+        ets_printf("ESPURNA RBL: the new head did not confirm itself in %u starts, the old head back\n",
+            ESPURNA_RBL_STARTS);
+        DPORT_CTL = clock | 1u;
+        bool ok = rolling || backup_ok(&record);
+        if (ok && !rolling) {
+            word_put(ESPURNA_RBL_ROLLBACK_AT, 0);
+        }
+        ok = ok && rollback(&record);
+        DPORT_CTL = clock;
+
+        if (ok || !rolling) {
+            header_erase();
+        }
+        ets_printf(ok ? "ESPURNA RBL: the old head is back (read back)\n"
+            : "ESPURNA RBL: the backup is broken, the new head stays\n");
+        return;
+    }
+
     DPORT_CTL = clock | 1u;
-    const bool crc_ok = package_crc_ok(&rbl);
+    const bool crc_ok = swapping || package_crc_ok(&rbl);
     DPORT_CTL = clock;
 
     if (!crc_ok) {
@@ -473,39 +1045,69 @@ void bootloader_after_init(void) {
         return;
     }
 
-    ets_printf("ESPURNA RBL: installing %u bytes (package %u)\n", rbl.raw_size, rbl.data_size);
+    /* a new swap: the running head must fit the zone deflated */
+    if (!swapping) {
+        DPORT_CTL = clock | 1u;
+        const uint32_t old_size = running_head();
+        uint32_t old_hash = 0;
+        const bool fits = old_size && backup_fits(&rbl, old_size, &old_hash);
+        DPORT_CTL = clock;
 
-    s_in_at = espurna_rbl_package_at(&rbl);
-    s_in_left = rbl.data_size;
-    s_in_len = 0;
-    s_in_pos = 0;
-    s_in_error = false;
-    s_bits = 0;
-    s_bit_count = 0;
+        if (fits) {
+            /* the sizes of the package's chunks while it is whole (written again the same after a power cut here) */
+            uint32_t package = espurna_rbl_package_at(&rbl);
+            for (uint32_t index = 0; index < sectors_of(rbl.raw_size); ++index) {
+                const uint32_t next = chunk_next(package);
+                size_put(ESPURNA_RBL_PACKAGE_SIZES_AT, index, next - package);
+                package = next;
+            }
 
-    s_out_len = 0;
-    s_out_max = rbl.raw_size;
-    s_hash = ESPURNA_RBL_FNV_START;
-    s_out_error = false;
-    s_erased_to = ESPURNA_RBL_HEAD_AT;
+            record.magic = ESPURNA_RBL_SWAP_MAGIC;
+            record.old_size = old_size;
+            record.old_hash = old_hash;
+            record.backup_at = zone_bottom(&rbl, old_size);
+            record.sectors = sectors_of((old_size > rbl.raw_size) ? old_size : rbl.raw_size);
+            record.crc = espurna_rbl_crc32(0, &record, sizeof(record) - 4u);
+            bootloader_flash_write(ESPURNA_RBL_SWAP_AT, &record, sizeof(record), false);
+        } else {
+            ets_printf("ESPURNA RBL: installing %u bytes (package %u), no room to keep the old head\n",
+                rbl.raw_size, rbl.data_size);
+            DPORT_CTL = clock | 1u;
+            const bool ok = install_plain(&rbl) && (head_hash(rbl.raw_size) == rbl.data_hash);
+            DPORT_CTL = clock;
+            if (!ok) {
+                ets_printf("ESPURNA RBL: install failed, again on the next boot\n");
+                return;
+            }
+            header_erase();
+            ets_printf("ESPURNA RBL: installed (read back)\n");
+            return;
+        }
+    }
+
+    ets_printf("ESPURNA RBL: installing %u bytes (package %u), the old head %u kept at 0x%06x\n",
+        rbl.raw_size, rbl.data_size, record.old_size, record.backup_at);
 
     DPORT_CTL = clock | 1u;
-    const bool ok = inflate();
-    const bool read_back = ok && written_ok(&rbl);
+    const bool ok = swap(&rbl, &record);
+    const bool read_back = ok && (head_hash(rbl.raw_size) == rbl.data_hash);
     DPORT_CTL = clock;
 
-    if (!ok || (s_out_len != rbl.raw_size) || (s_hash != rbl.data_hash)) {
-        /* the header stays: the next boot tries again from the start */
-        ets_printf("ESPURNA RBL: install failed (%u of %u bytes), again on the next boot\n", s_out_len, rbl.raw_size);
+    if (!ok) {
+        /* the bits stay: the next boot goes on from the sector that failed */
+        ets_printf("ESPURNA RBL: install failed, again on the next boot\n");
         return;
     }
 
+    word_put(ESPURNA_RBL_DONE_AT, 0);
     if (!read_back) {
-        /* the header stays: the next boot writes it again */
-        ets_printf("ESPURNA RBL: the head in the flash differs from the package, again on the next boot\n");
+        /* the new head is not what the package says: the old one back at once */
+        ets_printf("ESPURNA RBL: the head in the flash differs from the package, the old head back\n");
+        word_put(ESPURNA_RBL_BOOTS_AT, 0);
+        bootloader_after_init();
         return;
     }
 
-    bootloader_flash_erase_sector(ESPURNA_RBL_HEADER_AT / ESPURNA_RBL_SECTOR);
+    start_count();
     ets_printf("ESPURNA RBL: installed (read back)\n");
 }

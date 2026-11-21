@@ -242,7 +242,15 @@ void otaProgress(size_t bytes) {
     otaProgress(bytes, Each);
 }
 
+#if defined(ESP8266)
+// a new head confirms itself to the bootloader (arch/esp8266/ota_esp8266.cpp)
+void otaConfirmSetup();
+#endif
+
 void otaSetup() {
+#if defined(ESP8266)
+    otaConfirmSetup();
+#endif
 #if OTA_ARDUINOOTA_SUPPORT
     otaArduinoSetup();
 #endif

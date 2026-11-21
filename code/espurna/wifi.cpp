@@ -1562,9 +1562,9 @@ void wifi(::terminal::CommandContext&& ctx) {
     if (mode & OpmodeSta) {
         if (sta::connected()) {
             auto network = sta::current();
-            ctx.output.printf_P(PSTR("STA: bssid %s rssi %hhd channel %hhu ssid \"%s\"\n"),
+            ctx.output.printf_P(PSTR("STA: bssid %s rssi %hhd channel %hhu security %s ssid \"%s\"\n"),
                 debug::mac(network.bssid).c_str(),
-                network.rssi, network.channel, network.ssid.c_str());
+                network.rssi, network.channel, driver::sta_security(), network.ssid.c_str());
         } else {
             ctx.output.printf_P(PSTR("STA: %s\n"),
                 sta::connecting() ? "connecting" : "disconnected");

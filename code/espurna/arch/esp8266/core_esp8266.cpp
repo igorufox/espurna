@@ -24,6 +24,7 @@ pwm_esp8266.cpp); the Wi-Fi of the SDK with tcpip_adapter and the default event 
 #include <esp_timer.h>
 #include <esp_wifi.h>
 #include <rom/ets_sys.h>
+#include <esp8266/pin_mux_register.h>
 #include <esp_private/esp_system_internal.h>
 #include <spi_flash.h>
 #include <nvs.h>
@@ -733,7 +734,10 @@ auto& rom_user_start_fptr = *reinterpret_cast<void (**)()>(0x3fffdcd0);
 
 namespace {
 
-[[noreturn]] void IRAM_ATTR uart_download() {
+// noinline: inlined into rom_loader() (flash) it ran on from the flash right after Cache_Read_Disable() - an
+// IllegalInstruction, the board restarted instead of the ROM loader (RESET.ROM 20.11; the regression's "RESET.ROM and
+// back" passed on that restart)
+[[noreturn]] void IRAM_ATTR __attribute__((noinline)) uart_download() {
     Wait_SPI_Idle(reinterpret_cast<void*>(0x3fffc714));  // the ROM's flashchip record (g_rom_flashchip)
     Cache_Read_Disable();
     // the IRAM the cache took, back to the ROM's 64 KB (a hardware reset clears these, Cache_Read_Disable() does not)
@@ -748,6 +752,13 @@ namespace {
     __asm__ __volatile__("mov a1, %0" :: "r"(0x40000000));
     __asm__ __volatile__("wsr.ps %0" :: "r"(0x20));
     __asm__ __volatile__("rsync");
+
+    // UART0 back on GPIO1 / GPIO3 for the ROM loader: the head or a module may have moved it (the swap to GPIO15 / GPIO13,
+    // IOSWAP bit 2) or taken the pins, and rom_Uart_Init() sets neither (20.11: after RESET.ROM the ROM never answered
+    // the sync of esptool on any baud rate, the board was lost until a power cycle)
+    *reinterpret_cast<volatile uint32_t*>(0x3ff00028) &= ~uint32_t{1u << 2};
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_U0TXD_U, FUNC_U0TXD);
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_U0RXD_U, FUNC_U0RXD);
 
     rom_uartAttach();
     rom_Uart_Init(0);
@@ -860,17 +871,8 @@ bool wifi_mode(wifi_mode_t mode) {
         return false;
     }
 
-    // The AP is not taken down while the Wi-Fi runs: wifi_softap_stop() of the Wi-Fi library breaks the lists of
-    // FreeRTOS-Kernel V11 (the pending ready list, 11-18: a LoadProhibited in xTaskResumeAll, or a board on the network
-    // that answers nothing and no watchdog sees). The fallback AP, once up, stays until the next restart (it has the
-    // admin password); regress-todo.md has the root cause as an open item
-    if (wifi::started && !(mode & WIFI_MODE_AP)) {
-        wifi_mode_t current { WIFI_MODE_NULL };
-        if ((esp_wifi_get_mode(&current) == ESP_OK) && (current & WIFI_MODE_AP)) {
-            mode = static_cast<wifi_mode_t>(mode | WIFI_MODE_AP);
-        }
-    }
-
+    // the AP goes down on the fly again (regress-todo 3): wifi_softap_stop() broke the lists of FreeRTOS-Kernel V11 while
+    // its List_t had the mini end item - configUSE_MINI_LIST_ITEM 0 since 19.11 (GCC 14 strict aliasing, item 17)
     if (esp_wifi_set_mode(mode) != ESP_OK) {
         return false;
     }

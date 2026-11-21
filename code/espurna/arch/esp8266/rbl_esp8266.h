@@ -6,13 +6,18 @@ One file for the two sides of it, C (the SDK's bootloader, bootloader/espurna_rb
 
 - the head takes the RBL of a new head (espurna-esp8266.ota, scripts/esp8266_module_link.py) while the modules are off,
   writes the package right under the header sector and the 96 bytes of the header last
-- the bootloader finds the header at its fixed place, checks the package before it erases anything, inflates it onto
-  'factory' (0x10000), checks the result and only then erases the header. A power cut anywhere before that: the
-  package is still whole, the next boot installs it again from the start
+- the bootloader finds the header at its fixed place, checks the package before it erases anything, then SWAPS the heads
+  a sector at a time (owner 20.11 «поменять местами»): each sector of the running head is deflated into the free part of
+  the package's zone, then the sector of the new head is inflated in its place. The old head stays there, compressed in
+  the same chunks, until the new one is confirmed: the new head erases the header sector after 60 s with Wi-Fi
+  (ota_esp8266.cpp). Three starts without that and the bootloader puts the old head back. The progress is a bit per
+  sector in the header sector, a power cut resumes at that sector. One bootloader on every chip size: the zone is the
+  space under the header on 1 MB, the top 512 KB on 2 MB and more (ESPURNA_RBL_TOP_ZONE). A dry run first: when the old
+  head would not fit the zone compressed, the new head is installed without a rollback, as before
 
 The header is the RBL of the Beken bootloaders (RT-Thread OTA, ltchiptool soc/bk72xx/util/rbl.py), 96 bytes:
-"RBL\0", encryption 0, compression 1 = raw deflate with a 4 KB window (zlib wbits -12: the bootloader keeps the window
-in one sector of RAM), the build time, the name "esp8266", the version, sn (unused), the CRC32 of the package, the
+"RBL\0", encryption 0, compression 2 = the head a sector (4 KB) at a time, each sector a chunk of its own raw deflate
+(zlib wbits -12): u16 length, the deflate bytes, padding to 4 bytes (scripts/esp8266_rbl.py), the build time, the name "esp8266", the version, sn (unused), the CRC32 of the package, the
 FNV-1a of the inflated head, the size of the inflated head, the size of the package, the CRC32 of the 92 bytes before
 
 Flash (arch/esp8266/partitions.csv, modules_esp8266.cpp): the head at 0x10000 grows up, the modules' directory is in
@@ -32,8 +37,38 @@ package (no overlapping inflate), the package must start above the running head 
 #define ESPURNA_RBL_HEAD_AT     0x10000u
 #define ESPURNA_RBL_MAGIC       0x004C4252u     /* "RBL\0" */
 #define ESPURNA_RBL_NAME        "esp8266"
-#define ESPURNA_RBL_DEFLATE     1u
+#define ESPURNA_RBL_SECTORS     2u      /* compression: a raw deflate chunk per 4 KB sector */
+/* compression: the same chunks, an image of the flash from 0x0 - another firmware (ESPurna 1.15 / 1.22 of the Arduino
+   core with its eboot, owner 21.11: «пиши 1.15 по воздуху»). No swap and no rollback: the SDK's bootloader is
+   overwritten too. A bootloader without this kind refuses it ("RBL of another kind"), the head stays */
+#define ESPURNA_RBL_FLASH       3u
 #define ESPURNA_RBL_WINDOW      4096u
+
+/* the state of a swap in the header sector, after the header (the head writes only the 96 bytes of the header there; the
+   rest is 0xFF until the bootloader writes it; bits are cleared one at a time, never set again until the sector is
+   erased - by the head's confirmation or at the end of a rollback) */
+#define ESPURNA_RBL_SWAP_AT     (ESPURNA_RBL_HEADER_AT + 0x100u)    /* espurna_rbl_swap_t */
+#define ESPURNA_RBL_SAVED_AT    (ESPURNA_RBL_HEADER_AT + 0x200u)    /* a bit per sector: the old one is in the zone */
+#define ESPURNA_RBL_WRITTEN_AT  (ESPURNA_RBL_HEADER_AT + 0x240u)    /* a bit per sector: the new one is in place */
+#define ESPURNA_RBL_DONE_AT     (ESPURNA_RBL_HEADER_AT + 0x280u)    /* 0: the swap is done */
+#define ESPURNA_RBL_BOOTS_AT    (ESPURNA_RBL_HEADER_AT + 0x284u)    /* a bit per start of the new head not confirmed */
+#define ESPURNA_RBL_BACK_AT     (ESPURNA_RBL_HEADER_AT + 0x300u)    /* a bit per sector: the old one is back */
+#define ESPURNA_RBL_ROLLBACK_AT (ESPURNA_RBL_HEADER_AT + 0x340u)    /* 0: a rollback runs */
+/* u16 per sector, the padded size of its chunk: the read part of the package is overwritten by the backup and the
+   backup's own sectors may be written again after a power cut - where a chunk starts is never read from them */
+#define ESPURNA_RBL_PACKAGE_SIZES_AT (ESPURNA_RBL_HEADER_AT + 0x400u)
+#define ESPURNA_RBL_BACKUP_SIZES_AT  (ESPURNA_RBL_HEADER_AT + 0x600u)
+#define ESPURNA_RBL_SWAP_MAGIC  0x50415753u                         /* "SWAP" */
+#define ESPURNA_RBL_STARTS      3u                                  /* starts of a new head without its confirmation */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t old_size;      /* the running head that is backed up */
+    uint32_t old_hash;      /* its FNV-1a */
+    uint32_t backup_at;     /* its chunks, from the bottom of the zone up */
+    uint32_t sectors;       /* the sectors swapped: the larger head of the two */
+    uint32_t crc;           /* CRC32 of the 20 bytes before */
+} espurna_rbl_swap_t;
 #define ESPURNA_RBL_SIZE        96u
 
 typedef struct {
@@ -128,6 +163,11 @@ static inline uint32_t espurna_rbl_fnv(uint32_t hash, const uint8_t* data, size_
     return hash;
 }
 
+/* where the inflated image goes: the head's place, or 0x0 for an image of the flash */
+static inline uint32_t espurna_rbl_dest(const espurna_rbl_t* rbl) {
+    return (rbl->compression == ESPURNA_RBL_FLASH) ? 0u : ESPURNA_RBL_HEAD_AT;
+}
+
 /* the header itself: its CRC, a package this chip takes. NULL - fine, else what is wrong */
 static inline const char* espurna_rbl_check(const espurna_rbl_t* rbl) {
     if (rbl->magic != ESPURNA_RBL_MAGIC) {
@@ -138,8 +178,10 @@ static inline const char* espurna_rbl_check(const espurna_rbl_t* rbl) {
         return "RBL header CRC";
     }
 
-    if ((rbl->encryption != 0) || (rbl->compression != ESPURNA_RBL_DEFLATE)) {
-        return "RBL of another kind (encrypted, or not deflate)";
+    if ((rbl->encryption != 0)
+        || ((rbl->compression != ESPURNA_RBL_SECTORS) && (rbl->compression != ESPURNA_RBL_FLASH)))
+    {
+        return "RBL of another kind (encrypted, or not deflate chunks)";
     }
 
     if (strncmp(rbl->name, ESPURNA_RBL_NAME, sizeof(rbl->name)) != 0) {
@@ -150,14 +192,16 @@ static inline const char* espurna_rbl_check(const espurna_rbl_t* rbl) {
         return "empty RBL";
     }
 
+    /* the image ends under the header sector: the header, the modules' directory and the settings above it stay */
+    const uint32_t dest = espurna_rbl_dest(rbl);
     if ((rbl->data_size > (ESPURNA_RBL_HEADER_AT - ESPURNA_RBL_HEAD_AT))
-        || (rbl->raw_size > (ESPURNA_RBL_HEADER_AT - ESPURNA_RBL_HEAD_AT)))
+        || (rbl->raw_size > (ESPURNA_RBL_HEADER_AT - dest)))
     {
         return "RBL larger than the flash";
     }
 
-    if ((ESPURNA_RBL_HEAD_AT + rbl->raw_size) > espurna_rbl_package_at(rbl)) {
-        return "the new head and its package do not fit the flash together";
+    if ((dest + rbl->raw_size) > espurna_rbl_package_at(rbl)) {
+        return "the new image and its package do not fit the flash together";
     }
 
     return NULL;

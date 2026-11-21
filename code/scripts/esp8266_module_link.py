@@ -36,6 +36,7 @@ for target_env in [env, globals()["projenv"]] + [builder.env for builder in env.
 
 sys.path.insert(0, os.path.join(env.subst("$PROJECT_DIR"), "scripts"))
 import esp8266_rbl  # noqa: E402
+import esp8266_migrate  # noqa: E402
 import module_initial_image  # noqa: E402
 import module_link  # noqa: E402
 from release_image import name as release_name, path as release_path, write  # noqa: E402
@@ -132,6 +133,12 @@ class Esp8266Linker(module_link.Linker):
         same install image by the Apply, as on every chip"""
         out = os.path.join(ctx["build_dir"], "espurna-esp8266.rbl")
         esp8266_rbl.write(ctx["head_bin"], out)
+        # the migration image of the ESPurna 1.15 / 1.22 boards (esp8266_migrate.py): one upload through their /upgrade
+        bootloader = os.path.join(ctx["build_dir"], "bootloader.bin")
+        table = os.path.join(ctx["build_dir"], "partition-table.bin")
+        if os.path.isfile(bootloader) and os.path.isfile(table):
+            esp8266_migrate.write(bootloader, table, ctx["head_bin"],
+                                  os.path.join(ctx["build_dir"], "espurna-esp8266-migrate.bin.gz"))
         return [("esp8266", out)]
 
 
