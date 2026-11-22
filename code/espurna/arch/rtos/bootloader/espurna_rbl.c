@@ -1,8 +1,11 @@
 /*
 
-The ESPurna step of the SDK's bootloader: bootloader_after_init() of the SDK's bootloader_hooks.h (bootloader_start.c
-calls it right after bootloader_init(), this one replaces the weak one): a new head left by the head as an RBL package
-(../rbl_esp8266.h) goes onto 'factory'. Owner 2026-11-18: the Tuya bootloader's scheme; owner 20.11: the heads swap
+The ESPurna step of the bootloader, ONE for every chip that takes its head as an RBL package (ESP8266, ESP32; owner
+22.11 «делай как ESP8266 у нас общая схема», one app partition on both): bootloader_after_init() of the bootloader's
+bootloader_hooks.h (the SDK's / ESP-IDF's bootloader_start.c calls it right after bootloader_init(), this one replaces
+the weak one): a new head left by the head as an RBL package (libs/rbl.h, the places in arch/<chip>/rbl_<chip>.h) goes
+onto the app partition. What the chip's bootloader and ROM force (the flash size for the ROM, the clock, the watchdog,
+the reset, the RAM of the buffers) is arch/<chip>/bootloader/rbl_chip.h. Owner 2026-11-18: the Tuya bootloader's scheme; owner 20.11: the heads swap
 places («поменять местами»), the old one kept compressed for a rollback, one bootloader on every chip size.
 
 1. no valid header at ESPURNA_RBL_HEADER_AT - nothing to do, the head boots as always
@@ -19,14 +22,16 @@ places («поменять местами»), the old one kept compressed for a 
 
 5. an image of the flash (compression ESPURNA_RBL_FLASH, owner 21.11: ESPurna 1.15 back over the air): the CRC and a
    dry inflate against the FNV-1a first, then the image from 0x0, from the top sector down - this bootloader last (a
-   power cut before that starts it over). No swap, no rollback; the header erased, the chip reset as eboot does it
+   power cut before that starts it over). No swap, no rollback; the header erased, the chip reset as eboot does it.
+   Kept sectors (a chunk of length 0) stay as they are: the ESP32 migration (scripts/esp32_migrate.py) keeps the NVS
 
 The package and the backup are the same chunks (u16 length, raw deflate of one 4 KB sector, padding to 4 bytes): one
 inflate for both. The bootloader deflates with the fixed Huffman codes of RFC 1951 (LZ77 inside the sector, hash chains),
 a stored block when that is not smaller.
 
-Linked into the bootloader only (scripts/esp8266_rtos_sdk.py, before the bootloader's archives of the SDK package),
-never into the head.
+Linked into the bootloader only, never into the head: ESP8266 scripts/esp8266_rtos_sdk.py (before the bootloader's
+archives of the SDK package), ESP32 the bootloader component code/bootloader_components/espurna_rbl (ESP-IDF takes the
+project's bootloader_components into its bootloader).
 
 */
 
@@ -37,46 +42,42 @@ never into the head.
 
 #include "esp_err.h"
 #include "esp_image_format.h"
-#include "rom/ets_sys.h"
 
-/* bootloader_support/src/bootloader_flash.c (its header is private to that component) */
+/* bootloader_support/src/bootloader_flash.c (its header is private to that component), the same on both bootloaders */
 esp_err_t bootloader_flash_read(size_t src_addr, void* dest, size_t size, bool allow_decrypt);
 esp_err_t bootloader_flash_write(size_t dest_addr, void* src, size_t size, bool write_encrypted);
 esp_err_t bootloader_flash_erase_sector(size_t sector);
-uint32_t bootloader_read_flash_id(void);
 
-#include "esp8266/rom_functions.h"
+/* the hook of bootloader_hooks.h (weak in the bootloader, private to its main component on ESP-IDF): this one is it */
+void bootloader_after_init(void);
 
-/* the size of the chip by its JEDEC id (capacity byte 0x14..0x18 = 1..16 MB), as the head does (core_esp8266.cpp
-   flash_size_from_id): the ROM takes it from the image header (the SDK's bootloader.bin says 1 MB), and the ROM's
-   SPIRead refuses anything over it - 19.11 the package at the top of the 4 MB chip was never read, the head stayed.
-   g_rom_flashchip of the bootloader is the RAM copy of the SDK's libspi_flash (0x3ffeed10 in bootloader.map), not the
-   record the ROM's SPIRead / SPIWrite / SPIEraseSector check: the ROM's own is set by its SPIParamCfg (as esptool's
-   stub does it). 22.11 the Wemos (XMC 16 MB): the package at 0xF95000 failed its CRC on every boot ("package CRC, the
-   head stays") - the ROM still had the 4 MB of the image header and refused every read above it */
-typedef uint32_t (*espurna_rom_spi_param_cfg_t)(uint32_t device_id, uint32_t chip_size, uint32_t block_size,
-    uint32_t sector_size, uint32_t page_size, uint32_t status_mask);
-#define ESPURNA_ROM_SPI_PARAM_CFG ((espurna_rom_spi_param_cfg_t)0x40004c2cu)
+/* the chip: its layout (ESPURNA_RBL_* and espurna_rbl_check() of arch/<chip>/rbl_<chip>.h), RBL_PRINTF, and what its
+   bootloader forces (RBL_CHIP_BEGIN / END, RBL_FAST / SLOW, RBL_FEED, RBL_RESET, RBL_RAM, RBL_CHIP_FLASH_IMAGE) */
+#include "rbl_chip.h"
 
-static void chip_size_from_id(void) {
-    const uint32_t capacity = bootloader_read_flash_id() & 0xffu;
-    if ((capacity >= 0x14u) && (capacity <= 0x18u)) {
-        g_rom_flashchip.chip_size = 1u << capacity;
-        ESPURNA_ROM_SPI_PARAM_CFG(0, 1u << capacity, 0x10000u, 0x1000u, 0x100u, 0xffffu);
-    }
-}
-
-/* the ROM's record back to the size of the image header before the head starts: the head finds the ROM as the SDK's
-   bootloader leaves it (the head sets its own size, core_esp8266.cpp flash_size_from_id) */
-static void chip_size_restore(uint32_t size) {
-    g_rom_flashchip.chip_size = size;
-    ESPURNA_ROM_SPI_PARAM_CFG(0, size, 0x10000u, 0x1000u, 0x100u, 0xffffu);
-}
-
-
-#include "bootloader_hooks.h"
-
-#include "../rbl_esp8266.h"
+#ifndef RBL_CHIP_BEGIN
+#define RBL_CHIP_BEGIN()
+#endif
+#ifndef RBL_CHIP_END
+#define RBL_CHIP_END()
+#endif
+#ifndef RBL_FAST
+#define RBL_FAST()
+#endif
+#ifndef RBL_SLOW
+#define RBL_SLOW()
+#endif
+/* a watchdog the bootloader runs: fed between the sectors */
+#ifndef RBL_FEED
+#define RBL_FEED()
+#endif
+#ifndef RBL_CHIP_FLASH_IMAGE
+#define RBL_CHIP_FLASH_IMAGE 0
+#endif
+/* the image check of the bootloader, without loading it (ESP8266 SDK: esp_image_load; ESP-IDF 5: esp_image_verify) */
+#ifndef RBL_IMAGE_CHECK
+#define RBL_IMAGE_CHECK(part, data) esp_image_load(ESP_IMAGE_VERIFY_SILENT, (part), (data))
+#endif
 
 #define SECTOR ESPURNA_RBL_SECTOR
 
@@ -85,12 +86,32 @@ static void chip_size_restore(uint32_t size) {
 #define RBL_TRACE(...)
 #endif
 #define INPUT_SIZE 4096u
+#define HASH_BITS 10u
 
-/* the CPU at 160 MHz while installing (DPORT_CTL_DOUBLE_CLK, as bootloader_start.c with CONFIG_BOOTLOADER_FAST_BOOT);
-   ets_printf() only at 80 MHz (the UART divider) */
-#ifndef DPORT_CTL
-#define DPORT_CTL (*(volatile uint32_t*)0x3FF00014u)
+/* the buffers (~28 KB): static where the bootloader has the RAM (ESP8266), else RBL_RAM - RAM the bootloader does not use
+   while the step runs (ESP32: the app's DRAM, loaded only after it) */
+typedef struct {
+    uint8_t in[INPUT_SIZE] __attribute__((aligned(4)));
+    uint8_t out[ESPURNA_RBL_SECTOR] __attribute__((aligned(4)));
+    uint8_t old[ESPURNA_RBL_SECTOR] __attribute__((aligned(4)));
+    uint8_t cmp[ESPURNA_RBL_SECTOR + 16u] __attribute__((aligned(4)));   /* u16 length, the deflate, padding */
+    uint16_t hash_head[1u << HASH_BITS];
+    uint16_t hash_prev[ESPURNA_RBL_SECTOR];
+} rbl_ram_t;
+
+#ifdef RBL_RAM
+#define S_RAM ((rbl_ram_t*)(RBL_RAM))
+#else
+static rbl_ram_t s_ram;
+#define S_RAM (&s_ram)
 #endif
+
+#define s_in (S_RAM->in)
+#define s_out (S_RAM->out)
+#define s_old (S_RAM->old)
+#define s_cmp (S_RAM->cmp)
+#define s_hash_head (S_RAM->hash_head)
+#define s_hash_prev (S_RAM->hash_prev)
 
 static uint32_t round_up(uint32_t value) {
     return (value + SECTOR - 1u) & ~(SECTOR - 1u);
@@ -131,7 +152,6 @@ static void size_put(uint32_t base, uint32_t index, uint32_t size) {
 
 static uint32_t s_in_at;            /* the next flash offset to read */
 static uint32_t s_in_left;          /* chunk bytes not read yet */
-static uint8_t s_in[INPUT_SIZE] __attribute__((aligned(4)));
 static uint32_t s_in_len;
 static uint32_t s_in_pos;
 static bool s_in_error;
@@ -185,7 +205,6 @@ static uint32_t chunk_next(uint32_t at) {
 
 /* --- the output: one sector in RAM ----------------------------------------------------------------------------- */
 
-static uint8_t s_out[SECTOR] __attribute__((aligned(4)));
 static uint32_t s_out_len;
 static uint32_t s_out_max;
 static bool s_out_error;
@@ -406,6 +425,7 @@ static bool block_stored(void) {
 
 /* the chunk at 'at' into s_out: true when it gives exactly 'size' bytes */
 static bool inflate_chunk(uint32_t at, uint32_t size) {
+    RBL_FEED();
     s_in_at = at;
     s_in_left = 2u + chunk_size(at);
     s_in_len = 0;
@@ -451,14 +471,10 @@ static bool inflate_chunk(uint32_t at, uint32_t size) {
 
 /* --- deflate: fixed Huffman codes, LZ77 inside the sector ------------------------------------------------------ */
 
-#define HASH_BITS 10u
 #define CHAIN 16u
 #define MATCH_MAX 258u
 
-static uint16_t s_hash_head[1u << HASH_BITS];
-static uint16_t s_hash_prev[SECTOR];
 
-static uint8_t s_cmp[SECTOR + 16u] __attribute__((aligned(4)));   /* u16 length, the deflate, padding */
 static uint32_t s_cmp_pos;
 static uint32_t s_cmp_acc;
 static uint32_t s_cmp_count;
@@ -523,6 +539,7 @@ static uint32_t hash3(const uint8_t* data) {
 
 /* 'data' of 'size' bytes into s_cmp as a chunk; its padded size */
 static uint32_t deflate_chunk(const uint8_t* data, uint32_t size) {
+    RBL_FEED();
     s_cmp_pos = 2;
     s_cmp_acc = 0;
     s_cmp_count = 0;
@@ -607,10 +624,10 @@ static uint32_t deflate_chunk(const uint8_t* data, uint32_t size) {
 
 /* --- the heads ----------------------------------------------------------------------------------------------- */
 
-static uint8_t s_old[SECTOR] __attribute__((aligned(4)));
 
 /* sector 'index' of the area at 'base' (the head's place, or 0x0 for an image of the flash) into s_old */
 static bool area_sector_read(uint32_t base, uint32_t index, uint32_t size) {
+    RBL_FEED();
     return bootloader_flash_read(base + (index * SECTOR), s_old, (size + 3u) & ~3u, false) == ESP_OK;
 }
 
@@ -660,7 +677,7 @@ static uint32_t head_hash(uint32_t size) {
     return area_hash(ESPURNA_RBL_HEAD_AT, size);
 }
 
-/* the length of the running head (esp_image_load checks it: segments, checksum), 0 - no valid image */
+/* the length of the running head (the bootloader's image check: segments, checksum), 0 - no valid image */
 static uint32_t running_head(void) {
     const esp_partition_pos_t part = {
         .offset = ESPURNA_RBL_HEAD_AT,
@@ -668,7 +685,7 @@ static uint32_t running_head(void) {
     };
     esp_image_metadata_t data;
     memset(&data, 0, sizeof(data));
-    if (esp_image_load(ESP_IMAGE_VERIFY_SILENT, &part, &data) != ESP_OK) {
+    if (RBL_IMAGE_CHECK(&part, &data) != ESP_OK) {
         return 0;
     }
 
@@ -683,6 +700,7 @@ static bool package_crc_ok(const espurna_rbl_t* rbl) {
     uint32_t crc = 0;
 
     while (left) {
+        RBL_FEED();
         const uint32_t take = (left < INPUT_SIZE) ? left : INPUT_SIZE;
         if (bootloader_flash_read(at, s_in, (take + 3u) & ~3u, false) != ESP_OK) {
             return false;
@@ -696,11 +714,14 @@ static bool package_crc_ok(const espurna_rbl_t* rbl) {
     return crc == rbl->data_crc;
 }
 
-/* the bottom of the zone: on 1 MB above both heads, on 2 MB and more the top zone (the package lies at its top) */
+/* the bottom of the zone: above both heads; a chip with a top zone (ESP8266 of 2 MB and more) - that zone, the package
+   lies at its top */
 static uint32_t zone_bottom(const espurna_rbl_t* rbl, uint32_t old_size) {
+#ifdef ESPURNA_RBL_TOP_ZONE
     if (memcmp(rbl->sn, ESPURNA_RBL_AT_TAG, 4) == 0) {
         return espurna_rbl_package_at(rbl) + espurna_rbl_round(rbl->data_size) - ESPURNA_RBL_TOP_ZONE;
     }
+#endif
 
     const uint32_t larger = (old_size > rbl->raw_size) ? old_size : rbl->raw_size;
     return round_up(ESPURNA_RBL_HEAD_AT + larger);
@@ -742,17 +763,25 @@ static bool backup_write(uint32_t at, uint32_t size) {
 
         const uint32_t keep = (at > sector) ? (at - sector) : 0;
         if (keep && (bootloader_flash_read(sector, s_in, keep, false) != ESP_OK)) {
+            RBL_TRACE("backup: read 0x%06x %u\n", sector, keep);
             return false;
         }
         if (bootloader_flash_erase_sector(sector / SECTOR) != ESP_OK) {
+            RBL_TRACE("backup: erase 0x%06x\n", sector);
             return false;
         }
         if (keep && (bootloader_flash_write(sector, s_in, keep, false) != ESP_OK)) {
+            RBL_TRACE("backup: keep write 0x%06x %u\n", sector, keep);
             return false;
         }
     }
 
-    return bootloader_flash_write(at, s_cmp, size, false) == ESP_OK;
+    if (bootloader_flash_write(at, s_cmp, size, false) != ESP_OK) {
+        RBL_TRACE("backup: write 0x%06x %u\n", at, size);
+        return false;
+    }
+
+    return true;
 }
 
 /* the dry run: the old head deflated a sector at a time, its chunks must stay under the package that is not read yet
@@ -910,21 +939,8 @@ static void start_count(void) {
 
 /* --- an image of the flash from 0x0 (ESPURNA_RBL_FLASH: another firmware with its own bootloader) -------------- */
 
-#ifndef RBL_RESET
-/* the chip's reset by the hardware watchdog, as the head's restart (core_esp8266.cpp chip::restart()), after the UART had
-   its time. Not eboot's SWRST (the RTC's system reset): 21.11 the image of 1.15 was written whole and read back, the
-   SWRST that followed left the board silent until a power cycle (the SPI flash controller as the SDK's bootloader set
-   it, as after a jump to the ROM's reset vector, 19.11) */
-#define RBL_RESET() do { \
-        for (volatile uint32_t wait = 0; wait < 200000u; ++wait) {} \
-        volatile uint32_t* const wdt = (volatile uint32_t*)0x60000900u; \
-        wdt[0] &= ~1u;                                  /* WDT_CTL: off while it is set up */ \
-        wdt[1] = 1;                                     /* WDT_OP: the shortest stage */ \
-        wdt[2] = 1;                                     /* WDT_OP_ND */ \
-        wdt[0] = (wdt[0] & ~0x3Fu) | (7u << 3) | 1u;    /* RSTLEN 7, RSPMOD 0 (reset at once), EN */ \
-        for (;;) {} \
-    } while (0)
-#endif
+#if RBL_CHIP_FLASH_IMAGE
+
 
 /* where the chunk of sector 'index' starts: counted from the package's start (the package lies above the image and is
    never written here, so this holds after a power cut too) */
@@ -936,12 +952,23 @@ static uint32_t chunk_of(const espurna_rbl_t* rbl, uint32_t index) {
     return at;
 }
 
+/* a chunk of length 0: a kept sector (owner 22.11, the ESP32 migration both ways): the flash there stays as it is (the
+   NVS of ESP-IDF), it is not in the FNV-1a of the image either (scripts/esp8266_rbl.py, keep). A raw deflate is never
+   empty, so no other chunk looks like that */
+static bool chunk_kept(uint32_t at) {
+    return chunk_size(at) == 0u;
+}
+
 /* every chunk inflates and the image they give has the FNV-1a of the header: checked before anything is erased */
 static bool package_inflates(const espurna_rbl_t* rbl) {
     uint32_t at = espurna_rbl_package_at(rbl);
     uint32_t hash = ESPURNA_RBL_FNV_START;
     for (uint32_t index = 0; index < sectors_of(rbl->raw_size); ++index) {
         const uint32_t size = sector_size(rbl->raw_size, index);
+        if (chunk_kept(at)) {
+            at = chunk_next(at);
+            continue;
+        }
         if (!inflate_chunk(at, size)) {
             RBL_TRACE("flash image: chunk %u at 0x%06x does not inflate\n", index, at);
             return false;
@@ -958,58 +985,65 @@ static bool package_inflates(const espurna_rbl_t* rbl) {
 static bool install_flash(const espurna_rbl_t* rbl) {
     for (uint32_t index = sectors_of(rbl->raw_size); index--; ) {
         const uint32_t size = sector_size(rbl->raw_size, index);
-        if (!inflate_chunk(chunk_of(rbl, index), size) || !area_sector_write(0, index, size)) {
+        const uint32_t chunk = chunk_of(rbl, index);
+        if (chunk_kept(chunk)) {
+            continue;
+        }
+        if (!inflate_chunk(chunk, size) || !area_sector_write(0, index, size)) {
             RBL_TRACE("flash image: sector %u\n", index);
             return false;
         }
     }
 
-    return area_hash(0, rbl->raw_size) == rbl->data_hash;
+    /* read back: the FNV-1a of the written sectors, the kept ones left out as in the package */
+    uint32_t at = espurna_rbl_package_at(rbl);
+    uint32_t hash = ESPURNA_RBL_FNV_START;
+    for (uint32_t index = 0; index < sectors_of(rbl->raw_size); ++index) {
+        const uint32_t take = sector_size(rbl->raw_size, index);
+        const bool kept = chunk_kept(at);
+        at = chunk_next(at);
+        if (kept) {
+            continue;
+        }
+        if (!area_sector_read(0, index, take)) {
+            return false;
+        }
+        hash = espurna_rbl_fnv(hash, s_old, take);
+    }
+
+    return hash == rbl->data_hash;
 }
 
 static void flash_image(const espurna_rbl_t* rbl) {
-    const uint32_t clock = DPORT_CTL;
-
-    DPORT_CTL = clock | 1u;
+    RBL_FAST();
     const bool good = package_crc_ok(rbl) && package_inflates(rbl);
-    DPORT_CTL = clock;
+    RBL_SLOW();
     if (!good) {
-        ets_printf("ESPURNA RBL: the image of the flash does not check out, the head stays\n");
+        RBL_PRINTF("ESPURNA RBL: the image of the flash does not check out, the head stays\n");
         return;
     }
 
-    ets_printf("ESPURNA RBL: writing an image of the flash, %u bytes (package %u at 0x%06x) from 0x0\n",
+    RBL_PRINTF("ESPURNA RBL: writing an image of the flash, %u bytes (package %u at 0x%06x) from 0x0\n",
         rbl->raw_size, rbl->data_size, espurna_rbl_package_at(rbl));
 
-    DPORT_CTL = clock | 1u;
+    RBL_FAST();
     bool ok = false;
     for (uint32_t attempt = 0; (attempt < 3u) && !ok; ++attempt) {
         ok = install_flash(rbl);
     }
-    DPORT_CTL = clock;
+    RBL_SLOW();
 
     /* this bootloader is gone from 0x0 now whatever happened: the chip starts over from the new image */
     if (ok) {
         header_erase();
     }
-    ets_printf(ok ? "ESPURNA RBL: the image of the flash is written (read back), reset\n"
+    RBL_PRINTF(ok ? "ESPURNA RBL: the image of the flash is written (read back), reset\n"
         : "ESPURNA RBL: the flash differs from the image, reset\n");
     RBL_RESET();
 }
 
-/* XM25QH..A flash (RDID 20 70 xx, the Wemos D1 mini of 21.11): an XMC chip the SDK's strict list does not know (series
- * 0x40 / 0x41 / 0x50 only), so its XMC startup flow runs, still reads 0x70 and the bootloader reboots ("XMC flash startup
- * fail") before it ever starts a head. That series needs no startup flow: taken as it is. Every other chip goes to the
- * SDK's own check (bootloader_init.c -> --wrap in scripts/esp8266_rtos_sdk.py) */
-uint32_t bootloader_read_flash_id(void);
-esp_err_t __real_bootloader_flash_xmc_startup(void);
-esp_err_t __wrap_bootloader_flash_xmc_startup(void) {
-    const uint32_t id = bootloader_read_flash_id();
-    if ((((id >> 16) & 0xffu) == 0x20u) && (((id >> 8) & 0xffu) == 0x70u)) {
-        return ESP_OK;
-    }
-    return __real_bootloader_flash_xmc_startup();
-}
+#endif // RBL_CHIP_FLASH_IMAGE
+
 
 static void rbl_step(void) {
     espurna_rbl_t rbl;
@@ -1023,16 +1057,16 @@ static void rbl_step(void) {
 
     const char* error = espurna_rbl_check(&rbl);
     if (error) {
-        ets_printf("ESPURNA RBL: %s, the head stays\n", error);
+        RBL_PRINTF("ESPURNA RBL: %s, the head stays\n", error);
         return;
     }
 
+#if RBL_CHIP_FLASH_IMAGE
     if (rbl.compression == ESPURNA_RBL_FLASH) {
         flash_image(&rbl);
         return;
     }
-
-    const uint32_t clock = DPORT_CTL;
+#endif
 
     espurna_rbl_swap_t record;
     bootloader_flash_read(ESPURNA_RBL_SWAP_AT, &record, sizeof(record), false);
@@ -1046,40 +1080,49 @@ static void rbl_step(void) {
             return;
         }
 
-        ets_printf("ESPURNA RBL: the new head did not confirm itself in %u starts, the old head back\n",
+        RBL_PRINTF("ESPURNA RBL: the new head did not confirm itself in %u starts, the old head back\n",
             ESPURNA_RBL_STARTS);
-        DPORT_CTL = clock | 1u;
+        RBL_FAST();
         bool ok = rolling || backup_ok(&record);
         if (ok && !rolling) {
             word_put(ESPURNA_RBL_ROLLBACK_AT, 0);
         }
         ok = ok && rollback(&record);
-        DPORT_CTL = clock;
+        RBL_SLOW();
 
         if (ok || !rolling) {
             header_erase();
         }
-        ets_printf(ok ? "ESPURNA RBL: the old head is back (read back)\n"
+        RBL_PRINTF(ok ? "ESPURNA RBL: the old head is back (read back)\n"
             : "ESPURNA RBL: the backup is broken, the new head stays\n");
         return;
     }
 
-    DPORT_CTL = clock | 1u;
+    RBL_FAST();
     const bool crc_ok = swapping || package_crc_ok(&rbl);
-    DPORT_CTL = clock;
+    RBL_SLOW();
 
     if (!crc_ok) {
-        ets_printf("ESPURNA RBL: package CRC, the head stays\n");
+        RBL_PRINTF("ESPURNA RBL: package CRC, the head stays\n");
         return;
     }
 
     /* a new swap: the running head must fit the zone deflated */
     if (!swapping) {
-        DPORT_CTL = clock | 1u;
+        RBL_FAST();
         const uint32_t old_size = running_head();
+        /* the head in the flash is the package already: an install without a rollback cut by the power after its last
+           sector, before the header was erased (test_no_room), or the same head uploaded again - nothing to swap */
+        const bool same = (old_size == rbl.raw_size) && (head_hash(old_size) == rbl.data_hash);
         uint32_t old_hash = 0;
-        const bool fits = old_size && backup_fits(&rbl, old_size, &old_hash);
-        DPORT_CTL = clock;
+        const bool fits = !same && old_size && backup_fits(&rbl, old_size, &old_hash);
+        RBL_SLOW();
+
+        if (same) {
+            header_erase();
+            RBL_PRINTF("ESPURNA RBL: the head is the package already (read back)\n");
+            return;
+        }
 
         if (fits) {
             /* the sizes of the package's chunks while it is whole (written again the same after a power cut here) */
@@ -1098,51 +1141,50 @@ static void rbl_step(void) {
             record.crc = espurna_rbl_crc32(0, &record, sizeof(record) - 4u);
             bootloader_flash_write(ESPURNA_RBL_SWAP_AT, &record, sizeof(record), false);
         } else {
-            ets_printf("ESPURNA RBL: installing %u bytes (package %u), no room to keep the old head\n",
+            RBL_PRINTF("ESPURNA RBL: installing %u bytes (package %u), no room to keep the old head\n",
                 rbl.raw_size, rbl.data_size);
-            DPORT_CTL = clock | 1u;
+            RBL_FAST();
             const bool ok = install_plain(&rbl) && (head_hash(rbl.raw_size) == rbl.data_hash);
-            DPORT_CTL = clock;
+            RBL_SLOW();
             if (!ok) {
-                ets_printf("ESPURNA RBL: install failed, again on the next boot\n");
+                RBL_PRINTF("ESPURNA RBL: install failed, again on the next boot\n");
                 return;
             }
             header_erase();
-            ets_printf("ESPURNA RBL: installed (read back)\n");
+            RBL_PRINTF("ESPURNA RBL: installed (read back)\n");
             return;
         }
     }
 
-    ets_printf("ESPURNA RBL: installing %u bytes (package %u), the old head %u kept at 0x%06x\n",
+    RBL_PRINTF("ESPURNA RBL: installing %u bytes (package %u), the old head %u kept at 0x%06x\n",
         rbl.raw_size, rbl.data_size, record.old_size, record.backup_at);
 
-    DPORT_CTL = clock | 1u;
+    RBL_FAST();
     const bool ok = swap(&rbl, &record);
     const bool read_back = ok && (head_hash(rbl.raw_size) == rbl.data_hash);
-    DPORT_CTL = clock;
+    RBL_SLOW();
 
     if (!ok) {
         /* the bits stay: the next boot goes on from the sector that failed */
-        ets_printf("ESPURNA RBL: install failed, again on the next boot\n");
+        RBL_PRINTF("ESPURNA RBL: install failed, again on the next boot\n");
         return;
     }
 
     word_put(ESPURNA_RBL_DONE_AT, 0);
     if (!read_back) {
         /* the new head is not what the package says: the old one back at once */
-        ets_printf("ESPURNA RBL: the head in the flash differs from the package, the old head back\n");
+        RBL_PRINTF("ESPURNA RBL: the head in the flash differs from the package, the old head back\n");
         word_put(ESPURNA_RBL_BOOTS_AT, 0);
         rbl_step();
         return;
     }
 
     start_count();
-    ets_printf("ESPURNA RBL: installed (read back)\n");
+    RBL_PRINTF("ESPURNA RBL: installed (read back)\n");
 }
 
 void bootloader_after_init(void) {
-    const uint32_t before = g_rom_flashchip.chip_size;
-    chip_size_from_id();
+    RBL_CHIP_BEGIN();
     rbl_step();
-    chip_size_restore(before);
+    RBL_CHIP_END();
 }

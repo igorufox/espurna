@@ -1,5 +1,5 @@
 /*
- * Host test of the ESP8266 bootloader step (espurna/arch/esp8266/bootloader/espurna_rbl.c, owner 20.11: the heads swap
+ * Host test of the ESP8266 bootloader step (espurna/arch/rtos/bootloader/espurna_rbl.c with the ESP8266 part, owner 20.11: the heads swap
  * places, the old one kept compressed for a rollback, one bootloader on every chip size): the real C file on a flash of
  * 1 MB and 4 MB in RAM (NOR: a write only clears bits, an erase sets a sector to 0xFF).
  *
@@ -20,8 +20,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DPORT_CTL s_dport
+#define RBL_DPORT_CTL s_dport
 static uint32_t s_dport;
+
+/* the ROM's flash size record is the bootloader's business, not the swap's */
+#define RBL_CHIP_BEGIN()
+#define RBL_CHIP_END()
 
 #include "esp_err.h"
 #include "esp_image_format.h"
@@ -124,6 +128,11 @@ esp_err_t esp_image_load(esp_image_load_mode_t mode, const esp_partition_pos_t* 
         return ESP_OK;
     }
     return ESP_FAIL;
+}
+
+/* the SDK's XMC startup check the ESP8266 part wraps */
+esp_err_t __real_bootloader_flash_xmc_startup(void) {
+    return ESP_OK;
 }
 
 #include "espurna_rbl.c"
@@ -365,6 +374,10 @@ static void test_no_room(uint32_t chip) {
 static uint8_t* s_flash_rbl;
 static uint32_t s_flash_rbl_len;
 
+/* the kept sectors of the image (a chunk of length 0, the NVS of the ESP32 migration): 0 - none */
+static uint32_t g_keep_at;
+static uint32_t g_keep_len;
+
 static void flash_image_setup(uint32_t chip) {
     uint8_t* keep = s_rbl;
     const uint32_t keep_len = s_rbl_len;
@@ -379,8 +392,12 @@ static void flash_image_setup(uint32_t chip) {
 static bool flash_image_done(void) {
     espurna_rbl_t header;
     memcpy(&header, s_flash_rbl, sizeof(header));
-    if (memcmp(s_flash, g_new, g_new_len)) {
-        return false;
+    for (uint32_t at = 0; at < g_new_len; ++at) {
+        const bool kept = (at >= g_keep_at) && (at < (g_keep_at + g_keep_len));
+        if (s_flash[at] != (kept ? s_initial[at] : g_new[at])) {
+            printf("  flash image: %s byte at 0x%06x\n", kept ? "a kept" : "an image", at);
+            return false;
+        }
     }
     for (uint32_t at = g_new_len; at < s_chip; ++at) {
         const bool tail = at < round_up(g_new_len);
@@ -443,6 +460,12 @@ int main(int argc, char** argv) {
     g_new = load(argv[2], &g_new_len);
     s_rbl = load(argv[3], &s_rbl_len);
     s_flash_rbl = load(argv[4], &s_flash_rbl_len);
+    /* the same image with kept sectors (run.sh: flash-keep.rbl, 0x6000..0x8000) */
+    uint8_t* keep_rbl = NULL;
+    uint32_t keep_rbl_len = 0;
+    if (argc > 6) {
+        keep_rbl = load(argv[6], &keep_rbl_len);
+    }
 
     /* the deflate of the bootloader against its own inflate, every sector of both heads */
     for (uint32_t index = 0; index < sectors_of(g_old_len); ++index) {
@@ -465,6 +488,19 @@ int main(int argc, char** argv) {
         test_rollback_power_cut(chips[index], step);
         test_no_room(chips[index]);
         test_flash_image(chips[index], step);
+        if (keep_rbl) {
+            uint8_t* plain = s_flash_rbl;
+            const uint32_t plain_len = s_flash_rbl_len;
+            s_flash_rbl = keep_rbl;
+            s_flash_rbl_len = keep_rbl_len;
+            g_keep_at = 0x6000u;
+            g_keep_len = 0x2000u;
+            test_flash_image(chips[index], step);
+            s_flash_rbl = plain;
+            s_flash_rbl_len = plain_len;
+            g_keep_at = 0;
+            g_keep_len = 0;
+        }
     }
 
     printf("%s: %d failures\n", s_failures ? "FAIL" : "PASS", s_failures);

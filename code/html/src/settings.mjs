@@ -463,6 +463,30 @@ export function init() {
         });
     }
 
+    // the installed firmware as it is in the flash (GET /firmware.bin): the name comes from the board
+    const firmware = document.querySelector(".button-firmware-download");
+    if (firmware instanceof HTMLButtonElement) {
+        listenAppConnected((urls) => {
+            firmware.dataset["url"] = urls.firmware.href;
+        });
+
+        firmware.addEventListener("click", (event) => {
+            event.preventDefault();
+
+            const url = firmware.dataset["url"];
+            if (!url) {
+                alert("Not connected");
+                return;
+            }
+
+            const elem = document.getElementById("downloader");
+            if (elem instanceof HTMLAnchorElement) {
+                elem.href = url;
+                elem.click();
+            }
+        });
+    }
+
     document.querySelector(".button-settings-restore")
         ?.addEventListener("click", () => {
             document.getElementById("uploader")?.click();

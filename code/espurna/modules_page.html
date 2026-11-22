@@ -22,7 +22,8 @@ style="display:none"></select> <button type=button id=sc>Scan</button> password 
 <table><thead><tr><th></th><th>Module</th><th class=r>Flash</th><th class=r>RAM</th><th>State</th></tr></thead>
 <tbody id=list></tbody></table>
 <p>Install image (.ota): <input type=file id=file accept=.ota,.bin> <button id=gh>From GitHub</button></p>
-<p><button id=ap disabled>Apply</button> <button id=rs>Restart</button> <a href="./">WebUI</a></p>
+<p><button id=ap disabled>Apply</button> <button id=rs>Restart</button> <a href="./">WebUI</a>
+<a href="firmware.bin" download>Download the installed firmware</a></p>
 <p class=st>Tick the modules, then Apply: a head of another build in the file goes on first, then the board restarts
 without modules, writes the ticked ones from the file and restarts with them. Switching off only needs no file. The full
 WebUI is the module webui.</p><div id=msg></div>

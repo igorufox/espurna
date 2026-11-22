@@ -30,6 +30,8 @@ Import("env", "projenv")
 env = globals()["env"]
 
 sys.path.insert(0, os.path.join(env.subst("$PROJECT_DIR"), "scripts"))
+import esp8266_rbl  # noqa: E402
+import esp32_migrate  # noqa: E402
 import module_initial_image  # noqa: E402
 import module_link  # noqa: E402
 from release_image import name as release_name, path as release_path, write  # noqa: E402
@@ -222,9 +224,21 @@ class Esp32Linker(module_link.Linker):
         return [write(merged, image)]
 
     def ota_heads(self, ctx):
-        """the head of the install image: the head alone (the application image), as on every chip; the modules, webui
-        among them, come from the same install image by the Apply"""
-        return [("esp32", ctx["head_bin"])]
+        """the head of the install image: the head as an RBL package (esp8266_rbl.py, the name "esp32"), the ESP8266's
+        scheme (owner 22.11): the head writes it under the modules' directory, the bootloader step installs it
+        (arch/rtos/bootloader/espurna_rbl.c); the modules, webui among them, come from the same install image by the
+        Apply, as on every chip"""
+        out = os.path.join(ctx["build_dir"], "espurna-esp32.rbl")
+        esp8266_rbl.write(ctx["head_bin"], out, name=b"esp32")
+        # the migration of the safeboot layout's boards (esp32_migrate.py): this build's flash from 0x0 for the /upgrade
+        # of this head started from their app0
+        bootloader = os.path.join(ctx["build_dir"], "bootloader.bin")
+        table = os.path.join(ctx["build_dir"], "partitions.bin")
+        if os.path.isfile(bootloader) and os.path.isfile(table):
+            with open(bootloader, "rb") as f_boot, open(table, "rb") as f_table, open(ctx["head_bin"], "rb") as f_head:
+                esp32_migrate.save(esp32_migrate.over(f_boot.read(), f_table.read(), f_head.read()),
+                                   os.path.join(ctx["build_dir"], "espurna-esp32-migrate.rbl"))
+        return [("esp32", out)]
 
 
 Esp32Linker(env, globals()["projenv"]).install()

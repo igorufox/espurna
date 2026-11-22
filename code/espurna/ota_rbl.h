@@ -91,6 +91,12 @@ private:
     Stream _stream;
 };
 
+// The new head confirms itself (owner 20.11, every chip of the scheme): the bootloader swapped the heads and keeps the
+// old one compressed; 60 s of running with Wi-Fi and the header sector at `header_at` is erased - the swap is final.
+// Without that the bootloader counts the starts and puts the old head back after ESPURNA_RBL_STARTS of them. Once at
+// boot (driver::confirm() of the chip)
+void confirm(const Flash& flash, uint32_t header_at);
+
 } // namespace rbl
 } // namespace ota
 } // namespace espurna

@@ -63,6 +63,22 @@ static inline uint32_t espurna_rbl_fnv(uint32_t hash, const uint8_t* data, size_
     return hash;
 }
 
+
+/* the state of a swap the bootloader keeps in the header sector, after the header (libs/rbl_layout.h): the record of the
+   old head, and the word that says the swap is done - what the head's confirmation looks for */
+#define ESPURNA_RBL_SWAP_OFFSET 0x100u
+#define ESPURNA_RBL_DONE_OFFSET 0x280u
+#define ESPURNA_RBL_SWAP_MAGIC  0x50415753u     /* "SWAP" */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t old_size;      /* the running head that is backed up */
+    uint32_t old_hash;      /* its FNV-1a */
+    uint32_t backup_at;     /* its chunks, from the bottom of the zone up */
+    uint32_t sectors;       /* the sectors swapped: the larger head of the two */
+    uint32_t crc;           /* CRC32 of the 20 bytes before */
+} espurna_rbl_swap_t;
+
 /* the header of every RBL: the magic, its own CRC, a package. NULL - fine, else what is wrong */
 static inline const char* espurna_rbl_header_check(const espurna_rbl_t* rbl) {
     if (rbl->magic != ESPURNA_RBL_MAGIC) {

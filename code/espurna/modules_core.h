@@ -316,6 +316,11 @@ struct Area {
 
 Area area();
 
+// the flash inside the area that holds the board's own secrets (settings, keys, calibration) and never leaves it: the
+// download of the installed firmware (GET /firmware.bin) gives 0xFF there; up to `max` ranges, their count. Default:
+// none (ESP8266, ESP32: their settings, NVS and the SDK's sectors lie outside the area)
+size_t privateRanges(Area::Range* out, size_t max);
+
 // how far the head can erase and write: the whole area has to be below it before an Apply touches anything (Beken: the
 // FAL 'root' partition of the build; a 4 MiB board under a 2 MiB head refused the erase half way, 2026-11-16)
 uint32_t flashReach();

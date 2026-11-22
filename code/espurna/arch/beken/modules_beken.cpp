@@ -701,6 +701,17 @@ Area area() {
     return out;
 }
 
+// ESPurna's own sectors (SystemOffset .. SystemEnd: the RF calibration, Matter's keys, the settings pool, the crash
+// record, the Tuya config) lie inside the area on the Quectel layout: never in the firmware download
+size_t privateRanges(Area::Range* out, size_t max) {
+    if (!max) {
+        return 0;
+    }
+
+    out[0] = Area::Range{SystemOffset, SystemEnd - SystemOffset};
+    return 1;
+}
+
 bool rawRead(uint32_t offset, void* data, size_t size) {
     return ::espurna::beken::flash_read(offset, static_cast<uint8_t*>(data), size) == size;
 }

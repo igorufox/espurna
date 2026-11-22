@@ -189,6 +189,51 @@ void Writer::abort() {
     _active = false;
 }
 
+// --- the confirmation of a new head --------------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t ConfirmAfterMs { 60000 };
+
+const Flash* confirm_flash { nullptr };
+uint32_t confirm_header { 0 };
+
+void confirm_check() {
+    if (!confirm_flash || (espurna::time::ms() < ConfirmAfterMs) || !wifiConnected()) {
+        return;
+    }
+
+    const auto* flash = confirm_flash;
+    confirm_flash = nullptr;
+    if (flash->erase(confirm_header & ~(Sector - 1))) {
+        DEBUG_MSG_P(PSTR("[OTA] The new head is confirmed, the old one is no longer kept\n"));
+    }
+}
+
+} // namespace
+
+void confirm(const Flash& flash, uint32_t header_at) {
+    espurna_rbl_t header __attribute__((aligned(4)));
+    if (!flash.read(header_at, reinterpret_cast<uint8_t*>(&header), sizeof(header))
+        || (header.magic != ESPURNA_RBL_MAGIC))
+    {
+        return;
+    }
+
+    espurna_rbl_swap_t record __attribute__((aligned(4)));
+    uint32_t done { 0xFFFFFFFF };
+    flash.read(header_at + ESPURNA_RBL_SWAP_OFFSET, reinterpret_cast<uint8_t*>(&record), sizeof(record));
+    flash.read(header_at + ESPURNA_RBL_DONE_OFFSET, reinterpret_cast<uint8_t*>(&done), sizeof(done));
+    if ((record.magic != ESPURNA_RBL_SWAP_MAGIC) || done) {
+        return;
+    }
+
+    confirm_flash = &flash;
+    confirm_header = header_at;
+    DEBUG_MSG_P(PSTR("[OTA] A new head: it confirms itself after 60 s with Wi-Fi, else the old one comes back\n"));
+    espurnaRegisterLoop(confirm_check);
+}
+
 } // namespace rbl
 } // namespace ota
 } // namespace espurna

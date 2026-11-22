@@ -1633,6 +1633,10 @@ __attribute__((weak)) uint32_t failedAllocations() {
     return 0;
 }
 
+__attribute__((weak)) size_t privateRanges(Area::Range*, size_t) {
+    return 0;
+}
+
 __attribute__((weak)) bool otaBusy() {
     return otaWebUploading();
 }
@@ -3175,6 +3179,7 @@ namespace {
 void onUiList(WebRequest&);
 void onUiPart(WebRequest&);
 void onUiParts(WebRequest&);
+void onFirmware(WebRequest&);
 
 } // namespace
 } // namespace modules
@@ -3234,6 +3239,7 @@ void modulesSetup() {
         {"/modules/on", WebMethod::Post, onModulesOn},
         {"/modules/enable", WebMethod::Post, onEnable},
         {"/modules.html", WebMethod::Get, onPage},
+        {"/firmware.bin", WebMethod::Get, onFirmware},
         {"/modules", WebMethod::Get, onStatus},
         {"/ui", WebMethod::Get, onUiList},
         {"/ui/part", WebMethod::Get, onUiPart},
@@ -3512,6 +3518,134 @@ struct UiPart {
 
 UiPart ui_parts[DirectoryEntries];
 size_t ui_count { 0 };
+
+// GET /firmware.bin: the installed firmware as it lies in the flash, so the build a board runs can be taken off it
+// any time later (owner 22.11: a panel ran a build nobody kept): from the start of the head to the directory sector
+// (the head, the modules, the directory), and the flash of the data modules over the code window (ESP8266: Area::upper);
+// raw, the chip's own flash format (Beken: encrypted, the CRCs), to be written back at the offset in its name. 0xFF in
+// between and over the board's secrets (arch::privateRanges(): settings, keys, calibration never leave it)
+struct FirmwareDump {
+    arch::Area area;
+    arch::Area::Range hidden[arch::Area::KeepMax];
+    size_t hidden_count { 0 };
+    uint32_t start { 0 };
+    uint32_t end { 0 };
+    alignas(4) uint8_t buffer[1024];
+};
+
+uint32_t firmwareAreaEnd(const arch::Area& area) {
+    return area.hi + SectorSize;
+}
+
+bool firmwareInRange(uint32_t offset, uint32_t from, uint32_t size) {
+    return size && (offset >= from) && (offset < (from + size));
+}
+
+// the bytes at `offset` come from the flash (else 0xFF)
+bool firmwareTaken(const FirmwareDump& dump, uint32_t offset) {
+    for (size_t index = 0; index < dump.hidden_count; ++index) {
+        if (firmwareInRange(offset, dump.hidden[index].offset, dump.hidden[index].size)) {
+            return false;
+        }
+    }
+
+    return firmwareInRange(offset, dump.area.start, firmwareAreaEnd(dump.area) - dump.area.start)
+        || firmwareInRange(offset, dump.area.upper.offset, dump.area.upper.size);
+}
+
+// the next offset after `offset` where taken / not taken may change (every edge is sector aligned)
+uint32_t firmwareEdge(const FirmwareDump& dump, uint32_t offset) {
+    uint32_t out = dump.end;
+    const auto edge = [&](uint32_t value) {
+        if ((value > offset) && (value < out)) {
+            out = value;
+        }
+    };
+
+    edge(firmwareAreaEnd(dump.area));
+    if (dump.area.upper.size) {
+        edge(dump.area.upper.offset);
+        edge(dump.area.upper.offset + dump.area.upper.size);
+    }
+    for (size_t index = 0; index < dump.hidden_count; ++index) {
+        edge(dump.hidden[index].offset);
+        edge(dump.hidden[index].offset + dump.hidden[index].size);
+    }
+
+    return out;
+}
+
+void onFirmware(WebRequest& request) {
+    if (!authenticated(request)) {
+        return;
+    }
+
+    // an Apply or an OTA writing the flash now: the file would hold half of each
+    if (applyRunning() || arch::otaBusy()) {
+        request.send(409, "text/plain", "ERROR: an update is writing the flash, download after it");
+        return;
+    }
+
+    std::shared_ptr<FirmwareDump> dump(new (std::nothrow) FirmwareDump);
+    if (!dump) {
+        request.send(500, "text/plain", "ERROR: no memory");
+        return;
+    }
+
+    dump->area = arch::area();
+    if (!dump->area.hi) {
+        request.send(500, "text/plain", "ERROR: no module area");
+        return;
+    }
+
+    dump->hidden_count = arch::privateRanges(dump->hidden, arch::Area::KeepMax);
+    dump->start = dump->area.start;
+    dump->end = firmwareAreaEnd(dump->area);
+    if (dump->area.upper.size && ((dump->area.upper.offset + dump->area.upper.size) > dump->end)) {
+        dump->end = dump->area.upper.offset + dump->area.upper.size;
+    }
+
+    // <hostname>-<version>-<head md5>-0x<offset>.bin: what runs, and where it goes back
+    char name[160];
+    const auto version = buildApp().version.toString();
+    const int written = snprintf_P(name, sizeof(name),
+        PSTR("attachment; filename=\"%s-%s-%.8s-0x%06X.bin\""),
+        systemHostname().c_str(), version.c_str(), modulesHeadId().c_str(), static_cast<unsigned>(dump->start));
+    if ((written <= 0) || (static_cast<size_t>(written) >= sizeof(name))) {
+        request.send(500, "text/plain", "ERROR: file name");
+        return;
+    }
+
+    request.addHeader("Content-Disposition", name);
+    request.send(200, "application/octet-stream", static_cast<long>(dump->end - dump->start),
+        [dump](uint8_t* out, size_t max, size_t at) -> size_t {
+            const uint32_t offset = dump->start + static_cast<uint32_t>(at);
+            if (offset >= dump->end) {
+                return 0;
+            }
+
+            // up to the next edge; the flash read in whole aligned words through the buffer (the reads of every chip
+            // take them), the edges are sector aligned
+            const uint32_t skew = offset & 3;
+            size_t take = std::min<size_t>(max, sizeof(dump->buffer) - 4);
+            take = std::min<size_t>(take, firmwareEdge(*dump, offset) - offset);
+            if (!take) {
+                return 0;
+            }
+
+            if (firmwareTaken(*dump, offset)) {
+                const size_t words = (skew + take + 3) & ~static_cast<size_t>(3);
+                if (!arch::rawRead(offset - skew, dump->buffer, words)) {
+                    return 0;
+                }
+                std::memcpy(out, dump->buffer + skew, take);
+            } else {
+                std::memset(out, 0xFF, take);
+            }
+
+            return take;
+        });
+}
 
 // GET /ui: ["relay","light",...]
 void onUiList(WebRequest& request) {

@@ -16,6 +16,8 @@ image, kind 1), and the maps stay. When they come out elsewhere at a boot the co
 
 #include "../../modules_core.h"
 
+#include "rbl_esp32.h"
+
 #include <esp_flash.h>
 #include <esp_heap_caps.h>
 #include <esp_heap_caps_init.h>
@@ -229,6 +231,13 @@ Area area() {
     Area out{region.start, region.lo, region.hi};
     if (region.tail && (region.tail != region.lo)) {
         out.initial = region.tail;
+    }
+
+    // the RBL header sector of the head OTA under the directory (rbl_esp32.h): the OTA erases it and writes the header
+    // there, the bootloader its swap state, the head's confirmation erases it - never a module's (the ESP8266's bug of
+    // 22.11: the module there was broken by the OTA, the swap state by the Apply)
+    if ((ESPURNA_RBL_HEADER_AT >= region.lo) && (ESPURNA_RBL_HEADER_AT < region.hi)) {
+        out.keep[0] = Area::Range{ESPURNA_RBL_HEADER_AT, ESPURNA_RBL_SECTOR};
     }
 
     return out;

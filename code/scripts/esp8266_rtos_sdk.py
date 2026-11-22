@@ -32,8 +32,10 @@ BUILD_DIR = env.subst("$BUILD_DIR")
 SDK_OUT = os.path.join(BUILD_DIR, "sdk")
 # the 1 MB layout: one 936 KB app partition (the head and the modules), the settings in sectors 250/251
 PARTITIONS = os.path.join(PROJECT_DIR, "espurna", "arch", "esp8266", "partitions.csv")
-# the ESPurna step of the bootloader: a new head from its RBL package (owner 2026-11-18, the Tuya scheme)
-BOOTLOADER_STEP = os.path.join(PROJECT_DIR, "espurna", "arch", "esp8266", "bootloader", "espurna_rbl.c")
+# the ESPurna step of the bootloader: a new head from its RBL package (owner 2026-11-18, the Tuya scheme), the one step
+# of every chip (arch/rtos/bootloader, owner 22.11: ESP32 the same), the ESP8266's part in arch/esp8266/bootloader
+BOOTLOADER_STEP = os.path.join(PROJECT_DIR, "espurna", "arch", "rtos", "bootloader", "espurna_rbl.c")
+BOOTLOADER_CHIP = os.path.join(PROJECT_DIR, "espurna", "arch", "esp8266", "bootloader")
 
 
 def package_dir(name):
@@ -187,6 +189,8 @@ def build_bootloader():
     table_bin = os.path.join(BUILD_DIR, "partition-table.bin")
     stamp_path = os.path.join(SDK_OUT, "bootloader.stamp")
     changed, current = stamp_changed(stamp_path, [BOOTLOADER_STEP, FLAGS_PATH, PARTITIONS,
+        os.path.join(BOOTLOADER_CHIP, "rbl_chip.h"),
+        os.path.join(PROJECT_DIR, "espurna", "libs", "rbl.h"),
         os.path.join(PROJECT_DIR, "espurna", "arch", "esp8266", "rbl_esp8266.h"),
         os.path.join(PROJECT_DIR, "scripts", "esp8266_rtos_sdk.py")])
     if not changed and os.path.isfile(bootloader_bin) and os.path.isfile(table_bin):
@@ -196,9 +200,9 @@ def build_bootloader():
     obj = os.path.join(SDK_OUT, "espurna_rbl.o")
     elf = os.path.join(SDK_OUT, "bootloader.elf")
     run([gcc] + expand(image["cflags"]) + ["-D" + define for define in image["defines"]]
-        + ["-I" + path for path in expand(image["includes"])] + ["-c", BOOTLOADER_STEP, "-o", obj],
+        + ["-I" + BOOTLOADER_CHIP] + ["-I" + path for path in expand(image["includes"])] + ["-c", BOOTLOADER_STEP, "-o", obj],
         "compile the bootloader step")
-    # the XMC chips of the XM25QH..A series pass the SDK's startup check (espurna_rbl.c)
+    # the XMC chips of the XM25QH..A series pass the SDK's startup check (arch/esp8266/bootloader/rbl_chip.h)
     run([gcc, "-nostdlib", "-Wl,--gc-sections", "-mlongcalls", "-Wl,--wrap=bootloader_flash_xmc_startup", "-o", elf, obj,
          "-Wl,-Map=" + posix(os.path.join(SDK_OUT, "bootloader.map"))] + expand(image["link"]),
         "link the bootloader")

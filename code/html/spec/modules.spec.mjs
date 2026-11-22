@@ -312,11 +312,11 @@ test('the head id of the modules file and the head of an install image for the b
 test('every head of an install image has its route, the chips differ only in that data', () => {
     expect(['esp8266', 'esp32', 'beken-tuya', 'beken-quectel', 'esp32-matter'].map(headName))
         .toEqual(['esp8266', 'esp32', 'beken', 'beken', 'esp32']);
-    for (const name of ['esp8266', 'beken']) {
+    for (const name of ['esp8266', 'esp32', 'beken']) {
         expect(HEAD_ROUTES[name]).toBeDefined();
     }
-    // the ESP32 head is not replaced over the network (no safeboot)
-    expect(HEAD_ROUTES.esp32).toBeUndefined();
+    // one scheme on every chip (owner 22.11: the ESP32 as the ESP8266)
+    expect(HEAD_ROUTES.esp32).toEqual(HEAD_ROUTES.esp8266);
     expect(HEAD_ROUTES.beken).toEqual(HEAD_ROUTES.esp8266);
 });
 
@@ -406,15 +406,9 @@ describe('one install for every chip', () => {
         expect(await run('beken-quectel', 'beken', 'ff')).toEqual([...head, ...APPLY]);
     });
 
-    test('ESP32: another head is refused, the head is not replaced over the network', async () => {
-        vi.useFakeTimers();
-        const log = [];
-        board(log);
-        const done = installImage(new URL('http://board/'), image('esp32'), {image: 'esp32', md5: 'ff'}, ['webui'], () => {});
-        const outcome = expect(done).rejects.toThrow('the ESP32 head is not replaced over the network');
-        await vi.runAllTimersAsync();
-        await outcome;
-        expect(log).toEqual([]);
+    test('ESP32: the head the same way as the ESP8266 (owner 22.11), then the Apply', async () => {
+        const head = ['POST modules/off', 'GET modules', 'POST upgrade', 'form upgrade', 'GET modules'];
+        expect(await run('esp32', 'esp32', 'ff')).toEqual([...head, ...APPLY]);
     });
 
     test('the board runs the head of the image: the Apply alone', async () => {

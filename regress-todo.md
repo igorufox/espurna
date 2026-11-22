@@ -320,6 +320,22 @@
     firmware-dumps/wemos-rbl-header-20261122.bin), отката нет. Исправлено: modules_esp8266.cpp area().keep = сектор
     заголовка. Проверено на Wemos по COM4: «installing ... old head kept at 0xf70000», «[060038] [OTA] The new head is
     confirmed», 19 модулей running, tools на 0xF1000.
+  - **22.11 18:00 голова ESP32 по сети по схеме ESP8266 (владелец: «да, делай как ESP8266 у нас общая схема», «у esp32
+    остается один раздел»):** один шаг загрузчика arch/rtos/bootloader/espurna_rbl.c на оба чипа, у чипа
+    arch/<chip>/bootloader/rbl_chip.h; раскладка libs/rbl_layout.h, у чипа rbl_<chip>.h (ESP32: заголовок 0x3AE000 под
+    каталогом, пакет под ним); подтверждение и запись — общие (ota_rbl.cpp). ESP32: компонент
+    code/bootloader_components/espurna_rbl, буферы в DRAM приложения 0x3FFB8000, сторож RTC кормится, защита флеша
+    снимается в начале (стирание загрузчика ESP-IDF её не снимает — первая попытка «install failed»), журнал загрузчика
+    ESP-IDF выключен (CONFIG_BOOTLOADER_LOG_LEVEL_NONE: иначе 30928 > 28672 до таблицы разделов; сейчас 26256).
+    Найдено: таблицы размеров кусков держали 256 секторов (голова ESP32 — 322), стали 512 (0x400 / 0x800).
+    Проверено: DevKit 10.0.4.175 «installing 1317808 bytes ... old head kept at 0x152000» → «installed (read back)»
+    (~45 с), сектор заголовка стёрт подтверждением (дамп firmware-dumps/devkit-rbl-header-20261122.bin), 19 модулей
+    running. Wemos на новом загрузчике: «installed (read back)», «[060046] [OTA] The new head is confirmed».
+    Тест на хосте test_no_room (обрыв питания в конце установки без отката, 245/247: следующая загрузка ставила ту же
+    голову ещё раз уже с откатом) — исправлено в загрузчике: голова во флеше уже равна пакету (размер и FNV-1a) →
+    заголовок стирается, «the head is the package already». Тест PASS. На платах загрузчик с этим не стоит (Wemos,
+    DevKit — сборка 17:5x), поставится со следующей записью загрузчика.
+    Загрузчик ESP32 на платах в проде — только проводом (один раз).
 - **Миграция 1.15 → наша (21.11 ночь, COM3):** официальная 1.15.0-dev.gitb409dc27+github230330 itead-sonoff-basic
   записана (стёрт весь чип, хэш совпал), запущена из ROM, владелец подключил к foxy. `/upgrade` с
   `espurna-esp8266-migrate.bin.gz` (355 523 байт, свободно 442 368) → `ERROR[11]: Invalid bootstrapping state`:

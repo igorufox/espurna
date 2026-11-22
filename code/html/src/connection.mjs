@@ -1,7 +1,7 @@
 import { notifyError, notifyMessage } from './notify.mjs';
 import { pageReloadIn } from './core.mjs';
 
-/** @typedef {{auth: URL, config: URL, upgrade: URL, ws: URL}} ConnectionUrls */
+/** @typedef {{auth: URL, config: URL, firmware: URL, upgrade: URL, ws: URL}} ConnectionUrls */
 
 /**
  * @param {URL} root
@@ -36,6 +36,7 @@ function makeConnectionUrls(root) {
     return {
         auth: makeUrl("auth", root),
         config: makeUrl("config", root),
+        firmware: makeUrl("firmware.bin", root),
         upgrade: makeUrl("upgrade", root),
         ws: makeWebSocketUrl(root),
     };

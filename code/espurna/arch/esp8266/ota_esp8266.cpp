@@ -413,50 +413,7 @@ void espurna::ota::driver::web_setup() {
 
 #endif
 
-// The new head confirms itself (rbl_esp8266.h, owner 20.11): the bootloader swapped the heads and keeps the old one
-// compressed; 60 s of running with Wi-Fi and the header sector is erased - the swap is final. Without that the
-// bootloader counts the starts and puts the old head back after ESPURNA_RBL_STARTS of them
-namespace espurna {
-namespace ota {
-namespace confirm {
-namespace {
-
-constexpr uint32_t AfterMs { 60000 };
-bool pending { false };
-
-void check() {
-    if (!pending || (espurna::time::ms() < AfterMs) || !wifiConnected()) {
-        return;
-    }
-
-    pending = false;
-    if (spi_flash_erase_sector(ESPURNA_RBL_HEADER_AT / ESPURNA_RBL_SECTOR) == ESP_OK) {
-        DEBUG_MSG_P(PSTR("[OTA] The new head is confirmed, the old one is no longer kept\n"));
-    }
-}
-
-} // namespace
-} // namespace confirm
-} // namespace ota
-} // namespace espurna
-
+// The new head confirms itself to the bootloader: the common part (ota_rbl.h), at the header sector of this chip
 void espurna::ota::driver::confirm() {
-    espurna_rbl_t rbl;
-    if ((spi_flash_read(ESPURNA_RBL_HEADER_AT, reinterpret_cast<uint32_t*>(&rbl), sizeof(rbl)) != ESP_OK)
-        || (rbl.magic != ESPURNA_RBL_MAGIC))
-    {
-        return;
-    }
-
-    espurna_rbl_swap_t record;
-    uint32_t done { 0xFFFFFFFF };
-    spi_flash_read(ESPURNA_RBL_SWAP_AT, reinterpret_cast<uint32_t*>(&record), sizeof(record));
-    spi_flash_read(ESPURNA_RBL_DONE_AT, &done, sizeof(done));
-    if ((record.magic != ESPURNA_RBL_SWAP_MAGIC) || done) {
-        return;
-    }
-
-    espurna::ota::confirm::pending = true;
-    DEBUG_MSG_P(PSTR("[OTA] A new head: it confirms itself after 60 s with Wi-Fi, else the old one comes back\n"));
-    espurnaRegisterLoop(espurna::ota::confirm::check);
+    rbl::confirm(Flash, ESPURNA_RBL_HEADER_AT);
 }

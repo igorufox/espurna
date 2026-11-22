@@ -24,6 +24,8 @@ open(sys.argv[2] + "/new.bin", "wb").write(head)
 EOF
 python3 "$CODE/scripts/esp8266_rbl.py" "$OUT/new.bin" "$OUT/new.rbl"
 python3 "$CODE/scripts/esp8266_rbl.py" --flash "$OUT/new.bin" "$OUT/flash.rbl"
-gcc -O2 -Wall -Wextra -Wno-unused-function -I"$HERE/stub" -I"$CODE/espurna/arch/esp8266/bootloader" \
+# the same image with two kept sectors (chunks of length 0: the bootloader leaves them, the ESP32 migration's NVS)
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import esp8266_rbl as R; open(sys.argv[3], 'wb').write(R.make(open(sys.argv[2], 'rb').read(), flash=True, keep=[(0x6000, 0x2000)]))"     "$CODE/scripts" "$OUT/new.bin" "$OUT/flash-keep.rbl"
+gcc -O2 -Wall -Wextra -Wno-unused-function -I"$HERE/stub" -I"$CODE/espurna/arch/esp8266/bootloader" -I"$CODE/espurna/arch/rtos/bootloader" \
     -o "$OUT/test" "$HERE/test.c"
-"$OUT/test" "$OUT/old.bin" "$OUT/new.bin" "$OUT/new.rbl" "$OUT/flash.rbl" "$STEP"
+"$OUT/test" "$OUT/old.bin" "$OUT/new.bin" "$OUT/new.rbl" "$OUT/flash.rbl" "$STEP" "$OUT/flash-keep.rbl"
