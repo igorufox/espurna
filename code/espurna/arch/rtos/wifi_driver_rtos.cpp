@@ -1,6 +1,6 @@
 /*
 
-WIFI MODULE, the shared driver of ESP32 and Beken (ref. wifi_driver_rtos.h, wifi_driver.h)
+WIFI MODULE, the one driver of every chip (ESP8266, ESP32, Beken) (ref. wifi_driver_rtos.h, wifi_driver.h)
 
 */
 

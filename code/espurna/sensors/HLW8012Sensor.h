@@ -9,9 +9,9 @@
 
 #include "BaseEmonSensor.h"
 
-#include <HLW8012.h>
+#include "hlw8012_chip.h"
 
-// ref. HLW8012/src/HLW8012.h
+// ref. hlw8012_chip.h (the logic of the HLW8012 library, on the chip calls)
 //
 // These values are used to calculate current, voltage and power factors as per datasheet formula
 // These are the nominal values for the Sonoff POW resistors:
@@ -19,7 +19,7 @@
 // * The VOLTAGE_RESISTOR_UPSTREAM are the 5 470kOhm resistors in the voltage divider that feeds the V2P pin in the HLW8012
 // * The VOLTAGE_RESISTOR_DOWNSTREAM is the 1kOhm resistor in the voltage divider that feeds the V2P pin in the HLW8012
 //
-// (note: V_REF & F_OSC come from HLW8012.h)
+// (note: V_REF & F_OSC come from hlw8012_chip.h)
 
 namespace {
 
@@ -392,7 +392,7 @@ class HLW8012Sensor : public BaseEmonSensor {
         InterruptablePin _cf{};
         InterruptablePin _cf1{};
 
-        HLW8012 _hlw8012{};
+        Hlw8012Chip _hlw8012{};
 };
 
 #ifndef __cpp_inline_variables

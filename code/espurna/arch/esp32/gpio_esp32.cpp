@@ -41,7 +41,8 @@ bool valid_output(uint8_t pin) {
 void pin_mode(uint8_t pin, int8_t mode) {
     const auto value = static_cast<uint8_t>(mode);
     ::espurna::core::chip::pin_mode(pin, value);
-    if (value != ::espurna::core::chip::pin::Output) {
+    // input-only pads (GPIO34..39) have no hold: gpio_hold_dis() logs an error for each of them
+    if ((value != ::espurna::core::chip::pin::Output) && GPIO_IS_VALID_OUTPUT_GPIO(pin)) {
         gpio_hold_dis(static_cast<gpio_num_t>(pin));
     }
 }
@@ -63,7 +64,7 @@ void setup() {
         espurnaRegisterOnce([]() {
             const auto unused = previous & ~Rtcmem->gpio_ignore;
             for (uint8_t pin = 0; pin < GPIO_NUM_MAX; ++pin) {
-                if (unused & (uint64_t{1} << pin)) {
+                if ((unused & (uint64_t{1} << pin)) && GPIO_IS_VALID_OUTPUT_GPIO(pin)) {
                     gpio_hold_dis(static_cast<gpio_num_t>(pin));
                 }
             }

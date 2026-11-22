@@ -19,7 +19,7 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include "ws.h"
 
 #include "libs/espota.h"
-#include "ota_driver.h"
+#include "storage_eeprom.h"
 #include "rtcmem.h"
 
 namespace espurna {
@@ -32,6 +32,14 @@ espota::Server server;
 
 uint32_t nonce_seed() {
     return randomNumber();
+}
+
+// espota receives the whole image inside of a single loop() call: the loop watchdog and the loop stall watcher
+// (arch/rtos/system_rtos.cpp, SYSTEM_LOOP_STALL s without a loop() pass) are fed between the chunks, a slow upload is
+// not aborted
+void feed() {
+    ::espurna::system::chip::sdk::feed_loop_wdt();
+    ::espurna::system::stall::pass();
 }
 
 void configure() {
@@ -60,7 +68,8 @@ void start() {
     Rtcmem->ota_trace = TraceRunning;
     Rtcmem->ota_bytes = 0;
     Rtcmem->ota_size = 0;
-    driver::espota_started();
+    // pending settings reach the flash before the image goes over the place of their backup
+    eepromForceCommit();
 
     DEBUG_MSG_P(PSTR("[OTA] Started...\n"));
 #if WEB_SUPPORT
@@ -73,7 +82,6 @@ void start() {
 void end() {
     // the restart comes from the loop, as after /upgrade. Page reload will happen automatically, when WebUI will fail
     // to receive the PING response.
-    driver::espota_stopped();
     Rtcmem->ota_trace = 0;
     DEBUG_MSG_P(PSTR("[OTA] Done, restarting.\n"));
     prepareReset(CustomResetReason::Ota);
@@ -81,7 +89,7 @@ void end() {
 
 // between the waits of the transfer: the watchdogs, and the other tasks get the CPU
 void idle() {
-    driver::espota_progress();
+    feed();
     espurna::time::blockingDelay(
         espurna::duration::Milliseconds(1));
 }
@@ -90,7 +98,7 @@ void progress(size_t progress, size_t total) {
     // espota receives the whole image inside of a single loop() call
     Rtcmem->ota_bytes = progress;
     Rtcmem->ota_size = total;
-    driver::espota_progress();
+    feed();
 
     // Removed to avoid websocket ping back during upgrade (see #1574)
     // TODO: implement as a custom payload that reports progress in non-text form?
@@ -111,7 +119,6 @@ void progress(size_t progress, size_t total) {
 }
 
 void error(espota::Error error, const char* text) {
-    driver::espota_stopped();
     Rtcmem->ota_trace = 0;
 
 #if DEBUG_SUPPORT

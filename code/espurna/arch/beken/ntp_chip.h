@@ -14,6 +14,9 @@ namespace ntp {
 namespace driver {
 namespace chip {
 
+// plain lwIP: the raw API, run in the tcpip thread (ntp_rtos.cpp run_tcpip)
+constexpr bool PostsItself { false };
+
 inline bool enabled() {
     return sntp_enabled();
 }

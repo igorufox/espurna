@@ -4,12 +4,11 @@ WIFI MODULE
 
 Chip part of the WiFi module. wifi.cpp holds the state machine (scan, connection, roaming,
 AP fallback, settings, terminal, WebUI); everything that talks to the SDK is behind these
-functions, ref. arch/esp8266/wifi_driver_esp8266.cpp (NONOS SDK) and arch/rtos/wifi_driver_rtos.cpp (Arduino WiFi
-class of ESP32 and LibreTiny, with arch/esp32 and arch/beken wifi_driver_<chip>.cpp for the calls only their SDK has)
+functions. One driver on every chip: arch/rtos/wifi_driver_rtos.cpp on the SDK calls of arch/rtos/wifi_sdk.h, with
+arch/<chip>/wifi_driver_<chip>.cpp (ESP8266, ESP32, Beken) for what only that chip's SDK knows
 
-Network events reach the common code through the `on_...` functions below, always from
-the context of loop(). esp8266 SDK runs them in SYS, which never overlaps with loop().
-Chips running WiFi in a task of their own latch the events and deliver them from loop().
+Network events reach the common code through the `on_...` functions below, always from the context of loop(): the
+SDK runs Wi-Fi in a task of its own, the driver queues the events and delivers them from loop().
 
 */
 

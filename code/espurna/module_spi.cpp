@@ -1,8 +1,9 @@
 /*
 
-The spi module (docs/modules.md): the SPI bus of the board, spi.cpp and the chip's SPI (settings spiSCK / spiMISO /
-spiMOSI; the ESP8266's HSPI has its pins fixed, the BK7231N the software SPI of lib_beken/SPI). The modules on SPI
-(rfm69, mcp23s08) need it and are linked against it directly.
+The spi module (docs/modules.md): the SPI bus of the board, spi.cpp on the chip's SPI master (spi_* of
+arch/rtos/chip_sdk.h, no Arduino layer; settings spiSCK / spiMISO / spiMOSI; the ESP8266's HSPI has its pins fixed, the
+BK7231N a software SPI). The modules on SPI (rfm69, mcp23s08) need it and are linked against it directly; their
+SPI calls go through SPI of the arduino_emu module, on the same chip bus.
 
 The SENSORS panel shows its pins with the other buses, in the spec format of the drivers: `snsBus`.
 

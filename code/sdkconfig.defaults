@@ -11,6 +11,13 @@
 # - the CONFIG_ARDUINO_* options of the Arduino component are gone
 # - FreeRTOS 11 (owner 11-18, one kernel on every chip): ESP-IDF's FreeRTOS-Kernel-SMP, V11.1.0 of FreeRTOS-Kernel with
 #   two additions of Espressif (the per-core scheduler start, idf_additions.h), instead of its own 10.5.1
+# - the task watchdog does not watch the idle tasks (Arduino-ESP32 watched CPU0's): on the SMP kernel an idle task runs
+#   on either core and ESP-IDF's TWDT idle hook (task_wdt.c idle_hook_cb) feeds the user of the core it runs on. CPU1
+#   unwatched: the hook of CPU0 on CPU1 feeds a NULL user, logs "esp_task_wdt_reset_user: Invalid arguments" and blocks
+#   on the log lock inside the idle task - the scheduler breaks (tasks.c:863 prvCheckForRunStateChange), then the heap
+#   and the Wi-Fi semaphores. Both watched: IDLE0 on CPU1 feeds "CPU 1" while ipc0 keeps CPU0 busy (flash writes of
+#   an Apply), "CPU 0" starves and the TWDT fires. Found 22.11 by bisecting a stock ESP-IDF AP + HTTP server between
+#   this file and the defaults; loopTask stays watched (enableLoopWDT)
 CONFIG_FREERTOS_SMP=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="esp32_4mb.csv"
@@ -1503,8 +1510,8 @@ CONFIG_ESP_REGI2C_CTRL_FUNC_IN_IRAM=y
 #
 # CONFIG_XTAL_FREQ_26 is not set
 # CONFIG_XTAL_FREQ_32 is not set
-CONFIG_XTAL_FREQ_40=y
-# CONFIG_XTAL_FREQ_AUTO is not set
+# CONFIG_XTAL_FREQ_40 is not set
+CONFIG_XTAL_FREQ_AUTO=y
 CONFIG_XTAL_FREQ=40
 # end of Main XTAL Config
 
@@ -1754,7 +1761,7 @@ CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
-CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+# CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0 is not set
 # CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1 is not set
 # CONFIG_ESP_PANIC_HANDLER_IRAM is not set
 # CONFIG_ESP_DEBUG_STUBS_ENABLE is not set
@@ -3621,8 +3628,8 @@ CONFIG_ESP32_RTC_CLOCK_SOURCE_INTERNAL_RC=y
 CONFIG_ESP32_RTC_CLK_CAL_CYCLES=1024
 CONFIG_PERIPH_CTRL_FUNC_IN_IRAM=y
 # CONFIG_ESP32_XTAL_FREQ_26 is not set
-CONFIG_ESP32_XTAL_FREQ_40=y
-# CONFIG_ESP32_XTAL_FREQ_AUTO is not set
+# CONFIG_ESP32_XTAL_FREQ_40 is not set
+CONFIG_ESP32_XTAL_FREQ_AUTO=y
 CONFIG_ESP32_XTAL_FREQ=40
 CONFIG_BROWNOUT_DET=y
 CONFIG_ESP32_BROWNOUT_DET=y
@@ -3680,7 +3687,7 @@ CONFIG_TASK_WDT=y
 CONFIG_ESP_TASK_WDT=y
 CONFIG_TASK_WDT_PANIC=y
 CONFIG_TASK_WDT_TIMEOUT_S=5
-CONFIG_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+# CONFIG_TASK_WDT_CHECK_IDLE_TASK_CPU0 is not set
 # CONFIG_TASK_WDT_CHECK_IDLE_TASK_CPU1 is not set
 # CONFIG_ESP32_DEBUG_STUBS_ENABLE is not set
 CONFIG_ESP32_DEBUG_OCDAWARE=y

@@ -1294,7 +1294,7 @@
 #endif
 
 #ifndef SONAR_MAX_DISTANCE
-#define SONAR_MAX_DISTANCE             MAX_SENSOR_DISTANCE           // Max sensor distance in cm
+#define SONAR_MAX_DISTANCE             500                           // Max sensor distance in cm
 #endif
 
 #ifndef SONAR_ITERATIONS
@@ -1368,12 +1368,12 @@
 #endif
 
 #ifndef VEML6075_INTEGRATION_TIME
-#define VEML6075_INTEGRATION_TIME         VEML6075::IT_100MS        // The time, in milliseconds, allocated for a single
+#define VEML6075_INTEGRATION_TIME         1                         // 0..4: 50, 100, 200, 400, 800 ms. The time, in milliseconds, allocated for a single
 #endif                                                              // measurement. A longer timing budget allows for more
                                                                     // accurate results at the cost of power.
 
 #ifndef VEML6075_DYNAMIC_MODE
-#define VEML6075_DYNAMIC_MODE             VEML6075::DYNAMIC_NORMAL  // The dynamic mode can either be normal or high. In high
+#define VEML6075_DYNAMIC_MODE             0                         // 1 - high. The dynamic mode can either be normal or high. In high
 #endif                                                              // dynamic mode, the resolution increases by about two
                                                                     // times.
 //------------------------------------------------------------------------------

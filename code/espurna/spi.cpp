@@ -15,6 +15,7 @@ then the chip's SPI starts (arch/<chip>/spi_chip.h: ESP8266 HSPI, ESP32 any pins
 #include "gpio.h"
 
 #include <spi_chip.h>
+#include <chip_sdk.h>
 
 namespace espurna {
 namespace spi {
@@ -39,7 +40,17 @@ SpiPins spiPins() {
     return espurna::spi::pins;
 }
 
+// the bus for SPI of the Arduino emulation (chip_sdk.h SpiBus): the RFM69 library and mcp23s08 talk through it
+static constexpr espurna::core::chip::SpiBus SpiBusTable {
+    &espurna::core::chip::spi_begin,
+    &espurna::core::chip::spi_end,
+    &espurna::core::chip::spi_config,
+    &espurna::core::chip::spi_transfer,
+};
+
 void spiSetup() {
+    espurna::core::chip::spi_bus = &SpiBusTable;
+
     using namespace espurna::driver::spi;
 
     const SpiPins pins {

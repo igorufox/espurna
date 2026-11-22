@@ -713,8 +713,11 @@ const char* run(const Entry& entry, Started& out) {
 
 // --- dependencies: the modules a module needs, by name (Header::needs, comma separated) ----------------------------
 
+// as many as a package links to (LinkProviders): 22.11, the thermostat needs five (relay, sensors, ntp, tools,
+// arduino); a list cut at four left its links to arduino where its link A put them, `&Wire` at 0x60000044, and the
+// display's first call crashed the board (LoadProhibited in SSD1306Wire::connect(), the guard turned every module off)
 struct Requires {
-    char names[4][16] {};
+    char names[LinkProviders][16] {};
     size_t count { 0 };
 };
 
@@ -731,7 +734,7 @@ Requires requiresOf(const Entry& entry) {
     list[sizeof(header.needs)] = '\0';
 
     char* item = list;
-    while (item && *item && (out.count < 4)) {
+    while (item && *item && (out.count < LinkProviders)) {
         char* next = std::strchr(item, ',');
         if (next) {
             *next++ = '\0';

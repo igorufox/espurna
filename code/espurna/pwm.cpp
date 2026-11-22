@@ -8,6 +8,8 @@ Copyright (C) 2019-2022 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #include "espurna.h"
 
+#include <chip_sdk.h>
+
 #if PWM_SUPPORT
 
 #include "pwm.h"
@@ -258,7 +260,16 @@ void pwmUpdate() {
     espurna::driver::pwm::update();
 }
 
+// the PWM of the chip for the head and the other modules (chip_sdk.h PwmBus): pins::pwm(), the NSPanel's buzzer,
+// analogWrite() of the Arduino emulation, the head's pin_mode() on Beken
+static constexpr espurna::core::chip::PwmBus PwmBusTable {
+    &espurna::core::chip::pwm_write,
+    &espurna::core::chip::pwm_stop,
+};
+
 void pwmSetup() {
+    espurna::core::chip::pwm_bus = &PwmBusTable;
+
     espurna::driver::pwm::setup();
 #if TERMINAL_SUPPORT
     espurna::driver::pwm::terminal::setup();

@@ -15,7 +15,7 @@ IMAGE RECEIVER - the one code that takes a firmware image in, everything ESPurna
 - the POSTs that change the firmware are refused for a page of another site (sameOrigin())
 
 What differs is only where the bytes go, the Target of the image:
-- the head: Arduino Update and the chip's checks (ota.cpp, arch/<chip>/ota_driver_<chip>.h)
+- the head: the image into the chip (ota.cpp, ota_driver.h, arch/<chip>/ota_<chip>.cpp)
 - the migration image: the free space behind the running image and eboot, read back before eboot is told (migration-app)
 
 */

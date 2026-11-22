@@ -7,13 +7,20 @@
 
 #pragma once
 
+// the VL53L1X library of the fork igorufox/vl53l1x (code/libraries.ini) without Arduino (VL53L1X_NO_ARDUINO of the
+// module flags): its I2C bus and clock are i2c.h and espurna::time, given with setPlatform()
 #include <VL53L1X.h>
 
 #include "I2CSensor.h"
+#include "../i2c.h"
 
 class VL53L1XSensor : public I2CSensor<> {
 
     public:
+
+        VL53L1XSensor() {
+            _vl53l1x.setPlatform(&Platform);
+        }
 
         using MeasurementTimingBudget = espurna::duration::critical::Microseconds;
         using InterMeasurementPeriod = espurna::duration::Milliseconds;
@@ -102,6 +109,31 @@ class VL53L1XSensor : public I2CSensor<> {
         }
 
     private:
+
+        static uint8_t bus_write(void*, uint8_t address, const uint8_t* data, size_t size) {
+            return i2c_write_buffer(address, data, size);
+        }
+
+        static size_t bus_read(void*, uint8_t address, uint8_t* data, size_t size) {
+            return i2c_read_buffer(address, data, size);
+        }
+
+        static uint32_t clock_ms(void*) {
+            return espurna::time::ms();
+        }
+
+        static void wait_us(void*, uint32_t us) {
+            if (us >= 1000) {
+                espurna::time::blockingDelay(espurna::duration::Milliseconds(us / 1000));
+                us %= 1000;
+            }
+            espurna::time::sleep_us(us);
+        }
+
+        static constexpr VL53L1X_Platform Platform {
+            bus_write, bus_read, clock_ms, wait_us, nullptr,
+        };
+
         InterMeasurementPeriod _measurement_period;
         VL53L1X _vl53l1x;
         double _distance = 0;

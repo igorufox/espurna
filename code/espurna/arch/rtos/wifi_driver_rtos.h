@@ -1,12 +1,12 @@
 /*
 
-WIFI MODULE, the shared driver of the FreeRTOS chips (ESP32, Beken)
+WIFI MODULE, the one driver of every chip (ESP8266, ESP32, Beken)
 
 wifi_driver_rtos.cpp implements every function of wifi_driver.h on the SDK calls of the chip (wifi_sdk.h, no WiFi class):
 WiFi events arrive from another task, the handler queues each one whole (espurna::system::EventQueue) and loop() delivers
 them to the common code in the order they came, so the state machine in wifi.cpp runs in loop() only. The link state (connecting / linked), the last connection request, the
 scan and the AP settings are kept here. What only the chip's SDK knows is behind `chip::` below, ref.
-arch/esp32/wifi_driver_esp32.cpp and arch/beken/wifi_driver_beken.cpp.
+arch/esp8266/wifi_driver_esp8266.cpp, arch/esp32/wifi_driver_esp32.cpp and arch/beken/wifi_driver_beken.cpp.
 
 */
 

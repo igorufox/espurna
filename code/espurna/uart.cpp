@@ -226,11 +226,35 @@ void setup() {
 
 } // namespace release
 
+// The first port is the serial log and the terminal: TX / RX pins the chip has no UART for (hardware::number(), the
+// pairs of ESP8266 and Beken) leave it on the build's pins, the log and the terminal stay
+namespace pins {
+
+bool fallback { false };
+
+bool valid(uint8_t tx, uint8_t rx) {
+    if ((tx == GPIO_NONE) && (rx == GPIO_NONE)) {
+        return true;
+    }
+
+#if UART_SOFTWARE_SUPPORT
+    return gpioValid(tx) || gpioValid(rx);
+#else
+    return hardware::number(tx, rx) >= 0;
+#endif
+}
+
+} // namespace pins
+
 namespace settings {
 
 uint8_t tx(size_t index) {
     if ((index == 0) && release::tx_user.length()) {
         return GPIO_NONE;
+    }
+
+    if ((index == 0) && pins::fallback) {
+        return build::tx(0);
     }
 
     return getSetting({keys::TxPin, index}, build::tx(index));
@@ -239,6 +263,10 @@ uint8_t tx(size_t index) {
 uint8_t rx(size_t index) {
     if ((index == 0) && release::rx_user.length()) {
         return GPIO_NONE;
+    }
+
+    if ((index == 0) && pins::fallback) {
+        return build::rx(0);
     }
 
     return getSetting({keys::RxPin, index}, build::rx(index));
@@ -691,13 +719,37 @@ bool claim(size_t index, const char* owner) {
 #if WEB_SUPPORT
 namespace web {
 
-// RELAYS panel: the pins of the first port, what the build gives it and who took one of them (ref. html/src/uart.mjs)
+void onVisible(espurna::json::Writer& root) {
+    wsPayloadModule(root, settings::Prefix);
+}
+
+// SERIAL panel of the uart module: the pins of the first port, every pin the chip can give it, what the build gives
+// it and who took one of them (ref. html/src/uart.mjs)
 void onConnected(espurna::json::Writer& root) {
     root.object(STRING_VIEW("uartPins"));
     root.field(STRING_VIEW("tx"), build::tx(0));
     root.field(STRING_VIEW("rx"), build::rx(0));
     root.field(STRING_VIEW("txUser"), release::tx_user);
     root.field(STRING_VIEW("rxUser"), release::rx_user);
+    root.field(STRING_VIEW("fallback"), pins::fallback);
+
+    const auto pins_count = gpioPins();
+
+    root.array(STRING_VIEW("txPins"));
+    for (size_t pin = 0; pin < pins_count; ++pin) {
+        if (gpioValidForOutput(pin) && pins::valid(pin, GPIO_NONE)) {
+            root.value(pin);
+        }
+    }
+    root.end();
+
+    root.array(STRING_VIEW("rxPins"));
+    for (size_t pin = 0; pin < pins_count; ++pin) {
+        if (gpioValid(pin) && pins::valid(GPIO_NONE, pin)) {
+            root.value(pin);
+        }
+    }
+    root.end();
     root.end();
 
     root.field(espurna::string(settings::keys::TxPin) + '0', settings::tx(0));
@@ -710,6 +762,7 @@ bool onKeyCheck(StringView key, espurna::json::Value) {
 
 void setup() {
     wsRegister()
+        .onVisible(onVisible)
         .onConnected(onConnected)
         .onKeyCheck(onKeyCheck);
 }
@@ -723,6 +776,16 @@ void setup() {
 #endif
     settings::query::setup();
     release::setup();
+
+    {
+        const auto tx = settings::tx(0);
+        const auto rx = settings::rx(0);
+        if (!pins::valid(tx, rx)) {
+            pins::fallback = true;
+            DEBUG_MSG_P(PSTR("[UART] No UART on GPIO%hhu (TX) / GPIO%hhu (RX), the serial port stays on GPIO%hhu / GPIO%hhu\n"),
+                tx, rx, build::tx(0), build::rx(0));
+        }
+    }
 #if WEB_SUPPORT
     web::setup();
 #endif

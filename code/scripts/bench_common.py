@@ -51,6 +51,7 @@ BENCH_HOSTS = {
     "10.0.5.58": "ESP8266 Sonoff Basic ESPURNA-79E12A (1 MB)",
     "10.0.5.66": "ESP32 LC-Tech relay x2",
     "10.0.5.139": "Beken BK7231N (serial on COM3)",
+    "10.0.4.175": "ESP32 DevKit on COM3 (ESP32-D0WDQ6 rev1, 26 MHz crystal), ESPURNA-173F9C",
 }
 
 # ESPurna counts soft restarts and resets the counter SYSTEM_CHECK_TIME (60 s) after boot; 3 restarts before that

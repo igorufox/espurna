@@ -3,7 +3,7 @@
 OTA MODULE, ESP8266 on ESP8266_RTOS_SDK: a new head and the bootloader over the network (owner 2026-11-18: the Tuya
 bootloader's scheme, and the bootloader may be flashed explicitly)
 
-/upgrade with the RBL of a new head (espurna-esp8266.ota, rbl_esp8266.h): ota.cpp hands it to own_*() here. The same
+/upgrade with the RBL of a new head (espurna-esp8266.ota, rbl_esp8266.h): ota.cpp hands it to driver::begin() .. end() here (ota_driver.h). The same
 route takes an RBL of an image of the flash from 0x0 (scripts/esp8266_rbl.py --flash: ESPurna 1.15 / 1.22 of the Arduino
 core back, owner 21.11) - the bootloader writes it over itself, no rollback. The modules
 are off (ota_web.cpp refuses the upload while they run: the package goes where they are). The package is written right
@@ -21,6 +21,7 @@ writes them). Only then it is copied to 0x0, a sector at a time: the one moment 
 
 #include "ota_driver.h"
 #include "rbl_esp8266.h"
+#include "ota_rbl.h"
 
 #if MODULES_SUPPORT
 #include "modules.h"
@@ -42,237 +43,110 @@ namespace ota {
 namespace driver {
 namespace {
 
-constexpr size_t Stage { 512 };
-
-// the bytes of a stream written to the flash in aligned blocks (the SDK's spi_flash_write wants 4-byte multiples)
-struct Writer {
-    uint32_t base { 0 };            // where the stream goes
-    uint32_t limit { 0 };           // where it must end
-    uint32_t written { 0 };         // bytes in the flash
-    uint32_t erased { 0 };          // bytes of the flash erased from `base`
-    uint8_t stage[Stage] __attribute__((aligned(4))) {};
-    size_t staged { 0 };
-
-    void start(uint32_t at, uint32_t end) {
-        base = at;
-        limit = end;
-        written = 0;
-        erased = 0;
-        staged = 0;
-    }
-
-    bool flush() {
-        if (!staged) {
-            return true;
-        }
-
-        const size_t size = (staged + 3) & ~size_t{3};
-        std::memset(&stage[staged], 0xFF, size - staged);
-
-        const uint32_t at = base + written;
-        if ((at + size) > limit) {
-            return false;
-        }
-
-        while (erased < (written + size)) {
-            if (spi_flash_erase_sector((base + erased) / ESPURNA_RBL_SECTOR) != ESP_OK) {
-                return false;
-            }
-            erased += ESPURNA_RBL_SECTOR;
-        }
-
-        if (spi_flash_write(at, stage, size) != ESP_OK) {
-            return false;
-        }
-
-        written += staged;
-        staged = 0;
-        return true;
-    }
-
-    bool push(const uint8_t* data, size_t len) {
-        while (len) {
-            const size_t take = std::min(len, Stage - staged);
-            std::memcpy(&stage[staged], data, take);
-            staged += take;
-            data += take;
-            len -= take;
-            if ((staged == Stage) && !flush()) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-};
-
-// what was written, read back: its CRC32
-bool flashCrc(uint32_t at, uint32_t size, uint32_t& out) {
-    std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[1024]);
-    if (!buffer) {
-        return false;
-    }
-
-    uint32_t crc = 0;
-    while (size) {
-        const uint32_t take = std::min<uint32_t>(size, 1024);
-        if (spi_flash_read(at, buffer.get(), (take + 3) & ~uint32_t{3}) != ESP_OK) {
-            return false;
-        }
-        crc = espurna_rbl_crc32(crc, buffer.get(), take);
-        at += take;
-        size -= take;
-    }
-
-    out = crc;
-    return true;
+// the SDK's flash calls for the common writer (ota_rbl.h): sector erase, write and read of 4-byte multiples
+bool flashErase(uint32_t at) {
+    return spi_flash_erase_sector(at / ESPURNA_RBL_SECTOR) == ESP_OK;
 }
+
+bool flashWrite(uint32_t at, const uint8_t* data, size_t size) {
+    return spi_flash_write(at, reinterpret_cast<const uint32_t*>(data), size) == ESP_OK;
+}
+
+bool flashRead(uint32_t at, uint8_t* data, size_t size) {
+    return spi_flash_read(at, reinterpret_cast<uint32_t*>(data), size) == ESP_OK;
+}
+
+} // namespace
+
+const rbl::Flash Flash { flashErase, flashWrite, flashRead };
+
+namespace {
 
 // the end of the running head, rounded to a sector: the free space starts there
 uint32_t headEnd() {
     return espurna_rbl_round(ESPURNA_RBL_HEAD_AT + ::espurna::core::chip::sketch_size());
 }
 
-// --- the RBL of a new head ------------------------------------------------------------------------------------------
-
-struct Rbl {
-    bool active { false };
-    espurna_rbl_t header {};
-    uint32_t received { 0 };        // bytes of the upload (header + package)
-    Writer writer;
-};
-
 // from the heap for one upload (636 bytes held for good before, 11-18 memory pass)
-std::unique_ptr<Rbl> current;
-
-void rblDrop() {
-    current.reset();
-}
+std::unique_ptr<rbl::Writer> current;
 
 } // namespace
 
-bool own_image(const uint8_t* data, size_t len) {
-    uint32_t magic { 0 };
-    if (len < sizeof(magic)) {
-        return false;
+// the one image this chip takes over the network: the RBL (one app partition, nothing for a plain app image to go to).
+// The common part (ota_rbl.h) writes it; here only where it goes and what this chip's bootloader installs
+const char* begin(const uint8_t* data, size_t len, size_t) {
+    current.reset();
+
+    espurna_rbl_t header {};
+    const char* error = rbl::header(data, len, header);
+    if (error) {
+        return (header.magic == ESPURNA_RBL_MAGIC)
+            ? error
+            : PSTR("ERROR: Not an RBL of this chip (espurna-esp8266.ota, or esp8266_rbl.py --flash of an image)");
     }
-
-    std::memcpy(&magic, data, sizeof(magic));
-    return magic == ESPURNA_RBL_MAGIC;
-}
-
-const char* own_begin(const uint8_t* data, size_t len) {
-    if (len < ESPURNA_RBL_SIZE) {
-        return PSTR("ERROR: Upload too short for an RBL header");
-    }
-
-    current.reset(new (std::nothrow) Rbl());
-    if (!current) {
-        return PSTR("ERROR: Not enough memory");
-    }
-
-    auto& rbl = *current;
-    std::memcpy(&rbl.header, data, ESPURNA_RBL_SIZE);
 
     // a chip of 2 MB and more: the top of the flash (out of the modules' area), named in the header - before the check,
     // which tells whether the image and the package fit where the package goes (21.11: an image of the flash of 585 KB
-    // was refused by the 1 MB place of its package). The header's own CRC is checked first: naming the place signs it
-    // again
-    if (espurna_rbl_crc32(0, &rbl.header, ESPURNA_RBL_SIZE - 4u) != rbl.header.info_crc) {
-        return PSTR("ERROR: RBL header CRC");
-    }
-
-    const uint32_t top_at = espurna_rbl_top_at(spi_flash_get_chip_size(), rbl.header.data_size);
+    // was refused by the 1 MB place of its package). Naming the place signs the header again
+    const uint32_t top_at = espurna_rbl_top_at(spi_flash_get_chip_size(), header.data_size);
     if (top_at) {
-        espurna_rbl_set_package_at(&rbl.header, top_at);
+        espurna_rbl_set_package_at(&header, top_at);
     }
 
-    const char* error = espurna_rbl_check(&rbl.header);
+    error = espurna_rbl_check(&header);
     if (error) {
         return error;
     }
 
-    const uint32_t package_at = espurna_rbl_package_at(&rbl.header);
+    const uint32_t package_at = espurna_rbl_package_at(&header);
     if (package_at < headEnd()) {
         return PSTR("ERROR: The package does not fit above the running head");
     }
 
-    // an older header goes first: nothing half-written is ever installed
-    if (spi_flash_erase_sector(ESPURNA_RBL_HEADER_AT / ESPURNA_RBL_SECTOR) != ESP_OK) {
-        return PSTR("ERROR: Flash erase failed");
+    current.reset(new (std::nothrow) rbl::Writer());
+    if (!current) {
+        return PSTR("ERROR: Not enough memory");
     }
 
-    rbl.writer.start(package_at, top_at ? (top_at + espurna_rbl_round(rbl.header.data_size)) : ESPURNA_RBL_HEADER_AT);
-    rbl.active = true;
-    return nullptr;
+    const rbl::Place place {
+        .header = ESPURNA_RBL_HEADER_AT,
+        .package = package_at,
+        .limit = top_at ? (top_at + espurna_rbl_round(header.data_size)) : ESPURNA_RBL_HEADER_AT,
+    };
+
+    error = current->begin(Flash, header, place);
+    if (error) {
+        current.reset();
+    }
+
+    return error;
 }
 
-const char* own_write(const uint8_t* data, size_t len) {
-    if (!current || !current->active) {
+const char* write(const uint8_t* data, size_t len) {
+    if (!current) {
         return PSTR("ERROR: No upload");
     }
 
-    auto& rbl = *current;
-
-    // the header was taken by own_begin(), the package follows it
-    if (rbl.received < ESPURNA_RBL_SIZE) {
-        const size_t skip = std::min<size_t>(ESPURNA_RBL_SIZE - rbl.received, len);
-        rbl.received += skip;
-        data += skip;
-        len -= skip;
+    const auto* error = current->write(data, len);
+    if (error) {
+        current.reset();
     }
 
-    if ((rbl.received + len) > (ESPURNA_RBL_SIZE + rbl.header.data_size)) {
-        rblDrop();
-        return PSTR("ERROR: More data than the RBL header says");
-    }
-
-    if (len && !rbl.writer.push(data, len)) {
-        rblDrop();
-        return PSTR("ERROR: Flash write failed");
-    }
-
-    rbl.received += len;
-    return nullptr;
+    return error;
 }
 
-const char* own_end() {
+const char* end() {
     if (!current) {
         return PSTR("ERROR: Incomplete image");
     }
 
-    auto& rbl = *current;
-    if (!rbl.active || (rbl.received != (ESPURNA_RBL_SIZE + rbl.header.data_size))) {
-        rblDrop();
-        return PSTR("ERROR: Incomplete image");
-    }
-
-    if (!rbl.writer.flush()) {
-        rblDrop();
-        return PSTR("ERROR: Flash write failed");
-    }
-
-    uint32_t crc { 0 };
-    if (!flashCrc(espurna_rbl_package_at(&rbl.header), rbl.header.data_size, crc) || (crc != rbl.header.data_crc)) {
-        rblDrop();
-        return PSTR("ERROR: The package in the flash does not match its CRC");
-    }
-
-    // the header last: from now on the bootloader installs it on the next boot
-    if (spi_flash_write(ESPURNA_RBL_HEADER_AT, &rbl.header, ESPURNA_RBL_SIZE) != ESP_OK) {
-        rblDrop();
-        return PSTR("ERROR: Flash write failed");
-    }
-
-    DEBUG_MSG_P(PSTR("[OTA] RBL of %s %u bytes (package %u) at 0x%06X, the bootloader installs it\n"),
-        (rbl.header.compression == ESPURNA_RBL_FLASH) ? "an image of the flash from 0x0" : "the head",
-        rbl.header.raw_size, rbl.header.data_size, espurna_rbl_package_at(&rbl.header));
-    rblDrop();
-    return nullptr;
+    const auto* error = current->end();
+    current.reset();
+    return error;
 }
 
-void own_abort() {
-    rblDrop();
+void abort() {
+    current.reset();
 }
 
 } // namespace driver
@@ -397,7 +271,7 @@ public:
             return PSTR("larger than the bootloader's place (32 KB)");
         }
 
-        _writer.start(StageAt, StageAt + Place);
+        _writer.start(driver::Flash, StageAt, StageAt + Place);
         _active = true;
         return nullptr;
     }
@@ -434,7 +308,7 @@ public:
     }
 
 private:
-    driver::Writer _writer;
+    rbl::Stream _writer;
     bool _active { false };
 };
 
@@ -527,14 +401,14 @@ void onDone(WebRequest& request) {
 } // namespace ota
 } // namespace espurna
 
-void otaBootloaderSetup() {
+void espurna::ota::driver::web_setup() {
     webServer().on("/upgrade/bootloader", WebMethod::Post,
         espurna::ota::bootloader::onDone, espurna::ota::bootloader::onFile);
 }
 
 #else
 
-void otaBootloaderSetup() {
+void espurna::ota::driver::web_setup() {
 }
 
 #endif
@@ -566,7 +440,7 @@ void check() {
 } // namespace ota
 } // namespace espurna
 
-void otaConfirmSetup() {
+void espurna::ota::driver::confirm() {
     espurna_rbl_t rbl;
     if ((spi_flash_read(ESPURNA_RBL_HEADER_AT, reinterpret_cast<uint32_t*>(&rbl), sizeof(rbl)) != ESP_OK)
         || (rbl.magic != ESPURNA_RBL_MAGIC))

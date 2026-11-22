@@ -4,19 +4,38 @@ import { setInputOrSelectValueByKey, variableListeners } from './settings.mjs';
 export const PIN_NONE = 153;
 
 /**
- * @typedef {{tx: number, rx: number, txUser: string, rxUser: string}} UartPins
+ * @typedef {{tx: number, rx: number, txUser: string, rxUser: string, fallback?: boolean, txPins?: number[], rxPins?: number[]}} UartPins
  */
 
 /**
- * Options of the TX / RX select: the pin the build gives the serial port, or none
- * @param {number} pin
+ * Options of the TX / RX select: every pin the chip has a UART for (the build's one first), or none
+ * @param {number} pin - the pin the build gives the serial port
+ * @param {number[]} [pins] - the pins the chip can give it
  * @returns {{value: string, text: string}[]}
  */
-export function pinOptions(pin) {
-    return [
-        {value: pin.toString(), text: `GPIO${pin}: serial port`},
-        {value: PIN_NONE.toString(), text: 'Off: the pin is free for a button, a relay or an LED'},
-    ];
+export function pinOptions(pin, pins = []) {
+    const out = [{value: pin.toString(), text: `GPIO${pin}: serial port (default)`}];
+    for (const other of pins) {
+        if (other !== pin) {
+            out.push({value: other.toString(), text: `GPIO${other}`});
+        }
+    }
+
+    out.push({value: PIN_NONE.toString(), text: 'Off: the pin is free for a button, a relay or an LED'});
+    return out;
+}
+
+/**
+ * What the WebUI says when the saved TX / RX pair has no UART on this chip
+ * @param {UartPins} pins
+ * @returns {string}
+ */
+export function fallbackText(pins) {
+    if (!pins.fallback) {
+        return '';
+    }
+
+    return `The chip has no UART on the saved TX / RX pair: the serial port stays on GPIO${pins.tx} / GPIO${pins.rx}.`;
 }
 
 /**
@@ -44,14 +63,15 @@ export function releaseText(pins) {
 /**
  * @param {string} name
  * @param {number} pin
+ * @param {number[]} [pins]
  */
-function fillSelect(name, pin) {
+function fillSelect(name, pin, pins) {
     const select = document.querySelector(`select[name='${name}']`);
     if (!(select instanceof HTMLSelectElement)) {
         return;
     }
 
-    select.replaceChildren(...pinOptions(pin).map((option) => {
+    select.replaceChildren(...pinOptions(pin, pins).map((option) => {
         const elem = document.createElement('option');
         elem.value = option.value;
         elem.textContent = option.text;
@@ -69,8 +89,8 @@ function onPins(_, pins) {
         return;
     }
 
-    fillSelect('uartTx0', pins.tx);
-    fillSelect('uartRx0', pins.rx);
+    fillSelect('uartTx0', pins.tx, pins.txPins);
+    fillSelect('uartRx0', pins.rx, pins.rxPins);
 
     const hint = document.getElementById('uartRelease');
     if (hint) {
@@ -78,7 +98,12 @@ function onPins(_, pins) {
         hint.hidden = !hint.textContent;
     }
 
-    fieldset.hidden = false;
+    const fallback = document.getElementById('uartFallback');
+    if (fallback) {
+        fallback.textContent = fallbackText(pins);
+        fallback.hidden = !fallback.textContent;
+    }
+
 }
 
 /**

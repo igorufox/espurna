@@ -7,7 +7,7 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 /upgrade (an image uploaded by the browser, the file of a form or the raw body; the browser also downloads the releases,
 fwinstall.mjs). On the one HTTP server of ESPurna (libs/http_server.h): the body comes a piece at a time into
-the one image receiver (libs/image_receiver.h) and the head's target (Update, ota.cpp), the handlers run in the loop.
+the one image receiver (libs/image_receiver.h) and the head's target (ota.cpp), the handlers run in the loop.
 
 */
 
@@ -42,7 +42,7 @@ void sendResponse(WebRequest& request, int code, const espurna::string& payload)
 }
 
 // The upload of one request, its context (freed with it, an image not finished by then is aborted): the one image
-// receiver (libs/image_receiver.h) into the head's target (Update, ota.cpp)
+// receiver (libs/image_receiver.h) into the head's target (ota.cpp)
 struct Upload {
     Upload() :
         receiver(otaUpdateTarget())
@@ -158,17 +158,11 @@ bool otaWebUploading() {
     return otaRunning() || ota::web::installed;
 }
 
-#if defined(ESP8266)
-// /upgrade/bootloader: the SDK's bootloader, explicitly (arch/esp8266/ota_esp8266.cpp)
-void otaBootloaderSetup();
-#endif
-
 void otaWebSetup() {
     auto& server = webServer();
     server.on("/upgrade", WebMethod::Post, ota::web::onUpgrade, ota::web::onFile);
-#if defined(ESP8266)
-    otaBootloaderSetup();
-#endif
+    // the chip's own routes (ESP8266: /upgrade/bootloader)
+    espurna::ota::driver::web_setup();
     wsRegister()
         .onVisible(ota::web::onVisible);
 }

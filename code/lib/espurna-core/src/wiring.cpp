@@ -17,6 +17,13 @@ struct Pwm {
 
 Pwm pwm;
 
+// the PWM is the light_pwm module's (chip_sdk.h PwmBus): nothing without it
+void pwm_out(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency) {
+    if (chip::pwm_bus) {
+        chip::pwm_bus->write(pin, duty, range, frequency);
+    }
+}
+
 uint32_t random_state { 0x2545f491 };
 
 } // namespace
@@ -69,7 +76,7 @@ void analogReference(uint8_t) {
 
 void analogWrite(pin_size_t pin, int value) {
     const auto duty = (value < 0) ? 0u : static_cast<uint32_t>(value);
-    chip::pwm_write(pin, (duty > pwm.range) ? pwm.range : duty, pwm.range, pwm.frequency);
+    pwm_out(pin, (duty > pwm.range) ? pwm.range : duty, pwm.range, pwm.frequency);
 }
 
 void attachInterruptParam(pin_size_t pin, voidFuncPtrParam callback, PinStatus mode, void* param) {
@@ -160,11 +167,11 @@ extern "C" void interrupts(void) {
 void tone(uint8_t pin, unsigned int frequency, unsigned long duration) {
     // a square wave; the duration is the caller's (no timer here), noTone() stops it
     (void)duration;
-    chip::pwm_write(pin, 128, 255, frequency);
+    pwm_out(pin, 128, 255, frequency);
 }
 
 void noTone(uint8_t pin) {
-    chip::pwm_write(pin, 0, 255, 1000);
+    pwm_out(pin, 0, 255, 1000);
 }
 
 // xorshift32: random() of the libraries (rc-switch, RFM69 ...); keys and TLS use the hardware RNG of the chip

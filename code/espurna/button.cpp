@@ -21,7 +21,7 @@ Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "mqtt.h"
 #include "relay.h"
 #include "system.h"
-#include "thermostat.h"
+#include "oled.h"
 
 #if WEB_SUPPORT
 #include "ws.h"
@@ -218,7 +218,7 @@ static constexpr Enumeration<ButtonAction> ButtonActionOptions[] PROGMEM {
     {ButtonAction::BrightnessIncrease, BrightnessIncrease},
     {ButtonAction::BrightnessDecrease, BrightnessDecrease},
 #endif
-#if THERMOSTAT_DISPLAY_SUPPORT
+#if OLED_SUPPORT
     {ButtonAction::DisplayOn, DisplayOn},
 #endif
     {ButtonAction::Custom, Custom},
@@ -1430,7 +1430,7 @@ void buttonEvent(size_t id, ButtonEvent event) {
         break;
 
     case ButtonAction::DisplayOn:
-#if THERMOSTAT_DISPLAY_SUPPORT
+#if OLED_SUPPORT
         displayOn();
 #endif
         break;

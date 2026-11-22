@@ -4,6 +4,21 @@
 
 namespace chip = espurna::core::chip;
 
+// the SPI master is in the spi module (chip_sdk.h SpiBus): nothing moves without it
+namespace {
+
+const chip::SpiBus* bus() {
+    return chip::spi_bus;
+}
+
+void transfer_bytes(const uint8_t* out, uint8_t* in, size_t size) {
+    if (bus()) {
+        bus()->transfer(out, in, size);
+    }
+}
+
+} // namespace
+
 SPIClass SPI;
 
 void SPIClass::pins(int8_t sck, int8_t miso, int8_t mosi, int8_t) {
@@ -27,7 +42,7 @@ bool SPIClass::begin(int8_t sck, int8_t miso, int8_t mosi, int8_t ss) {
         return (value < 0) ? chip::NoPin : static_cast<uint8_t>(value);
     };
 
-    _started = chip::spi_begin(pin(_sck), pin(_miso), pin(_mosi));
+    _started = bus() && bus()->begin(pin(_sck), pin(_miso), pin(_mosi));
     if (_started) {
         apply();
     }
@@ -40,15 +55,17 @@ void SPIClass::begin() {
 }
 
 void SPIClass::end() {
-    if (_started) {
-        chip::spi_end();
+    if (_started && bus()) {
+        bus()->end();
         _started = false;
     }
 }
 
 void SPIClass::apply() {
-    if (_started) {
-        chip::spi_config(_frequency, _mode, _msb_first);
+    // the bus may be the one the spi module started on the chip (spi.cpp, not through SPI): the chip ignores the
+    // config while no bus is up
+    if (bus()) {
+        bus()->config(_frequency, _mode, _msb_first);
     }
 }
 
@@ -83,7 +100,7 @@ void SPIClass::setBitOrder(uint8_t order) {
 
 uint8_t SPIClass::transfer(uint8_t data) {
     uint8_t out { 0 };
-    chip::spi_transfer(&data, &out, 1);
+    transfer_bytes(&data, &out, 1);
     return out;
 }
 
@@ -97,7 +114,7 @@ uint16_t SPIClass::transfer16(uint16_t data) {
         buffer[1] = data >> 8;
     }
 
-    chip::spi_transfer(buffer, buffer, 2);
+    transfer_bytes(buffer, buffer, 2);
 
     return _msb_first
         ? static_cast<uint16_t>((buffer[0] << 8) | buffer[1])
@@ -106,13 +123,13 @@ uint16_t SPIClass::transfer16(uint16_t data) {
 
 void SPIClass::transfer(void* buffer, size_t size) {
     auto* data = static_cast<uint8_t*>(buffer);
-    chip::spi_transfer(data, data, size);
+    transfer_bytes(data, data, size);
 }
 
 void SPIClass::transferBytes(const uint8_t* out, uint8_t* in, uint32_t size) {
-    chip::spi_transfer(out, in, size);
+    transfer_bytes(out, in, size);
 }
 
 void SPIClass::writeBytes(const uint8_t* data, uint32_t size) {
-    chip::spi_transfer(data, nullptr, size);
+    transfer_bytes(data, nullptr, size);
 }

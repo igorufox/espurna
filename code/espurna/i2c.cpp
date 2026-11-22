@@ -10,9 +10,10 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #if I2C_SUPPORT
 
-// the framework's Wire; on the BK7231N (LibreTiny has none) the software one of lib_beken/Wire. The i2c module's:
-// the one Wire of the board, the I2C drivers and their libraries are linked against this module
-#include <Wire.h>
+// the bus is the chip's I2C master (i2c_* of arch/rtos/chip_sdk.h), no Arduino layer: the module and the drivers on
+// i2c.h call it here; the libraries of a few drivers (BME680, VEML6075, VL53L1X, SI1145) use Wire of
+// code/lib/espurna-core, which calls the same chip bus (the arduino_emu module, in their needs)
+#include <chip_sdk.h>
 
 #include "compat.h"
 #include "i2c.h"
@@ -98,9 +99,46 @@ unsigned char scl() {
 // make note that both APIs return integer status codes
 // success is 0, everything else depends on the implementation
 
+namespace chip = ::espurna::core::chip;
+
+// the clock of the bus, as Wire had it
+static constexpr uint32_t Frequency { 100000 };
+
+// one write of a transmission: the bytes collected, then the chip writes them at once (0 ok, 2 / 3 NACK, 4 other)
+struct Transmission {
+    static constexpr size_t Size { 128 };
+
+    uint8_t address { 0 };
+    size_t size { 0 };
+    uint8_t data[Size];
+};
+
+Transmission tx;
+
+void tx_begin(uint8_t address) {
+    tx.address = address;
+    tx.size = 0;
+}
+
+size_t tx_write(const uint8_t* data, size_t size) {
+    const size_t room = Transmission::Size - tx.size;
+    const size_t out = (size < room) ? size : room;
+    std::memcpy(&tx.data[tx.size], data, out);
+    tx.size += out;
+    return out;
+}
+
+size_t tx_write(uint8_t value) {
+    return tx_write(&value, 1);
+}
+
+uint8_t tx_end(bool stop) {
+    return chip::i2c_write(tx.address, tx.data, tx.size, stop);
+}
+
 uint8_t transmission(uint8_t address, bool stop) {
-    Wire.beginTransmission(address);
-    return Wire.endTransmission(stop);
+    tx_begin(address);
+    return tx_end(stop);
 }
 
 uint8_t transmission(uint8_t address) {
@@ -109,9 +147,9 @@ uint8_t transmission(uint8_t address) {
 
 template <typename T>
 uint8_t with_transmission(uint8_t address, bool stop, T&& callback) {
-    Wire.beginTransmission(address);
-    callback();    
-    return Wire.endTransmission(stop);
+    tx_begin(address);
+    callback();
+    return tx_end(stop);
 }
 
 // device address when found
@@ -283,7 +321,7 @@ void init() {
     internal::bus.sda = settings::sda();
     internal::bus.scl = settings::scl();
 
-    Wire.begin(internal::bus.sda, internal::bus.scl);
+    chip::i2c_begin(internal::bus.sda, internal::bus.scl, Frequency);
     DEBUG_MSG_P(PSTR("[I2C] Initialized SDA @ GPIO%hhu and SCL @ GPIO%hhu\n"),
             internal::bus.sda, internal::bus.scl);
 
@@ -457,7 +495,7 @@ uint8_t i2c_wakeup(uint8_t address) {
 }
 
 // api below split into two variants
-// - ..._append_... - only issues Wire.write()
+// - ..._append_... - only adds bytes to the transmission
 // - ..._write_... - starts with 'begin()' & ends with 'end()' of transmission
 
 // attempt to write 1..4bytes from the value
@@ -472,7 +510,7 @@ static uint8_t i2c_append_least(uint32_t value) {
 
     for (auto it = begin; it != end; ++it) {
         if (*it || (it == before_end)) {
-            out = Wire.write(it, std::distance(it, end));
+            out = espurna::i2c::tx_write(it, std::distance(it, end));
             break;
         }
     }
@@ -489,7 +527,7 @@ static uint8_t i2c_write_least(uint8_t address, uint32_t value, bool stop) {
 }
 
 static uint8_t i2c_append_buffer_impl(const uint8_t* buffer, size_t len) {
-    return Wire.write(buffer, len);
+    return espurna::i2c::tx_write(buffer, len);
 }
 
 uint8_t i2c_write_buffer(uint8_t address, const uint8_t* buffer, size_t len, bool stop) {
@@ -516,7 +554,7 @@ uint8_t i2c_write_buffer(uint8_t address, uint32_t reg, const uint8_t* buffer, s
 }
 
 static uint8_t i2c_append_uint8_impl(uint8_t value) {
-    return Wire.write(value);
+    return espurna::i2c::tx_write(value);
 }
 
 uint8_t i2c_write_uint8(uint8_t address, uint8_t value) {
@@ -536,7 +574,7 @@ uint8_t i2c_write_uint8(uint8_t address, uint32_t reg, uint8_t value) {
 
 static uint8_t i2c_append_uint16_impl(uint16_t value) {
     const auto prepared = pack_uint16(value);
-    return Wire.write(prepared.data(), prepared.size());
+    return espurna::i2c::tx_write(prepared.data(), prepared.size());
 }
 
 uint8_t i2c_write_uint16(uint8_t address, uint16_t value) {
@@ -556,7 +594,7 @@ uint8_t i2c_write_uint16(uint8_t address, uint32_t reg, uint16_t value) {
 
 static uint8_t i2c_append_uint32_impl(uint32_t value) {
     const auto prepared = pack_uint32(value);
-    return Wire.write(prepared.data(), prepared.size());
+    return espurna::i2c::tx_write(prepared.data(), prepared.size());
 }
 
 uint8_t i2c_write_uint32(uint8_t address, uint32_t value) {
@@ -588,12 +626,7 @@ uint8_t i2c_write_most(uint8_t address, uint32_t reg, uint32_t value, size_t len
 }
 
 uint8_t i2c_read_buffer(uint8_t address, uint8_t* buffer, size_t len) {
-    const auto out = Wire.requestFrom(address, static_cast<uint8_t>(len));
-    for (size_t i = 0; i < out; ++i) {
-        buffer[i] = Wire.read();
-    }
-
-    return out;
+    return static_cast<uint8_t>(espurna::core::chip::i2c_read(address, buffer, len, true));
 }
 
 uint8_t i2c_read_buffer(uint8_t address, uint32_t reg, uint8_t* buffer, size_t len, bool stop) {
@@ -750,7 +783,18 @@ uint8_t i2cFindAndLock(const uint8_t* begin, const uint8_t* end) {
     return espurna::i2c::findAndLock(begin, end);
 }
 
+// the bus for Wire of the Arduino emulation (chip_sdk.h I2cBus): the libraries of a few drivers talk through it
+static constexpr espurna::core::chip::I2cBus I2cBusTable {
+    &espurna::core::chip::i2c_begin,
+    &espurna::core::chip::i2c_end,
+    &espurna::core::chip::i2c_clock,
+    &espurna::core::chip::i2c_write,
+    &espurna::core::chip::i2c_read,
+};
+
 void i2cSetup() {
+    espurna::core::chip::i2c_bus = &I2cBusTable;
+
     // generic images have no bus until the device template sets both pins (ref. config/sensors.h)
     if ((espurna::i2c::settings::sda() == GPIO_NONE)
      || (espurna::i2c::settings::scl() == GPIO_NONE))

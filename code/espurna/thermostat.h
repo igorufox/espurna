@@ -40,7 +40,6 @@ Copyright (C) 2017 by Dmitry Blinov <dblinov76 at gmail dot com>
 struct temp_t {
   float temp;
   unsigned long last_update = 0;
-  bool need_display_update = false;
 };
 
 struct temp_range_t {
@@ -49,7 +48,6 @@ struct temp_range_t {
   unsigned long last_update = 0;
   unsigned long ask_time = 0;
   unsigned long  ask_interval = ASK_TEMP_RANGE_INTERVAL_INITIAL;
-  bool need_display_update = true;
 };
 
 using thermostat_callback_f = std::function<void(bool state)>;
@@ -65,7 +63,3 @@ void thermostatModeCooler(bool cooler);
 bool thermostatModeCooler();
 
 void thermostatSetup();
-
-void displayOn();
-void displaySetup();
-void displayLoop();

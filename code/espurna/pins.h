@@ -64,9 +64,12 @@ inline int analog(uint8_t pin) {
     return core::chip::adc_read(pin);
 }
 
-// PWM of `duty` out of `range` at `frequency` Hz; 0 stops it
+// PWM of `duty` out of `range` at `frequency` Hz; 0 stops it. The PWM is the light_pwm module's (chip_sdk.h PwmBus):
+// nothing without it
 inline void pwm(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency) {
-    core::chip::pwm_write(pin, duty, range, frequency);
+    if (core::chip::pwm_bus) {
+        core::chip::pwm_bus->write(pin, duty, range, frequency);
+    }
 }
 
 // an interrupt on an edge: `handler(arg)`, runs in the interrupt (IRAM_ATTR, nothing in flash)

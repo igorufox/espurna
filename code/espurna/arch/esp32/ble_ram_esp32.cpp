@@ -7,9 +7,11 @@ The controller in ROM writes into fixed places of the internal RAM (esp_bt.h, th
 its .data (SOC_MEM_BT_DATA 0x3ffae6e0, 6 KB), the exchange memory of the radio (SOC_MEM_BT_EM 0x3ffb0000, BLE 10 KB
 + BR/EDR), its .bss (SOC_MEM_BT_BSS 0x3ffb8000, 6.5 KB) and a word or so (SOC_MEM_BT_MISC 0x3ffbdb28). With
 CONFIG_BT_ENABLED the link script starts the head's data behind all of it (CONFIG_BTDM_RESERVE_DRAM 0xdb5c); the
-places between them are the heap's from the start. The four regions are reserved here as ESP-IDF's bt.c reserves them
-(bt.c is the module's, not the head's), and given to the heap at boot when the ble module is not on: then the
-controller never runs this boot.
+places between them are the heap's from the start. ESP-IDF's bt.c reserves the four regions
+(SOC_RESERVE_MEMORY_REGION rom_bt_*); bt.c is in the head (one copy of the controller's state for the head and the ble
+module), held there by the call below. They are given to the heap at boot when the ble module is not on: then the
+controller never runs this boot. (22.11: the head reserved them a second time itself, the two equal regions failed
+the assert of s_prepare_reserved_regions before app_main on every ESP32.)
 
 When the module is on, they stay its; nimble_port_init() of the module gives the BR/EDR part of the exchange memory
 to the heap itself (esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT)): the BLE controller does not use it.
@@ -29,12 +31,6 @@ to the heap itself (esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT)): the 
 #include <esp_bt.h>
 #include <esp_rom_sys.h>
 #include <esp_heap_caps_init.h>
-#include <heap_memory_layout.h>
-
-SOC_RESERVE_MEMORY_REGION(SOC_MEM_BT_EM_START, SOC_MEM_BT_EM_BREDR_REAL_END, espurna_bt_em);
-SOC_RESERVE_MEMORY_REGION(SOC_MEM_BT_BSS_START, SOC_MEM_BT_BSS_END, espurna_bt_bss);
-SOC_RESERVE_MEMORY_REGION(SOC_MEM_BT_MISC_START, SOC_MEM_BT_MISC_END, espurna_bt_misc);
-SOC_RESERVE_MEMORY_REGION(SOC_MEM_BT_DATA_START, SOC_MEM_BT_DATA_END, espurna_bt_data);
 
 namespace {
 
@@ -54,6 +50,11 @@ void give(intptr_t start, intptr_t end) {
 void bleRamSetup() {
     kept = modulesEnabled("ble");
     if (kept) {
+        return;
+    }
+
+    // bt.c of the head reserved the regions; a controller that is not idle (never at boot) keeps them
+    if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE) {
         return;
     }
 

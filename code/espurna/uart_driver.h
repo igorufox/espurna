@@ -5,6 +5,9 @@ UART MODULE
 Chip part of the hardware UART ports, ref. arch/<chip>/uart_<chip>.h. Only uart.cpp includes it,
 every function is inline (uart.cpp is also a part of the sensors module, ref. custom_modules)
 
+- hardware::number(tx, rx)
+                         the chip's UART of these pins, -1 when it has none there (the WebUI's pin lists,
+                         the check of the serial port's pins)
 - hardware::open(baudrate, tx, rx, config, invert, rx_buffer)
                          hardware UART on these pins. {nullptr} when the chip has none there,
                          or that UART is already used by another port (uart.cpp tries the software port then).

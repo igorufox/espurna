@@ -20,7 +20,7 @@ Copyright (C) 2016 Plamen Kovandjiev <p.kovandiev@kmpelectronics.eu> & Dimitar A
 
 #include "spi.h"
 
-#include <SPI.h>
+#include <chip_sdk.h>
 #include <bitset>
 
 // the chip select of the expander (setting mcp23s08CS), the hardware CS pin of the ESP8266's HSPI by default
@@ -119,8 +119,8 @@ void _mcp23s08Begin() {
     DEBUG_MSG_P(PSTR("[MCP23S08] CS GPIO%hhu\n"), _mcp23s08_cs);
 
     // Expander SPI settings
-    SPI.setFrequency(1000000);
-    SPI.setDataMode(SPI_MODE0);
+    // 1 MHz, mode 0, MSB first; the spi module's master (chip_sdk.h spi_*, no Arduino emulation)
+    espurna::core::chip::spi_config(1000000, 0, true);
 
     espurna::pins::mode(_mcp23s08_cs, espurna::pins::Output);
     espurna::pins::write(_mcp23s08_cs, true);
@@ -169,7 +169,7 @@ uint8_t MCP23S08ReadRegister(uint8_t address)
     _mcp23s08TxData[1] = address;
 
     espurna::pins::write(_mcp23s08_cs, false);
-    SPI.transferBytes(_mcp23s08TxData, _mcp23s08RxData, 3);
+    espurna::core::chip::spi_transfer(_mcp23s08TxData, _mcp23s08RxData, 3);
     espurna::pins::write(_mcp23s08_cs, true);
 
     return _mcp23s08RxData[2];
@@ -190,7 +190,7 @@ void MCP23S08WriteRegister(uint8_t address, uint8_t data)
     _mcp23s08TxData[2] = data;
 
     espurna::pins::write(_mcp23s08_cs, false);
-    SPI.transferBytes(_mcp23s08TxData, _mcp23s08RxData, 3);
+    espurna::core::chip::spi_transfer(_mcp23s08TxData, _mcp23s08RxData, 3);
     espurna::pins::write(_mcp23s08_cs, true);
 }
 

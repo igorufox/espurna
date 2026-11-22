@@ -26,16 +26,20 @@ inline bool& used(int slot) {
 
 // no inverted levels
 // the receive ring buffer of core_beken.cpp has a fixed size: rx_buffer is not taken
-inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert, size_t rx_buffer) {
+// the UART of these pins, -1 when the chip has none there
+inline int number(uint8_t tx, uint8_t rx) {
     const auto pins = [&](uint8_t port_tx, uint8_t port_rx) {
         return ((tx == port_tx) || (tx == GPIO_NONE))
             && ((rx == port_rx) || (rx == GPIO_NONE))
             && ((tx != GPIO_NONE) || (rx != GPIO_NONE));
     };
 
-    const int number =
-        pins(11, 10) ? 1 :
+    return pins(11, 10) ? 1 :
         pins(0, 1) ? 2 : -1;
+}
+
+inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert, size_t rx_buffer) {
+    const int number = hardware::number(tx, rx);
     if (number < 0) {
         return Opened{nullptr, Type::Unknown};
     }

@@ -516,9 +516,9 @@ void setup() {
         thermostatSetup();
         SETUP_HEAP_PROBE("thermostat");
     #endif
-    #if THERMOSTAT_DISPLAY_SUPPORT
-        displaySetup();
-        SETUP_HEAP_PROBE("display");
+    #if OLED_SUPPORT
+        oledSetup();
+        SETUP_HEAP_PROBE("oled");
     #endif
     #if TUYA_SUPPORT
         tuya::setup();

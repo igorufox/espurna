@@ -2,7 +2,7 @@
 
 OneWire MODULE
 
-Uses PaulStoffregen/OneWire library
+The bus: onewire_bus.h (the timings and the search of the PaulStoffregen/OneWire library, no Arduino emulation)
 
 Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 Copyright (C) 2019-2024 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
@@ -22,7 +22,7 @@ Copyright (C) 2019-2024 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 #include "types.h"
 #include "system.h"
 
-class OneWire;
+class OneWireBus;
 
 namespace espurna {
 namespace driver {
@@ -112,10 +112,10 @@ public:
     }
 
 private:
-    Devices _search(OneWire&);
-    Devices search(OneWire&, unsigned char pin);
+    Devices _search(OneWireBus&);
+    Devices search(OneWireBus&, unsigned char pin);
 
-    std::unique_ptr<OneWire> _wire;
+    std::unique_ptr<OneWireBus> _wire;
     unsigned char _pin { GPIO_NONE };
     bool _parasite { false };
 

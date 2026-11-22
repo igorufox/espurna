@@ -57,6 +57,11 @@ namespace chip {
 
 using namespace esp8266;
 
+// the output off (duty 0), its channel stays the pin's until a restart of the SDK's driver
+void pwm_stop(uint8_t pin) {
+    pwm_write(pin, 0, 1, 1000);
+}
+
 void pwm_write(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency) {
     if (!frequency) {
         return;

@@ -49,12 +49,28 @@ uint32_t bootloader_read_flash_id(void);
 
 /* the size of the chip by its JEDEC id (capacity byte 0x14..0x18 = 1..16 MB), as the head does (core_esp8266.cpp
    flash_size_from_id): the ROM takes it from the image header (the SDK's bootloader.bin says 1 MB), and the ROM's
-   SPIRead refuses anything over it - 19.11 the package at the top of the 4 MB chip was never read, the head stayed */
+   SPIRead refuses anything over it - 19.11 the package at the top of the 4 MB chip was never read, the head stayed.
+   g_rom_flashchip of the bootloader is the RAM copy of the SDK's libspi_flash (0x3ffeed10 in bootloader.map), not the
+   record the ROM's SPIRead / SPIWrite / SPIEraseSector check: the ROM's own is set by its SPIParamCfg (as esptool's
+   stub does it). 22.11 the Wemos (XMC 16 MB): the package at 0xF95000 failed its CRC on every boot ("package CRC, the
+   head stays") - the ROM still had the 4 MB of the image header and refused every read above it */
+typedef uint32_t (*espurna_rom_spi_param_cfg_t)(uint32_t device_id, uint32_t chip_size, uint32_t block_size,
+    uint32_t sector_size, uint32_t page_size, uint32_t status_mask);
+#define ESPURNA_ROM_SPI_PARAM_CFG ((espurna_rom_spi_param_cfg_t)0x40004c2cu)
+
 static void chip_size_from_id(void) {
     const uint32_t capacity = bootloader_read_flash_id() & 0xffu;
     if ((capacity >= 0x14u) && (capacity <= 0x18u)) {
         g_rom_flashchip.chip_size = 1u << capacity;
+        ESPURNA_ROM_SPI_PARAM_CFG(0, 1u << capacity, 0x10000u, 0x1000u, 0x100u, 0xffffu);
     }
+}
+
+/* the ROM's record back to the size of the image header before the head starts: the head finds the ROM as the SDK's
+   bootloader leaves it (the head sets its own size, core_esp8266.cpp flash_size_from_id) */
+static void chip_size_restore(uint32_t size) {
+    g_rom_flashchip.chip_size = size;
+    ESPURNA_ROM_SPI_PARAM_CFG(0, size, 0x10000u, 0x1000u, 0x100u, 0xffffu);
 }
 
 
@@ -981,9 +997,21 @@ static void flash_image(const espurna_rbl_t* rbl) {
     RBL_RESET();
 }
 
-void bootloader_after_init(void) {
-    chip_size_from_id();
+/* XM25QH..A flash (RDID 20 70 xx, the Wemos D1 mini of 21.11): an XMC chip the SDK's strict list does not know (series
+ * 0x40 / 0x41 / 0x50 only), so its XMC startup flow runs, still reads 0x70 and the bootloader reboots ("XMC flash startup
+ * fail") before it ever starts a head. That series needs no startup flow: taken as it is. Every other chip goes to the
+ * SDK's own check (bootloader_init.c -> --wrap in scripts/esp8266_rtos_sdk.py) */
+uint32_t bootloader_read_flash_id(void);
+esp_err_t __real_bootloader_flash_xmc_startup(void);
+esp_err_t __wrap_bootloader_flash_xmc_startup(void) {
+    const uint32_t id = bootloader_read_flash_id();
+    if ((((id >> 16) & 0xffu) == 0x20u) && (((id >> 8) & 0xffu) == 0x70u)) {
+        return ESP_OK;
+    }
+    return __real_bootloader_flash_xmc_startup();
+}
 
+static void rbl_step(void) {
     espurna_rbl_t rbl;
     if (bootloader_flash_read(ESPURNA_RBL_HEADER_AT, &rbl, sizeof(rbl), false) != ESP_OK) {
         return;
@@ -1104,10 +1132,17 @@ void bootloader_after_init(void) {
         /* the new head is not what the package says: the old one back at once */
         ets_printf("ESPURNA RBL: the head in the flash differs from the package, the old head back\n");
         word_put(ESPURNA_RBL_BOOTS_AT, 0);
-        bootloader_after_init();
+        rbl_step();
         return;
     }
 
     start_count();
     ets_printf("ESPURNA RBL: installed (read back)\n");
+}
+
+void bootloader_after_init(void) {
+    const uint32_t before = g_rom_flashchip.chip_size;
+    chip_size_from_id();
+    rbl_step();
+    chip_size_restore(before);
 }

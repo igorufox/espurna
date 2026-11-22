@@ -2,7 +2,7 @@
 
 OneWire MODULE
 
-Uses PaulStoffregen/OneWire library
+The bus: onewire_bus.h (the timings and the search of the PaulStoffregen/OneWire library, no Arduino emulation)
 
 Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 Copyright (C) 2019-2024 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
@@ -15,7 +15,7 @@ Copyright (C) 2019-2024 by Maxim Prokhorov <prokhorov dot max at outlook dot com
 
 #include "driver_onewire.h"
 
-#include <OneWire.h>
+#include "onewire_bus.h"
 
 #include <forward_list>
 #include <vector>
@@ -83,7 +83,7 @@ namespace internal {
 bool debug { false };
 std::vector<PortPtr> references;
 
-ResetResult reset(OneWire* wire) {
+ResetResult reset(OneWireBus* wire) {
     auto out = ResetResult::Unknown;
 
     switch (wire->reset()) {
@@ -107,21 +107,21 @@ ResetResult reset(OneWire* wire) {
     return out;
 }
 
-void skip(OneWire* wire) {
+void skip(OneWireBus* wire) {
     wire->skip();
     if (debug) {
         DEBUG_MSG_P(PSTR("[W1] ROM skip\n"));
     }
 }
 
-void select(OneWire* wire, Address address) {
+void select(OneWireBus* wire, Address address) {
     wire->select(address.data());
     if (debug) {
         DEBUG_MSG_P(PSTR("[W1] Selected %s\n"), hexEncode(address).c_str());
     }
 }
 
-void write_bytes(OneWire* wire, Span<const uint8_t> data, bool power = false) {
+void write_bytes(OneWireBus* wire, Span<const uint8_t> data, bool power = false) {
     wire->write_bytes(data.data(), data.size(), power);
     if (debug) {
         DEBUG_MSG_P(PSTR("[W1] %s-> %s \n"),
@@ -130,7 +130,7 @@ void write_bytes(OneWire* wire, Span<const uint8_t> data, bool power = false) {
     }
 }
 
-void read_bytes(OneWire* wire, Span<uint8_t> data) {
+void read_bytes(OneWireBus* wire, Span<uint8_t> data) {
     wire->read_bytes(data.data(), data.size());
     if (debug) {
         DEBUG_MSG_P(PSTR("[W1] <- %s\n"), hexEncode(data).c_str());
@@ -232,7 +232,7 @@ void setup() {
 } // namespace
 
 uint16_t crc16(Span<const uint8_t> data) {
-    return OneWire::crc16(data.data(), data.size());
+    return OneWireBus::crc16(data.data(), data.size());
 }
 
 bool check_crc16(Span<const uint8_t> data) {
@@ -245,7 +245,7 @@ bool check_crc16(Span<const uint8_t> data) {
 }
 
 uint8_t crc8(Span<const uint8_t> data) {
-    return OneWire::crc8(data.data(), data.size());
+    return OneWireBus::crc8(data.data(), data.size());
 }
 
 bool check_crc8(Span<const uint8_t> data) {
@@ -287,7 +287,7 @@ Error Port::attach(unsigned char pin, bool parasite) {
         return Error::GpioUsed;
     }
 
-    auto wire = std::make_unique<OneWire>(pin);
+    auto wire = std::make_unique<OneWireBus>(pin);
 
     auto devices = search(*wire, pin);
     if (internal::debug) {
@@ -322,7 +322,7 @@ void Port::detach() {
     _parasite = false;
 }
 
-Port::Devices Port::_search(OneWire& wire) {
+Port::Devices Port::_search(OneWireBus& wire) {
     Address address;
 
     wire.reset();
@@ -343,7 +343,7 @@ Port::Devices Port::_search(OneWire& wire) {
     return out;
 }
 
-Port::Devices Port::search(OneWire& wire, unsigned char pin) {
+Port::Devices Port::search(OneWireBus& wire, unsigned char pin) {
     Devices out;
 
     out = _search(wire);

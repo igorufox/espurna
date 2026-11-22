@@ -1,9 +1,9 @@
 /*
 
-NTP MODULE, the SNTP client of ESP-IDF (ref. arch/rtos/ntp_rtos.cpp, which calls these from the tcpip thread)
+NTP MODULE, the SNTP client of ESP-IDF (ref. arch/rtos/ntp_rtos.cpp, which calls these from the task that asks)
 
-esp_sntp_* of ESP-IDF 5 run the lwIP call right away when they are already in the tcpip thread (esp_netif_tcpip_exec),
-any other task hands it over and waits. The update interval is the IDF's own (3 hours by default)
+esp_sntp_* of ESP-IDF 5.5 post the lwIP call to the tcpip thread and wait for it (tcpip_callback, tcpip_api_call) from
+any task, the tcpip thread included (it then waits for itself): never called from there. The update interval is the IDF's own (3 hours by default)
 
 */
 
@@ -17,6 +17,12 @@ namespace espurna {
 namespace ntp {
 namespace driver {
 namespace chip {
+
+// esp_sntp_* hand their work to the tcpip thread themselves and wait for it (tcpip_callback / tcpip_api_call): called
+// from that thread, esp_sntp_setservername() waited for itself (22.11, the first run on the DevKit: the tcpip thread
+// stuck, the loop behind it in lwipCall(), the task watchdog reset the board 20 s after every boot). Called from the
+// task that asks, never from the tcpip thread
+constexpr bool PostsItself { true };
 
 inline bool enabled() {
     return esp_sntp_enabled();

@@ -161,17 +161,6 @@
 #endif
 
 //------------------------------------------------------------------------------
-// It looks more natural that one click will enable display
-// and long click will switch relay
-
-#if THERMOSTAT_DISPLAY_SUPPORT
-#undef BUTTON1_CLICK
-#define BUTTON1_CLICK           BUTTON_ACTION_DISPLAY_ON
-#undef BUTTON1_LNGCLICK
-#define BUTTON1_LNGCLICK        BUTTON_ACTION_TOGGLE
-#endif
-
-//------------------------------------------------------------------------------
 // Disable BME680 support if using Core version 2.3.0 due to memory constraints.
 
 #if BME680_SUPPORT && defined(ARDUINO_ESP8266_RELEASE_2_3_0)

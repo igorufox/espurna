@@ -2,7 +2,7 @@
 
 ESP32 part of the layer without Arduino (lib/espurna-core core_chip.h): the ESP-IDF calls under the Arduino names,
 the loop task and app_main(). What Arduino-ESP32 did at start (initArduino(), loopTask()) is here, the same order
-and settings: NVS first (erased when broken or of a newer format), the loop task with 8 KB of stack on core 1,
+and settings: NVS first (erased when broken or of a newer format), the loop task with 8 KB of stack on the last core,
 priority 1, its task watchdog once enableLoopWDT() turns it on
 
 */
@@ -13,10 +13,7 @@ priority 1, its task watchdog once enableLoopWDT() turns it on
 #include <core_arduino_chip.h>
 
 #include <driver/gpio.h>
-#include <driver/ledc.h>
 #include <driver/uart.h>
-#include <driver/i2c.h>
-#include <driver/spi_master.h>
 #include <driver/rmt_tx.h>
 #include <driver/rmt_encoder.h>
 #include <esp_adc/adc_oneshot.h>
@@ -136,47 +133,6 @@ int raw(uint8_t pin) {
 } // namespace adc
 
 // -----------------------------------------------------------------------------
-// LEDC: channels 0..15 as Arduino-ESP32 numbers them, 0..7 high speed, 8..15 low speed, two channels per timer
-// -----------------------------------------------------------------------------
-
-namespace ledc {
-
-ledc_mode_t mode(uint8_t channel) {
-    return (channel < 8) ? LEDC_HIGH_SPEED_MODE : LEDC_LOW_SPEED_MODE;
-}
-
-ledc_timer_t timer(uint8_t channel) {
-    return static_cast<ledc_timer_t>((channel / 2) % 4);
-}
-
-uint8_t bits[16] {};
-
-} // namespace ledc
-
-// the PWM channels of analogWrite() / tone(): from the top, next to the buzzer's (15, buzzer_chip.h); pwm.cpp
-// allocates from 0
-struct AnalogPin {
-    uint8_t pin;
-    uint8_t channel;
-    uint32_t frequency;
-    uint8_t bits;
-};
-
-constexpr uint8_t AnalogChannels { 6 };
-constexpr uint8_t AnalogFirst { 14 };
-AnalogPin analog_pins[AnalogChannels] {};
-uint8_t analog_used { 0 };
-
-uint8_t bits_for(uint32_t range) {
-    uint8_t out { 1 };
-    while ((out < 20) && ((1UL << out) - 1) < range) {
-        ++out;
-    }
-
-    return out;
-}
-
-// -----------------------------------------------------------------------------
 // GPIO interrupts: the ISR service of ESP-IDF, no IRAM flag (Arduino-ESP32's default)
 // -----------------------------------------------------------------------------
 
@@ -252,63 +208,6 @@ uart_stop_bits_t stop_bits(uint16_t config) {
     }
 
     return UART_STOP_BITS_1;
-}
-
-// -----------------------------------------------------------------------------
-// I2C master: port 0, the legacy command link driver (any write / read / restart sequence, like Wire needs)
-// -----------------------------------------------------------------------------
-
-constexpr i2c_port_t I2cPort { I2C_NUM_0 };
-constexpr TickType_t I2cTimeout { pdMS_TO_TICKS(50) };
-
-bool i2c_started { false };
-uint8_t i2c_sda { 0 };
-uint8_t i2c_scl { 0 };
-
-// write() without the stop: the bytes go out with the read that follows (repeated start)
-uint8_t i2c_pending_address { 0 };
-uint8_t i2c_pending[128];
-size_t i2c_pending_size { 0 };
-
-uint8_t i2c_error(esp_err_t err) {
-    switch (err) {
-    case ESP_OK:
-        return 0;
-    case ESP_FAIL:
-        // a NACK; the driver does not say of what, the address is the usual one (a probe)
-        return 2;
-    case ESP_ERR_TIMEOUT:
-        return 5;
-    }
-
-    return 4;
-}
-
-// -----------------------------------------------------------------------------
-// SPI master: VSPI (SPI3), any pins through the GPIO matrix, CS by the caller
-// -----------------------------------------------------------------------------
-
-constexpr spi_host_device_t SpiHost { SPI3_HOST };
-
-bool spi_started { false };
-spi_device_handle_t spi_device { nullptr };
-uint32_t spi_frequency { 1000000 };
-uint8_t spi_mode { 0 };
-bool spi_msb_first { true };
-
-void spi_attach() {
-    if (spi_device) {
-        spi_bus_remove_device(spi_device);
-        spi_device = nullptr;
-    }
-
-    spi_device_interface_config_t config{};
-    config.mode = spi_mode;
-    config.clock_speed_hz = static_cast<int>(spi_frequency);
-    config.spics_io_num = -1;
-    config.queue_size = 1;
-    config.flags = spi_msb_first ? 0 : (SPI_DEVICE_TXBIT_LSBFIRST | SPI_DEVICE_RXBIT_LSBFIRST);
-    spi_bus_add_device(SpiHost, &config, &spi_device);
 }
 
 // -----------------------------------------------------------------------------
@@ -466,57 +365,11 @@ esp_netif_t* netif(bool access_point) {
 } // namespace esp32
 
 // -----------------------------------------------------------------------------
-// The ESP32 extras of ESPurna's own drivers (pwm_chip.h, buzzer_chip.h, adc_chip.h): LEDC channels by number
-// and the calibrated ADC
+// The ESP32 extras of ESPurna's own drivers: the calibrated ADC (adc_chip.h); the LEDC channels are in the
+// light_pwm module (pwm_esp32.cpp)
 // -----------------------------------------------------------------------------
 
 namespace esp32 {
-
-bool ledc_attach(uint8_t pin, uint8_t channel, uint32_t frequency, uint8_t bits) {
-    if (channel >= 16) {
-        return false;
-    }
-
-    ledc_timer_config_t timer{};
-    timer.speed_mode = ledc::mode(channel);
-    timer.duty_resolution = static_cast<ledc_timer_bit_t>(bits);
-    timer.timer_num = ledc::timer(channel);
-    timer.freq_hz = frequency;
-    timer.clk_cfg = LEDC_AUTO_CLK;
-    if (ledc_timer_config(&timer) != ESP_OK) {
-        return false;
-    }
-
-    ledc_channel_config_t config{};
-    config.gpio_num = pin;
-    config.speed_mode = ledc::mode(channel);
-    config.channel = static_cast<ledc_channel_t>(channel % 8);
-    config.intr_type = LEDC_INTR_DISABLE;
-    config.timer_sel = ledc::timer(channel);
-    config.duty = 0;
-    config.hpoint = 0;
-    if (ledc_channel_config(&config) != ESP_OK) {
-        return false;
-    }
-
-    ledc::bits[channel] = bits;
-    return true;
-}
-
-void ledc_write(uint8_t channel, uint32_t duty) {
-    if (channel >= 16) {
-        return;
-    }
-
-    // full duty: all bits set and one more (Arduino-ESP32's ledcWrite() does the same)
-    const uint32_t max = (1UL << ledc::bits[channel]) - 1;
-    if (duty >= max) {
-        duty = max + 1;
-    }
-
-    ledc_set_duty(ledc::mode(channel), static_cast<ledc_channel_t>(channel % 8), duty);
-    ledc_update_duty(ledc::mode(channel), static_cast<ledc_channel_t>(channel % 8));
-}
 
 // calibrated millivolts of the pin (line fitting, the eFuse Vref), the raw scale without calibration data
 uint32_t adc_millivolts(uint8_t pin) {
@@ -676,48 +529,6 @@ uint8_t adc_bits() {
     return 10;
 }
 
-void pwm_write(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency) {
-    AnalogPin* slot { nullptr };
-    for (uint8_t index = 0; index < analog_used; ++index) {
-        if (analog_pins[index].pin == pin) {
-            slot = &analog_pins[index];
-            break;
-        }
-    }
-
-    if (!slot) {
-        if (!duty) {
-            return;
-        }
-
-        if (analog_used >= AnalogChannels) {
-            return;
-        }
-
-        slot = &analog_pins[analog_used];
-        slot->pin = pin;
-        slot->channel = static_cast<uint8_t>(AnalogFirst - analog_used);
-        slot->frequency = 0;
-        ++analog_used;
-    }
-
-    const auto bits = bits_for(range);
-    if ((slot->frequency != frequency) || (slot->bits != bits)) {
-        if (!ledc_attach(pin, slot->channel, frequency, bits)) {
-            return;
-        }
-
-        slot->frequency = frequency;
-        slot->bits = bits;
-    }
-
-    const uint32_t max = (1UL << bits) - 1;
-    const uint64_t scaled = range
-        ? (static_cast<uint64_t>(duty) * max) / range
-        : 0;
-    ledc_write(slot->channel, static_cast<uint32_t>(scaled));
-}
-
 int uart_open(uint32_t baud, uint16_t config, uint8_t rx, uint8_t tx, bool invert, size_t rx_buffer) {
     const bool console = ((rx == NoPin) && (tx == NoPin))
         || (((rx == 3) || (rx == NoPin)) && ((tx == 1) || (tx == NoPin)));
@@ -824,151 +635,6 @@ void uart_flush(int port) {
     uart_wait_tx_done(static_cast<uart_port_t>(port), portMAX_DELAY);
 }
 
-bool i2c_begin(uint8_t sda, uint8_t scl, uint32_t frequency) {
-    i2c_end();
-
-    i2c_config_t config{};
-    config.mode = I2C_MODE_MASTER;
-    config.sda_io_num = sda;
-    config.scl_io_num = scl;
-    config.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    config.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    config.master.clk_speed = frequency;
-    if (i2c_param_config(I2cPort, &config) != ESP_OK) {
-        return false;
-    }
-
-    if (i2c_driver_install(I2cPort, I2C_MODE_MASTER, 0, 0, 0) != ESP_OK) {
-        return false;
-    }
-
-    i2c_sda = sda;
-    i2c_scl = scl;
-    i2c_started = true;
-    return true;
-}
-
-void i2c_end() {
-    if (i2c_started) {
-        i2c_driver_delete(I2cPort);
-        i2c_started = false;
-    }
-
-    i2c_pending_size = 0;
-}
-
-void i2c_clock(uint32_t frequency) {
-    if (i2c_started) {
-        i2c_begin(i2c_sda, i2c_scl, frequency);
-    }
-}
-
-uint8_t i2c_write(uint8_t address, const uint8_t* data, size_t size, bool stop) {
-    if (!i2c_started) {
-        return 4;
-    }
-
-    if (!stop) {
-        i2c_pending_address = address;
-        i2c_pending_size = (size < sizeof(i2c_pending)) ? size : sizeof(i2c_pending);
-        memcpy(i2c_pending, data, i2c_pending_size);
-        return 0;
-    }
-
-    auto cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, static_cast<uint8_t>(address << 1) | I2C_MASTER_WRITE, true);
-    if (size) {
-        i2c_master_write(cmd, data, size, true);
-    }
-    i2c_master_stop(cmd);
-
-    const auto err = i2c_master_cmd_begin(I2cPort, cmd, I2cTimeout);
-    i2c_cmd_link_delete(cmd);
-
-    return i2c_error(err);
-}
-
-size_t i2c_read(uint8_t address, uint8_t* out, size_t size, bool) {
-    if (!i2c_started || !size) {
-        return 0;
-    }
-
-    auto cmd = i2c_cmd_link_create();
-    if (i2c_pending_size && (i2c_pending_address == address)) {
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, static_cast<uint8_t>(address << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_write(cmd, i2c_pending, i2c_pending_size, true);
-    }
-    i2c_pending_size = 0;
-
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, static_cast<uint8_t>(address << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, out, size, I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-
-    const auto err = i2c_master_cmd_begin(I2cPort, cmd, I2cTimeout);
-    i2c_cmd_link_delete(cmd);
-
-    return (err == ESP_OK) ? size : 0;
-}
-
-bool spi_begin(uint8_t sck, uint8_t miso, uint8_t mosi) {
-    spi_end();
-
-    spi_bus_config_t config{};
-    config.sclk_io_num = (sck == NoPin) ? -1 : sck;
-    config.miso_io_num = (miso == NoPin) ? -1 : miso;
-    config.mosi_io_num = (mosi == NoPin) ? -1 : mosi;
-    config.quadwp_io_num = -1;
-    config.quadhd_io_num = -1;
-    config.max_transfer_sz = 4096;
-    if (spi_bus_initialize(SpiHost, &config, SPI_DMA_CH_AUTO) != ESP_OK) {
-        return false;
-    }
-
-    spi_started = true;
-    spi_attach();
-    return spi_device != nullptr;
-}
-
-void spi_end() {
-    if (spi_device) {
-        spi_bus_remove_device(spi_device);
-        spi_device = nullptr;
-    }
-
-    if (spi_started) {
-        spi_bus_free(SpiHost);
-        spi_started = false;
-    }
-}
-
-void spi_config(uint32_t frequency, uint8_t mode, bool msb_first) {
-    if ((frequency == spi_frequency) && (mode == spi_mode) && (msb_first == spi_msb_first) && spi_device) {
-        return;
-    }
-
-    spi_frequency = frequency;
-    spi_mode = mode;
-    spi_msb_first = msb_first;
-    if (spi_started) {
-        spi_attach();
-    }
-}
-
-void spi_transfer(const uint8_t* out, uint8_t* in, size_t size) {
-    if (!spi_device || !size) {
-        return;
-    }
-
-    spi_transaction_t transaction{};
-    transaction.length = size * 8;
-    transaction.tx_buffer = out;
-    transaction.rx_buffer = in;
-    spi_device_polling_transmit(spi_device, &transaction);
-}
-
 uint32_t heap_free() {
     return heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 }
@@ -1056,10 +722,12 @@ const char* sdk_version() {
     return esp_get_idf_version();
 }
 
+// the major revision (Arduino-ESP32's getChipRevision()): ESP-IDF 5 has major * 100 + minor in esp_chip_info_t
+// (22.11 DevKit: 100 for v1.0 was taken for a v3 chip, "ESP32-D0WDQ6-V3 rev100"; 301 does not fit the byte either)
 uint8_t chip_revision() {
     esp_chip_info_t info{};
     esp_chip_info(&info);
-    return static_cast<uint8_t>(info.revision);
+    return static_cast<uint8_t>(info.revision / 100);
 }
 
 // the package of the chip, the names of Arduino-ESP32's getChipModel()
@@ -1686,18 +1354,11 @@ void loop_task(void*) {
 void bleRamSetup();
 #endif
 
-#if MODULES_SUPPORT
-// arch/esp32/modules_esp32.cpp: the IRAM pool past the pool code of the installed modules to the heap
-void modulesPoolSetup();
-#endif
-
 extern "C" void app_main() {
 #if CONFIG_BT_ENABLED
     bleRamSetup();
 #endif
-#if MODULES_SUPPORT
-    modulesPoolSetup();
-#endif
     nvs_init();
-    xTaskCreatePinnedToCore(loop_task, "loopTask", 8192, nullptr, 1, &loopTaskHandle, 1);
+    // the last core: core 1 of the two, core 0 when FreeRTOS runs on one (CONFIG_FREERTOS_UNICORE)
+    xTaskCreatePinnedToCore(loop_task, "loopTask", 8192, nullptr, 1, &loopTaskHandle, portNUM_PROCESSORS - 1);
 }

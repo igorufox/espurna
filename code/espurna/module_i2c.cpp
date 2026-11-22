@@ -1,9 +1,9 @@
 /*
 
-The i2c module (docs/modules.md): the I2C bus of the board, i2c.cpp and the one Wire (settings i2cSDA / i2cSCL, the
-bus starts when both are set; the BK7231N has the software Wire of lib_beken/Wire). The I2C sensor drivers need it
-and are linked against it directly, their libraries (VL53L1X, VEML6075, SI1145, BSEC) take its Wire: the head has no
-I2C (owner 2026-11-12).
+The i2c module (docs/modules.md): the I2C bus of the board, i2c.cpp on the chip's I2C master (i2c_* of
+arch/rtos/chip_sdk.h, no Arduino layer; settings i2cSDA / i2cSCL, the bus starts when both are set). The I2C sensor
+drivers need it and are linked against it directly; the libraries of a few (VL53L1X, VEML6075, SI1145, BSEC) talk
+through Wire of the arduino_emu module, on the same chip bus: the head has no I2C (owner 2026-11-12).
 
 The SENSORS panel shows its pins above the drivers, in the spec format of the drivers (espurna::sensor::Driver of
 sensor.h): `snsBus`.

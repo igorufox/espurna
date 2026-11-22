@@ -45,11 +45,35 @@ def modules_file(container, on):
     magic, count = struct.unpack_from("<II", container, 0)
     if magic != CONTAINER_MAGIC:
         raise ValueError("not a modules file (EMC2)")
-    rows = []
-    for index in range(count):
-        fields = list(CONTAINER_ENTRY.unpack_from(container, 8 + CONTAINER_ENTRY.size * index))
-        if fields[0].rstrip(b"\0").decode() in on:
-            rows.append(fields)
+    every = [list(CONTAINER_ENTRY.unpack_from(container, 8 + CONTAINER_ENTRY.size * index)) for index in range(count)]
+    needs_of = {fields[0].rstrip(b"\0").decode(): fields[6].rstrip(b"\0").decode().replace(",", " ").split()
+                for fields in every}
+
+    # with what they need (22.11: relay, button, led and captive link to the library module tools; without it the
+    # board refused the file, "needs a module not written before it", and no module was ever installed)
+    wanted = set()
+
+    def need(name):
+        if name in wanted or name not in needs_of:
+            return
+        wanted.add(name)
+        for other in needs_of[name]:
+            need(other)
+
+    for name in on:
+        need(name)
+    added = sorted(wanted - set(on))
+    if added:
+        print(f"  initial: with what they need: {' '.join(added)}")
+
+    # the modules file lists a module after what it needs (link order): keep that order
+    rows = [fields for fields in every if fields[0].rstrip(b"\0").decode() in wanted]
+    for index, fields in enumerate(rows):
+        name = fields[0].rstrip(b"\0").decode()
+        before = {other[0].rstrip(b"\0").decode() for other in rows[:index]}
+        late = [other for other in needs_of[name] if other in wanted and other not in before]
+        if late:
+            raise ValueError(f"{name}: needs {' '.join(late)}, which the modules file lists after it")
 
     found = {fields[0].rstrip(b"\0").decode() for fields in rows}
     missing = set(on) - found

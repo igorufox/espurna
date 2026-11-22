@@ -14,6 +14,7 @@ CHIP DESCRIPTION AND LWIP GLUE, ESP32 part (ref. espurna_chip.h)
 #include <esp_idf_version.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <soc/rtc.h>
 
 namespace espurna {
 namespace chip {
@@ -29,9 +30,11 @@ WebInfo web_info() {
 }
 
 void info(::espurna::Output& out) {
-    out.printf_P(PSTR("mcu: %s rev%u chipid: %s freq: %hhumhz\n"),
+    // the crystal is detected at boot (CONFIG_XTAL_FREQ_AUTO): boards come with 40 or 26 MHz
+    out.printf_P(PSTR("mcu: %s rev%u chipid: %s freq: %hhumhz xtal: %umhz\n"),
             ::espurna::core::chip::chip_model(), ::espurna::core::chip::chip_revision(),
-            systemChipId().c_str(), system_get_cpu_freq());
+            systemChipId().c_str(), system_get_cpu_freq(),
+            static_cast<unsigned>(rtc_clk_xtal_freq_get()));
 }
 
 void memory(::espurna::Output&) {

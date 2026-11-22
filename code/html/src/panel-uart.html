@@ -1,0 +1,36 @@
+<form id="form-uart" class="pure-form pure-form-aligned form-settings">
+    <div class="panel" id="panel-uart">
+
+        <div class="header">
+            <h1>SERIAL</h1>
+            <h2>The serial port of the log and the terminal</h2>
+        </div>
+
+        <div class="page">
+
+            <fieldset id="uartPins">
+                <legend>Pins</legend>
+
+                <span class="pure-form-message">
+                    The serial log and the terminal use these pins, any pin the chip has a UART for. A button, a relay or an LED
+                    set up on one of the default pins takes it by itself (e.g. a wall switch on GPIO3 / RX of a Sonoff Mini R2);
+                    here the pins are given up by hand. Takes effect after a reboot.
+                </span>
+
+                <span id="uartRelease" class="pure-form-message" hidden></span>
+                <span id="uartFallback" class="pure-form-message" hidden></span>
+
+                <div class="pure-control-group">
+                    <label>TX</label>
+                    <select name="uartTx0" class="pure-input-1-2"></select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>RX</label>
+                    <select name="uartRx0" class="pure-input-1-2"></select>
+                </div>
+            </fieldset>
+
+        </div>
+    </div>
+</form>

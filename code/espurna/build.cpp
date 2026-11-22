@@ -177,8 +177,8 @@ alignas(4) static constexpr char Modules[] PROGMEM_STRING_ATTR =
 #if THERMOSTAT_SUPPORT
     "THERMOSTAT "
 #endif
-#if THERMOSTAT_DISPLAY_SUPPORT
-    "THERMOSTAT_DISPLAY "
+#if OLED_SUPPORT
+    "OLED "
 #endif
 #if THINGSPEAK_SUPPORT
     "THINGSPEAK "

@@ -94,7 +94,7 @@ PROVIDED_FILE = "espurna/modules_provided.txt"
 # module only, every other module links without it: one that uses it needs the module (config/head.h) and takes the
 # symbols from there (custom_module_provided), the library is on the board once. The layer of the Arduino names
 # (lib/espurna-core) for the third-party libraries of the modules
-LIBRARY_MODULES = {"arduino": "espurna-core"}
+LIBRARY_MODULES = {"arduino_emu": "espurna-core"}
 # a provider's own symbols that are no symbols of the modules that need it
 PROVIDER_PRIVATE =("__mod_", "espurna_module_", "_GLOBAL_", "_etext", "_edata", "_end")
 CHUNK = 4096
@@ -867,13 +867,28 @@ class Linker:
         elf = os.path.join(build_dir, f"module-{provider}.elf" if tag == "a" else f"module-{provider}-b.elf")
         # the head's defined globals: a local of the SDK of the same name (ESP8266 `SPI`) stays the provider's
         head = ctx["head_globals"]
+
+        def defined(path):
+            out = {}
+            for line in self.run([self.tool("nm"), "-g", "--defined-only", path]).splitlines():
+                parts = line.split()
+                if len(parts) == 3 and parts[1] in "TDBRVWAGSuiN":
+                    out[parts[2]] = parts[0]
+            return out
+
+        # only the provider's own symbols: those that move with it between its links A and B. One it took from a module
+        # it needs itself keeps its address in both (ntp: tools' datetime functions, "A"; mqtt: tools' copy of the weak
+        # vtable of json::StreamWriter, "V"), as a ROM address does: taken from this provider, the user's words stayed
+        # at the provider's link A for every link of the user, no link was recorded and the board never moved them
+        # (22.11 Wemos: scheduler 1 link of dozens, homeassistant 0, calls into 0x4040xxxx at the first NTP sync / MQTT
+        # connect). The user takes such a symbol from the module that defines it, which it needs too (config/head.h)
+        own_a = defined(os.path.join(build_dir, f"module-{provider}.elf"))
+        own_b = defined(os.path.join(build_dir, f"module-{provider}-b.elf"))
         names = []
-        for line in self.run([self.tool("nm"), "-g", "--defined-only", elf]).splitlines():
-            parts = line.split()
-            if len(parts) != 3 or parts[1] not in "TDBRVWAGSuiN":
-                continue
-            symbol = parts[2]
+        for symbol, value in own_a.items():
             if symbol in head or symbol.startswith(PROVIDER_PRIVATE):
+                continue
+            if own_b.get(symbol, value) == value:
                 continue
             names.append(symbol)
         return self.symbols_arg(build_dir, elf, names, os.path.join(build_dir, f"mod-{name}", f"provided-{provider}-{tag}"))

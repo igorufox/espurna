@@ -1,0 +1,13 @@
+.oled-mirror {
+    width: 384px;
+    max-width: 100%;
+    image-rendering: pixelated;
+    border: 4px solid #222;
+    border-radius: 4px;
+    background: #10141c;
+    vertical-align: middle;
+}
+
+.oled-line input + input {
+    margin-left: 0.5em;
+}

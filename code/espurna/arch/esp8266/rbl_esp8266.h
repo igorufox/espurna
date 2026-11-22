@@ -15,7 +15,7 @@ One file for the two sides of it, C (the SDK's bootloader, bootloader/espurna_rb
   space under the header on 1 MB, the top 512 KB on 2 MB and more (ESPURNA_RBL_TOP_ZONE). A dry run first: when the old
   head would not fit the zone compressed, the new head is installed without a rollback, as before
 
-The header is the RBL of the Beken bootloaders (RT-Thread OTA, ltchiptool soc/bk72xx/util/rbl.py), 96 bytes:
+The header is the RBL of the Beken bootloaders, one for both chips (libs/rbl.h), 96 bytes:
 "RBL\0", encryption 0, compression 2 = the head a sector (4 KB) at a time, each sector a chunk of its own raw deflate
 (zlib wbits -12): u16 length, the deflate bytes, padding to 4 bytes (scripts/esp8266_rbl.py), the build time, the name "esp8266", the version, sn (unused), the CRC32 of the package, the
 FNV-1a of the inflated head, the size of the inflated head, the size of the package, the CRC32 of the 92 bytes before
@@ -32,10 +32,12 @@ package (no overlapping inflate), the package must start above the running head 
 #include <stdint.h>
 #include <string.h>
 
+/* the RBL header of every chip: espurna_rbl_t, its CRC32 and FNV-1a */
+#include "../../libs/rbl.h"
+
 #define ESPURNA_RBL_SECTOR      0x1000u
 #define ESPURNA_RBL_HEADER_AT   0xF7000u
 #define ESPURNA_RBL_HEAD_AT     0x10000u
-#define ESPURNA_RBL_MAGIC       0x004C4252u     /* "RBL\0" */
 #define ESPURNA_RBL_NAME        "esp8266"
 #define ESPURNA_RBL_SECTORS     2u      /* compression: a raw deflate chunk per 4 KB sector */
 /* compression: the same chunks, an image of the flash from 0x0 - another firmware (ESPurna 1.15 / 1.22 of the Arduino
@@ -69,25 +71,6 @@ typedef struct {
     uint32_t sectors;       /* the sectors swapped: the larger head of the two */
     uint32_t crc;           /* CRC32 of the 20 bytes before */
 } espurna_rbl_swap_t;
-#define ESPURNA_RBL_SIZE        96u
-
-typedef struct {
-    uint32_t magic;
-    uint8_t encryption;
-    uint8_t compression;
-    uint8_t reserved[2];
-    uint32_t timestamp;
-    char name[16];
-    char version[24];
-    char sn[24];
-    uint32_t data_crc;      /* CRC32 of the package */
-    uint32_t data_hash;     /* FNV-1a of the inflated head */
-    uint32_t raw_size;      /* the inflated head */
-    uint32_t data_size;     /* the package */
-    uint32_t info_crc;      /* CRC32 of the 92 bytes before */
-} espurna_rbl_t;
-
-typedef char espurna_rbl_size_check[(sizeof(espurna_rbl_t) == ESPURNA_RBL_SIZE) ? 1 : -1];
 
 static inline uint32_t espurna_rbl_round(uint32_t value) {
     return (value + ESPURNA_RBL_SECTOR - 1u) & ~(ESPURNA_RBL_SECTOR - 1u);
@@ -100,8 +83,6 @@ static inline uint32_t espurna_rbl_round(uint32_t value) {
 #define ESPURNA_RBL_AT_TAG      "PKG@"
 #define ESPURNA_RBL_TOP_TAIL    0x10000u        /* the last 64 KB of the chip: the SDK's system parameters */
 #define ESPURNA_RBL_TOP_ZONE    0x80000u        /* 512 KB under it for the package, the data modules below */
-
-static inline uint32_t espurna_rbl_crc32(uint32_t crc, const void* data, size_t size);
 
 static inline uint32_t espurna_rbl_package_at(const espurna_rbl_t* rbl) {
     if (memcmp(rbl->sn, ESPURNA_RBL_AT_TAG, 4) == 0) {
@@ -134,48 +115,16 @@ static inline void espurna_rbl_set_package_at(espurna_rbl_t* rbl, uint32_t at) {
     rbl->info_crc = espurna_rbl_crc32(0, rbl, ESPURNA_RBL_SIZE - 4u);
 }
 
-/* CRC32 (zlib's), a nibble table: small code for the bootloader */
-static inline uint32_t espurna_rbl_crc32(uint32_t crc, const void* data, size_t size) {
-    static const uint32_t table[16] = {
-        0x00000000u, 0x1DB71064u, 0x3B6E20C8u, 0x26D930ACu, 0x76DC4190u, 0x6B6B51F4u, 0x4DB26158u, 0x5005713Cu,
-        0xEDB88320u, 0xF00F9344u, 0xD6D6A3E8u, 0xCB61B38Cu, 0x9B64C2B0u, 0x86D3D2D4u, 0xA00AE278u, 0xBDBDF21Cu,
-    };
-
-    const uint8_t* ptr = (const uint8_t*)data;
-    crc = ~crc;
-    while (size--) {
-        crc ^= *ptr++;
-        crc = (crc >> 4) ^ table[crc & 0x0Fu];
-        crc = (crc >> 4) ^ table[crc & 0x0Fu];
-    }
-
-    return ~crc;
-}
-
-#define ESPURNA_RBL_FNV_START   0x811C9DC5u
-
-static inline uint32_t espurna_rbl_fnv(uint32_t hash, const uint8_t* data, size_t size) {
-    while (size--) {
-        hash ^= *data++;
-        hash *= 0x01000193u;
-    }
-
-    return hash;
-}
-
 /* where the inflated image goes: the head's place, or 0x0 for an image of the flash */
 static inline uint32_t espurna_rbl_dest(const espurna_rbl_t* rbl) {
     return (rbl->compression == ESPURNA_RBL_FLASH) ? 0u : ESPURNA_RBL_HEAD_AT;
 }
 
-/* the header itself: its CRC, a package this chip takes. NULL - fine, else what is wrong */
+/* the header itself (libs/rbl.h), and a package this chip takes. NULL - fine, else what is wrong */
 static inline const char* espurna_rbl_check(const espurna_rbl_t* rbl) {
-    if (rbl->magic != ESPURNA_RBL_MAGIC) {
-        return "not an RBL";
-    }
-
-    if (espurna_rbl_crc32(0, rbl, ESPURNA_RBL_SIZE - 4u) != rbl->info_crc) {
-        return "RBL header CRC";
+    const char* error = espurna_rbl_header_check(rbl);
+    if (error) {
+        return error;
     }
 
     if ((rbl->encryption != 0)

@@ -3,7 +3,7 @@
 ESP8266 on ESP8266_RTOS_SDK 3.4: the calls of the chip's SDK (arch/rtos/chip_sdk.h, wifi_sdk.h), the loop task and
 app_main(). No Arduino. The same as arch/esp32/core_esp32.cpp on ESP-IDF, with
 the SDK 3.4 drivers: GPIO with the ISR service, the UART driver (UART0 on its pins or swapped, UART1 TX only) and the
-TOUT ADC (the I2C, SPI and PWM drivers are in the modules that use them: i2c_esp8266.cpp, spi_esp8266.cpp,
+TOUT ADC (the I2C, SPI and PWM drivers are in the modules that use them: arch/soft/i2c_soft.cpp, spi_esp8266.cpp,
 pwm_esp8266.cpp); the Wi-Fi of the SDK with tcpip_adapter and the default event loop
 
 */

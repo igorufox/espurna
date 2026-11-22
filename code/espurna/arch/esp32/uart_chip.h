@@ -51,13 +51,17 @@ inline bool uart2_pins(uint8_t tx, uint8_t rx) {
     return true;
 }
 
-inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert, size_t rx_buffer) {
-    const int number =
-        uart0_console(tx, rx)
+// the UART of these pins, -1 when the chip has none there
+inline int number(uint8_t tx, uint8_t rx) {
+    return uart0_console(tx, rx)
             ? 0 :
         uart2_pins(tx, rx)
             ? 2
             : -1;
+}
+
+inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert, size_t rx_buffer) {
+    const int number = hardware::number(tx, rx);
     if (number < 0) {
         return Opened{nullptr, Type::Unknown};
     }

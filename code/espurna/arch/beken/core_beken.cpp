@@ -1122,12 +1122,16 @@ struct PinState {
     void* arg;
     uint8_t edge;
     bool change;
-    bool pwm;
 };
 
 PinState pins[PinCount] {};
 
-void pwm_stop(uint8_t pin);
+// a pin that was a PWM output (the light_pwm module, chip::pwm_bus) becomes a plain GPIO again
+void pwm_release(uint8_t pin) {
+    if (pwm_bus && pwm_bus->stop) {
+        pwm_bus->stop(pin);
+    }
+}
 
 } // namespace
 
@@ -1140,7 +1144,7 @@ void pin_mode(uint8_t pin, uint8_t mode) {
         return;
     }
 
-    pwm_stop(pin);
+    pwm_release(pin);
     switch (mode) {
     case pin::Input:
         gpio_config(pin, GMODE_INPUT);
@@ -1201,7 +1205,7 @@ bool pin_attach(uint8_t pin, PinHandler handler, void* arg, uint8_t mode) {
         return false;
     }
 
-    pwm_stop(pin);
+    pwm_release(pin);
 
     auto& state = pins[pin];
     state.handler = handler;
@@ -1303,97 +1307,6 @@ int adc_read(uint8_t pin) {
 
 uint8_t adc_bits() {
     return 10;
-}
-
-// --- PWM: six channels on fixed pins, 26 MHz clock -------------------------------------------------------------------
-
-namespace {
-
-constexpr uint8_t PwmPins[] { 6, 7, 8, 9, 24, 26 };
-
-int pwm_channel(uint8_t pin) {
-    for (size_t index = 0; index < std::size(PwmPins); ++index) {
-        if (PwmPins[index] == pin) {
-            return static_cast<int>(index);
-        }
-    }
-
-    return -1;
-}
-
-struct Pwm {
-    pwm_param_t param;
-    bool running;
-};
-
-Pwm pwms[std::size(PwmPins)] {};
-
-void pwm_stop(uint8_t pin) {
-    const int channel = pwm_channel(pin);
-    if ((channel < 0) || !pins[pin].pwm) {
-        return;
-    }
-
-    auto& pwm = pwms[channel];
-    if (pwm.running) {
-        UINT32 unit = static_cast<UINT32>(channel);
-        sddev_control(PWM_DEV_NAME, CMD_PWM_UNIT_DISABLE, &unit);
-        pwm.running = false;
-    }
-
-    pins[pin].pwm = false;
-}
-
-} // namespace
-
-void pwm_write(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency) {
-    const int channel = pwm_channel(pin);
-    if ((channel < 0) || !range || !frequency) {
-        return;
-    }
-
-    auto& pwm = pwms[channel];
-    UINT32 unit = static_cast<UINT32>(channel);
-    const uint32_t end = (26000000UL / frequency) - 1;
-    const uint32_t value = static_cast<uint32_t>((static_cast<uint64_t>(std::min(duty, range)) * end) / range);
-
-    if (!pins[pin].pwm) {
-        gpio_int_disable(pin);
-        pins[pin].handler = nullptr;
-        pins[pin].pwm = true;
-        pwm.running = false;
-    }
-
-    pwm.param.channel = channel;
-    pwm.param.cfg.bits.en = PWM_ENABLE;
-    pwm.param.cfg.bits.int_en = PWM_INT_DIS;
-    pwm.param.cfg.bits.mode = PWM_PWM_MODE;
-    pwm.param.cfg.bits.clk = PWM_CLK_26M;
-    pwm.param.end_value = end;
-    pwm.param.p_Int_Handler = nullptr;
-    pwm.param.duty_cycle1 = value;
-    pwm.param.duty_cycle2 = 0;
-    pwm.param.duty_cycle3 = 0;
-
-    if (!pwm.running) {
-        if (value) {
-            sddev_control(PWM_DEV_NAME, CMD_PWM_INIT_PARAM, &pwm.param);
-            sddev_control(PWM_DEV_NAME, CMD_PWM_INIT_LEVL_SET_HIGH, &unit);
-            sddev_control(PWM_DEV_NAME, CMD_PWM_UNIT_ENABLE, &unit);
-            pwm.running = true;
-        } else {
-            gpio_config(pin, GMODE_OUTPUT);
-            gpio_output(pin, 0);
-        }
-    } else if (value) {
-        sddev_control(PWM_DEV_NAME, CMD_PWM_INIT_LEVL_SET_HIGH, &unit);
-        sddev_control(PWM_DEV_NAME, CMD_PWM_SET_DUTY_CYCLE, &pwm.param);
-    } else {
-        sddev_control(PWM_DEV_NAME, CMD_PWM_INIT_LEVL_SET_LOW, &unit);
-        sddev_control(PWM_DEV_NAME, CMD_PWM_SET_DUTY_CYCLE, &pwm.param);
-        sddev_control(PWM_DEV_NAME, CMD_PWM_UNIT_DISABLE, &unit);
-        pwm.running = false;
-    }
 }
 
 // --- UART: UART1 is P11 (TX) & P10 (RX), the console and the flashing pads; UART2 is P0 (TX) & P1 (RX) -----------
@@ -1554,281 +1467,6 @@ size_t uart_write(int port, const uint8_t* data, size_t size) {
 void uart_flush(int port) {
     if (uart_valid(port)) {
         uart_wait_tx_over();
-    }
-}
-
-// --- I2C: a software master on any two pins (open drain: a line is driven low or released to its pull-up) ---------
-
-namespace {
-
-struct I2c {
-    int sda { -1 };
-    int scl { -1 };
-    uint32_t half { 5 };    // half a clock period, us (100 kHz)
-};
-
-I2c i2c;
-
-void i2c_release(int pin) {
-    gpio_config(pin, GMODE_INPUT_PULLUP);
-}
-
-void i2c_low(int pin) {
-    gpio_output(pin, 0);
-    gpio_config(pin, GMODE_OUTPUT);
-    gpio_output(pin, 0);
-}
-
-void i2c_wait() {
-    beken::delay_us(i2c.half);
-}
-
-// a slave may stretch the clock: SCL is released, then read back until it is high
-bool i2c_scl_high() {
-    i2c_release(i2c.scl);
-    for (int attempt = 0; attempt < 1000; ++attempt) {
-        if (gpio_input(i2c.scl)) {
-            i2c_wait();
-            return true;
-        }
-        beken::delay_us(1);
-    }
-
-    return false;
-}
-
-bool i2c_start() {
-    i2c_release(i2c.sda);
-    if (!i2c_scl_high() || !gpio_input(i2c.sda)) {
-        return false;
-    }
-
-    i2c_low(i2c.sda);
-    i2c_wait();
-    i2c_low(i2c.scl);
-    i2c_wait();
-    return true;
-}
-
-void i2c_stop() {
-    i2c_low(i2c.sda);
-    i2c_wait();
-    i2c_scl_high();
-    i2c_release(i2c.sda);
-    i2c_wait();
-}
-
-bool i2c_write_byte(uint8_t value) {
-    for (int bit = 7; bit >= 0; --bit) {
-        if (value & (1 << bit)) {
-            i2c_release(i2c.sda);
-        } else {
-            i2c_low(i2c.sda);
-        }
-        i2c_wait();
-        if (!i2c_scl_high()) {
-            return false;
-        }
-        i2c_low(i2c.scl);
-    }
-
-    // ACK: the slave pulls SDA low
-    i2c_release(i2c.sda);
-    i2c_wait();
-    if (!i2c_scl_high()) {
-        return false;
-    }
-
-    const bool ack = !gpio_input(i2c.sda);
-    i2c_low(i2c.scl);
-    i2c_wait();
-    return ack;
-}
-
-uint8_t i2c_read_byte(bool ack) {
-    uint8_t out = 0;
-    i2c_release(i2c.sda);
-    for (int bit = 7; bit >= 0; --bit) {
-        i2c_wait();
-        i2c_scl_high();
-        if (gpio_input(i2c.sda)) {
-            out |= (1 << bit);
-        }
-        i2c_low(i2c.scl);
-    }
-
-    if (ack) {
-        i2c_low(i2c.sda);
-    } else {
-        i2c_release(i2c.sda);
-    }
-
-    i2c_wait();
-    i2c_scl_high();
-    i2c_low(i2c.scl);
-    i2c_release(i2c.sda);
-    i2c_wait();
-    return out;
-}
-
-} // namespace
-
-bool i2c_begin(uint8_t sda, uint8_t scl, uint32_t frequency) {
-    if (!pin_valid(sda) || !pin_valid(scl)) {
-        return false;
-    }
-
-    i2c.sda = sda;
-    i2c.scl = scl;
-    i2c_clock(frequency);
-    i2c_release(i2c.sda);
-    i2c_release(i2c.scl);
-    return true;
-}
-
-void i2c_end() {
-    i2c.sda = -1;
-    i2c.scl = -1;
-}
-
-void i2c_clock(uint32_t frequency) {
-    i2c.half = frequency ? std::max<uint32_t>(1, 500000 / frequency) : 5;
-}
-
-// 0 ok, 2 address NACK, 3 data NACK, 4 bus error (Wire's endTransmission() codes)
-uint8_t i2c_write(uint8_t address, const uint8_t* data, size_t size, bool stop) {
-    if ((i2c.sda < 0) || !i2c_start()) {
-        return 4;
-    }
-
-    uint8_t result = 0;
-    if (!i2c_write_byte(static_cast<uint8_t>(address << 1))) {
-        result = 2;
-    }
-
-    for (size_t index = 0; !result && (index < size); ++index) {
-        if (!i2c_write_byte(data[index])) {
-            result = 3;
-        }
-    }
-
-    if (stop || result) {
-        i2c_stop();
-    }
-
-    return result;
-}
-
-size_t i2c_read(uint8_t address, uint8_t* out, size_t size, bool stop) {
-    if ((i2c.sda < 0) || !i2c_start() || !i2c_write_byte(static_cast<uint8_t>((address << 1) | 1))) {
-        i2c_stop();
-        return 0;
-    }
-
-    for (size_t index = 0; index < size; ++index) {
-        out[index] = i2c_read_byte((index + 1) < size);
-    }
-
-    if (stop) {
-        i2c_stop();
-    }
-
-    return size;
-}
-
-// --- SPI: a software master on any three pins, 500 kHz at most ----------------------------------------------------
-
-namespace {
-
-struct Spi {
-    int sck { -1 };
-    int miso { -1 };
-    int mosi { -1 };
-    uint8_t mode { 0 };
-    bool msb_first { true };
-    uint32_t half { 1 };
-};
-
-Spi spi;
-
-uint8_t spi_byte(uint8_t data) {
-    const bool idle = (spi.mode & 0x02) != 0;   // CPOL
-    const bool late = (spi.mode & 0x01) != 0;   // CPHA: data on the second edge
-
-    uint8_t out = 0;
-    for (int bit = 0; bit < 8; ++bit) {
-        const int shift = spi.msb_first ? (7 - bit) : bit;
-        const bool value = (data >> shift) & 1;
-        if (!late && (spi.mosi >= 0)) {
-            gpio_output(spi.mosi, value);
-        }
-
-        beken::delay_us(spi.half);
-        gpio_output(spi.sck, idle ? 0 : 1);
-        if (late && (spi.mosi >= 0)) {
-            gpio_output(spi.mosi, value);
-        }
-
-        if (!late && (spi.miso >= 0) && gpio_input(spi.miso)) {
-            out |= (1 << shift);
-        }
-
-        beken::delay_us(spi.half);
-        gpio_output(spi.sck, idle ? 1 : 0);
-        if (late && (spi.miso >= 0) && gpio_input(spi.miso)) {
-            out |= (1 << shift);
-        }
-    }
-
-    return out;
-}
-
-} // namespace
-
-bool spi_begin(uint8_t sck, uint8_t miso, uint8_t mosi) {
-    if (!pin_valid(sck)) {
-        return false;
-    }
-
-    spi.sck = sck;
-    spi.miso = pin_valid(miso) ? miso : -1;
-    spi.mosi = pin_valid(mosi) ? mosi : -1;
-
-    gpio_config(spi.sck, GMODE_OUTPUT);
-    gpio_output(spi.sck, (spi.mode & 0x02) ? 1 : 0);
-    if (spi.mosi >= 0) {
-        gpio_config(spi.mosi, GMODE_OUTPUT);
-    }
-    if (spi.miso >= 0) {
-        gpio_config(spi.miso, GMODE_INPUT);
-    }
-
-    return true;
-}
-
-void spi_end() {
-    spi.sck = spi.miso = spi.mosi = -1;
-}
-
-void spi_config(uint32_t frequency, uint8_t mode, bool msb_first) {
-    spi.mode = mode & 0x03;
-    spi.msb_first = msb_first;
-    spi.half = frequency ? std::max<uint32_t>(1, 500000 / frequency) : 1;
-    if (spi.sck >= 0) {
-        gpio_output(spi.sck, (spi.mode & 0x02) ? 1 : 0);
-    }
-}
-
-void spi_transfer(const uint8_t* out, uint8_t* in, size_t size) {
-    if (spi.sck < 0) {
-        return;
-    }
-
-    for (size_t index = 0; index < size; ++index) {
-        const uint8_t value = spi_byte(out ? out[index] : 0xff);
-        if (in) {
-            in[index] = value;
-        }
     }
 }
 

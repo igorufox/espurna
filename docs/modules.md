@@ -43,8 +43,9 @@ leaves out only what cannot exist on it.
 | `mdns` | mDNS (`<hostname>.local`); not next to `matter`, whose stack answers mDNS itself | all |
 | `matter` | Matter On/Off plugs | ESP32, Beken |
 | `nspanel` | the Sonoff NSPanel display protocol, its pages, the TFT upload | ESP32 |
+| `oled` | the small I2C screen (SSD1306 / SH1106): up to 8 lines of a label and a source (time, IP, a relay, a sensor, an MQTT topic ...) in pages, the controller, size, address and the reset pin in the settings (`oledType`, `oledSize`, `oledAddr`, `oledRst`, the bus is `i2cSDA` / `i2cSCL`), the `OLED` command and the WebUI mirror; the button action `display-on` wakes it (needs `i2c`) | all |
 | `test` | a tiny module for testing the loader | all |
-| `arduino` | the Arduino names (`String`, `Print`, `pinMode`, `Wire`, `SPI`, `Serial`, `WiFiUDP`: `code/lib/espurna-core`) for the third-party libraries of the modules: only modules whose library needs it have it in their needs (I2C, SPI, sensors of the libraries, IR, RF, RFM69, Alexa, RPN rules, garland, thermostat, my92xx); linked into no other module. Beken: empty, LibreTiny's core is in the head | all |
+| `arduino_emu` | the emulation of the Arduino names (`String`, `Print`, `pinMode`, `Wire`, `SPI`, `Serial`, `WiFiUDP`: `code/lib/espurna-core`) for the third-party libraries of the modules: only modules whose library needs it have it in their needs (the sensors on a library's Wire, IR, RF, RFM69, MCP23S08, Alexa, RPN rules, garland, my92xx); linked into no other module. The buses (`i2c`, `spi`) and `oled` are on the chip calls (`arch/rtos/chip_sdk.h`), without it. Beken: empty, LibreTiny's core is in the head | all |
 
 A module that needs another one (`requires`) cannot be switched on without it, and the other one cannot be switched off
 or removed while it is needed. Modules that use each other's functions do it through the head (Home Assistant shows the

@@ -1,0 +1,188 @@
+<form id="form-oled" class="pure-form pure-form-aligned form-settings">
+    <div class="panel" id="panel-oled">
+
+        <div class="header">
+            <h1>OLED</h1>
+            <h2>The small I2C screen of the board: what each line shows</h2>
+        </div>
+
+        <div class="page">
+
+            <fieldset>
+                <legend>Screen</legend>
+
+                <div class="pure-control-group">
+                    <label>Now on it</label>
+                    <canvas id="oled-mirror" class="oled-mirror" width="128" height="64"></canvas>
+                    <span class="pure-form-message-inline" id="oled-mirror-state"></span>
+                </div>
+
+            </fieldset>
+
+            <fieldset>
+                <legend>Lines</legend>
+
+                <div class="pure-control-group">
+                    <span class="pure-form-message-inline">
+                        The label on the left, the source on the right. Sources: <code>time</code>, <code>date</code>,
+                        <code>datetime</code>, <code>ip</code>, <code>ssid</code>, <code>rssi</code>, <code>host</code>,
+                        <code>uptime</code>, <code>heap</code>, <code>wifi</code>, <code>mqtt</code>,
+                        <code>relay:0</code>, <code>sensor:temperature</code> (or the magnitude number,
+                        <code>sensor:0</code>), <code>mqtt:&lt;topic&gt;</code> or <code>mqtt:&lt;topic&gt;#&lt;json key&gt;</code>.
+                        A label without a source is a line of text. The lines that do not fit are the next pages.
+                    </span>
+                </div>
+
+                <div class="pure-control-group oled-line">
+                    <label>Line 1</label>
+                    <input class="pure-input-1-4" name="oledLbl0" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="oledSrc0" type="text" list="list:oledSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group oled-line">
+                    <label>Line 2</label>
+                    <input class="pure-input-1-4" name="oledLbl1" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="oledSrc1" type="text" list="list:oledSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group oled-line">
+                    <label>Line 3</label>
+                    <input class="pure-input-1-4" name="oledLbl2" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="oledSrc2" type="text" list="list:oledSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group oled-line">
+                    <label>Line 4</label>
+                    <input class="pure-input-1-4" name="oledLbl3" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="oledSrc3" type="text" list="list:oledSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group oled-line">
+                    <label>Line 5</label>
+                    <input class="pure-input-1-4" name="oledLbl4" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="oledSrc4" type="text" list="list:oledSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group oled-line">
+                    <label>Line 6</label>
+                    <input class="pure-input-1-4" name="oledLbl5" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="oledSrc5" type="text" list="list:oledSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group oled-line">
+                    <label>Line 7</label>
+                    <input class="pure-input-1-4" name="oledLbl6" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="oledSrc6" type="text" list="list:oledSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group oled-line">
+                    <label>Line 8</label>
+                    <input class="pure-input-1-4" name="oledLbl7" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="oledSrc7" type="text" list="list:oledSrc" placeholder="source">
+                </div>
+
+                <datalist id="list:oledSrc">
+                    <option value="time"></option>
+                    <option value="date"></option>
+                    <option value="datetime"></option>
+                    <option value="ip"></option>
+                    <option value="ssid"></option>
+                    <option value="rssi"></option>
+                    <option value="host"></option>
+                    <option value="uptime"></option>
+                    <option value="heap"></option>
+                    <option value="wifi"></option>
+                    <option value="mqtt"></option>
+                    <option value="relay:0"></option>
+                    <option value="sensor:temperature"></option>
+                    <option value="sensor:humidity"></option>
+                    <option value="mqtt:"></option>
+                </datalist>
+
+                <div class="pure-control-group">
+                    <label>Font</label>
+                    <select class="pure-input-1-4" name="oledFont">
+                        <option value="10">10 (small)</option>
+                        <option value="16">16</option>
+                        <option value="24">24 (large)</option>
+                    </select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Page time</label>
+                    <input class="pure-input-1-4" name="oledPage" type="number" min="1" max="3600">
+                    <span class="pure-form-message-inline">s, how long a page stays when the lines take more than one</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Blank after</label>
+                    <input class="pure-input-1-4" name="oledOff" type="number" min="0" max="86400">
+                    <span class="pure-form-message-inline">s, 0 - never; a button with the action <code>display-on</code> wakes it</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Matter QR code</label>
+                    <input class="checkbox-toggle" type="checkbox" name="oledMatter">
+                    <span class="pure-form-message-inline">while the Matter pairing window is open the screen shows its QR code and the manual code</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Brightness</label>
+                    <input class="pure-input-1-4" name="oledBright" type="number" min="-1" max="255">
+                    <span class="pure-form-message-inline">0..255, -1 - as the panel starts</span>
+                </div>
+
+            </fieldset>
+
+            <fieldset>
+                <legend>Panel and pins</legend>
+
+                <div class="pure-control-group">
+                    <label>Controller</label>
+                    <select class="pure-input-1-4" name="oledType">
+                        <option value="ssd1306">SSD1306</option>
+                        <option value="sh1106">SH1106</option>
+                    </select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Size</label>
+                    <select class="pure-input-1-4" name="oledSize">
+                        <option value="128x64">128 x 64</option>
+                        <option value="128x32">128 x 32</option>
+                        <option value="64x48">64 x 48</option>
+                        <option value="64x32">64 x 32</option>
+                    </select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Address</label>
+                    <input class="pure-input-1-4" name="oledAddr" type="text" placeholder="0x3c">
+                    <span class="pure-form-message-inline">on the I2C bus, <code>0x3c</code> or <code>0x3d</code></span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Turned over</label>
+                    <input class="checkbox-toggle" type="checkbox" name="oledFlip">
+                </div>
+
+                <div class="pure-control-group">
+                    <label>SDA</label>
+                    <select class="pure-input-1-4" name="i2cSDA" data-enumerable="gpio-hardware"></select>
+                    <span class="pure-form-message-inline">the I2C bus of the board (the i2c module), shared with the I2C sensors</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>SCL</label>
+                    <select class="pure-input-1-4" name="i2cSCL" data-enumerable="gpio-hardware"></select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Reset</label>
+                    <select class="pure-input-1-4" name="oledRst" data-enumerable="gpio-hardware"></select>
+                    <span class="pure-form-message-inline">the pin that holds the panel in reset (Heltec WiFi Kit 32: GPIO16), none if it has none</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <span class="pure-form-message-inline">The controller, size, address and pins apply after a reboot of the board when the bus changes; the lines at once.</span>
+                </div>
+
+            </fieldset>
+
+        </div>
+
+    </div>
+</form>

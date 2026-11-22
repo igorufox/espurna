@@ -156,6 +156,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "thermostat.h"
 #endif
 
+#if OLED_SUPPORT
+#include "oled.h"
+#endif
+
 #if THINGSPEAK_SUPPORT
 #include "thingspeak.h"
 #endif

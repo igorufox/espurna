@@ -1,6 +1,7 @@
 /*
 
-OTA MODULE, BK7231N: which bootloader a .uf2 upload is for (ref. ota_driver_chip.h)
+OTA MODULE, BK7231N (ref. ota_driver.h): the RBL of a new head into 'download', the .uf2 of the wire, and which
+bootloader a .uf2 upload is for
 
 One head image, two initial images of it: espurna-beken-tuya.uf2 for the Tuya bootloader and espurna-beken-quectel.uf2
 for the Quectel one (scripts/beken_quectel_image.py). Each UF2 carries its own FAL partition table (tag FAL_PTABLE)
@@ -16,6 +17,7 @@ would install an image in the wrong format (the Tuya one is encrypted, the Quect
 
 #include "layout_beken.h"
 #include "../../ota_driver.h"
+#include "../../ota_rbl.h"
 
 #include <cstring>
 
@@ -94,7 +96,7 @@ bool download(const uint8_t* block, uint32_t& offset, uint32_t& length) {
 
 } // namespace
 
-const char* upload_check(const uint8_t* data, size_t len) {
+const char* uf2_check(const uint8_t* data, size_t len) {
     const auto& layout = ::espurna::beken::flashLayout();
     // an unknown bootloader: where its download partition is, is not known - nothing is written (layout_beken.cpp)
     if (layout.layout == ::espurna::beken::Layout::Unknown) {
@@ -126,41 +128,42 @@ const char* upload_check(const uint8_t* data, size_t len) {
 
 // --- the RBL head of the install image ---------------------------------------------------------------------------
 // The .ota carries the head as the RBL package only (~450 KB; the .uf2 of the wire around it was 2.5 / 4.5 MB, W62),
-// the same package for both bootloaders. It goes into 'download' of this board's layout; its first bytes (the RBL
-// magic) are written last, so an interrupted upload leaves no package for the bootloader to install.
+// the same package for both bootloaders. The common writer (ota_rbl.h) puts it into 'download' of this board's layout,
+// the header first in the partition and written last: an interrupted upload leaves no package for the bootloader.
+// Here only the flash calls, where 'download' is and what this board's bootloader installs
 
 namespace {
 
-constexpr uint32_t RblMagic { 0x004C4252 }; // "RBL\0"
-constexpr size_t RblHeader { 96 };          // ltchiptool bk72xx RBL: magic .. size_package (at 88), info_crc32
-constexpr size_t RblFirst { 16 };
-constexpr uint32_t Sector { 0x1000 };
+bool flashErase(uint32_t at) {
+    return ::espurna::beken::flash_erase_block(at);
+}
 
-struct Rbl {
-    bool active { false };
-    uint32_t offset { 0 };      // 'download' of this layout
-    uint32_t length { 0 };      // header + package
-    uint32_t written { 0 };
-    uint32_t erased { 0 };      // bytes of 'download' erased so far
-    uint8_t first[RblFirst] {};
-};
+bool flashWrite(uint32_t at, const uint8_t* data, size_t size) {
+    return ::espurna::beken::flash_write(at, data, size) == size;
+}
 
-Rbl rbl;
+bool flashRead(uint32_t at, uint8_t* data, size_t size) {
+    return ::espurna::beken::flash_read(at, data, size) == size;
+}
+
+const rbl::Flash Flash { flashErase, flashWrite, flashRead };
+
+rbl::Writer* current { nullptr };
 
 void rbl_drop() {
-    if (rbl.erased) {
-        ::espurna::beken::flash_erase_block(rbl.offset);
-    }
-    rbl = Rbl{};
+    delete current;
+    current = nullptr;
 }
 
 } // namespace
 
-bool own_image(const uint8_t* data, size_t len) {
-    return (len >= 4) && (word(data) == RblMagic);
+bool rbl_magic(const uint8_t* data, size_t len) {
+    return (len >= 4) && (word(data) == ESPURNA_RBL_MAGIC);
 }
 
-const char* own_begin(const uint8_t* data, size_t len) {
+const char* rbl_begin(const uint8_t* data, size_t len) {
+    rbl_drop();
+
     const auto& layout = ::espurna::beken::flashLayout();
     if (layout.layout == ::espurna::beken::Layout::Unknown) {
         return PSTR("ERROR: Unknown bootloader, no OTA on this board (flash it by wire)");
@@ -170,11 +173,13 @@ const char* own_begin(const uint8_t* data, size_t len) {
         return PSTR("ERROR: Tuya bootloader 3.00 does not install this image, update over UART or replace the bootloader");
     }
 
-    if (len < RblHeader) {
-        return PSTR("ERROR: Upload too short for an RBL header");
+    espurna_rbl_t header {};
+    const char* error = rbl::header(data, len, header);
+    if (error) {
+        return error;
     }
 
-    const uint32_t length = RblHeader + word(&data[88]);
+    const uint32_t length = ESPURNA_RBL_SIZE + header.data_size;
     if (length > layout.download_length) {
         return PSTR("ERROR: The image does not fit the download partition");
     }
@@ -184,78 +189,50 @@ const char* own_begin(const uint8_t* data, size_t len) {
         return PSTR("ERROR: The download partition is past the flash this head can write");
     }
 
-    rbl = Rbl{};
-    rbl.active = true;
-    rbl.offset = layout.download_offset;
-    rbl.length = length;
-    return nullptr;
+    current = new (std::nothrow) rbl::Writer();
+    if (!current) {
+        return PSTR("ERROR: Not enough memory");
+    }
+
+    const rbl::Place place {
+        .header = layout.download_offset,
+        .package = layout.download_offset + ESPURNA_RBL_SIZE,
+        .limit = layout.download_offset + layout.download_length,
+    };
+
+    error = current->begin(Flash, header, place);
+    if (error) {
+        rbl_drop();
+    }
+
+    return error;
 }
 
-const char* own_write(const uint8_t* data, size_t len) {
-    if (!rbl.active) {
+const char* rbl_write(const uint8_t* data, size_t len) {
+    if (!current) {
         return PSTR("ERROR: No upload");
     }
 
-    if ((rbl.written + len) > rbl.length) {
+    const auto* error = current->write(data, len);
+    if (error) {
         rbl_drop();
-        return PSTR("ERROR: More data than the RBL header says");
     }
 
-    while (rbl.erased < (rbl.written + len)) {
-        if (!::espurna::beken::flash_erase_block(rbl.offset + rbl.erased)) {
-            rbl_drop();
-            return PSTR("ERROR: Flash erase failed");
-        }
-        rbl.erased += Sector;
-    }
-
-    // the first bytes wait for the end
-    if (rbl.written < RblFirst) {
-        const size_t keep = std::min<size_t>(RblFirst - rbl.written, len);
-        std::memcpy(&rbl.first[rbl.written], data, keep);
-        rbl.written += keep;
-        data += keep;
-        len -= keep;
-    }
-
-    if (len) {
-        if (::espurna::beken::flash_write(rbl.offset + rbl.written, data, len) != len) {
-            rbl_drop();
-            return PSTR("ERROR: Flash write failed");
-        }
-        rbl.written += len;
-    }
-
-    return nullptr;
+    return error;
 }
 
-const char* own_end() {
-    if (!rbl.active || (rbl.written != rbl.length)) {
-        rbl_drop();
+const char* rbl_end() {
+    if (!current) {
         return PSTR("ERROR: Incomplete image");
     }
 
-    if (::espurna::beken::flash_write(rbl.offset, rbl.first, RblFirst) != RblFirst) {
-        rbl_drop();
-        return PSTR("ERROR: Flash write failed");
-    }
-
-    uint32_t magic { 0 };
-    ::espurna::beken::flash_read(rbl.offset, reinterpret_cast<uint8_t*>(&magic), sizeof(magic));
-    if (magic != RblMagic) {
-        rbl_drop();
-        return PSTR("ERROR: Not an OTA package");
-    }
-
-    DEBUG_MSG_P(PSTR("[OTA] RBL written, %u bytes\n"), rbl.written);
-    rbl = Rbl{};
-    return nullptr;
+    const auto* error = current->end();
+    rbl_drop();
+    return error;
 }
 
-void own_abort() {
-    if (rbl.active) {
-        rbl_drop();
-    }
+void rbl_abort() {
+    rbl_drop();
 }
 
 } // namespace driver
@@ -265,7 +242,7 @@ void own_abort() {
 // LibreTiny's UF2 OTA format (its uf2ota library did this until 2026-11-19): 512 byte blocks, the first one with the
 // tags only; OTA_PART_INFO names the partition of the blocks that follow for every OTA scheme (the Beken one is
 // "device, single": the high nibble of the first byte), the FAL_PTABLE tag of the first block where each name is.
-// upload_check() has made sure that table's 'download' is the one of this board's bootloader.
+// uf2_check() has made sure that table's 'download' is the one of this board's bootloader.
 
 namespace core {
 namespace chip {
@@ -444,11 +421,11 @@ const char* uf2_block(const uint8_t* block) {
 
     const uint32_t offset = uf2->part->offset + address;
     while (uf2->erased_end < (offset + size)) {
-        const uint32_t sector = std::max(uf2->erased_end, offset & ~(ota::driver::Sector - 1));
+        const uint32_t sector = std::max(uf2->erased_end, offset & ~(ota::rbl::Sector - 1));
         if (!beken::flash_erase_block(sector)) {
             return PSTR("ERROR: Flash erase failed");
         }
-        uf2->erased_end = sector + ota::driver::Sector;
+        uf2->erased_end = sector + ota::rbl::Sector;
     }
 
     if (beken::flash_write(offset, &block[HeaderSize], size) != size) {
@@ -516,3 +493,107 @@ void ota_abort() {
 } // namespace core
 } // namespace espurna
 
+// --- the one path of ota_driver.h: the RBL of a head, or the .uf2 of the wire --------------------------------------
+
+namespace espurna {
+namespace ota {
+namespace driver {
+namespace {
+
+enum class Mode {
+    None,
+    Rbl,
+    Uf2,
+};
+
+Mode mode { Mode::None };
+
+bool uf2_magic(const uint8_t* data, size_t len) {
+    return (len >= 8) && (word(data) == 0x0A324655) && (word(&data[4]) == 0x9E5D5157);
+}
+
+} // namespace
+
+const char* begin(const uint8_t* data, size_t len, size_t) {
+    abort();
+
+    if (rbl_magic(data, len)) {
+        const auto* error = rbl_begin(data, len);
+        if (!error) {
+            mode = Mode::Rbl;
+        }
+        return error;
+    }
+
+    if (!uf2_magic(data, len)) {
+        return PSTR("ERROR: Not a firmware image for this chip (RBL of the .ota, or an UF2 block)");
+    }
+
+    // which bootloader the .uf2 is for, before anything is written
+    const auto* error = uf2_check(data, len);
+    if (error) {
+        return error;
+    }
+
+    // the .uf2 is a lot bigger than the image it carries, the UF2 writer checks the partition itself
+    error = ::espurna::core::chip::ota_begin(::espurna::core::chip::OtaSizeUnknown);
+    if (!error) {
+        mode = Mode::Uf2;
+    }
+    return error;
+}
+
+const char* write(const uint8_t* data, size_t len) {
+    switch (mode) {
+    case Mode::Rbl:
+        return rbl_write(data, len);
+    case Mode::Uf2:
+        return ::espurna::core::chip::ota_write(data, len);
+    case Mode::None:
+        break;
+    }
+
+    return PSTR("ERROR: No upload");
+}
+
+const char* end() {
+    const auto was = mode;
+    mode = Mode::None;
+
+    switch (was) {
+    case Mode::Rbl:
+        return rbl_end();
+    case Mode::Uf2:
+        return ::espurna::core::chip::ota_end();
+    case Mode::None:
+        break;
+    }
+
+    return PSTR("ERROR: No upload");
+}
+
+void abort() {
+    switch (mode) {
+    case Mode::Rbl:
+        rbl_abort();
+        break;
+    case Mode::Uf2:
+        ::espurna::core::chip::ota_abort();
+        break;
+    case Mode::None:
+        break;
+    }
+
+    mode = Mode::None;
+}
+
+// the bootloader installs the package and boots it, nothing to confirm
+void confirm() {
+}
+
+void web_setup() {
+}
+
+} // namespace driver
+} // namespace ota
+} // namespace espurna

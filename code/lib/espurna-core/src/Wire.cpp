@@ -4,6 +4,15 @@
 
 namespace chip = espurna::core::chip;
 
+// the I2C master is in the i2c module (chip_sdk.h I2cBus): nothing answers without it
+namespace {
+
+const chip::I2cBus* bus() {
+    return chip::i2c_bus;
+}
+
+} // namespace
+
 TwoWire Wire;
 TwoWire& Wire1 = Wire;
 
@@ -30,7 +39,7 @@ bool TwoWire::begin(int sda, int scl, uint32_t frequency) {
     }
 
     end();
-    _started = chip::i2c_begin(
+    _started = bus() && bus()->begin(
         static_cast<uint8_t>(_sda), static_cast<uint8_t>(_scl), _frequency);
 
     return _started;
@@ -41,16 +50,16 @@ void TwoWire::begin() {
 }
 
 void TwoWire::end() {
-    if (_started) {
-        chip::i2c_end();
+    if (_started && bus()) {
+        bus()->end();
         _started = false;
     }
 }
 
 void TwoWire::setClock(uint32_t frequency) {
     _frequency = frequency;
-    if (_started) {
-        chip::i2c_clock(frequency);
+    if (_started && bus()) {
+        bus()->clock(frequency);
     }
 }
 
@@ -66,26 +75,21 @@ uint8_t TwoWire::endTransmission(bool stop) {
     }
 
     _transmitting = false;
-    if (!_started) {
-        return 4;
-    }
 
-    return chip::i2c_write(_address, _tx, _tx_size, stop);
+    // the bus may be the one the i2c module started (i2c.cpp, not through Wire): its driver answers 4 while no
+    // bus is up
+    return bus() ? bus()->write(_address, _tx, _tx_size, stop) : 4;
 }
 
 size_t TwoWire::requestFrom(uint8_t address, size_t size, bool stop) {
     _rx_size = 0;
     _rx_index = 0;
 
-    if (!_started) {
-        return 0;
-    }
-
     if (size > BufferSize) {
         size = BufferSize;
     }
 
-    _rx_size = chip::i2c_read(address, _rx, size, stop);
+    _rx_size = bus() ? bus()->read(address, _rx, size, stop) : 0;
     return _rx_size;
 }
 

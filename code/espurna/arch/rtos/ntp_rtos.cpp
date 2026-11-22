@@ -1,7 +1,8 @@
 /*
 
 NTP MODULE, the SNTP client of the FreeRTOS chips, ESP32 and Beken (ntp_driver.h). The calls of the SDK are in
-arch/<chip>/ntp_chip.h, every one of them runs in the tcpip thread, posted in the order of the calls
+arch/<chip>/ntp_chip.h, every one of them runs in the tcpip thread, posted in the order of the calls (or, where the
+chip's calls post themselves, chip::PostsItself, called right away)
 
 lwip2 of the esp8266 restarts SNTP every time the netif gets a valid address (sntp_stop + sntp_init from the netif
 status callback), IDF and plain lwIP do not. sntp_init() from setup() runs before the station is up, the first request
@@ -49,7 +50,13 @@ void watch_sync() {
     }
 }
 
+// in the tcpip thread, or right here where the chip's calls post themselves there (chip::PostsItself, ESP32)
 bool run_tcpip(tcpip_callback_fn callback, void* arg) {
+    if (chip::PostsItself) {
+        callback(arg);
+        return true;
+    }
+
     if (tcpip_callback(callback, arg) != ERR_OK) {
         DEBUG_MSG_P(PSTR("[NTP] tcpip thread did not take the call\n"));
         return false;

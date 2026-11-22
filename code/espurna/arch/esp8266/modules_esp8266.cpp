@@ -103,6 +103,13 @@ Area area() {
     }
 
     Area out{region.start, region.lo, region.hi};
+
+    // the RBL header sector (rbl_esp8266.h: under the directory, the modules under it): every head OTA erases it and
+    // writes the new header there, the bootloader its swap state, the head's confirmation erases it. Never a module's:
+    // 22.11 an Apply put the tail of the 'tools' slot there - the OTA broke 'tools' ("ranges"), the Apply after the
+    // install wrote over the swap state (the new head never confirmed itself, no rollback left)
+    out.keep[0] = Area::Range{ESPURNA_RBL_HEADER_AT, ESPURNA_RBL_SECTOR};
+
     const uint32_t chip = spi_flash_get_chip_size();
     // the package of a new head takes the top ESPURNA_RBL_TOP_ZONE under the tail (rbl_esp8266.h, item 22 stage 2)
     if (chip >= (UpperStart + UpperTail + ESPURNA_RBL_TOP_ZONE + SectorSize)) {

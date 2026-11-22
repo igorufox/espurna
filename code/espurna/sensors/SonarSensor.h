@@ -8,10 +8,86 @@
 
 #pragma once
 
-#include <NewPing.h>
-#include <memory>
+#include "../pins.h"
+
+#include <algorithm>
+#include <vector>
 
 #include "BaseSensor.h"
+
+// the ping of the sensor on espurna::pins (no library, no Arduino emulation), as NewPing 1.9 does it: a 12 us pulse on
+// the trigger, then the width of the echo (57 us a centimetre there and back), one pin when trigger == echo
+namespace espurna {
+namespace sensor {
+namespace sonar {
+
+static constexpr uint32_t RoundtripCm { 57 };
+static constexpr uint32_t TriggerWidth { 12 };
+static constexpr uint32_t MaxStartDelay { 5800 };
+static constexpr uint32_t MaxDistanceCm { 500 };
+static constexpr uint32_t MedianDelayMs { 30 };
+
+// us of the echo, 0 - none within the distance
+inline uint32_t ping(uint8_t trigger, uint8_t echo, uint32_t max_cm) {
+    const uint32_t max_echo = std::min(max_cm ? max_cm : MaxDistanceCm, MaxDistanceCm) * RoundtripCm
+        + (RoundtripCm / 2);
+
+    espurna::pins::mode(trigger, espurna::pins::Output);
+    espurna::pins::write(trigger, true);
+    espurna::time::sleep_us(TriggerWidth);
+    espurna::pins::write(trigger, false);
+    if (trigger == echo) {
+        espurna::pins::mode(echo, espurna::pins::Input);
+    }
+
+    // the previous ping has not ended
+    if (espurna::pins::read(echo)) {
+        return 0;
+    }
+
+    const uint32_t triggered = espurna::time::us();
+    while (!espurna::pins::read(echo)) {
+        if ((espurna::time::us() - triggered) > (MaxStartDelay + max_echo)) {
+            return 0;
+        }
+    }
+
+    const uint32_t start = espurna::time::us();
+    while (espurna::pins::read(echo)) {
+        if ((espurna::time::us() - start) > max_echo) {
+            return 0;
+        }
+    }
+
+    return espurna::time::us() - start;
+}
+
+// the median of `iterations` pings that had an echo, 30 ms apart
+inline uint32_t median(uint8_t trigger, uint8_t echo, uint32_t max_cm, unsigned int iterations) {
+    std::vector<uint32_t> out;
+    out.reserve(iterations);
+    for (unsigned int index = 0; index < iterations; ++index) {
+        const auto value = ping(trigger, echo, max_cm);
+        if (value) {
+            out.push_back(value);
+        }
+
+        if (index + 1 < iterations) {
+            espurna::time::blockingDelay(espurna::duration::Milliseconds(MedianDelayMs));
+        }
+    }
+
+    if (out.empty()) {
+        return 0;
+    }
+
+    std::sort(out.begin(), out.end());
+    return out[out.size() / 2];
+}
+
+} // namespace sonar
+} // namespace sensor
+} // namespace espurna
 
 class SonarSensor : public BaseSensor {
 
@@ -72,11 +148,9 @@ class SonarSensor : public BaseSensor {
 
         // Initialization method, must be idempotent
         void begin() override {
-            if (_sonar) {
-                _sonar.reset(nullptr);
-            }
-
-            _sonar = std::make_unique<NewPing>(getTrigger(), getEcho(), getMaxDistance());
+            espurna::pins::mode(getEcho(), espurna::pins::Input);
+            espurna::pins::mode(getTrigger(), espurna::pins::Output);
+            espurna::pins::write(getTrigger(), false);
             _distance = 0.0;
             _ready = true;
         }
@@ -102,11 +176,11 @@ class SonarSensor : public BaseSensor {
 
         // TODO: fix meter <-> cm conversions
         void pre() override {
-            if (getIterations()) {
-                _distance = NewPing::convert_cm(_sonar->ping_median(getIterations())) / 100.0;
-            } else {
-                _distance = _sonar->ping_cm() / 100.0;
-            }
+            namespace sonar = espurna::sensor::sonar;
+            const auto echo = getIterations()
+                ? sonar::median(getTrigger(), getEcho(), getMaxDistance(), getIterations())
+                : sonar::ping(getTrigger(), getEcho(), getMaxDistance());
+            _distance = static_cast<double>(echo / sonar::RoundtripCm) / 100.0;
         }
 
         // Current value for slot # index
@@ -127,8 +201,6 @@ class SonarSensor : public BaseSensor {
         unsigned int _max_distance;
         unsigned int _iterations;
         double _distance;
-
-        std::unique_ptr<NewPing> _sonar;
 
 };
 

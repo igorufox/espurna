@@ -75,8 +75,11 @@ void pin_detach(uint8_t pin);
 int adc_read(uint8_t pin);
 uint8_t adc_bits();
 
-// PWM: `duty` of `range` at `frequency` Hz, duty 0 stops the output
+// PWM: `duty` of `range` at `frequency` Hz, duty 0 stops the output; stop() gives the pin back as a plain GPIO.
+// In the light_pwm module on every chip (arch/<chip>/pwm_<chip>.cpp), not in the head: the head and the other
+// modules call it through chip::pwm_bus (pins::pwm(), the NSPanel's buzzer, analogWrite() of the Arduino emulation)
 void pwm_write(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency);
+void pwm_stop(uint8_t pin);
 
 // the UART config: data bits | parity | stop bits, the SERIAL_* values of ArduinoCore-API
 namespace serial {
@@ -121,6 +124,35 @@ bool spi_begin(uint8_t sck, uint8_t miso, uint8_t mosi);
 void spi_end();
 void spi_config(uint32_t frequency, uint8_t mode, bool msb_first);
 void spi_transfer(const uint8_t* out, uint8_t* in, size_t size);
+
+// The I2C and SPI masters above are in the i2c / spi modules on every chip, the PWM in light_pwm (arch/soft/i2c_soft.cpp, ESP32 arch/esp32/i2c_esp32.cpp,
+// spi_<chip>.cpp), not in the head. The modules linked against them call them directly; Wire and SPI of the Arduino
+// emulation (lib/espurna-core, the arduino_emu module, which needs neither bus) reach them through these tables, the
+// module sets its table when it starts (null - the bus module is not there: nothing answers)
+struct I2cBus {
+    bool (*begin)(uint8_t sda, uint8_t scl, uint32_t frequency);
+    void (*end)();
+    void (*clock)(uint32_t frequency);
+    uint8_t (*write)(uint8_t address, const uint8_t* data, size_t size, bool stop);
+    size_t (*read)(uint8_t address, uint8_t* out, size_t size, bool stop);
+};
+
+struct SpiBus {
+    bool (*begin)(uint8_t sck, uint8_t miso, uint8_t mosi);
+    void (*end)();
+    void (*config)(uint32_t frequency, uint8_t mode, bool msb_first);
+    void (*transfer)(const uint8_t* out, uint8_t* in, size_t size);
+};
+
+struct PwmBus {
+    void (*write)(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency);
+    void (*stop)(uint8_t pin);
+};
+
+// in the head (arch/rtos/bus_rtos.cpp)
+extern const I2cBus* i2c_bus;
+extern const SpiBus* spi_bus;
+extern const PwmBus* pwm_bus;
 
 // System
 uint32_t heap_free();

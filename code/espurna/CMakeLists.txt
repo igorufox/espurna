@@ -40,3 +40,10 @@ idf_component_register(
         mbedtls
         nvs_flash
         spi_flash)
+
+# ringbuf.c's event list calls through the kernel's critical on the SMP kernel (arch/esp32/ringbuf_smp_esp32.c)
+if(CONFIG_FREERTOS_SMP)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE
+        "-Wl,--wrap=xTaskRemoveFromEventList"
+        "-Wl,--wrap=vTaskPlaceOnEventList")
+endif()

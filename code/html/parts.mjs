@@ -100,6 +100,11 @@ export const PARTS = {
         css: ['src/rfm69.css'],
         script: 'src/rfm69.mjs',
     },
+    oled: {
+        panels: ['src/panel-oled.html'],
+        css: ['src/oled.css'],
+        script: 'src/oled.mjs',
+    },
     rpnrules: {
         panels: ['src/panel-rpn.html'],
         templates: ['src/template-rpn.html'],
@@ -127,6 +132,7 @@ export const PARTS = {
         script: 'src/thingspeak.mjs',
     },
     uart: {
+        panels: ['src/panel-uart.html'],
         script: 'src/uart.mjs',
     },
 };

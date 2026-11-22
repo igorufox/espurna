@@ -16,13 +16,9 @@ void otaSetup();
 void otaWebSetup();
 void otaArduinoSetup();
 
-// The head's target of the one image receiver (libs/image_receiver.h): Arduino Update with the checks of the chip
-// (arch/<chip>/ota_driver_<chip>.h). /upgrade and the update by an URL write through it; one image at a time
+// The head's target of the one image receiver (libs/image_receiver.h): the image into the chip (ota_driver.h,
+// arch/<chip>/ota_<chip>.cpp). /upgrade and espota write through it; one image at a time
 espurna::image::Target& otaUpdateTarget();
-
-// Helper methods from UpdaterClass that need to be called manually for async mode,
-// because we are not using Stream interface to feed it data.
-bool otaVerifyHeader(uint8_t* data, size_t len);
 
 void otaProgress(size_t bytes, size_t each);
 void otaProgress(size_t bytes);
@@ -68,6 +64,4 @@ constexpr uint32_t TraceStalled { 0x4F544132 };
 
 } // namespace ota
 } // namespace espurna
-bool otaFinalize(size_t size, CustomResetReason reason, bool evenIfRemaining);
-bool otaFinalize(size_t size, CustomResetReason reason);
 

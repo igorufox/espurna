@@ -8,8 +8,6 @@ Copyright (C) 2017 by Dmitry Blinov <dblinov76 at gmail dot com>
 
 #include "espurna.h"
 
-#include <wifi_sdk.h>
-
 #if THERMOSTAT_SUPPORT
 
 #include "mqtt.h"
@@ -21,11 +19,6 @@ Copyright (C) 2017 by Dmitry Blinov <dblinov76 at gmail dot com>
 #include "ws.h"
 
 #include "json.h"
-
-#if THERMOSTAT_DISPLAY_SUPPORT
-// alias for `#include "SSD1306Wire.h"`
-#include <SSD1306.h>
-#endif
 
 #include <limits>
 #include <cmath>
@@ -207,7 +200,6 @@ void thermostatMqttCallback(unsigned int type, espurna::StringView topic, espurn
                 espurna::string remote_temp(text.c_str());
                 _remote_temp.temp = remote_temp.toFloat();
                 _remote_temp.last_update = espurna::time::ms();
-                _remote_temp.need_display_update = true;
                 DEBUG_MSG_P(PSTR("[THERMOSTAT] Remote sensor temperature: %s\n"), remote_temp.c_str());
                 updateRemoteTemp(true);
             }
@@ -230,7 +222,6 @@ void thermostatMqttCallback(unsigned int type, espurna::StringView topic, espurn
                 saveSettings();
                 _temp_range.ask_interval = ASK_TEMP_RANGE_INTERVAL_REGULAR;
                 _temp_range.last_update = espurna::time::ms();
-                _temp_range.need_display_update = true;
 
                 DEBUG_MSG_P(PSTR("[THERMOSTAT] Hold temperature range: (%d - %d)\n"), _temp_range.min, _temp_range.max);
                 // Update websocket clients
@@ -519,268 +510,6 @@ void resetBurnCounters() {
   _thermostat_burn_this_month  = 0;
   _thermostat_burn_prev_month  = 0;
 }
-
-//#######################################################################
-//  ___   _            _             
-// |   \ (_) ___ _ __ | | __ _  _  _ 
-// | |) || |(_-<| '_ \| |/ _` || || |
-// |___/ |_|/__/| .__/|_|\__,_| \_, |
-//              |_|             |__/ 
-//#######################################################################
-
-#if THERMOSTAT_DISPLAY_SUPPORT
-
-#define wifi_on_width 16
-#define wifi_on_height 16
-const uint8_t wifi_on_bits[] PROGMEM = {
-  0x00, 0x00, 0x0E, 0x00, 0x7E, 0x00, 0xFE, 0x01, 0xE0, 0x03, 0x80, 0x07,
-  0x02, 0x0F, 0x1E, 0x1E, 0x3E, 0x1C, 0x78, 0x38, 0xE0, 0x38, 0xC0, 0x31,
-  0xC6, 0x71, 0x8E, 0x71, 0x8E, 0x73, 0x00, 0x00, };
-
-#define mqtt_width 16
-#define mqtt_height 16
-const uint8_t mqtt_bits[] PROGMEM = {
-  0x00, 0x00, 0x00, 0x08, 0x00, 0x18, 0x00, 0x38, 0xEA, 0x7F, 0xEA, 0x7F,
-  0x00, 0x38, 0x10, 0x18, 0x18, 0x08, 0x1C, 0x00, 0xFE, 0x57, 0xFE, 0x57,
-  0x1C, 0x00, 0x18, 0x00, 0x10, 0x00, 0x00, 0x00, };
-
-#define remote_temp_width 16
-#define remote_temp_height 16
-const uint8_t remote_temp_bits[] PROGMEM = {
-  0x00, 0x00, 0xE0, 0x18, 0x10, 0x25, 0x10, 0x25, 0x90, 0x19, 0x50, 0x01,
-  0x50, 0x01, 0xD0, 0x01, 0x50, 0x01, 0x50, 0x01, 0xD0, 0x01, 0x50, 0x01,
-  0xE0, 0x00, 0xE0, 0x00, 0xE0, 0x00, 0x00, 0x00, };
-
-#define server_width 16
-#define server_height 16
-const uint8_t server_bits[] PROGMEM = {
-  0x00, 0x00, 0xF8, 0x1F, 0xFC, 0x3F, 0x0C, 0x30, 0x0C, 0x30, 0x0C, 0x30,
-  0x0C, 0x30, 0x0C, 0x30, 0x0C, 0x30, 0xF8, 0x1F, 0xFC, 0x3F, 0xFE, 0x7F,
-  0x1E, 0x78, 0xFE, 0x7F, 0xFC, 0x3F, 0x00, 0x00, };
-
-#define LOCAL_TEMP_UPDATE_INTERVAL 60000
-#define LOCAL_HUM_UPDATE_INTERVAL  61000
-
-SSD1306  display(0x3c, 1, 3);
-
-unsigned long _local_temp_last_update = 0xFFFF;
-unsigned long _local_hum_last_update = 0xFFFF;
-unsigned long _thermostat_display_off_interval = THERMOSTAT_DISPLAY_OFF_INTERVAL * MILLIS_IN_SEC;
-unsigned long _thermostat_display_on_time = espurna::time::ms();
-bool _thermostat_display_is_on = true;
-bool _display_wifi_status   = true;
-bool _display_mqtt_status   = true;
-bool _display_server_status = true;
-bool _display_remote_temp_status = true;
-bool _display_need_refresh  = true;
-bool _temp_range_need_update = true;
-
-//------------------------------------------------------------------------------
-void drawIco(int16_t x, int16_t y, const uint8_t *ico, bool on = true) {
-  display.drawIco16x16(x, y, ico, !on);
-  _display_need_refresh = true;
-}
-
-//------------------------------------------------------------------------------
-void display_wifi_status(bool on) {
-  _display_wifi_status = on;
-  drawIco(0, 0, wifi_on_bits, on);
-}
-
-//------------------------------------------------------------------------------
-void display_mqtt_status(bool on) {
-  _display_mqtt_status = on;
-  drawIco(17, 0, mqtt_bits, on);
-}
-
-//------------------------------------------------------------------------------
-void display_server_status(bool on) {
-  _display_server_status = on;
-  drawIco(34, 0, server_bits, on);
-}
-
-//------------------------------------------------------------------------------
-void display_remote_temp_status(bool on) {
-  _display_remote_temp_status = on;
-  drawIco(51, 0, remote_temp_bits, on);
-}
-
-//------------------------------------------------------------------------------
-void display_temp_range() {
-  _temp_range.need_display_update = false;
-  display.setColor(BLACK);
-  display.fillRect(68, 0, 60, 16);
-  display.setColor(WHITE);
-  display.setTextAlignment(TEXT_ALIGN_RIGHT);
-  display.setFont(ArialMT_Plain_16);
-  espurna::string temp_range = espurna::string(_temp_range.min) + "°- " + espurna::string(_temp_range.max) + "°";
-  display.drawString(128, 0, ::String(temp_range.c_str()));
-  _display_need_refresh = true;
-}
-
-//------------------------------------------------------------------------------
-void display_remote_temp() {
-  _remote_temp.need_display_update = false;
-  display.setColor(BLACK);
-  display.fillRect(0, 16, 128, 16);
-  display.setColor(WHITE);
-  display.setFont(ArialMT_Plain_16);
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-  espurna::string temp_range_title = espurna::string("Remote  t");
-  display.drawString(0, 16, ::String(temp_range_title.c_str()));
-
-  espurna::string temp_range_vol = espurna::string("= ") + (_display_remote_temp_status ? espurna::string(_remote_temp.temp, 1) : espurna::string("?")) + "°";
-  display.drawString(75, 16, ::String(temp_range_vol.c_str()));
-
-  _display_need_refresh = true;
-}
-
-//------------------------------------------------------------------------------
-void display_local_temp() {
-  display.setColor(BLACK);
-  display.fillRect(0, 32, 128, 16);
-  display.setColor(WHITE);
-  display.setFont(ArialMT_Plain_16);
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-
-  espurna::string local_temp_title = espurna::string("Local      t");
-  display.drawString(0, 32, ::String(local_temp_title.c_str()));
-
-  espurna::string local_temp_vol = espurna::string("= ") + (!std::isnan(getLocalTemperature()) ? espurna::string(getLocalTemperature(), 1) : espurna::string("?")) + "°";
-  display.drawString(75, 32, ::String(local_temp_vol.c_str()));
-
-  _display_need_refresh = true;
-}
-
-//------------------------------------------------------------------------------
-void display_local_humidity() {
-  display.setColor(BLACK);
-  display.fillRect(0, 48, 128, 16);
-  display.setColor(WHITE);
-  display.setFont(ArialMT_Plain_16);
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-
-  espurna::string local_hum_title = espurna::string("Local      h ");
-  display.drawString(0, 48, ::String(local_hum_title.c_str()));
-
-  espurna::string local_hum_vol = espurna::string("= ") + (!std::isnan(getLocalHumidity()) ? espurna::string(getLocalHumidity(), 0) : espurna::string("?")) + "%";
-  display.drawString(75, 48, ::String(local_hum_vol.c_str()));
-
-  _display_need_refresh = true;
-}
-
-//------------------------------------------------------------------------------
-void displayOn() {
-  DEBUG_MSG_P(PSTR("[THERMOSTAT] Display is On.\n"));
-  _thermostat_display_on_time = espurna::time::ms();
-  _thermostat_display_is_on = true;
-  _display_need_refresh = true;
-  display_wifi_status(_display_wifi_status);
-  display_mqtt_status(_display_mqtt_status);
-  display_server_status(_display_server_status);
-  display_remote_temp_status(_display_remote_temp_status);
-  _temp_range.need_display_update = true;
-  _remote_temp.need_display_update = true;
-  display_local_temp();
-  display_local_humidity();
-}
-
-//------------------------------------------------------------------------------
-// Setup
-//------------------------------------------------------------------------------
-void displaySetup() {
-  display.init();
-  display.flipScreenVertically();
-
-  displayOn();
-
-  espurnaRegisterLoop(displayLoop);
-}
-
-//------------------------------------------------------------------------------
-void displayLoop() {
-  if (THERMOSTAT_DISPLAY_OFF_INTERVAL > 0 && espurna::time::ms() - _thermostat_display_on_time > _thermostat_display_off_interval) {
-    if (_thermostat_display_is_on) {
-      DEBUG_MSG_P(PSTR("[THERMOSTAT] Display Off by timeout\n"));
-      _thermostat_display_is_on = false;
-      display.resetDisplay();
-    }
-    return;
-  }
-
-  //------------------------------------------------------------------------------
-  // Indicators
-  //------------------------------------------------------------------------------
-  if (!_display_wifi_status) {
-    if (wifiConnected() && (::espurna::core::chip::wifi_get_mode() != WIFI_MODE_AP))
-      display_wifi_status(true);
-  } else if (!wifiConnected() || (::espurna::core::chip::wifi_get_mode() == WIFI_MODE_AP)) {
-    display_wifi_status(false);
-  }
-
-  if (!_display_mqtt_status) {
-    if (mqttConnected())
-      display_mqtt_status(true);
-  } else if (!mqttConnected()) {
-    display_mqtt_status(false);
-  }
-
-  if (_temp_range.last_update != 0 && espurna::time::ms() - _temp_range.last_update < THERMOSTAT_SERVER_LOST_INTERVAL) {
-    if (!_display_server_status)
-      display_server_status(true);
-  } else if (_display_server_status) {
-    display_server_status(false);
-  }
-
-  if (_remote_temp.last_update != 0 && espurna::time::ms() - _remote_temp.last_update < _thermostat_remote_temp_max_wait) {
-    if (!_display_remote_temp_status)
-      display_remote_temp_status(true);
-  } else if (_display_remote_temp_status) {
-    display_remote_temp_status(false);
-    display_remote_temp();
-  }
-
-  //------------------------------------------------------------------------------
-  // Temp range
-  //------------------------------------------------------------------------------
-  if (_temp_range.need_display_update) {
-      display_temp_range();
-  }
-
-  //------------------------------------------------------------------------------
-  // Remote temp
-  //------------------------------------------------------------------------------
-  if (_remote_temp.need_display_update) {
-      display_remote_temp();
-  }
-
-  //------------------------------------------------------------------------------
-  // Local temp
-  //------------------------------------------------------------------------------
-  if (espurna::time::ms() - _local_temp_last_update > LOCAL_TEMP_UPDATE_INTERVAL) {
-      _local_temp_last_update = espurna::time::ms();
-      display_local_temp();
-  }
-
-  //------------------------------------------------------------------------------
-  // Local temp
-  //------------------------------------------------------------------------------
-  if (espurna::time::ms() - _local_hum_last_update > LOCAL_HUM_UPDATE_INTERVAL) {
-      _local_hum_last_update = espurna::time::ms();
-      display_local_humidity();
-  }
-
-  //------------------------------------------------------------------------------
-  // Display update
-  //------------------------------------------------------------------------------
-  if (_display_need_refresh) {
-    espurna::time::yield();
-    display.display();
-    _display_need_refresh = false;
-  }
-}
-
-#endif // THERMOSTAT_DISPLAY_SUPPORT
 
 #if WEB_SUPPORT
 //------------------------------------------------------------------------------

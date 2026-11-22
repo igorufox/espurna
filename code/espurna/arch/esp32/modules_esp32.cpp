@@ -23,6 +23,9 @@ image, kind 1), and the maps stay. When they come out elsewhere at a boot the co
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <spi_flash_mmap.h>
+#include <esp_mmu_map.h>
+
+#include <algorithm>
 
 // arch/esp32/modules_pool_esp32.c: the IRAM pool of the modules (package version 7: their pool code)
 extern "C" uint32_t modulesPoolBase();
@@ -51,6 +54,7 @@ struct Region {
     uint32_t start { 0 };       // flash address where the Flash meter starts (app0: the head)
     uint32_t lo { 0 };          // first byte for modules (64 KB aligned: the start of the maps)
     uint32_t hi { 0 };          // the directory
+    uint32_t tail { 0 };        // where the tail behind the head starts: the initial image's modules file is there
     uint32_t irom { 0 };        // instruction view of `lo`
     uint32_t drom { 0 };        // data view of `lo`
     bool mapped { false };
@@ -104,27 +108,63 @@ bool findArea() {
     region.part = app;
     region.start = app->address;
     region.lo = roundUp(app->address + head, PageSize);
+    region.tail = region.lo;
     region.hi = app->address + app->size - SectorSize;
     return region.hi > region.lo;
 }
 
+// The area is the part of app0 behind the head that both buses can map: the instruction window (0x400D0000..
+// 0x40400000) and the data window are shared with the head's own maps, and app0 (3712 KB since the layout without
+// safeboot, 2026-11-18) is bigger than what is left of them (22.11: the whole tail did not map, "esp_mmu_map: no such
+// vaddr range", no module was ever installed). So the area is the top of the tail, as much as maps, in pages; the
+// modules sit at its top and the directory above it.
 bool mapArea() {
-    const void* ptr { nullptr };
-    spi_flash_mmap_handle_t handle;
-    const auto offset = region.lo - region.part->address;
-    const auto size = region.hi - region.lo;
-    if (esp_partition_mmap(region.part, offset, size, ESP_PARTITION_MMAP_INST, &ptr, &handle) != ESP_OK) {
-        return false;
-    }
-    region.irom = reinterpret_cast<uint32_t>(ptr);
+    const auto hi = region.hi;
 
-    if (esp_partition_mmap(region.part, offset, size, ESP_PARTITION_MMAP_DATA, &ptr, &handle) != ESP_OK) {
-        return false;
+    // the longest free run of each window: start there instead of failing map after map
+    size_t inst_free { 0 };
+    size_t data_free { 0 };
+    auto lo = region.lo;
+    if ((esp_mmu_map_get_max_consecutive_free_block_size(MMU_MEM_CAP_EXEC, MMU_TARGET_FLASH0, &inst_free) == ESP_OK)
+        && (esp_mmu_map_get_max_consecutive_free_block_size(MMU_MEM_CAP_READ, MMU_TARGET_FLASH0, &data_free) == ESP_OK))
+    {
+        const uint32_t fits = std::min(inst_free, data_free) & ~(PageSize - 1);
+        // lo is the start of a map page (the bases of the modules are page offsets of both views)
+        if (fits < (hi - lo)) {
+            lo = roundUp(hi - fits, PageSize);
+        }
     }
-    region.drom = reinterpret_cast<uint32_t>(ptr);
 
-    region.mapped = true;
-    return true;
+    for (; (lo + PageSize) <= hi; lo += PageSize) {
+        const auto offset = lo - region.part->address;
+        const auto size = hi - lo;
+
+        const void* inst { nullptr };
+        spi_flash_mmap_handle_t inst_handle;
+        if (esp_partition_mmap(region.part, offset, size, ESP_PARTITION_MMAP_INST, &inst, &inst_handle) != ESP_OK) {
+            continue;
+        }
+
+        const void* data { nullptr };
+        spi_flash_mmap_handle_t data_handle;
+        if (esp_partition_mmap(region.part, offset, size, ESP_PARTITION_MMAP_DATA, &data, &data_handle) != ESP_OK) {
+            spi_flash_munmap(inst_handle);
+            continue;
+        }
+
+        if (lo != region.lo) {
+            DEBUG_MSG_P(PSTR("[MODULES] Area 0x%08X..0x%08X (%u KB): what the flash maps can take, the tail starts at 0x%08X\n"),
+                lo, hi, (hi - lo) / 1024, region.lo);
+        }
+
+        region.lo = lo;
+        region.irom = reinterpret_cast<uint32_t>(inst);
+        region.drom = reinterpret_cast<uint32_t>(data);
+        region.mapped = true;
+        return true;
+    }
+
+    return false;
 }
 
 // esp_flash_write() aborts on any write into the running app partition (DANGEROUS_WRITE_ABORTS of the Arduino
@@ -186,7 +226,12 @@ Area area() {
         return Area{0, 0, 0};
     }
 
-    return Area{region.start, region.lo, region.hi};
+    Area out{region.start, region.lo, region.hi};
+    if (region.tail && (region.tail != region.lo)) {
+        out.initial = region.tail;
+    }
+
+    return out;
 }
 
 bool rawRead(uint32_t offset, void* data, size_t size) {
@@ -253,32 +298,10 @@ void listHead(::espurna::Output& out) {
 } // namespace modules
 } // namespace espurna
 
-// app_main(), before the heap is busy: the IRAM pool past the pool code of the installed modules goes to the heap
-// (MALLOC_CAP_EXEC | 32BIT, as ESP-IDF has it without the pool); the Apply plans the whole pool, its restart keeps
-// what it placed
-void modulesPoolSetup() {
-    using namespace espurna::modules;
-    const uint32_t base = modulesPoolBase();
-    const uint32_t end = modulesPoolEnd();
-    uint32_t used = base;
-
-    auto dir = boxed<Directory>();
-    if (dir && readDirectory(*dir)) {
-        for (size_t index = 0; index < dir->count; ++index) {
-            const auto& entry = dir->entries[index];
-            if (entry.pool_base && entry.code_size && ((entry.pool_base + entry.code_size) > used)) {
-                used = entry.pool_base + entry.code_size;
-            }
-        }
-    }
-
-    used = roundUp(used, 4);
-    if (used < end) {
-        const auto err = heap_caps_add_region(used, end);
-        if ((err != ESP_OK) && (err != ESP_ERR_INVALID_SIZE)) {
-            DEBUG_MSG_P(PSTR("[MODULES] IRAM pool: heap_caps_add_region %d\n"), err);
-        }
-    }
-}
+// The IRAM pool (modules_pool_esp32.c, _iram_end .. 0x400A0000) is the modules' alone: no part of it goes to the heap.
+// 22.11, the first run of the RTOS head (DevKit COM3): app_main() gave the pool past the installed pool code to the heap
+// (MALLOC_CAP_EXEC | 32BIT), and an Apply then wrote the pool code of new modules into what the heap owned; with it
+// the board crashed in the scheduler (vTaskSwitchContext, a PS word in a ready list), in coex of the Wi-Fi task, hung
+// in a spinlock - within seconds of an upload, minutes idle; without it 15 minutes idle with the modules on, clean.
 
 #endif // MODULES_SUPPORT && ESP32

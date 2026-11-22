@@ -1,6 +1,7 @@
 // -----------------------------------------------------------------------------
 // MAX6675 Sensor
-// Uses MAX6675_Thermocouple library
+// The converter read here: 16 bits clocked out of SO (no library, no Arduino emulation); it measures all the time,
+// a read takes the last result
 // Copyright (C) 2017-2019 by Xose Pérez <andrade dot luciano at gmail dot com>
 // -----------------------------------------------------------------------------
 
@@ -8,7 +9,7 @@
 
 #pragma once
 
-#include <MAX6675.h>
+#include "../pins.h"
 
 #include <vector>
 
@@ -54,12 +55,11 @@ class MAX6675Sensor : public BaseSensor {
 
             if (!_dirty) return;
 
-            if (_max) {
-                _max.reset(nullptr);
-            }
-
-            // MAX6675 Units to readout temp (0 = raw, 1 = ˚C, 2 = ˚F)
-            _max = std::make_unique<MAX6675>(_pin_cs, _pin_so, _pin_sck, 1);
+            espurna::pins::mode(_pin_cs, espurna::pins::Output);
+            espurna::pins::mode(_pin_so, espurna::pins::Input);
+            espurna::pins::mode(_pin_sck, espurna::pins::Output);
+            espurna::pins::write(_pin_sck, false);
+            espurna::pins::write(_pin_cs, true);
 
             _ready = true;
             _dirty = false;
@@ -71,7 +71,7 @@ class MAX6675Sensor : public BaseSensor {
             const auto now = TimeSource::now();
             if (now - _last_reading > ReadInterval) {
                 _last_reading = now;
-                _value = _max->read_temp();
+                _value = read();
             }
         }
 
@@ -95,7 +95,7 @@ class MAX6675Sensor : public BaseSensor {
 
         // Pre-read hook (usually to populate registers with up-to-date data)
         void pre() override {
-            _error = SENSOR_ERROR_OK;
+            _error = _open ? SENSOR_ERROR_OUT_OF_RANGE : SENSOR_ERROR_OK;
         }
 
         // Current value for slot # index
@@ -115,9 +115,28 @@ class MAX6675Sensor : public BaseSensor {
         unsigned char _pin_cs = MAX6675_CS_PIN;
         unsigned char _pin_so = MAX6675_SO_PIN;
         unsigned char _pin_sck = MAX6675_SCK_PIN;
-        bool _busy = false;
+        bool _open = false;
         double _value = 0;
-        std::unique_ptr<MAX6675> _max;
+
+        // CS low: D15 dummy, D14..D3 the temperature in 0.25 C, D2 high - the thermocouple is open
+        double read() {
+            espurna::pins::write(_pin_cs, false);
+            espurna::time::sleep_us(1);
+
+            uint16_t raw = 0;
+            for (int bit = 0; bit < 16; ++bit) {
+                espurna::pins::write(_pin_sck, true);
+                espurna::time::sleep_us(1);
+                raw = static_cast<uint16_t>((raw << 1) | (espurna::pins::read(_pin_so) ? 1 : 0));
+                espurna::pins::write(_pin_sck, false);
+                espurna::time::sleep_us(1);
+            }
+
+            espurna::pins::write(_pin_cs, true);
+
+            _open = (raw & 0x4) != 0;
+            return _open ? _value : static_cast<double>(raw >> 3) * 0.25;
+        }
 
 };
 

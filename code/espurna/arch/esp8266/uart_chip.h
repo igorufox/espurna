@@ -35,13 +35,17 @@ constexpr bool uart1_pins(uint8_t tx, uint8_t rx) {
     return (tx == 2) && (rx == GPIO_NONE);
 }
 
-inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert, size_t rx_buffer) {
-    const int number =
-        uart0_pins(tx, rx)
+// the UART of these pins, -1 when the chip has none there
+inline int number(uint8_t tx, uint8_t rx) {
+    return uart0_pins(tx, rx)
             ? 0 :
         uart1_pins(tx, rx)
             ? 1
             : -1;
+}
+
+inline Opened open(uint32_t baudrate, uint8_t tx, uint8_t rx, Config config, bool invert, size_t rx_buffer) {
+    const int number = hardware::number(tx, rx);
     if ((number < 0) || used(number)) {
         return Opened{nullptr, Type::Unknown};
     }

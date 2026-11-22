@@ -198,7 +198,8 @@ def build_bootloader():
     run([gcc] + expand(image["cflags"]) + ["-D" + define for define in image["defines"]]
         + ["-I" + path for path in expand(image["includes"])] + ["-c", BOOTLOADER_STEP, "-o", obj],
         "compile the bootloader step")
-    run([gcc, "-nostdlib", "-Wl,--gc-sections", "-mlongcalls", "-o", elf, obj,
+    # the XMC chips of the XM25QH..A series pass the SDK's startup check (espurna_rbl.c)
+    run([gcc, "-nostdlib", "-Wl,--gc-sections", "-mlongcalls", "-Wl,--wrap=bootloader_flash_xmc_startup", "-o", elf, obj,
          "-Wl,-Map=" + posix(os.path.join(SDK_OUT, "bootloader.map"))] + expand(image["link"]),
         "link the bootloader")
     run([sys.executable, ESPTOOL, "--chip", "esp8266", "elf2image", "--flash_mode", "dout", "--flash_freq", "40m",

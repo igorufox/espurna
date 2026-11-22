@@ -22,7 +22,7 @@ import sys
 import time
 
 TOOL = "bench_mqtt"
-BENCH_TOPIC_HINTS = ("D390FC", "79E12A", "4F3E20")  # 10.0.5.19, 10.0.5.58, 10.0.5.66 (chip id suffixes)
+BENCH_TOPIC_HINTS = ("D390FC", "79E12A", "4F3E20", "173F9C")  # 10.0.5.19, 10.0.5.58, 10.0.5.66, COM3 ESP32 DevKit (chip id suffixes)
 
 try:
     sys.stdout.reconfigure(errors="replace", line_buffering=True)
