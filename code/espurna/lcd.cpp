@@ -151,6 +151,12 @@ public:
         command(0x13);              // normal mode
         command(0x29);              // display on
 
+        // read back only when the controller answers its ID (an unwired SDO reads all ones: the M5Stack)
+        uint8_t id[4] {};
+        query(0x04, id, sizeof(id));
+        _readable = !((id[1] == 0xff) && (id[2] == 0xff) && (id[3] == 0xff))
+            && !((id[1] == 0x00) && (id[2] == 0x00) && (id[3] == 0x00));
+
         fill(0, 0, _width, _height, ScreenBlack);
         backlight(100);
         return true;
@@ -267,7 +273,7 @@ public:
     // RAMRD: 18 bits a pixel (R, G, B in the high 6 bits of a byte each) after a dummy byte, at a read clock the
     // controllers take (ILI934x: 6.6 MHz)
     bool read(int x, int y, int w, int h, uint16_t* out) override {
-        if ((w <= 0) || (h <= 0) || (x < 0) || (y < 0) || (x + w > _width) || (y + h > _height)) {
+        if (!_readable || (w <= 0) || (h <= 0) || (x < 0) || (y < 0) || (x + w > _width) || (y + h > _height)) {
             return false;
         }
 
@@ -311,6 +317,23 @@ public:
         select(false);
         chip::spi_config(_config.frequency, 0, true);
         return true;
+    }
+
+    // a read command's answer (RDDID 0x04, RDDST 0x09 ...): `size` bytes after the command, at the read clock
+    void query(uint8_t cmd, uint8_t* out, size_t size) {
+        chip::spi_config(_config.frequency, 0, true);
+        select(true);
+        espurna::pins::write(_config.dc, false);
+        chip::spi_transfer(&cmd, nullptr, 1);
+        espurna::pins::write(_config.dc, true);
+        chip::spi_config(ReadFrequency, 0, true);
+        alignas(4) uint8_t zero[16] {};
+        alignas(4) uint8_t in[16] {};
+        size = std::min(size, sizeof(in));
+        chip::spi_transfer(zero, in, size);
+        std::memcpy(out, in, size);
+        select(false);
+        chip::spi_config(_config.frequency, 0, true);
     }
 
     void power(bool on) override {
@@ -391,6 +414,7 @@ private:
     int _height { 0 };
     uint8_t _brightness { 100 };
     bool _pwm { false };
+    bool _readable { false };
 };
 
 Panel* panel { nullptr };
@@ -519,11 +543,53 @@ bool on_key_check(espurna::StringView key, espurna::json::Value) {
 } // namespace lcd
 } // namespace espurna
 
+#if TERMINAL_SUPPORT
+namespace espurna {
+namespace lcd {
+namespace {
+
+PROGMEM_STRING(LcdId, "LCD.ID");
+
+// LCD.ID: what the controller answers to its read commands (whether it is read at all: the MISO line), and the first
+// pixels of its video memory
+void terminal_id(::terminal::CommandContext&& ctx) {
+    if (!panel) {
+        terminalError(ctx, STRING_VIEW("no panel"));
+        return;
+    }
+
+    static constexpr uint8_t Commands[] { 0x04, 0x09, 0x0a, 0x0c, 0xd3, 0xda, 0xdb, 0xdc };
+    for (const auto cmd : Commands) {
+        uint8_t out[5] {};
+        panel->query(cmd, out, sizeof(out));
+        ctx.output.printf_P(PSTR("0x%02X: %02X %02X %02X %02X %02X\n"), cmd, out[0], out[1], out[2], out[3], out[4]);
+    }
+
+    uint16_t pixels[4] {};
+    const bool read = panel->read(0, 0, 4, 1, pixels);
+    ctx.output.printf_P(PSTR("pixels (0,0): %s %04X %04X %04X %04X\n"), read ? "read" : "no read", pixels[0], pixels[1],
+        pixels[2], pixels[3]);
+    terminalOK(ctx);
+}
+
+static constexpr ::terminal::Command Commands[] PROGMEM {
+    {LcdId, terminal_id},
+};
+
+} // namespace
+} // namespace lcd
+} // namespace espurna
+#endif
+
 void lcdSetup() {
     using namespace espurna::lcd;
 
     // the pins and the controller at boot only: a change applies after a reboot
     start();
+
+#if TERMINAL_SUPPORT
+    espurna::terminal::add(Commands);
+#endif
 
 #if WEB_SUPPORT
     wsRegister()

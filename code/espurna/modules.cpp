@@ -3410,6 +3410,28 @@ bool modulesRunning() {
 
 namespace {
 
+} // namespace
+
+uint32_t modulesDataBottom() {
+    using namespace espurna::modules;
+    auto dir = boxed<Directory>();
+    if (!dir || !readDirectory(*dir)) {
+        return 0;
+    }
+
+    uint32_t out = 0;
+    for (size_t index = 0; index < dir->count; ++index) {
+        const auto& entry = dir->entries[index];
+        if (entry.data_size && (!out || (entry.data_offset < out))) {
+            out = entry.data_offset;
+        }
+    }
+
+    return out;
+}
+
+namespace {
+
 // the data of the module of that name (Entry::data_offset, data_size): false - none
 bool modulesDataPlace(const char* name, uint32_t& offset, uint32_t& size) {
     using namespace espurna::modules;

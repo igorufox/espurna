@@ -93,6 +93,18 @@ const char* begin(const uint8_t* data, size_t len, size_t) {
         espurna_rbl_set_package_at(&header, top_at);
     }
 
+    // 1 MB: the package right under the header sector is where the Apply keeps the data of the modules
+    // (modulesData(): the tile pages of the screen module) - written over it the data is gone. The bootloader reads a
+    // package named in the header as the one of the top zone (2 MB and more), so on 1 MB it can not go under the data
+    // instead: refused (2 MB and more: the data is in Area::upper, the package in the top zone, nothing is lost)
+    if (!top_at) {
+        const uint32_t data_at = modulesDataBottom();
+        if (data_at && (data_at < ESPURNA_RBL_HEADER_AT)) {
+            return PSTR("ERROR: The package goes where the modules keep their data (the screen module's pages): "
+                "MODULES.REMOVE that module, update, then install it and upload its data again");
+        }
+    }
+
     error = espurna_rbl_check(&header);
     if (error) {
         return error;

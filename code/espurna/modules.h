@@ -245,6 +245,11 @@ bool modulesDataRead(const char* name, uint32_t at, void* data, size_t len);
 bool modulesDataWrite(const char* name, uint32_t at, const void* data, size_t len);
 bool modulesDataErase(const char* name, uint32_t at, size_t len);
 
+// the lowest flash offset of the modules' data (the top of the area), 0 - no module has data. A head update keeps its
+// package under it (ota_esp32.cpp, ota_esp8266.cpp): the data stays across a new head (the tile pages of the screen
+// module, /nspanel.json)
+uint32_t modulesDataBottom();
+
 // the same data as plain memory (the mapped flash: read in place, any byte, writes above show at once), nullptr - the
 // chip cannot give that (its data is then only read with modulesDataRead())
 const uint8_t* modulesDataView(const char* name);

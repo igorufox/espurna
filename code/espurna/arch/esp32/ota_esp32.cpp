@@ -20,6 +20,7 @@ package (its boot sectors are stored deflate blocks), after the header; the new 
 #include "ota_rbl.h"
 #include "rbl_esp32.h"
 
+#include "../../modules.h"
 #include "../../modules_core.h"
 
 #include <chip_sdk.h>
@@ -178,6 +179,20 @@ const char* begin(const uint8_t* data, size_t len, size_t) {
             : PSTR("ERROR: Not an RBL of this chip (the head of espurna-esp32.ota)");
     }
 
+    // the package under the data of the modules (modulesData(): the tile pages of the screen module), named in the
+    // header: right under the header sector it was written over that data and the data was gone after a head update.
+    // The bootloader's zone for the old head ends at the package's top (zone_top()), under the data too
+    uint32_t limit = ESPURNA_RBL_HEADER_AT;
+    const uint32_t data_at = modulesDataBottom();
+    if (data_at && (data_at < limit)) {
+        const uint32_t size = espurna_rbl_round(header.data_size);
+        if (size >= data_at) {
+            return PSTR("ERROR: The package does not fit under the data of the modules");
+        }
+        espurna_rbl_set_package_at(&header, data_at - size);
+        limit = data_at;
+    }
+
     error = espurna_rbl_check(&header);
     if (error) {
         return error;
@@ -196,7 +211,7 @@ const char* begin(const uint8_t* data, size_t len, size_t) {
     const rbl::Place place {
         .header = ESPURNA_RBL_HEADER_AT,
         .package = package_at,
-        .limit = ESPURNA_RBL_HEADER_AT,
+        .limit = limit,
     };
 
     error = current->begin(Flash, header, place);
