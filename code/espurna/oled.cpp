@@ -2,39 +2,20 @@
 
 OLED MODULE
 
-The small I2C screen of a board: SSD1306 or SH1106 on the bus of the i2c module (i2cSDA / i2cSCL), everything else in
-the settings, nothing fixed per board:
+The small I2C screen of a board: SSD1306 or SH1106 on the bus of the i2c module (i2cSDA / i2cSCL), a panel of the
+screen module (screen.h: what it shows, the lines, the QR page, blanking, the WebUI mirror are all there). Here only the
+controller and its settings, nothing fixed per board:
 
   oledType    ssd1306 | sh1106                       (ssd1306)
   oledAddr    the address on the bus, 60 or 0x3c       (0x3c)
   oledRst     the reset pin of the panel, held high    (none; Heltec WiFi Kit 32: 16)
   oledSize    128x64 | 128x32 | 64x48 | 64x32          (128x64)
   oledFlip    turned by 180 degrees                    (0)
-  oledFont    10 | 16 | 24, the height of a line       (16)
-  oledBright  0..255                                   (as the panel starts)
-  oledOff     seconds to blank the screen, 0 - never   (0; the button action "display-on" wakes it)
-  oledPage    seconds a page stays                     (5)
-  oledLbl0..7 the label of a line, on the left
-  oledSrc0..7 what the line shows, on the right:
-                time | date | datetime | ip | ssid | rssi | host | uptime | heap | wifi | mqtt
-                relay:<id>             ON / OFF of the relay
-                sensor:<index>         a magnitude with its units, sensor:<type> - the first of the type (temperature)
-                mqtt:<topic>[#<key>]   the last payload of the topic (the full topic, + and # work), a key of its JSON
-              a line with a label and no source is the label alone; the lines that do not fit are the next pages
 
-  oledMatter  the Matter pairing QR code while its window is open   (1)
-
-The QR page: while the pairing window of the matter module is open (MATTER.WINDOW, the MATTER panel, a controller
-asking) the screen shows the QR code of the pairing payload on the left and the manual code on the right instead of
-the lines, a blanked screen wakes up for it; the matter module is reached through the head (matterWindowOpen(),
-matterPairingCodes()), without it there is no window and no page. `OLED.QR` shows the Matter code for a minute whatever
-the window, `OLED.QR <text>` a QR code of the text, `OLED.QR off` the lines again. The codes carry the setup passcode:
-drawn on the screen and the WebUI mirror (the owner's screens, as the MATTER panel), never kept, printed or logged.
-
-The terminal `OLED` prints what the screen shows (its pixels), the OLED panel of the WebUI draws it (oledMirror).
+The terminal `OLED` prints what the screen shows (its pixels; not the QR page).
 
 No Arduino layer: the controller commands go out with i2c_write() of the chip (arch/rtos/chip_sdk.h) on the bus the
-i2c module started, the pixels are drawn here (the fonts: oled_fonts.h), only the changed pages of 8 rows are sent.
+i2c module started; the screen module draws into the pixel buffer here, only the changed pages of 8 rows are sent.
 
 */
 
@@ -42,37 +23,25 @@ i2c module started, the pixels are drawn here (the fonts: oled_fonts.h), only th
 
 #if OLED_SUPPORT
 
-#include "espurna_matter.h"
-#include "espurna_wifi.h"
-#include "json.h"
-#include "mqtt.h"
-#include "ntp.h"
+#include "gpio.h"
 #include "oled.h"
-#include "oled_fonts.h"
 #include "pins.h"
-#include "relay.h"
-#include "sensor.h"
+#include "screen.h"
+
+#if WEB_SUPPORT
+#include "json.h"
 #include "ws.h"
+#endif
 
 #include <chip_sdk.h>
-#include <qrcode.h>
 
-#include <cctype>
-#include <cmath>
 #include <cstring>
-#include <ctime>
-#include <iterator>
 #include <memory>
 #include <new>
 
 namespace espurna {
 namespace oled {
 namespace {
-
-static constexpr size_t Lines { 8 };
-
-PROGMEM_STRING(LabelKey, "oledLbl");
-PROGMEM_STRING(SourceKey, "oledSrc");
 
 enum class Geometry {
     W128H64,
@@ -81,17 +50,19 @@ enum class Geometry {
     W64H32,
 };
 
-enum class Align {
-    Left,
-    Center,
-    Right,
-};
-
 namespace chip = ::espurna::core::chip;
+
+// a colour of the screen lights a pixel when it is brighter than half (the luma of its 8-bit channels)
+bool lit(uint16_t colour) {
+    const int r = ((colour >> 11) & 0x1f) << 3;
+    const int g = ((colour >> 5) & 0x3f) << 2;
+    const int b = (colour & 0x1f) << 3;
+    return (r * 30 + g * 59 + b * 11) >= (128 * 100);
+}
 
 // SSD1306 / SH1106 on I2C: the commands after a 0x00 control byte, the pixels after 0x40. The pixel buffer as the
 // controllers keep it: a byte is a column of 8 rows (the lowest bit on top), the pages of 8 rows one after the other
-class Screen {
+class Panel final : public ScreenPanel {
 public:
     static constexpr size_t Max { 128 * 64 / 8 };
 
@@ -145,110 +116,56 @@ public:
             return false;
         }
 
-        clear();
-        resend();
+        std::memset(_pixels, 0, sizeof(_pixels));
+        std::memset(_sent, 0xff, sizeof(_sent));
         flush();
 
         return on(true);
     }
 
-    bool on(bool value) {
-        const uint8_t command { static_cast<uint8_t>(value ? 0xaf : 0xae) };
-        return commands(&command, 1);
+    const char* name() const override {
+        return _sh1106 ? "sh1106" : "ssd1306";
     }
 
-    void brightness(uint8_t value) {
-        const uint8_t command[] { 0x81, value };
-        commands(command, sizeof(command));
-    }
-
-    int width() const {
+    int width() const override {
         return _width;
     }
 
-    int height() const {
+    int height() const override {
         return _height;
     }
 
-    const uint8_t* pixels() const {
-        return _pixels;
+    bool colour() const override {
+        return false;
     }
 
-    void clear() {
-        std::memset(_pixels, 0, sizeof(_pixels));
-    }
-
-    void set(int x, int y) {
-        if ((x < 0) || (y < 0) || (x >= _width) || (y >= _height)) {
-            return;
-        }
-
-        _pixels[x + (y / 8) * _width] |= static_cast<uint8_t>(1 << (y & 7));
-    }
-
-    bool get(int x, int y) const {
-        return (_pixels[x + (y / 8) * _width] >> (y & 7)) & 1;
-    }
-
-    // the width of the text in pixels with that font
-    static int text_width(const uint8_t* font, espurna::StringView text) {
-        int out = 0;
-        each_char(text, [&](uint8_t code) {
-            out += glyph_width(font, code);
-        });
-
-        return out;
-    }
-
-    void text(int x, int y, const uint8_t* font, espurna::StringView value, Align align) {
-        switch (align) {
-        case Align::Left:
-            break;
-        case Align::Center:
-            x -= text_width(font, value) / 2;
-            break;
-        case Align::Right:
-            x -= text_width(font, value);
-            break;
-        }
-
-        const uint8_t height = pgm_read_byte(&font[1]);
-        const uint8_t first = pgm_read_byte(&font[2]);
-        const uint8_t count = pgm_read_byte(&font[3]);
-        const int raster = (height + 7) / 8;
-        const uint8_t* table = &font[4];
-        const uint8_t* data = &font[4 + count * 4];
-
-        each_char(value, [&](uint8_t code) {
-            if ((code < first) || (code >= first + count)) {
-                return;
+    void fill(int x, int y, int w, int h, uint16_t colour) override {
+        const bool value = lit(colour);
+        for (int row = y; row < y + h; ++row) {
+            for (int column = x; column < x + w; ++column) {
+                set(column, row, value);
             }
+        }
+    }
 
-            const uint8_t* entry = &table[(code - first) * 4];
-            const uint16_t offset = static_cast<uint16_t>(
-                (pgm_read_byte(&entry[0]) << 8) | pgm_read_byte(&entry[1]));
-            const uint8_t size = pgm_read_byte(&entry[2]);
-            const uint8_t advance = pgm_read_byte(&entry[3]);
-
-            if (offset != 0xffff) {
-                for (int index = 0; index < size; ++index) {
-                    const uint8_t bits = pgm_read_byte(&data[offset + index]);
-                    const int column = x + index / raster;
-                    const int row = y + (index % raster) * 8;
-                    for (int bit = 0; bit < 8; ++bit) {
-                        if (bits & (1 << bit)) {
-                            set(column, row + bit);
-                        }
-                    }
+    void bits(int x, int y, int w, int h, const uint8_t* rows, uint16_t fore, int32_t back) override {
+        const bool on = lit(fore);
+        const bool off = (back >= 0) && lit(static_cast<uint16_t>(back));
+        const int stride = (w + 7) / 8;
+        for (int row = 0; row < h; ++row) {
+            const uint8_t* line = rows + row * stride;
+            for (int column = 0; column < w; ++column) {
+                if ((line[column / 8] >> (7 - (column % 8))) & 1) {
+                    set(x + column, y + row, on);
+                } else if (back >= 0) {
+                    set(x + column, y + row, off);
                 }
             }
-
-            x += advance;
-        });
+        }
     }
 
     // the pages of 8 rows that changed since the last time go to the screen
-    void flush() {
+    void flush() override {
         const int pages = (_height + 7) / 8;
         for (int page = 0; page < pages; ++page) {
             const auto* row = &_pixels[page * _width];
@@ -265,34 +182,48 @@ public:
         }
     }
 
-    // the panel is sent all of its pixels again at the next flush()
-    void resend() {
-        std::memset(_sent, 0xff, sizeof(_sent));
+    void power(bool value) override {
+        on(value);
+    }
+
+    void brightness(uint8_t percent) override {
+        const uint8_t command[] { 0x81, static_cast<uint8_t>((static_cast<unsigned>(percent) * 255u) / 100u) };
+        commands(command, sizeof(command));
+    }
+
+    // from the buffer: what was sent is what it shows
+    bool read(int x, int y, int w, int h, uint16_t* out) override {
+        if ((x < 0) || (y < 0) || (x + w > _width) || (y + h > _height)) {
+            return false;
+        }
+
+        for (int row = y; row < y + h; ++row) {
+            for (int column = x; column < x + w; ++column) {
+                *out++ = get(column, row) ? 0xffff : 0x0000;
+            }
+        }
+
+        return true;
+    }
+
+    bool get(int x, int y) const {
+        return (_pixels[x + (y / 8) * _width] >> (y & 7)) & 1;
     }
 
 private:
-    template <typename T>
-    static void each_char(espurna::StringView text, T&& callback) {
-        // UTF-8 of U+00A0..U+00FF to the Latin-1 codes of the fonts, the other multi-byte chars left out
-        for (size_t index = 0; index < text.length(); ++index) {
-            const auto code = static_cast<uint8_t>(text[index]);
-            if (code < 0x80) {
-                callback(code);
-            } else if (((code == 0xc2) || (code == 0xc3)) && (index + 1 < text.length())) {
-                const auto next = static_cast<uint8_t>(text[++index]);
-                callback(static_cast<uint8_t>((code == 0xc3) ? (next + 0x40) : next));
-            }
-        }
+    bool on(bool value) {
+        const uint8_t command { static_cast<uint8_t>(value ? 0xaf : 0xae) };
+        return commands(&command, 1);
     }
 
-    static int glyph_width(const uint8_t* font, uint8_t code) {
-        const uint8_t first = pgm_read_byte(&font[2]);
-        const uint8_t count = pgm_read_byte(&font[3]);
-        if ((code < first) || (code >= first + count)) {
-            return 0;
+    void set(int x, int y, bool value) {
+        if ((x < 0) || (y < 0) || (x >= _width) || (y >= _height)) {
+            return;
         }
 
-        return pgm_read_byte(&font[4 + (code - first) * 4 + 3]);
+        auto& byte = _pixels[x + (y / 8) * _width];
+        const auto mask = static_cast<uint8_t>(1 << (y & 7));
+        byte = value ? (byte | mask) : (byte & ~mask);
     }
 
     bool send(uint8_t control, const uint8_t* values, size_t size) {
@@ -346,47 +277,21 @@ private:
     uint8_t _sent[Max] {};
 };
 
-struct Line {
-    espurna::string label;
-    espurna::string source;
-    espurna::string mqtt_topic;
-    espurna::string mqtt_key;
-    espurna::string mqtt_value;
-};
-
 struct Config {
     bool sh1106 { false };
     uint8_t address { 0x3c };
     unsigned char reset { GPIO_NONE };
     Geometry geometry { Geometry::W128H64 };
     bool flip { false };
-    int font { 16 };
-    int brightness { -1 };
-    uint32_t off_ms { 0 };
-    uint32_t page_ms { 5000 };
-    bool matter { true };
 };
 
 struct State {
     Config config;
-    std::unique_ptr<Screen> display;
-    Line lines[Lines];
-    size_t page { 0 };
-    uint32_t page_since { 0 };
-    uint32_t on_since { 0 };
-    uint32_t last_draw { 0 };
-    bool on { true };
-    espurna::string drawn;
-    bool mirror_dirty { true };
-    // OLED.QR: the QR page for a minute, of qr_text or (empty) of the Matter codes
-    bool qr_manual { false };
-    uint32_t qr_since { 0 };
-    espurna::string qr_text;
+    std::unique_ptr<Panel> panel;
+    bool registered { false };
 };
 
 State state;
-
-// --- settings
 
 Geometry parse_geometry(const espurna::string& value) {
     if (value.equals(STRING_VIEW("128x32"))) {
@@ -414,491 +319,7 @@ Config read_config() {
     out.geometry = parse_geometry(getSetting("oledSize"));
     out.flip = getSetting("oledFlip", false);
 
-    const auto font = getSetting("oledFont", 16);
-    out.font = (font <= 10) ? 10 : (font >= 24) ? 24 : 16;
-
-    out.brightness = getSetting("oledBright", -1);
-    out.off_ms = getSetting("oledOff", 0ul) * 1000ul;
-    out.page_ms = std::max(1ul, getSetting("oledPage", 5ul)) * 1000ul;
-    out.matter = getSetting("oledMatter", true);
-
     return out;
-}
-
-void read_lines() {
-    for (size_t index = 0; index < Lines; ++index) {
-        auto& line = state.lines[index];
-        line.label = getSetting({LabelKey, index});
-        line.source = getSetting({SourceKey, index});
-        line.source.trim();
-
-        line.mqtt_topic = espurna::string();
-        line.mqtt_key = espurna::string();
-        line.mqtt_value = espurna::string();
-
-        if (line.source.startsWith(STRING_VIEW("mqtt:"))) {
-            auto topic = line.source.substring(5);
-            const auto hash = topic.lastIndexOf('#');
-            // `#` alone at the end is the wildcard of MQTT, `#key` after a `/`-less tail is the key of the JSON
-            if ((hash > 0) && (static_cast<size_t>(hash) + 1 < topic.length()) && (topic[hash - 1] != '/')) {
-                line.mqtt_key = topic.substring(hash + 1);
-                topic = topic.substring(0, hash);
-            }
-            line.mqtt_topic = topic;
-        }
-    }
-}
-
-// --- what a line shows
-
-const uint8_t* font_data(int font) {
-    switch (font) {
-    case 10:
-        return fonts::Arial10;
-    case 24:
-        return fonts::Arial24;
-    }
-
-    return fonts::Arial16;
-}
-
-int line_pitch(int font) {
-    switch (font) {
-    case 10:
-        return 12;
-    case 24:
-        return 28;
-    }
-
-    return 16;
-}
-
-espurna::string two(int value) {
-    espurna::string out;
-    if (value < 10) {
-        out += '0';
-    }
-    out += espurna::string(value);
-    return out;
-}
-
-bool local_time(tm& out) {
-#if NTP_SUPPORT
-    if (!ntpSynced()) {
-        return false;
-    }
-#endif
-    const auto now = ::time(nullptr);
-    if (now < 1000000000) {
-        return false;
-    }
-
-    localtime_r(&now, &out);
-    return true;
-}
-
-espurna::string sensor_value(espurna::StringView spec) {
-#if SENSOR_SUPPORT
-    const size_t count = magnitudeCount();
-    size_t index = count;
-
-    const auto text = spec.toString();
-    if (text.length() && isdigit(static_cast<unsigned char>(text[0]))) {
-        index = static_cast<size_t>(text.toInt());
-    } else {
-        for (size_t magnitude = 0; magnitude < count; ++magnitude) {
-            if (magnitudeTypeTopic(magnitudeType(magnitude)).equalsIgnoreCase(text)) {
-                index = magnitude;
-                break;
-            }
-        }
-    }
-
-    if (index >= count) {
-        return STRING_VIEW("?").toString();
-    }
-
-    const auto value = magnitudeValue(index);
-    if (std::isnan(value.value)) {
-        return STRING_VIEW("?").toString();
-    }
-
-    auto out = value.repr;
-    const auto units = magnitudeUnitsName(value.units);
-    if (units.length() && !units.equals(STRING_VIEW("none"))) {
-        out += ' ';
-        out += units;
-    }
-
-    return out;
-#else
-    return STRING_VIEW("?").toString();
-#endif
-}
-
-espurna::string uptime_text() {
-    const auto seconds = systemUptime().count();
-    const auto days = seconds / 86400;
-    espurna::string out;
-    if (days) {
-        out += espurna::string(static_cast<unsigned long>(days));
-        out += STRING_VIEW("d ");
-    }
-    out += two(static_cast<int>((seconds / 3600) % 24));
-    out += ':';
-    out += two(static_cast<int>((seconds / 60) % 60));
-    return out;
-}
-
-espurna::string value_of(const Line& line) {
-    const auto& source = line.source;
-    if (!source.length()) {
-        return espurna::string();
-    }
-
-    tm t{};
-    if (source.equals(STRING_VIEW("time"))) {
-        return local_time(t)
-            ? two(t.tm_hour) + ':' + two(t.tm_min)
-            : STRING_VIEW("--:--").toString();
-    }
-
-    if (source.equals(STRING_VIEW("date"))) {
-        return local_time(t)
-            ? two(t.tm_mday) + '.' + two(t.tm_mon + 1) + '.' + espurna::string(t.tm_year + 1900)
-            : STRING_VIEW("--.--").toString();
-    }
-
-    if (source.equals(STRING_VIEW("datetime"))) {
-        return local_time(t)
-            ? two(t.tm_mday) + '.' + two(t.tm_mon + 1) + ' ' + two(t.tm_hour) + ':' + two(t.tm_min)
-            : STRING_VIEW("--.-- --:--").toString();
-    }
-
-    if (source.equals(STRING_VIEW("ip"))) {
-        if (!wifiConnected()) {
-            return STRING_VIEW("-").toString();
-        }
-        char ip[16];
-        wifiStaIp().toString(ip, sizeof(ip));
-        return espurna::string(ip);
-    }
-
-    if (source.equals(STRING_VIEW("ssid"))) {
-        return wifiStaSsid();
-    }
-
-    if (source.equals(STRING_VIEW("rssi"))) {
-        return wifiConnected()
-            ? espurna::string(static_cast<int>(wifiStaRssi())) + STRING_VIEW(" dBm")
-            : STRING_VIEW("-").toString();
-    }
-
-    if (source.equals(STRING_VIEW("host"))) {
-        return systemHostname();
-    }
-
-    if (source.equals(STRING_VIEW("uptime"))) {
-        return uptime_text();
-    }
-
-    if (source.equals(STRING_VIEW("heap"))) {
-        return espurna::string(static_cast<unsigned long>(systemFreeHeap() / 1024)) + STRING_VIEW(" KB");
-    }
-
-    if (source.equals(STRING_VIEW("wifi"))) {
-        return wifiConnected() ? STRING_VIEW("on").toString() : STRING_VIEW("off").toString();
-    }
-
-    if (source.equals(STRING_VIEW("mqtt"))) {
-        return mqttConnected() ? STRING_VIEW("on").toString() : STRING_VIEW("off").toString();
-    }
-
-    if (source.startsWith(STRING_VIEW("relay:"))) {
-#if RELAY_SUPPORT
-        const auto id = static_cast<size_t>(source.substring(6).toInt());
-        switch (relayStatus(id)) {
-        case RelayStatus::On:
-            return STRING_VIEW("ON").toString();
-        case RelayStatus::Off:
-            return STRING_VIEW("OFF").toString();
-        case RelayStatus::NotReady:
-        case RelayStatus::NotAvailable:
-            break;
-        }
-#endif
-        return STRING_VIEW("-").toString();
-    }
-
-    if (source.startsWith(STRING_VIEW("sensor:"))) {
-        return sensor_value(source.view().slice(7));
-    }
-
-    if (line.mqtt_topic.length()) {
-        return line.mqtt_value.length() ? line.mqtt_value : STRING_VIEW("?").toString();
-    }
-
-    return STRING_VIEW("?").toString();
-}
-
-// --- the screen
-
-size_t rows() {
-    if (!state.display) {
-        return 1;
-    }
-
-    return std::max<size_t>(1, static_cast<size_t>(state.display->height() / line_pitch(state.config.font)));
-}
-
-size_t used_lines(size_t* out) {
-    size_t count = 0;
-    for (size_t index = 0; index < Lines; ++index) {
-        const auto& line = state.lines[index];
-        if (line.label.length() || line.source.length()) {
-            out[count++] = index;
-        }
-    }
-
-    return count;
-}
-
-// --- the QR page: the Matter pairing code while its window is open (oledMatter), or OLED.QR
-
-// ECC low, versions 1..5: a 22 character MT: payload is version 1 (21 x 21)
-static constexpr uint8_t QrVersionMax { 5 };
-static constexpr uint16_t QrAlphanumericLow[QrVersionMax] { 25, 47, 77, 114, 154 };
-static constexpr uint16_t QrBytesLow[QrVersionMax] { 17, 32, 53, 78, 106 };
-static constexpr int QrSizeMax { 17 + 4 * QrVersionMax };
-static constexpr size_t QrBufferSize { ((QrSizeMax * QrSizeMax) + 7) / 8 };
-static constexpr uint32_t QrManualMs { 60000 };
-
-uint8_t qr_version(const char* text) {
-    bool alphanumeric = true;
-    for (const char* p = text; *p; ++p) {
-        const char c = *p;
-        if (!((c >= '0') && (c <= '9')) && !((c >= 'A') && (c <= 'Z')) && !std::strchr(" $%*+-./:", c)) {
-            alphanumeric = false;
-            break;
-        }
-    }
-
-    const auto length = std::strlen(text);
-    const auto* capacity = alphanumeric ? QrAlphanumericLow : QrBytesLow;
-    for (uint8_t index = 0; index < QrVersionMax; ++index) {
-        if (length <= capacity[index]) {
-            return index + 1;
-        }
-    }
-
-    return 0;
-}
-
-// the code on the left, as large as the height takes it (white with its quiet zone, the dark modules off), the
-// lines of text on the right in the small font. false - the text does not fit a QR code up to version 5
-bool draw_qr(Screen& display, const char* payload, const char* const* lines, size_t count) {
-    const auto version = qr_version(payload);
-    uint8_t buffer[QrBufferSize];
-    QRCode code;
-    if (!version || (qrcode_initText(&code, buffer, version, ECC_LOW, payload) != 0)) {
-        return false;
-    }
-
-    // a quiet zone of 4 modules where the screen takes it, else 2
-    int quiet = 4;
-    int module = display.height() / (code.size + 2 * quiet);
-    if (module < 1) {
-        quiet = 2;
-        module = std::max(1, display.height() / (code.size + 2 * quiet));
-    }
-
-    const int side = (code.size + 2 * quiet) * module;
-    const int top = (display.height() - side) / 2;
-
-    display.clear();
-    for (int y = 0; y < side; ++y) {
-        for (int x = 0; x < side; ++x) {
-            const int qx = x / module - quiet;
-            const int qy = y / module - quiet;
-            const bool dark = (qx >= 0) && (qy >= 0) && (qx < code.size) && (qy < code.size)
-                && qrcode_getModule(&code, static_cast<uint8_t>(qx), static_cast<uint8_t>(qy));
-            if (!dark) {
-                display.set(x, top + y);
-            }
-        }
-    }
-
-    std::memset(buffer, 0, sizeof(buffer));
-
-    const int left = side + 4;
-    for (size_t index = 0; index < count; ++index) {
-        display.text(left, static_cast<int>(index) * 12, fonts::Arial10, espurna::StringView(lines[index]), Align::Left);
-    }
-
-    return true;
-}
-
-// true - the QR page is on the screen (the lines wait)
-bool draw_qr_page(Screen& display) {
-    const uint32_t now = espurna::time::ms();
-    const bool manual = state.qr_manual && (now - state.qr_since < QrManualMs);
-    if (!manual) {
-        state.qr_manual = false;
-        state.qr_text = espurna::string();
-    }
-
-    const bool window = state.config.matter && matterWindowOpen();
-    if (!manual && !window) {
-        return false;
-    }
-
-    // drawn once: the key has no payload (the codes carry the setup passcode, they are never kept)
-    const auto key = state.qr_text.length()
-        ? espurna::string("\x01qr:text:") + espurna::string(static_cast<unsigned long>(state.qr_text.length()))
-        : espurna::string("\x01qr:matter");
-    if (key.equals(state.drawn)) {
-        return true;
-    }
-
-    bool drawn = false;
-    if (state.qr_text.length()) {
-        const char* lines[] { "QR" };
-        drawn = draw_qr(display, state.qr_text.c_str(), lines, 1);
-    } else {
-        char payload[32] {};
-        char code[24] {};
-        if (matterPairingCodes(payload, sizeof(payload), code, sizeof(code))) {
-            // "34970112332" -> "3497-011" and "2332" (the width of the right side), as the controller apps print it
-            char first[12] {};
-            char second[12] {};
-            if (std::strlen(code) == 11) {
-                snprintf_P(first, sizeof(first), PSTR("%.4s-%.3s"), code, code + 4);
-                snprintf_P(second, sizeof(second), PSTR("%.4s"), code + 7);
-            } else {
-                snprintf_P(first, sizeof(first), PSTR("%.10s"), code);
-                snprintf_P(second, sizeof(second), PSTR("%.10s"), (std::strlen(code) > 10) ? code + 10 : "");
-            }
-
-            const char* lines[] { "Matter", first, second };
-            drawn = draw_qr(display, payload, lines, std::size(lines));
-            std::memset(payload, 0, sizeof(payload));
-            std::memset(code, 0, sizeof(code));
-            std::memset(first, 0, sizeof(first));
-            std::memset(second, 0, sizeof(second));
-        }
-    }
-
-    if (!drawn) {
-        display.clear();
-        const char* message = state.qr_text.length() ? "QR: too long" : "Matter: no codes";
-        display.text(0, 0, fonts::Arial10, espurna::StringView(message), Align::Left);
-    }
-
-    state.drawn = key;
-    display.flush();
-    state.mirror_dirty = true;
-    return true;
-}
-
-void draw() {
-    auto& display = *state.display;
-
-    if (draw_qr_page(display)) {
-        return;
-    }
-
-    size_t used[Lines];
-    const auto count = used_lines(used);
-    const auto per_page = rows();
-    const auto pages = std::max<size_t>(1, (count + per_page - 1) / per_page);
-    if (state.page >= pages) {
-        state.page = 0;
-    }
-
-    // what the page says: drawn again only when it changed
-    espurna::string text;
-    espurna::string values[Lines];
-    for (size_t row = 0; (row < per_page) && (row < Lines); ++row) {
-        const auto position = state.page * per_page + row;
-        if (position >= count) {
-            break;
-        }
-
-        const auto& line = state.lines[used[position]];
-        values[row] = value_of(line);
-        text += line.label;
-        text += '\t';
-        text += values[row];
-        text += '\n';
-    }
-
-    if (!count) {
-        text = systemHostname();
-    }
-
-    text += espurna::string(static_cast<unsigned long>(state.page));
-    if (text.equals(state.drawn)) {
-        return;
-    }
-
-    state.drawn = text;
-
-    display.clear();
-    const auto* font = font_data(state.config.font);
-    const int width = display.width();
-    const int pitch = line_pitch(state.config.font);
-
-    if (!count) {
-        // nothing set yet: the name of the board, so the screen shows it is alive
-        const auto host = systemHostname();
-        display.text(width / 2, 0, font, host.view(), Align::Center);
-    }
-
-    for (size_t row = 0; (row < per_page) && (row < Lines); ++row) {
-        const auto position = state.page * per_page + row;
-        if (position >= count) {
-            break;
-        }
-
-        const auto& line = state.lines[used[position]];
-        const int y = static_cast<int>(row) * pitch;
-        if (line.label.length()) {
-            display.text(0, y, font, line.label.view(), Align::Left);
-            display.text(width, y, font, values[row].view(), Align::Right);
-        } else {
-            display.text(0, y, font, values[row].view(), Align::Left);
-        }
-    }
-
-    if (pages > 1) {
-        // the page marks, one dot per page in the right bottom corner
-        for (size_t page = 0; page < pages; ++page) {
-            const int x = width - 1 - static_cast<int>((pages - 1 - page) * 3);
-            const int y = display.height() - 1;
-            display.set(x, y);
-            if (page == state.page) {
-                display.set(x, y - 1);
-            }
-        }
-    }
-
-    display.flush();
-    state.mirror_dirty = true;
-}
-
-void power(bool on) {
-    if (!state.display || (state.on == on)) {
-        return;
-    }
-
-    state.on = on;
-    state.display->on(on);
-    if (on) {
-        state.on_since = espurna::time::ms();
-        state.drawn = espurna::string();
-    }
-
-    state.mirror_dirty = true;
 }
 
 void reset_pin(unsigned char pin) {
@@ -917,178 +338,81 @@ void start() {
     const auto previous = state.config;
     state.config = read_config();
 
-    const bool same_panel = state.display
+    const bool same_panel = state.panel
         && (previous.sh1106 == state.config.sh1106)
         && (previous.address == state.config.address)
         && (previous.reset == state.config.reset)
         && (previous.geometry == state.config.geometry)
         && (previous.flip == state.config.flip);
-
-    if (!same_panel) {
-        if (previous.reset != GPIO_NONE) {
-            gpioUnlock(previous.reset);
-        }
-
-        state.display.reset();
-        reset_pin(state.config.reset);
-
-        std::unique_ptr<Screen> screen(new (std::nothrow) Screen());
-        if (!screen) {
-            DEBUG_MSG_P(PSTR("[OLED] No memory for the screen\n"));
-            return;
-        }
-
-        if (!screen->begin(state.config.sh1106, state.config.address, state.config.geometry, state.config.flip)) {
-            DEBUG_MSG_P(PSTR("[OLED] Nothing answers at 0x%02X (oledAddr, i2cSDA / i2cSCL, oledRst)\n"),
-                state.config.address);
-            return;
-        }
-
-        state.display = std::move(screen);
-        state.on = true;
-        DEBUG_MSG_P(PSTR("[OLED] %s at 0x%02X, %dx%d\n"),
-            state.config.sh1106 ? "SH1106" : "SSD1306", state.config.address,
-            state.display->width(), state.display->height());
+    if (same_panel) {
+        return;
     }
 
-    if (state.config.brightness >= 0) {
-        state.display->brightness(static_cast<uint8_t>(std::min(state.config.brightness, 255)));
+    if (state.registered) {
+        screenPanel(nullptr);
+        state.registered = false;
     }
 
-    read_lines();
-    state.page = 0;
-    state.page_since = espurna::time::ms();
-    state.on_since = state.page_since;
-    state.drawn = espurna::string();
-    power(true);
+    if (previous.reset != GPIO_NONE) {
+        gpioUnlock(previous.reset);
+    }
+
+    state.panel.reset();
+    reset_pin(state.config.reset);
+
+    std::unique_ptr<Panel> panel(new (std::nothrow) Panel());
+    if (!panel) {
+        DEBUG_MSG_P(PSTR("[OLED] No memory for the panel\n"));
+        return;
+    }
+
+    if (!panel->begin(state.config.sh1106, state.config.address, state.config.geometry, state.config.flip)) {
+        DEBUG_MSG_P(PSTR("[OLED] Nothing answers at 0x%02X (oledAddr, i2cSDA / i2cSCL, oledRst)\n"),
+            state.config.address);
+        return;
+    }
+
+    state.panel = std::move(panel);
+    DEBUG_MSG_P(PSTR("[OLED] %s at 0x%02X, %dx%d\n"),
+        state.config.sh1106 ? "SH1106" : "SSD1306", state.config.address,
+        state.panel->width(), state.panel->height());
+    state.registered = screenPanel(state.panel.get());
 }
 
-void tick() {
-    if (!state.display) {
-        return;
-    }
-
-    const uint32_t now = espurna::time::ms();
-
-    // the Matter pairing window opened: the QR page on a blanked screen too
-    if (!state.on && state.config.matter && matterWindowOpen()) {
-        power(true);
-    }
-
-    if (state.config.off_ms && state.on && (now - state.on_since > state.config.off_ms)
-        && !(state.config.matter && matterWindowOpen())) {
-        power(false);
-    }
-
-    if (!state.on) {
-        return;
-    }
-
-    if (now - state.page_since > state.config.page_ms) {
-        state.page_since = now;
-        ++state.page;
-    }
-
-    if (now - state.last_draw < 250) {
-        return;
-    }
-
-    state.last_draw = now;
-    draw();
-}
-
-// --- MQTT: the lines of mqtt:<topic>
-
-// the filter of a subscription against a topic: `+` one level, `#` at the end the rest
-bool topic_match(espurna::StringView filter, espurna::StringView topic) {
-    size_t f = 0;
-    size_t t = 0;
-    while (f < filter.length()) {
-        if (filter[f] == '#') {
-            return true;
-        }
-
-        if (filter[f] == '+') {
-            while ((t < topic.length()) && (topic[t] != '/')) {
-                ++t;
-            }
-            ++f;
-            continue;
-        }
-
-        if ((t >= topic.length()) || (filter[f] != topic[t])) {
-            return false;
-        }
-
-        ++f;
-        ++t;
-    }
-
-    return t == topic.length();
-}
-
-void on_mqtt(unsigned int type, espurna::StringView topic, espurna::StringView payload) {
-    if (type == MQTT_CONNECT_EVENT) {
-        for (const auto& line : state.lines) {
-            if (line.mqtt_topic.length()) {
-                mqttSubscribeRaw(line.mqtt_topic.c_str());
-            }
-        }
-        return;
-    }
-
-    if (type != MQTT_MESSAGE_EVENT) {
-        return;
-    }
-
-    for (auto& line : state.lines) {
-        if (!line.mqtt_topic.length() || !topic_match(line.mqtt_topic.view(), topic)) {
-            continue;
-        }
-
-        if (!line.mqtt_key.length()) {
-            line.mqtt_value = payload.toString();
-            continue;
-        }
-
-        const auto root = espurna::json::parse(payload);
-        if (root.isObject() && root.has(line.mqtt_key.view())) {
-            line.mqtt_value = root[line.mqtt_key.view()].asString();
-        }
-    }
-}
-
-// --- the pixels: the terminal, the WebUI
+// --- the pixels: the terminal
 
 #if TERMINAL_SUPPORT
 PROGMEM_STRING(Oled, "OLED");
 
 void terminal_oled(::terminal::CommandContext&& ctx) {
-    if (!state.display) {
+    if (!state.panel) {
         terminalError(ctx, STRING_VIEW("no screen (oledAddr, i2cSDA / i2cSCL, oledRst)"));
         return;
     }
 
-    const auto& display = *state.display;
-    ctx.output.printf_P(PSTR("%s 0x%02X %dx%d page %zu, %s\n"),
+    const auto& panel = *state.panel;
+    ctx.output.printf_P(PSTR("%s 0x%02X %dx%d, %s\n"),
         state.config.sh1106 ? "SH1106" : "SSD1306", state.config.address,
-        display.width(), display.height(), state.page,
-        state.on ? "on" : "off");
+        panel.width(), panel.height(), state.registered ? "the panel of the screen" : "not the screen's panel");
 
     // the QR page carries the setup passcode of Matter: on the screen only, never in a terminal or a log
-    if (state.drawn.startsWith(STRING_VIEW("\x01qr"))) {
+    if (state.registered && screenQrShown()) {
         ctx.output.printf_P(PSTR("(the QR page, not printed)\n"));
         terminalOK(ctx);
         return;
     }
 
+    if (!screenOn()) {
+        ctx.output.printf_P(PSTR("(blanked)\n"));
+    }
+
     // two rows of pixels per text line: ' ' none, '\'' the upper one, '.' the lower one, ':' both
     espurna::string row;
-    for (int y = 0; y < display.height(); y += 2) {
+    for (int y = 0; y < panel.height(); y += 2) {
         row.clear();
-        for (int x = 0; x < display.width(); ++x) {
-            const bool upper = display.get(x, y);
-            const bool lower = (y + 1 < display.height()) && display.get(x, y + 1);
+        for (int x = 0; x < panel.width(); ++x) {
+            const bool upper = panel.get(x, y);
+            const bool lower = (y + 1 < panel.height()) && panel.get(x, y + 1);
             row += upper ? (lower ? ':' : '\'') : (lower ? '.' : ' ');
         }
         ctx.output.printf_P(PSTR("|%s|\n"), row.c_str());
@@ -1097,41 +421,8 @@ void terminal_oled(::terminal::CommandContext&& ctx) {
     terminalOK(ctx);
 }
 
-PROGMEM_STRING(OledQr, "OLED.QR");
-
-// OLED.QR - the Matter pairing code for a minute (whatever the window), OLED.QR <text> - a QR code of the text,
-// OLED.QR off - back to the lines
-void terminal_oled_qr(::terminal::CommandContext&& ctx) {
-    if (!state.display) {
-        terminalError(ctx, STRING_VIEW("no screen"));
-        return;
-    }
-
-    state.drawn = espurna::string();
-    if ((ctx.argv.size() == 2) && ctx.argv[1].equalsIgnoreCase(STRING_VIEW("off"))) {
-        state.qr_manual = false;
-        state.qr_text = espurna::string();
-        terminalOK(ctx);
-        return;
-    }
-
-    state.qr_manual = true;
-    state.qr_since = espurna::time::ms();
-    state.qr_text = espurna::string();
-    for (size_t index = 1; index < ctx.argv.size(); ++index) {
-        if (index > 1) {
-            state.qr_text += ' ';
-        }
-        state.qr_text += ctx.argv[index];
-    }
-
-    power(true);
-    terminalOK(ctx);
-}
-
 static constexpr ::terminal::Command Commands[] PROGMEM {
     {Oled, terminal_oled},
-    {OledQr, terminal_oled_qr},
 };
 #endif
 
@@ -1146,55 +437,12 @@ void on_connected(espurna::json::Writer& root) {
     root.field(STRING_VIEW("oledRst"), getSetting("oledRst", static_cast<unsigned char>(GPIO_NONE)));
     root.field(STRING_VIEW("oledSize"), getSetting("oledSize", STRING_VIEW("128x64").toString()));
     root.field(STRING_VIEW("oledFlip"), getSetting("oledFlip", false));
-    root.field(STRING_VIEW("oledFont"), getSetting("oledFont", 16));
-    root.field(STRING_VIEW("oledBright"), getSetting("oledBright", -1));
-    root.field(STRING_VIEW("oledOff"), getSetting("oledOff", 0ul));
-    root.field(STRING_VIEW("oledPage"), getSetting("oledPage", 5ul));
-    root.field(STRING_VIEW("oledMatter"), getSetting("oledMatter", true));
     root.field(STRING_VIEW("i2cSDA"), getSetting("i2cSDA"));
     root.field(STRING_VIEW("i2cSCL"), getSetting("i2cSCL"));
-
-    for (size_t index = 0; index < Lines; ++index) {
-        const auto label = espurna::settings::Key(LabelKey, index);
-        const auto source = espurna::settings::Key(SourceKey, index);
-        root.field(StringView(label.c_str(), label.length()), state.lines[index].label);
-        root.field(StringView(source.c_str(), source.length()), state.lines[index].source);
-    }
-
-    state.mirror_dirty = true;
 }
 
 bool on_key_check(espurna::StringView key, espurna::json::Value) {
     return key.startsWith(STRING_VIEW("oled"));
-}
-
-// the pixels for the OLED panel (src/oled.mjs draws them): hex of the buffer, its pages of 8 rows
-void mirror() {
-    if (!state.mirror_dirty || !state.display || !wsConnected()) {
-        return;
-    }
-
-    state.mirror_dirty = false;
-    const int width = state.display->width();
-    const int height = state.display->height();
-    const size_t size = static_cast<size_t>(width * ((height + 7) / 8));
-    const auto* pixels = state.display->pixels();
-
-    espurna::string hex;
-    hex.reserve(size * 2);
-    for (size_t index = 0; index < size; ++index) {
-        hex += hexEncode(pixels[index]);
-    }
-
-    const bool on = state.on;
-    wsPost([width, height, on, hex](espurna::json::Writer& root) {
-        root.object(STRING_VIEW("oledMirror"));
-        root.field(STRING_VIEW("width"), width);
-        root.field(STRING_VIEW("height"), height);
-        root.field(STRING_VIEW("on"), on);
-        root.field(STRING_VIEW("pixels"), hex);
-        root.end();
-    });
 }
 #endif
 
@@ -1202,22 +450,11 @@ void mirror() {
 } // namespace oled
 } // namespace espurna
 
-void displayOn() {
-    using namespace espurna::oled;
-    if (!state.display) {
-        return;
-    }
-
-    state.on_since = espurna::time::ms();
-    power(true);
-}
-
 void oledSetup() {
     using namespace espurna::oled;
 
     start();
 
-    mqttRegister(on_mqtt);
 #if TERMINAL_SUPPORT
     espurna::terminal::add(Commands);
 #endif
@@ -1226,10 +463,8 @@ void oledSetup() {
         .onVisible(on_visible)
         .onConnected(on_connected)
         .onKeyCheck(on_key_check);
-    espurnaRegisterLoop(mirror);
 #endif
 
-    espurnaRegisterLoop(tick);
     espurnaRegisterReload(start);
 }
 

@@ -23,7 +23,8 @@ namespace espurna {
 namespace core {
 namespace chip {
 
-// --- SPI: a software master on any three pins, 500 kHz at most ----------------------------------------------------
+// --- SPI: a software master on any three pins: up to 500 kHz by half periods of 1 us and more, above that as fast as the
+// pins go (no delay: a TFT of the lcd module) -------------------------------------------------------------------------
 
 namespace {
 
@@ -50,7 +51,9 @@ uint8_t spi_byte(uint8_t data) {
             pins::write(spi.mosi, value);
         }
 
-        delay_us(spi.half);
+        if (spi.half) {
+            delay_us(spi.half);
+        }
         pins::write(spi.sck, idle ? 0 : 1);
         if (late && (spi.mosi >= 0)) {
             pins::write(spi.mosi, value);
@@ -60,7 +63,9 @@ uint8_t spi_byte(uint8_t data) {
             out |= (1 << shift);
         }
 
-        delay_us(spi.half);
+        if (spi.half) {
+            delay_us(spi.half);
+        }
         pins::write(spi.sck, idle ? 1 : 0);
         if (late && (spi.miso >= 0) && pins::read(spi.miso)) {
             out |= (1 << shift);
@@ -100,7 +105,7 @@ void spi_end() {
 void spi_config(uint32_t frequency, uint8_t mode, bool msb_first) {
     spi.mode = mode & 0x03;
     spi.msb_first = msb_first;
-    spi.half = frequency ? std::max<uint32_t>(1, 500000 / frequency) : 1;
+    spi.half = !frequency ? 1 : (frequency > 500000) ? 0 : std::max<uint32_t>(1, 500000 / frequency);
     if (spi.sck >= 0) {
         pins::write(spi.sck, (spi.mode & 0x02) ? 1 : 0);
     }

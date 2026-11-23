@@ -389,7 +389,8 @@
     #define RELAY2_PIN              19
     #define RELAY2_TYPE             RELAY_TYPE_NORMAL
 
-    #define NSPANEL_SUPPORT         1
+    #define SCREEN_SUPPORT          1
+    #define NEXTION_SUPPORT         1
 
     // Room temperature: NTC to GND with an 11.2k pull-up to 3.3V on GPIO38 (Tasmota template ADCParam1 2,11200,10000,3950)
     #ifndef NTC_SUPPORT

@@ -109,7 +109,7 @@ light_my92xx | module_light_my92xx.cpp.o | | | light
 rf | rfbridge.cpp.o module_rf.cpp.o | | rfbSend rfbOnCode| tools arduino_emu
 matter | matter.cpp.o matter_app.cpp.o matter_identity.cpp.o module_matter.cpp.o | | matterWindowOpen matterWindowStart matterPairingCodes | mdns tools
 matter_ble | matter_ble.cpp.o module_matter_ble.cpp.o | || ble matter tools
-nspanel | nspanel.cpp.o nspanel_config.cpp.o nspanel_storage.cpp.o nspanel_net.cpp.o nspanel_link.cpp.o nspanel_flash.cpp.o nspanel_web.cpp.o nspanel_lovelace.cpp.o nspanel_ohpanel.cpp.o nspanelqr.cpp.o module_nspanel.cpp.o | | | uart tls http tools | 32768
+nextion | nextion_link.cpp.o nextion_flash.cpp.o nextion_lovelace.cpp.o nextion_ohpanel.cpp.o nextion_screen.cpp.o module_nextion.cpp.o | | | screen uart tls http tools
 uart | uart.cpp.o module_uart.cpp.o | | uartPort uartClaim uartClaimed uartOnClaim uartOpen uartBaud| tools
 tls | module_tls.cpp.o | |
 http | http.cpp.o module_http.cpp.o | || tools
@@ -124,7 +124,9 @@ ir | ir.cpp.o module_ir.cpp.o | || tools arduino_emu
 rfm69 | rfm69.cpp.o module_rfm69.cpp.o | | | spi tools arduino_emu
 garland | garland.cpp.o module_garland.cpp.o | || tools arduino_emu
 thermostat | thermostat.cpp.o module_thermostat.cpp.o | | | relay sensors ntp tools
-oled | oled.cpp.o module_oled.cpp.o | | displayOn | i2c tools
+screen | screen.cpp.o screen_pages.cpp.o screen_pages_config.cpp.o screen_pages_storage.cpp.o screen_pages_net.cpp.o screen_pages_web.cpp.o screen_pages_light.cpp.o module_screen.cpp.o | | displayOn | tls http tools | 32768
+oled | oled.cpp.o module_oled.cpp.o | | | screen i2c tools
+lcd | lcd.cpp.o module_lcd.cpp.o | | | screen spi tools
 influxdb | influxdb.cpp.o module_influxdb.cpp.o | | | http tools
 prometheus | prometheus.cpp.o module_prometheus.cpp.o | | | api sensors tools
 curtain_kingart | curtain_kingart.cpp.o module_curtain_kingart.cpp.o | | | uart ntp tools
@@ -244,7 +246,9 @@ ESPURNA_MODULES */
 #define RFM69_SUPPORT               1
 #define GARLAND_SUPPORT             1
 #define THERMOSTAT_SUPPORT          1
+#define SCREEN_SUPPORT              1
 #define OLED_SUPPORT                1
+#define LCD_SUPPORT                 1
 #define INFLUXDB_SUPPORT            1
 #define PROMETHEUS_SUPPORT          1
 #define KINGART_CURTAIN_SUPPORT     1
@@ -255,11 +259,11 @@ ESPURNA_MODULES */
 #define NETBIOS_SUPPORT             1
 
 // what exists only on some chips: Matter (ESP32 and Beken, there is no Matter SDK for the ESP8266, the chip's ini
-// leaves the module out: custom_modules_skip); the NSPanel (its display on a UART port) on every chip
+// leaves the module out: custom_modules_skip); the Nextion (a display on a UART port: the NSPanel's) on every chip
 #if defined(ESP32) || defined(BK72XX)
 #define MATTER_SUPPORT              1
 #endif
-#define NSPANEL_SUPPORT             1
+#define NEXTION_SUPPORT             1
 
 #elif defined(MODULES_SUPPORT) && MODULES_SUPPORT
 
@@ -299,6 +303,6 @@ ESPURNA_MODULES */
 #define PWM_SUPPORT                 0
 #define RFB_SUPPORT                 0
 #define MATTER_SUPPORT              0
-#define NSPANEL_SUPPORT             0
+#define NEXTION_SUPPORT             0
 
 #endif

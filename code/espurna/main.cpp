@@ -28,8 +28,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "espurna_ota.h"
 #include "rtcmem.h"
 
-#if NSPANEL_SUPPORT
-#include "nspanel.h"
+#if NEXTION_SUPPORT
+#include "nextion.h"
 #endif
 
 #if MATTER_SUPPORT
@@ -320,10 +320,10 @@ void setup() {
         SETUP_HEAP_PROBE("telnet");
     #endif
 
-    // NSPanel display power and buzzer pins, also in the unstable mode
-    #if NSPANEL_SUPPORT
-        nspanelBootSetup();
-        SETUP_HEAP_PROBE("nspanelBoot");
+    // the Nextion display's power pin (the NSPanel's), also in the unstable mode
+    #if NEXTION_SUPPORT
+        nextionBootSetup();
+        SETUP_HEAP_PROBE("nextionBoot");
     #endif
 
     // -------------------------------------------------------------------------
@@ -516,9 +516,17 @@ void setup() {
         thermostatSetup();
         SETUP_HEAP_PROBE("thermostat");
     #endif
+    #if SCREEN_SUPPORT
+        screenSetup();
+        SETUP_HEAP_PROBE("screen");
+    #endif
     #if OLED_SUPPORT
         oledSetup();
         SETUP_HEAP_PROBE("oled");
+    #endif
+    #if LCD_SUPPORT
+        lcdSetup();
+        SETUP_HEAP_PROBE("lcd");
     #endif
     #if TUYA_SUPPORT
         tuya::setup();
@@ -535,9 +543,9 @@ void setup() {
         garlandSetup();
         SETUP_HEAP_PROBE("garland");
     #endif
-    #if NSPANEL_SUPPORT
-        nspanelSetup();
-        SETUP_HEAP_PROBE("nspanel");
+    #if NEXTION_SUPPORT
+        nextionSetup();
+        SETUP_HEAP_PROBE("nextion");
     #endif
 
     #if USE_EXTRA

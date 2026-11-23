@@ -120,7 +120,7 @@ const DESCRIPTIONS = new Map([
     ["ir", "Infrared: receive codes to MQTT, send codes, buttons of a remote on the relays."],
     ["rfm69", "RFM69 radio on SPI: messages of the LowPowerLab nodes to MQTT."],
     ["garland", "Addressable LED strip (WS2812) with animations, the GARLAND panel."],
-    ["thermostat", "Thermostat: a relay switched by a temperature sensor, an optional SSD1306 display."],
+    ["thermostat", "Thermostat: a relay switched by a temperature sensor (its display: the screen module)."],
     ["influxdb", "Sends relays and sensors to InfluxDB."],
     ["prometheus", "Relays and sensors on /api/metrics for Prometheus, it needs the api module."],
     ["curtain_kingart", "KingArt curtain motor (serial): position and moves."],
@@ -129,7 +129,11 @@ const DESCRIPTIONS = new Map([
     ["ssdp", "Answers SSDP discovery (UPnP): Windows shows the board under Network."],
     ["llmnr", "Answers <hostname> from Windows on the network (LLMNR)."],
     ["netbios", "Answers the NetBIOS name of the board on the network."],
-    ["http", "The HTTP client of the modules (http:// and https://): ThingSpeak, InfluxDB, NSPanel."],
+    ["http", "The HTTP client of the modules (http:// and https://): ThingSpeak, InfluxDB, the weather of the screen's pages, the Nextion's TFT upload."],
+    ["screen", "The screen of the board: lines of values, the Matter QR code, blanking, the tile pages (/nspanel.json) with the weather and thermostats, the SCREEN and PAGES panels. Its panels are modules of their own: oled, lcd, nextion."],
+    ["oled", "Screen panel: an SSD1306 / SH1106 OLED on I2C, it needs the screen and i2c modules."],
+    ["lcd", "Screen panel: a colour TFT on SPI (ILI9341, ILI9342 of the M5Stack, ST7789), it needs the screen and spi modules."],
+    ["nextion", "Screen panel: a Nextion display on a UART (the NSPanel's, OHpanel or Lovelace UI TFT), its TFT upload; it needs the screen and uart modules."],
 ]);
 
 // the panel shows the modules by group, in this order; a module not listed goes to the last one
@@ -138,6 +142,7 @@ export const GROUPS = [
     ["Inputs and outputs", ["relay", "button", "led", "rf", "ir", "rfm69", "encoder", "spi", "mcp23s08", "tuya",
         "dual", "stm", "lightfox", "ifan", "curtain_kingart", "thermostat", "uartmqtt"]],
     ["Light", ["light", "light_pwm", "light_my92xx", "garland"]],
+    ["Screen", ["screen", "oled", "lcd", "nextion"]],
     // the sensors manager, then its drivers (a module each)
     ["Sensors", ["sensors", "i2c", "dht", "dallas", "bmx280", "bme680", "bmp180", "sht3x", "si7021", "hdc1080", "am2320",
         "hlw8012", "cse7766", "pzem004t", "pzem004tv30", "ade7953", "v9261f", "ech1560", "ina219", "emon_adc121",

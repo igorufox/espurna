@@ -266,9 +266,18 @@
 #define THERMOSTAT_SUPPORT          0
 #endif
 
-// the small I2C screen (oled.cpp): its own module, the thermostat has no screen of its own
+// what every screen has in common (screen.cpp: the drawing, the lines, the QR page, the tile pages); the panels: the
+// small I2C screen (oled.cpp), a SPI TFT (lcd.cpp), a Nextion (nextion_*.cpp). Each its own module
+#ifndef SCREEN_SUPPORT
+#define SCREEN_SUPPORT              0
+#endif
+
 #ifndef OLED_SUPPORT
 #define OLED_SUPPORT                0
+#endif
+
+#ifndef LCD_SUPPORT
+#define LCD_SUPPORT                 0
 #endif
 
 #define THERMOSTAT_REMOTE_TEMP_MAX_WAIT     120 // 2 min
@@ -1752,11 +1761,12 @@
 #endif
 
 //--------------------------------------------------------------------------------
-// Sonoff NSPanel display backend (ESP32 only, enabled by the SONOFF_NSPANEL board)
+// A Nextion display on a UART (nextion_*.cpp: the NSPanel's, enabled by the SONOFF_NSPANEL board); it shows the tile
+// pages of the screen module
 //--------------------------------------------------------------------------------
 
-#ifndef NSPANEL_SUPPORT
-#define NSPANEL_SUPPORT             0
+#ifndef NEXTION_SUPPORT
+#define NEXTION_SUPPORT             0
 #endif
 
 //--------------------------------------------------------------------------------

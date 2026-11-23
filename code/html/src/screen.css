@@ -1,0 +1,25 @@
+.screen-mirror-box {
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.screen-mirror {
+    display: block;
+    width: 384px;
+    max-width: 100%;
+    image-rendering: pixelated;
+    border: 4px solid #222;
+    border-radius: 4px;
+    background: #10141c;
+}
+
+.screen-keys {
+    display: flex;
+    gap: 0.5em;
+    justify-content: center;
+    margin-top: 0.5em;
+}
+
+.screen-line input + input {
+    margin-left: 0.5em;
+}

@@ -72,9 +72,9 @@ export const PARTS = {
     mqtt: {
         panels: ['src/panel-mqtt.html'],
     },
-    nspanel: {
-        panels: ['src/panel-nspanel.html'],
-        script: 'src/nspanel.mjs',
+    nextion: {
+        panels: ['src/panel-nextion.html'],
+        script: 'src/nextion.mjs',
     },
     ntp: {
         panels: ['src/panel-ntp.html'],
@@ -102,8 +102,14 @@ export const PARTS = {
     },
     oled: {
         panels: ['src/panel-oled.html'],
-        css: ['src/oled.css'],
-        script: 'src/oled.mjs',
+    },
+    lcd: {
+        panels: ['src/panel-lcd.html'],
+    },
+    screen: {
+        panels: ['src/panel-screen.html', 'src/panel-pages.html'],
+        css: ['src/screen.css'],
+        script: 'src/screen.mjs',
     },
     rpnrules: {
         panels: ['src/panel-rpn.html'],

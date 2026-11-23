@@ -238,7 +238,7 @@ build_tests(
     led
     modules
     mqtt
-    nspanel
+    pages
     scheduler
     sensor
     settings

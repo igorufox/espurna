@@ -113,7 +113,7 @@ describe('modulesVisible', () => {
     }
 
     test('every module menu entry is hidden until the device names it', () => {
-        for (const module of ['relay', 'light', 'sns', 'matter', 'nspanel', 'curtain', 'mod', 'mqtt']) {
+        for (const module of ['relay', 'light', 'sns', 'matter', 'pages', 'nextion', 'curtain', 'mod', 'mqtt']) {
             expect(shown(module), module).toBeFalsy();
         }
     });
@@ -125,7 +125,7 @@ describe('modulesVisible', () => {
             expect(shown(module), module).toBeTruthy();
         }
 
-        for (const module of ['light', 'sns', 'matter', 'nspanel', 'curtain', 'garland', 'thermostat']) {
+        for (const module of ['light', 'sns', 'matter', 'pages', 'nextion', 'curtain', 'garland', 'thermostat']) {
             expect(shown(module), module).toBeFalsy();
         }
     });

@@ -1,0 +1,155 @@
+<form id="form-screen" class="pure-form pure-form-aligned form-settings">
+    <div class="panel" id="panel-screen">
+
+        <div class="header">
+            <h1>SCREEN</h1>
+            <h2>What the screen of the board shows: its lines, the Matter QR code, blanking (the panel: OLED, LCD or NEXTION)</h2>
+        </div>
+
+        <div class="page">
+
+            <fieldset>
+                <legend>Screen</legend>
+
+                <div class="pure-control-group">
+                    <label>Now on it</label>
+                    <div class="screen-mirror-box">
+                        <canvas id="screen-mirror" class="screen-mirror" width="128" height="64"></canvas>
+                        <div class="screen-keys">
+                            <button type="button" class="pure-button button-screen-key" data-key="prev">&#9664;</button>
+                            <button type="button" class="pure-button button-screen-key" data-key="enter">&#9679;</button>
+                            <button type="button" class="pure-button button-screen-key" data-key="next">&#9654;</button>
+                            <button type="button" class="pure-button button-screen-key" data-key="back">&#8962;</button>
+                        </div>
+                    </div>
+                    <span class="pure-form-message-inline" id="screen-mirror-state"></span>
+                </div>
+
+                <div class="pure-control-group">
+                    <span class="pure-form-message-inline">
+                        The keys are the board's too: a button with the action <em>terminal command</em>
+                        <code>screen.key prev</code> / <code>next</code> / <code>enter</code> / <code>back</code>
+                        (the M5Stack: A, B, C). A blanked screen only wakes up on a key. With a configuration in
+                        the PAGES panel the screen shows its tile pages instead of the lines.
+                    </span>
+                </div>
+
+            </fieldset>
+
+            <fieldset>
+                <legend>Lines</legend>
+
+                <div class="pure-control-group">
+                    <span class="pure-form-message-inline">
+                        The label on the left, the source on the right. Sources: <code>time</code>, <code>date</code>,
+                        <code>datetime</code>, <code>ip</code>, <code>ssid</code>, <code>rssi</code>, <code>host</code>,
+                        <code>uptime</code>, <code>heap</code>, <code>wifi</code>, <code>mqtt</code>,
+                        <code>relay:0</code>, <code>sensor:temperature</code> (or the magnitude number,
+                        <code>sensor:0</code>), <code>mqtt:&lt;topic&gt;</code> or <code>mqtt:&lt;topic&gt;#&lt;json key&gt;</code>.
+                        A label without a source is a line of text. The lines that do not fit are the next pages.
+                    </span>
+                </div>
+
+                <div class="pure-control-group screen-line">
+                    <label>Line 1</label>
+                    <input class="pure-input-1-4" name="scrLbl0" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="scrSrc0" type="text" list="list:scrSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group screen-line">
+                    <label>Line 2</label>
+                    <input class="pure-input-1-4" name="scrLbl1" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="scrSrc1" type="text" list="list:scrSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group screen-line">
+                    <label>Line 3</label>
+                    <input class="pure-input-1-4" name="scrLbl2" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="scrSrc2" type="text" list="list:scrSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group screen-line">
+                    <label>Line 4</label>
+                    <input class="pure-input-1-4" name="scrLbl3" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="scrSrc3" type="text" list="list:scrSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group screen-line">
+                    <label>Line 5</label>
+                    <input class="pure-input-1-4" name="scrLbl4" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="scrSrc4" type="text" list="list:scrSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group screen-line">
+                    <label>Line 6</label>
+                    <input class="pure-input-1-4" name="scrLbl5" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="scrSrc5" type="text" list="list:scrSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group screen-line">
+                    <label>Line 7</label>
+                    <input class="pure-input-1-4" name="scrLbl6" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="scrSrc6" type="text" list="list:scrSrc" placeholder="source">
+                </div>
+                <div class="pure-control-group screen-line">
+                    <label>Line 8</label>
+                    <input class="pure-input-1-4" name="scrLbl7" type="text" maxlength="24" placeholder="label">
+                    <input class="pure-input-1-3" name="scrSrc7" type="text" list="list:scrSrc" placeholder="source">
+                </div>
+
+                <datalist id="list:scrSrc">
+                    <option value="time"></option>
+                    <option value="date"></option>
+                    <option value="datetime"></option>
+                    <option value="ip"></option>
+                    <option value="ssid"></option>
+                    <option value="rssi"></option>
+                    <option value="host"></option>
+                    <option value="uptime"></option>
+                    <option value="heap"></option>
+                    <option value="wifi"></option>
+                    <option value="mqtt"></option>
+                    <option value="relay:0"></option>
+                    <option value="sensor:temperature"></option>
+                    <option value="sensor:humidity"></option>
+                    <option value="mqtt:"></option>
+                </datalist>
+
+                <div class="pure-control-group">
+                    <label>Font</label>
+                    <select class="pure-input-1-4" name="scrFont">
+                        <option value="10">small (13 px lines)</option>
+                        <option value="16">normal (17 px)</option>
+                        <option value="24">large (23 px)</option>
+                    </select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Page time</label>
+                    <input class="pure-input-1-4" name="scrPage" type="number" min="1" max="3600">
+                    <span class="pure-form-message-inline">s, how long a page stays when the lines take more than one</span>
+                </div>
+
+            </fieldset>
+
+            <fieldset>
+                <legend>Blanking and QR code</legend>
+
+                <div class="pure-control-group">
+                    <label>Blank after</label>
+                    <input class="pure-input-1-4" name="scrOff" type="number" min="0" max="86400">
+                    <span class="pure-form-message-inline">s, 0 - never; a key or a button with the action <code>display-on</code> wakes it (the tile pages: their own <code>screensaver</code>)</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Brightness</label>
+                    <input class="pure-input-1-4" name="scrBright" type="number" min="1" max="100">
+                    <span class="pure-form-message-inline">%</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Matter QR code</label>
+                    <input class="checkbox-toggle" type="checkbox" name="scrMatter">
+                    <span class="pure-form-message-inline">while the Matter pairing window is open the screen shows its QR code and the manual code</span>
+                </div>
+
+            </fieldset>
+
+        </div>
+
+    </div>
+</form>

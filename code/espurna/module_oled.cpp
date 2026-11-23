@@ -1,7 +1,7 @@
 /*
 
-The oled module (docs/modules.md): the small I2C screen of a board, SSD1306 or SH1106 (oled.cpp: the settings, the lines
-and their sources); the bus is the one of the i2c module. It gives the button action "display-on" to the head.
+The oled module (docs/modules.md): the small I2C screen of a board, SSD1306 or SH1106 (oled.cpp: the controller and
+its settings), a panel of the screen module, which draws on it; the bus is the one of the i2c module.
 
 */
 
@@ -20,9 +20,6 @@ ESPURNA_MODULE(oled, "oled", 50) {
 #if WEB_SUPPORT
     modulesUi("oled", ui_oled_data, sizeof(ui_oled_data));
 #endif
-
-    // the button action "display-on"
-    modulesProvide(espurna::modules::Api::DisplayOn, &displayOn);
 
     oledSetup();
 }

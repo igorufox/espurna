@@ -1,0 +1,119 @@
+<form id="form-lcd" class="pure-form pure-form-aligned form-settings">
+    <div class="panel" id="panel-lcd">
+
+        <div class="header">
+            <h1>LCD</h1>
+            <h2>A colour TFT on the SPI bus (ILI9341 / ILI9342 / ST7789): what it shows is in the SCREEN and PAGES panels</h2>
+        </div>
+
+        <div class="page">
+
+            <fieldset>
+                <legend>Panel</legend>
+
+                <div class="pure-control-group">
+                    <label>Controller</label>
+                    <select class="pure-input-1-4" name="lcdType">
+                        <option value="">none</option>
+                        <option value="ili9341">ILI9341</option>
+                        <option value="ili9342">ILI9342 (M5Stack)</option>
+                        <option value="st7789">ST7789</option>
+                    </select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Size</label>
+                    <input class="pure-input-1-4" name="lcdSize" type="text" placeholder="the controller's: 240x320 / 320x240">
+                    <span class="pure-form-message-inline">the controller's own width x height</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Rotation</label>
+                    <select class="pure-input-1-4" name="lcdRot">
+                        <option value="0">0</option>
+                        <option value="1">90</option>
+                        <option value="2">180</option>
+                        <option value="3">270</option>
+                    </select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Blue and red swapped</label>
+                    <select class="pure-input-1-4" name="lcdBgr">
+                        <option value="">as the controller (ILI934x yes, ST7789 no)</option>
+                        <option value="1">yes</option>
+                        <option value="0">no</option>
+                    </select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Colours inverted</label>
+                    <select class="pure-input-1-4" name="lcdInv">
+                        <option value="">as the controller (ILI934x no, ST7789 yes)</option>
+                        <option value="1">yes</option>
+                        <option value="0">no</option>
+                    </select>
+                    <span class="pure-form-message-inline">the newer M5Stacks: yes</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>SPI clock</label>
+                    <input class="pure-input-1-4" name="lcdMHz" type="number" min="1" max="80">
+                    <span class="pure-form-message-inline">MHz (Beken: its software SPI as fast as it goes)</span>
+                </div>
+
+            </fieldset>
+
+            <fieldset>
+                <legend>Pins</legend>
+
+                <div class="pure-control-group">
+                    <label>CS</label>
+                    <select class="pure-input-1-4" name="lcdCS" data-enumerable="gpio-hardware"></select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>DC</label>
+                    <select class="pure-input-1-4" name="lcdDC" data-enumerable="gpio-hardware"></select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Reset</label>
+                    <select class="pure-input-1-4" name="lcdRst" data-enumerable="gpio-hardware"></select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>Backlight</label>
+                    <select class="pure-input-1-4" name="lcdBL" data-enumerable="gpio-hardware"></select>
+                    <span class="pure-form-message-inline">dimmed by PWM when the light_pwm module is there</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>SCK</label>
+                    <select class="pure-input-1-4" name="spiSCK" data-enumerable="gpio-hardware"></select>
+                    <span class="pure-form-message-inline">the SPI bus of the board (the spi module)</span>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>MOSI</label>
+                    <select class="pure-input-1-4" name="spiMOSI" data-enumerable="gpio-hardware"></select>
+                </div>
+
+                <div class="pure-control-group">
+                    <label>MISO</label>
+                    <select class="pure-input-1-4" name="spiMISO" data-enumerable="gpio-hardware"></select>
+                </div>
+
+                <div class="pure-control-group">
+                    <span class="pure-form-message-inline">
+                        The M5Stack Basic / Gray: ILI9342, CS 14, DC 27, reset 33, backlight 32, SCK 18, MOSI 23, MISO 19.
+                        The panel and the pins apply after a reboot.
+                    </span>
+                </div>
+
+            </fieldset>
+
+        </div>
+
+    </div>
+</form>

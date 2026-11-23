@@ -279,7 +279,7 @@ void fanSpeed(FanSpeed speed) {
     }
 }
 
-#include "oled.h"
+#include "screen.h"
 
 void displayOn() {
     const auto func = api<decltype(displayOn)>(Api::DisplayOn);
@@ -306,7 +306,7 @@ void rfbOnCode(RfbCodeHandler handler) {
     }
 }
 
-// --- matter module, called by the nspanel and oled modules (the pairing QR code on the display); nothing without it
+// --- matter module, called by the screen module (the pairing QR code on the display); nothing without it
 
 #include "espurna_matter.h"
 
