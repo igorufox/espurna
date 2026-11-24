@@ -403,11 +403,6 @@
     #define NTC_BETA                3950
     #define NTC_SAMPLES             8
 
-    // One application partition, no second OTA slot: the head is not replaced over the network
-    #ifndef OTA_ARDUINOOTA_SUPPORT
-    #define OTA_ARDUINOOTA_SUPPORT  0
-    #endif
-
     #ifndef MDNS_SERVER_SUPPORT
     #define MDNS_SERVER_SUPPORT     0
     #endif
@@ -5859,10 +5854,6 @@
 
     #ifndef ALEXA_SUPPORT
     #define ALEXA_SUPPORT           0
-    #endif
-
-    #ifndef OTA_ARDUINOOTA_SUPPORT
-    #define OTA_ARDUINOOTA_SUPPORT  0
     #endif
 
     #ifndef LLMNR_SUPPORT
