@@ -582,7 +582,7 @@ void setup() {
 
     // Same as esp8266 soft WDT, reset when loop() gets stuck
     espurnaRegisterOnce([]() {
-        chip::sdk::enable_loop_wdt();
+        chip::sdk::enable_loop_wdt(0);
     });
 }
 
@@ -727,4 +727,8 @@ HeapStats systemHeapStats() {
 
     const uint8_t frag = free ? (100 - (block * 100 / free)) : 0;
     return {free, block, frag};
+}
+
+void systemLoopWatchdog(uint32_t ms) {
+    espurna::system::chip::sdk::enable_loop_wdt(ms);
 }

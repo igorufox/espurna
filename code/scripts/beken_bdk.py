@@ -7,8 +7,8 @@
 #   lib/libble_stack.a   the BLE 5.x stack for the ble module only, copied into the build folder (module_link.py takes
 #               the archives of the build folder for the modules; no image links it)
 # What depends on the board's flash layout is ESPurna's own and compiled here: the BDK's partitions of the layout
-# (espurna/arch/beken/bdk/wraps, FLASH_<NAME>_OFFSET / _LENGTH of the board) and FlashDB with its FAL (Matter's key-value
-# store on 'kvs': library-flashdb, espurna/arch/beken/bdk/port and config). The images (RBL, UF2): scripts/beken_image.py.
+# (espurna/arch/beken/bdk/wraps, FLASH_<NAME>_OFFSET / _LENGTH of the board, also the FAL of FlashDB: scripts/flashdb.py).
+# The images (RBL, UF2): scripts/beken_image.py.
 
 import json
 import os
@@ -37,7 +37,6 @@ def package_dir(name):
 PROJECT_DIR = env.subst("$PROJECT_DIR")  # noqa: F821
 SDK_DIR = package_dir("framework-beken-bdk")
 TOOLCHAIN_BIN = os.path.join(package_dir("toolchain-gccarmnoneeabi"), "bin")
-FLASHDB_DIR = package_dir("library-flashdb")
 GLUE = os.path.join(PROJECT_DIR, "espurna", "arch", "beken", "bdk")
 
 FLAGS_PATH = os.path.join(SDK_DIR, "flags.json")
@@ -116,22 +115,16 @@ env.Append(  # noqa: F821
         '"-Wl,-Map=' + os.path.join("$BUILD_DIR", "${PROGNAME}.map") + '"',
     ],
 )
-# ESPurna's config of FlashDB / FAL and bdk.h first, then the SDK's include folders
-env.Prepend(CPPPATH=[os.path.join(GLUE, "config"), GLUE])  # noqa: F821
-env.Append(  # noqa: F821
-    CPPPATH=expand(FLAGS["includes"]) + [
-        os.path.join(FLASHDB_DIR, "inc"),
-        os.path.join(FLASHDB_DIR, "port", "fal", "inc"),
-    ]
-)
+# bdk.h first, then the SDK's include folders
+env.Prepend(CPPPATH=[GLUE])  # noqa: F821
+env.Append(CPPPATH=expand(FLAGS["includes"]))  # noqa: F821
 
-# --- ESPurna's part of the SDK: the layout of the board, FlashDB --------------------------------------------------------
+# --- ESPurna's part of the SDK: the layout of the board --------------------------------------------------------
 
 sdk = env.Clone()  # noqa: F821
 sdk.Append(CCFLAGS=["-w", "-O1"])
 archives = [
-    sdk.BuildLibrary(os.path.join("$BUILD_DIR", "bdk_layout"), GLUE, "-<*> +<wraps/*.c> +<port/*.c>"),
-    sdk.BuildLibrary(os.path.join("$BUILD_DIR", "flashdb"), FLASHDB_DIR, "-<*> +<src/*.c> +<port/fal/src/*.c>"),
+    sdk.BuildLibrary(os.path.join("$BUILD_DIR", "bdk_layout"), GLUE, "-<*> +<wraps/*.c>"),
 ]
 
 # the archives of ESPurna's part first, then the SDK's own link (its archives, the closed libraries, the C libraries)

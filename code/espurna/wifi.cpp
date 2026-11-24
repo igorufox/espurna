@@ -39,6 +39,8 @@ Every request comes from the loop context (terminal, WebUI, buttons, the driver'
 #include <array>
 #include <forward_list>
 #include <functional>
+#include <memory>
+#include <cstring>
 
 #if WEB_SUPPORT
 #include "ws.h"
@@ -363,6 +365,14 @@ Mac convertBssid(const driver::ScanResult& info) {
 // STATION
 // -----------------------------------------------------------------------------
 
+// the fallback AP, below
+namespace ap {
+
+size_t stations();
+void station_lost();
+
+} // namespace ap
+
 namespace sta {
 namespace build {
 
@@ -594,6 +604,12 @@ void probe(void*) {
 
 } // namespace lwip
 
+namespace scan {
+
+bool start(std::function<void(const driver::ScanResult&)>&&, std::function<void(const char*)>&&);
+
+} // namespace scan
+
 namespace connection {
 namespace internal {
 
@@ -769,6 +785,129 @@ void forget(size_t id) {
 // of the SDK's disconnect (0: no disconnect, the attempt timed out or could not start)
 void failed(int reason);
 
+// An AP that takes the station and gives it no address (no DHCP answer): avoided for a while, the next attempts go to
+// another AP of the same network. 214 2026-11-23: tiger (2.4 GHz HE20) never got a DHCP offer through to the Beken
+// RTOS head, every round went back to it (the strongest one), duck and lion right next to it were fine
+namespace avoid {
+
+constexpr auto Time = duration::Minutes{ 30 };
+
+Mac bssid{};
+time::SystemClock::time_point until{};
+
+bool active() {
+    return (bssid != Mac{}) && (time::SystemClock::now() < until);
+}
+
+bool is(const uint8_t* other) {
+    return active() && std::equal(bssid.begin(), bssid.end(), other);
+}
+
+void add(const Mac& value) {
+    if (value != Mac{}) {
+        bssid = value;
+        until = time::SystemClock::now() + Time;
+    }
+}
+
+} // namespace avoid
+
+namespace internal {
+
+// the AP the current attempt went to: explicit (last AP, settings, the scan below), zero when the SDK picked it
+Mac attempt_bssid{};
+
+} // namespace internal
+
+// the attempt itself, to `bssid` / `channel` (zero: the SDK picks the AP)
+void connect_to(size_t id, const Mac& bssid, uint8_t channel) {
+    const auto ssid = settings::ssid(id);
+    const auto passphrase = settings::passphrase(id);
+
+    const auto ip = settings::ip(id);
+    const bool dhcp = !driver::ip_set(ip);
+    const auto netmask = dhcp ? espurna::Ip4() : settings::netmask(id);
+    const auto gateway = dhcp ? espurna::Ip4() : settings::gateway(id);
+    const auto dns = dhcp ? espurna::Ip4() : settings::dns(id);
+
+    internal::attempt_bssid = channel ? bssid : Mac{};
+
+    const auto hostname = espurna::string(systemHostname());
+    if (driver::sta_connect(driver::StaConnect{
+            .hostname = hostname,
+            .ssid = ssid,
+            .passphrase = passphrase,
+            .dhcp = dhcp,
+            .ip = ip,
+            .netmask = netmask,
+            .gateway = gateway,
+            .dns = dns,
+            .bssid = bssid,
+            .channel = channel,
+        }))
+    {
+        internal::waiting = true;
+        internal::attempt_at = time::SystemClock::now();
+        publish(Event::StationConnecting);
+        return;
+    }
+
+    // a network that cannot be tried is passed at once
+    internal::retry = build::ConnectionRetries;
+    failed(0);
+}
+
+// the best AP of the network but the avoided one, by a scan of our own; none found: the SDK picks
+struct Best {
+    size_t id;
+    espurna::string ssid;
+    Mac bssid;
+    uint8_t channel;
+    int8_t rssi;
+};
+
+void connect_best(size_t id) {
+    auto best = std::make_shared<Best>(Best{
+        .id = id,
+        .ssid = settings::ssid(id),
+        .bssid = Mac{},
+        .channel = 0,
+        .rssi = -128,
+    });
+
+    const bool started = scan::start(
+        [best](const driver::ScanResult& info) {
+            const size_t len = std::min<size_t>(info.ssid_len, sizeof(info.ssid));
+            if ((len != best->ssid.length())
+                || (std::memcmp(info.ssid, best->ssid.c_str(), len) != 0)
+                || avoid::is(info.bssid)
+                || (info.rssi <= best->rssi))
+            {
+                return;
+            }
+
+            std::copy(std::begin(info.bssid), std::end(info.bssid), best->bssid.begin());
+            best->channel = info.channel;
+            best->rssi = info.rssi;
+        },
+        [best](const char*) {
+            if (!internal::round || internal::connected) {
+                return;
+            }
+
+            if (best->channel) {
+                DEBUG_MSG_P(PSTR("[WIFI] Not the avoided AP: %s channel %u RSSI %d\n"),
+                    espurna::wifi::debug::mac(best->bssid).c_str(), best->channel, best->rssi);
+            }
+
+            connect_to(best->id, best->bssid, best->channel);
+        });
+
+    if (!started) {
+        connect_to(id, Mac{}, 0);
+    }
+}
+
 // one attempt with the current network of the round, the result is the driver's event
 void attempt() {
     if (!internal::round || internal::connected) {
@@ -785,48 +924,37 @@ void attempt() {
             || ((passphrase.length() >= driver::PassphraseMin)
              && (passphrase.length() <= driver::PassphraseMax)));
 
-    if (valid) {
-        // cancel what the SDK still does (a scan, an attempt): its disconnect event comes before the new attempt
-        driver::sta_disconnect();
-        espurna::time::yield();
+    if (!valid) {
+        // a network that cannot be tried is passed at once
+        internal::retry = build::ConnectionRetries;
+        failed(0);
+        return;
+    }
 
-        const auto ip = settings::ip(id);
-        const bool dhcp = !driver::ip_set(ip);
-        const auto netmask = dhcp ? espurna::Ip4() : settings::netmask(id);
-        const auto gateway = dhcp ? espurna::Ip4() : settings::gateway(id);
-        const auto dns = dhcp ? espurna::Ip4() : settings::dns(id);
+    // cancel what the SDK still does (a scan, an attempt): its disconnect event comes before the new attempt
+    driver::sta_disconnect();
+    espurna::time::yield();
 
-        auto channel = static_cast<uint8_t>(settings::channel(id));
-        auto bssid = channel ? settings::bssid(id) : Mac{};
-        internal::fast = false;
-        if (!channel && !internal::retry && last_ap::take(id, ssid, bssid, channel)) {
-            internal::fast = true;
-        }
-
-        const auto hostname = espurna::string(systemHostname());
-        if (driver::sta_connect(driver::StaConnect{
-                .hostname = hostname,
-                .ssid = ssid,
-                .passphrase = passphrase,
-                .dhcp = dhcp,
-                .ip = ip,
-                .netmask = netmask,
-                .gateway = gateway,
-                .dns = dns,
-                .bssid = bssid,
-                .channel = channel,
-            }))
-        {
-            internal::waiting = true;
-            internal::attempt_at = time::SystemClock::now();
-            publish(Event::StationConnecting);
-            return;
+    auto channel = static_cast<uint8_t>(settings::channel(id));
+    auto bssid = channel ? settings::bssid(id) : Mac{};
+    internal::fast = false;
+    if (!channel && !internal::retry && last_ap::take(id, ssid, bssid, channel)) {
+        internal::fast = true;
+        // the AP of the last connection is the one to avoid now: the scan below instead
+        if (avoid::is(bssid.data())) {
+            internal::fast = false;
+            bssid = Mac{};
+            channel = 0;
         }
     }
 
-    // a network that cannot be tried is passed at once
-    internal::retry = build::ConnectionRetries;
-    failed(0);
+    // an AP to avoid and none set for the network: our own scan picks another one
+    if (!channel && avoid::active()) {
+        connect_best(id);
+        return;
+    }
+
+    connect_to(id, bssid, channel);
 }
 
 // The AP rejected the association (WIFI_REASON_ASSOC_FAIL, the same code in the three SDKs): with PMF (foxy
@@ -883,11 +1011,51 @@ void failed(int reason) {
     publish(Event::StationReconnect);
 }
 
+// The attempt ended after the association: the AP takes the station, the network gives it no address (no DHCP answer).
+// More attempts right now only take the one radio away from the AP over and over (214 2026-11-23: 20 min of attempts,
+// the fallback AP up for seconds between them, nobody could join it): the round ends here, the fallback AP comes up and
+// stays alone for the reconnect interval; the next round waits while somebody uses the AP (start())
+bool no_address() {
+    if (!driver::sta_associated()) {
+        return false;
+    }
+
+    // the AP of this attempt: the explicit one, else the one the SDK linked to
+    Mac bssid = internal::attempt_bssid;
+    if (bssid == Mac{}) {
+        AUTH_MODE authmode;
+        driver::sta_info(bssid, authmode);
+    }
+    avoid::add(bssid);
+    if (internal::fast) {
+        internal::fast = false;
+        last_ap::forget(internal::network);
+    }
+
+    DEBUG_MSG_P(PSTR("[WIFI] Associated without an address (no DHCP answer), the fallback AP for now\n"));
+    stop();
+    if (internal::persist && enabled()) {
+        schedule(build::ReconnectionInterval, start);
+    }
+
+    publish(Event::StationReconnect);
+    return true;
+}
+
 // a new round from the first network
 void start() {
     if (!enabled() || !countNetworks()) {
         stop();
         publish(Event::StationReconnect);
+        return;
+    }
+
+    // Somebody uses the fallback AP: a round now takes the one radio away from it (the attempts move and restart the
+    // AP, its clients drop - 214 2026-11-23: the AP was up for seconds between the attempts, nobody could stay on it).
+    // The round waits until the AP is free
+    if (ap::stations()) {
+        DEBUG_MSG_P(PSTR("[WIFI] The AP has clients, the station waits\n"));
+        schedule(build::ReconnectionInterval, start);
         return;
     }
 
@@ -919,7 +1087,9 @@ void disconnected(int reason) {
         }
 
         internal::waiting = false;
-        failed(reason);
+        if (!no_address()) {
+            failed(reason);
+        }
         return;
     }
 
@@ -940,12 +1110,21 @@ void got_ip() {
     publish(Event::StationConnected);
 }
 
+// Associated, the address is on its way: lwIP 2.2 probes it (ACD, a few ARP probes and announcements, 5-8 s after the
+// DHCP ACK) before the netif reports it, on top of an association that took its time (214 behind tiger 2026-11-23:
+// association with the 4-way handshake ~7 s, DHCP ACK at 11 s, the address at 19 s - the 15 s timeout ended every
+// attempt with the ACK in hand)
+constexpr auto AttemptTimeoutAssociated = duration::Milliseconds{ 30000 };
+
 void loop() {
-    if (internal::waiting && ((time::SystemClock::now() - internal::attempt_at) >= AttemptTimeout)) {
+    const auto timeout = driver::sta_associated() ? AttemptTimeoutAssociated : AttemptTimeout;
+    if (internal::waiting && ((time::SystemClock::now() - internal::attempt_at) >= timeout)) {
         DEBUG_MSG_P(PSTR("[WIFI] Connection attempt timed out\n"));
         internal::waiting = false;
         driver::sta_disconnect();
-        failed(0);
+        if (!no_address()) {
+            failed(0);
+        }
     }
 }
 
@@ -2036,9 +2215,7 @@ bool wifiScanStart(WifiScanFound found, WifiScanError error) {
             found(wifi::convertSsid(info), info.rssi, info.authmode == wifi::driver::AuthOpen);
         },
         [error](const char* text) {
-            if (text) {
-                error(espurna::string(text));
-            }
+            error(text ? espurna::string(text) : espurna::string());
         });
 }
 

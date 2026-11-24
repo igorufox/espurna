@@ -92,8 +92,9 @@ espurna::Ip4 wifiApIp();
 // the wifiApCaptive setting, for the captive module (captive.cpp): DNS + connectivity check redirects while the AP is on
 bool wifiApCaptive();
 
-// The networks around, without the ws module (head_setup.cpp, the setup form of the head page): found - every network,
-// error - the scan failed or found nothing. true - started, wifiScanning() until it ends. Needs the station on
+// The networks around, without the ws module (head_setup.cpp, the setup form of the head page; matter_port.cpp): found -
+// every network, error - the end: empty when it went well, else why it failed or found nothing. true - started,
+// wifiScanning() until it ends. Needs the station on
 using WifiScanFound = void(*)(const espurna::string& ssid, int8_t rssi, bool open);
 using WifiScanError = void(*)(const espurna::string& error);
 bool wifiScanStart(WifiScanFound, WifiScanError);

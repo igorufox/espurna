@@ -48,9 +48,10 @@ namespace sdk {
 // last thing in systemSetup()
 void setup();
 
-// watchdog of the loop task, from the first loop() on (the rest of setup() is allowed to take its time).
+// watchdog of the loop task, from the first loop() on (the rest of setup() is allowed to take its time); again with
+// another period while the loop may be held up for longer (systemLoopWatchdog()). ms 0: the chip's own period.
 // The chip tells the stall watcher its period, stall::period()
-void enable_loop_wdt();
+void enable_loop_wdt(uint32_t ms);
 
 // loop task sleeps in delay_unlocked(), the watchdog that watches it has to be fed
 void feed_loop_wdt();

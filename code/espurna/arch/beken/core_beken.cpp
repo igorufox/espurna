@@ -38,6 +38,12 @@ extern "C" char _data_ram_end;
 // the C++ constructors, before anything of ESPurna runs
 extern "C" void __libc_init_array(void);
 
+// lwIP port of the BDK (net.c): the hook it calls when the station has its address, static or from DHCP
+extern "C" void net_set_sta_ipup_callback(void* fn);
+
+// BDK supplicant control (wlan_ui_pub.h): stops the station, the supplicant included
+extern "C" int wlan_sta_disconnect(void);
+
 // the end of the linker's RAM sections (bdk/bk7231n_bsp.ld), a C name: declared inside the namespace it was
 // espurna::beken::_empty_ram, an undefined reference
 extern "C" unsigned char _empty_ram;
@@ -584,6 +590,16 @@ void status_callback(rw_evt_type* value) {
     event_send(static_cast<int>(*value));
 }
 
+// A static address: the lwIP port of the BDK (net.c wm_netif_status_static_callback) only sets its own station status
+// to 'got IP', the status callback above never hears of it (its DHCP branch calls it), and the driver dropped the link
+// at the end of every attempt, 15 s (214, 2026-11-23). Its 'IP up' hook runs in both branches: the DHCP one is the
+// status callback's already
+void static_ipup(void*) {
+    if (wifi().sta.dhcp_mode == DHCP_DISABLE) {
+        event_send(RW_EVT_STA_GOT_IP);
+    }
+}
+
 void event_loop(void*) {
     int value;
     for (;;) {
@@ -603,6 +619,7 @@ void events_start() {
     }
 
     bk_wlan_status_register_cb(reinterpret_cast<FUNC_1PARAM_PTR>(status_callback));
+    net_set_sta_ipup_callback(reinterpret_cast<void*>(static_ipup));
 }
 
 // the RF and the BDK's apps, once (LibreTiny: the first WiFi.mode())
@@ -813,6 +830,37 @@ bool wifi_sta_info(WifiInfo& out) {
     out.rssi = static_cast<int8_t>(link.wifi_strength);
     out.authmode = auth_mode(link.security);
     return true;
+}
+
+void wifi_hostname_apply();
+
+} // namespace chip
+} // namespace core
+} // namespace espurna
+
+// The BDK adds the station netif anew on every association (lwIP port net.c net_wlan_add_netif, called by the
+// supplicant): its low_level_init() names it "wlan0" and the DHCP request carried that instead of the hostname set
+// before the connect (214, 2026-11-23). Linked with --wrap=net_wlan_add_netif (platformio_beken.ini)
+extern "C" {
+
+void __real_net_wlan_add_netif(void* mac);
+
+void __wrap_net_wlan_add_netif(void* mac) {
+    __real_net_wlan_add_netif(mac);
+    ::espurna::core::chip::wifi_hostname_apply();
+}
+
+} // extern "C"
+
+namespace espurna {
+namespace core {
+namespace chip {
+
+void wifi_hostname_apply() {
+    auto* ifs = static_cast<struct netif*>(net_get_sta_handle());
+    if (ifs && wifi().hostname[0]) {
+        netif_set_hostname(ifs, wifi().hostname);
+    }
 }
 
 bool wifi_hostname(const char* hostname) {

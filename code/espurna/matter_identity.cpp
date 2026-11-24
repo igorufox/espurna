@@ -19,7 +19,7 @@ MATTER: THE IDENTITY OF THE BOARD (one code on ESP32 and Beken)
 `matterIdentity` (owner 11-16): "factory" / "espurna" (the own one) / "custom"; none = factory when the board has
 factory data, else espurna, as before the setting. A choice the board cannot use falls back to espurna. setup() (the
 loop, the module setup) reads it; when the identity differs from the one of the last start (the setting, another custom
-DAC), the controllers are forgotten first (backend::reset(), as MATTER.RESET): they verified the old DAC.
+DAC), the controllers are forgotten first (port::reset(), as MATTER.RESET): they verified the old DAC.
 
 The chip's part (arch/<chip>/matter_*.cpp): store_read() / store_write() of the key-value store, factory_read().
 When: install() where the providers are set - the library's server init calls matter_identity_install() (below) on both
@@ -1028,7 +1028,7 @@ void setup() {
     if (known) {
         DEBUG_MSG_P(PSTR("[MATTER] Identity changed (%s), forgetting the controllers: they verified the old DAC\n"),
             name(choice_of(out)));
-        if (!backend::reset()) {
+        if (!port::reset()) {
             DEBUG_MSG_P(PSTR("[MATTER] Matter storage failed, the controllers are kept\n"));
             return;
         }

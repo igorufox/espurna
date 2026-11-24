@@ -254,10 +254,19 @@ void sdk::setup() {
     stall::setup();
 }
 
-// task WDT, CONFIG_ESP_TASK_WDT_TIMEOUT_S (5s)
-void sdk::enable_loop_wdt() {
-    enableLoopWDT();
-    stall::period(CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000);
+// task WDT, CONFIG_ESP_TASK_WDT_TIMEOUT_S (5s); another period: the same watchdog reconfigured, both idle checks stay
+// off (the SMP kernel), a missed feed still panics (the core dump)
+void sdk::enable_loop_wdt(uint32_t ms) {
+    const uint32_t period = ms ? ms : (CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000);
+    esp_task_wdt_config_t config {};
+    config.timeout_ms = period;
+    config.idle_core_mask = 0;
+    config.trigger_panic = true;
+    esp_task_wdt_reconfigure(&config);
+    if (!ms) {
+        enableLoopWDT();
+    }
+    stall::period(period);
 }
 
 } // namespace chip

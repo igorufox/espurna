@@ -23,12 +23,6 @@ Matter On/Off plug endpoints for the relays. One Matter layer for both chips:
 #pragma once
 
 
-// the chip's options of the Matter library that its SDK configuration does not have (ESP32: matter_config_chip.h),
-// before any header of the library
-#if __has_include(<matter_config_chip.h>)
-#include <matter_config_chip.h>
-#endif
-
 #include <cstddef>
 #include <cstdint>
 
@@ -83,26 +77,24 @@ bool matter_plug_name(uint8_t plug, char* label, size_t label_size, char* unique
 
 namespace espurna {
 namespace matter {
-namespace backend {
 
-// What only the chip has, called from the loop
+// the namespace of the board's factory data in the key-value store of the stack (read only, identity::factory_read())
+constexpr char FactoryNamespace[] = "chip-factory";
 
-// Default `matterDelay`, seconds between the station address and the automatic start
-uint32_t start_delay();
+// The platform layer under the library, the same on every chip (matter_port.cpp: the matter_port_* API of the
+// library's external_platform/Port/matter_port.h), called from the loop
+namespace port {
 
 void setup();
 
-// Before matter_app_start(): storage and identity of the chip. false: Matter cannot start
+// the key-value store (FlashDB on 'kvs'). false: Matter cannot start
 bool prepare();
 
-// Device type of the plug endpoints the identity of the board asks for (0 = plug), after prepare()
-uint16_t device_type();
-
-// Station got / lost its address
+// Station got / lost its address: the events of the library
 void network(bool up);
 
-// From the Matter task (matter_commissioning()): what the chip needs while a controller commissions
-void commissioning(bool active);
+// Forget every controller (fabrics, ACL), keep the own identity and its pairing code. Only while Matter is stopped
+bool reset();
 
 // Where the device attestation comes from, no secrets
 struct Identity {
@@ -116,8 +108,25 @@ struct Identity {
 
 void describe(Identity& out);
 
-// Forget every controller (fabrics, ACL), keep the own identity and its pairing code. Only while Matter is stopped
-bool reset();
+} // namespace port
+
+namespace backend {
+
+// What only the chip has, called from the loop
+
+// Before matter_app_start(): storage and identity of the chip. false: Matter cannot start
+bool prepare();
+
+// Device type of the plug endpoints the identity of the board asks for (0 = plug), after prepare()
+uint16_t device_type();
+
+// Station got / lost its address
+void network(bool up);
+
+
+
+// the size of the heap (Software Diagnostics of the library)
+size_t heap_total();
 
 } // namespace backend
 

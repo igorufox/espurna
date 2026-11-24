@@ -74,7 +74,9 @@ class BekenLinker(module_link.Linker):
     head_elf_name = "firmware.elf"
     head_bin_name = "firmware.bin"
     head_map_name = "firmware.map"
-    head_outputs = ("${PROGNAME}.elf", "firmware.uf2")
+    # in the order they are built again after a head relink: firmware.bin too, the RBL of the head and the UF2 come
+    # from it (without it they kept the head before the relink: Apply "built for another head", 214 2026-11-24)
+    head_outputs = ("${PROGNAME}.elf", "firmware.bin", "firmware.uf2")
     link_script = "beken_module.ld"
     bases = (("FLASH", FLASH_A, 0x00280000, "flash"),
              ("RAM", 0x10000000, 0x10100000, "RAM"))
@@ -198,10 +200,18 @@ class BekenLinker(module_link.Linker):
         # Tuya: the UF2 inputs of this build (its firmware.uf2, scripts/beken_image.py) and the modules file
         if extra:
             env = self.env
-            inputs = [env.subst(arg) for arg in env["UF2OTA"] if arg]
-            now = datetime.now()
             with open(os.path.join(folder, "board.json"), encoding="utf-8") as f:
                 board = json.load(f)
+            # beken_image.py sets UF2OTA when it builds firmware.uf2; with the head unchanged SCons skips that step
+            # (only a module changed) and the inputs come from the images it left in the build folder
+            if "UF2OTA" in env:
+                uf2ota = env["UF2OTA"]
+            else:
+                with open(os.path.join(folder, "firmware.bin"), "rb") as f:
+                    paths, header_offset = beken_image.head_images(folder, board, f.read())
+                uf2ota = beken_image.uf2_inputs(paths, header_offset)
+            inputs = [env.subst(arg) for arg in uf2ota if arg]
+            now = datetime.now()
             beken_image.write_uf2(tuya, board, inputs + extra, f"espurna:{now:%y.%m.%d}", int(now.timestamp()))
         else:
             copy(os.path.join(folder, "firmware.uf2"), tuya)

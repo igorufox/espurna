@@ -240,8 +240,8 @@ void sdk::setup() {
     esp_register_freertos_tick_hook(watch_tick);
 }
 
-// the hardware watchdog runs from the SDK's start (fed by the idle task), ref. feed_loop_wdt()
-void sdk::enable_loop_wdt() {
+// the hardware watchdog runs from the SDK's start (fed by the idle task), ref. feed_loop_wdt(): its period is the SDK's
+void sdk::enable_loop_wdt(uint32_t) {
 }
 
 } // namespace chip

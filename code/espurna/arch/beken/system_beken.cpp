@@ -501,8 +501,8 @@ void sdk::setup() {
 
 // hardware WDT, fed by chip::loop_pass() after every loop() (core_beken.cpp). The stall watcher learns the period from
 // beken::wdt_* (rtcmem_beken.cpp)
-void sdk::enable_loop_wdt() {
-    ::espurna::beken::wdt_enable(LoopWdtTimeout);
+void sdk::enable_loop_wdt(uint32_t ms) {
+    ::espurna::beken::wdt_enable(ms ? ms : LoopWdtTimeout);
 }
 
 } // namespace chip

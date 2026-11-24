@@ -128,6 +128,10 @@ void sta_disconnect();
 // Start the connection attempt, the result is one of the events above
 bool sta_connect(const StaConnect&);
 
+// The current attempt got as far as the association (and the 4-way handshake): a timeout after it is the IP stack's,
+// no DHCP answer, not the AP's
+bool sta_associated();
+
 // Start the scan, results and the end of the scan are reported as the events above
 bool scan_start();
 

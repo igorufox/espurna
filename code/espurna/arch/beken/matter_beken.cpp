@@ -2,18 +2,14 @@
 
 MATTER FOR BEKEN (BDK): WHAT ONLY THIS CHIP HAS
 
-The Matter application (the C API of espurna_matter.h: matter_app_start() ...) is libMatterApp.a of matter-espurna
-(connectedhomeip for the BK7231N), the rest of the Matter layer is matter.cpp. Here only what that library and this
-chip need underneath: the bk_* platform API it was written against (matter_pal.h of the BK7231N port):
-- "chip-factory" namespace: read only, straight from the factory data the stock firmware left in flash: the factory
+The Matter application and its platform layer are libMatterApp.a of matter-espurna, the same on every chip; the
+platform layer's API (matter_port_*: key-value store, Wi-Fi, events, OTA) is matter_port.cpp, the rest of the Matter
+layer matter.cpp. Here only what this chip has:
+- the factory data the stock firmware left in flash ("chip-factory" of the key-value store, read only): the factory
   table of the Quectel SDK (Sparkleiot XH-CB2S), or the encrypted key-value store of Tuya's Matter firmware (MOES
   MS-104B Matter, CBU, ref. tuya_kv_beken.h): DAC and its key, PAI, certification declaration, passcode verifier,
   discriminator, VID / PID. Nothing is ever written there
-- every other namespace (chip-config, chip-counters, the KVS of fabrics, ACL ...): FlashDB on the 'kvs' partition
-- Wi-Fi status and the connected / got IP events from the ESPurna wifi module
-- the store and the factory data of the board's identity (matter_identity.cpp, one code with the ESP32; the library
-  calls matter_identity_install() before its server init)
-- the watchdog while a controller commissions, IGMP on the netif for the mDNS of Matter
+- the watchdog while a controller commissions, IGMP on the netif for the mDNS (the lwIP port of the BDK), the heap
 
 */
 
@@ -31,8 +27,6 @@ chip need underneath: the bk_* platform API it was written against (matter_pal.h
 
 #include <wifi_sdk.h>
 #include <FreeRTOS.h>
-#include <semphr.h>
-#include <flashdb.h>
 
 #include <lwip/igmp.h>
 #include <lwip/netif.h>
@@ -48,72 +42,10 @@ chip need underneath: the bk_* platform API it was written against (matter_pal.h
 #include <cstring>
 #include <vector>
 
-// ---------------------------------------------------------------------------------------------------------------------
-// Types of the bk_* platform API of the Matter library (matter_pal.h of the BK7231N port)
-
-extern "C" {
-
-typedef int bk_err_t;
-
-typedef enum {
-    EVENT_MOD_WIFI,
-    EVENT_MOD_NETIF,
-} event_module_t;
-
-typedef int (*event_cb_t)(void* arg, event_module_t event_module, int event_id, void* event_data);
-
-typedef struct {
-    int disconnect_reason;
-    bool local_generated;
-} matter_sta_disconnected_t;
-
-typedef struct {
-    char ssid[33];
-    uint8_t bssid[6];
-    uint8_t channel;
-    int security;
-    char password[65];
-} wifi_sta_config_t;
-
-typedef struct {
-    char ssid[33];
-    uint8_t bssid[6];
-    uint8_t channel;
-    int8_t rssi;
-    int security;
-} wifi_link_status_t;
-
-typedef struct {
-    char ssid[33];
-} wifi_scan_config_t;
-
-typedef struct {
-    char ssid[33];
-    uint8_t bssid[6];
-    int rssi;
-    uint8_t channel;
-    int security;
-} wifi_scan_ap_info_t;
-
-typedef struct {
-    int ap_num;
-    wifi_scan_ap_info_t* aps;
-} wifi_scan_result_t;
-
-} // extern "C"
 
 namespace espurna {
 namespace matter {
 namespace {
-
-constexpr int BkOk { 0 };
-constexpr int BkFail { -1 };
-
-constexpr int EventWifiStaConnected { 1 };
-constexpr int EventWifiStaDisconnected { 2 };
-constexpr int EventNetifGotIp4 { 0 };
-
-constexpr char FactoryNamespace[] = "chip-factory";
 
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -456,283 +388,12 @@ bool quectel_read(const char* name, uint8_t* out, size_t size, size_t& length) {
     return false;
 }
 
-bool read(const char* name, std::vector<uint8_t>& out) {
-    size_t length { 0 };
-    if (!read(name, nullptr, 0, length)) {
-        return false;
-    }
-
-    out.resize(length);
-    return read(name, out.data(), out.size(), length);
-}
-
-uint32_t read_number(const char* name) {
-    uint8_t value[4] {};
-    size_t length { 0 };
-    if (!read(name, value, sizeof(value), length) || (length > sizeof(value))) {
-        return 0;
-    }
-
-    uint32_t out { 0 };
-    for (size_t index = length; index > 0; --index) {
-        out = (out << 8) | value[index - 1];
-    }
-
-    return out;
-}
-
-espurna::string read_text(const char* name) {
-    std::vector<uint8_t> value;
-    if (!read(name, value)) {
-        return espurna::string();
-    }
-
-    espurna::string out;
-    out.concat(reinterpret_cast<const char*>(value.data()), value.size());
-
-    return out;
-}
-
 } // namespace factory
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-namespace kv {
-
-// 'kvs' partition of the board (0x1D3000, 32 KiB), empty on the boards with Matter factory data
-struct fdb_kvdb db;
-espurna::system::Mutex mutex;
-bool ready { false };
-
-void lock(fdb_db_t) {
-    mutex.lock();
-}
-
-void unlock(fdb_db_t) {
-    mutex.unlock();
-}
-
-bool init() {
-    if (ready) {
-        return true;
-    }
-
-    fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_LOCK, reinterpret_cast<void*>(lock));
-    fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_UNLOCK, reinterpret_cast<void*>(unlock));
-
-    ready = fdb_kvdb_init(&db, "matter", "kvs", nullptr, nullptr) == FDB_NO_ERR;
-    return ready;
-}
-
-espurna::string key(const char* ns, const char* name) {
-    espurna::string out;
-    out.reserve(std::strlen(ns) + std::strlen(name) + 1);
-    out += ns;
-    out += '/';
-    out += name;
-
-    return out;
-}
-
-int read(const char* ns, const char* name, char* buf, uint32_t len, uint32_t* out_len) {
-    if (!init()) {
-        return BkFail;
-    }
-
-    struct fdb_kv obj;
-    const auto full = key(ns, name);
-    if (!fdb_kv_get_obj(&db, full.c_str(), &obj)) {
-        return BkFail;
-    }
-
-    struct fdb_blob blob;
-    const auto copy = std::min(len, static_cast<uint32_t>(obj.value_len));
-    fdb_blob_read(reinterpret_cast<fdb_db_t>(&db), fdb_kv_to_blob(&obj, fdb_blob_make(&blob, buf, copy)));
-
-    if (out_len) {
-        *out_len = copy;
-    }
-
-    return BkOk;
-}
-
-int write(const char* ns, const char* name, const char* buf, uint32_t len) {
-    if (!init()) {
-        return BkFail;
-    }
-
-    struct fdb_blob blob;
-    const auto full = key(ns, name);
-    const auto start = espurna::time::ms();
-    const auto out = (fdb_kv_set_blob(&db, full.c_str(), fdb_blob_make(&blob, buf, len)) == FDB_NO_ERR) ? BkOk : BkFail;
-
-    // W50: the Matter task held its lock 8.5 s in the flash driver at the start: how long each write takes
-    const auto took = espurna::time::ms() - start;
-    static uint32_t writes { 0 };
-    static uint32_t total { 0 };
-    ++writes;
-    total += took;
-    if (took >= 100) {
-        char line[96];
-        snprintf(line, sizeof(line), "KVS write %s (%u bytes) took %u ms, %u writes %u ms so far",
-            full.c_str(), static_cast<unsigned>(len), static_cast<unsigned>(took),
-            static_cast<unsigned>(writes), static_cast<unsigned>(total));
-        matter_log(line);
-    }
-
-    return out;
-}
-
-int remove(const char* ns, const char* name) {
-    if (!init()) {
-        return BkFail;
-    }
-
-    const auto full = key(ns, name);
-    return (fdb_kv_del(&db, full.c_str()) == FDB_NO_ERR) ? BkOk : BkFail;
-}
-
-bool exists(const char* ns, const char* name) {
-    if (!init()) {
-        return false;
-    }
-
-    struct fdb_kv obj;
-    const auto full = key(ns, name);
-    return fdb_kv_get_obj(&db, full.c_str(), &obj) != nullptr;
-}
-
-int clear(const char* ns) {
-    if (!init()) {
-        return BkFail;
-    }
-
-    espurna::string prefix(ns);
-    prefix += '/';
-
-    std::vector<espurna::string> names;
-
-    struct fdb_kv_iterator iterator;
-    fdb_kv_iterator_init(&iterator);
-    while (fdb_kv_iterate(&db, &iterator)) {
-        if (std::strncmp(iterator.curr_kv.name, prefix.c_str(), prefix.length()) == 0) {
-            names.emplace_back(iterator.curr_kv.name);
-        }
-    }
-
-    for (const auto& name : names) {
-        fdb_kv_del(&db, name.c_str());
-    }
-
-    return BkOk;
-}
-
-// Matter factory reset: fabrics, ACL, counters... everything but the own identity of the board (namespace
-// "espurna-id" of matter_identity.cpp), so the pairing code stays the same
-constexpr char IdentityPrefix[] = "espurna-id/";
-
-int clear_all() {
-    if (!init()) {
-        return BkFail;
-    }
-
-    std::vector<espurna::string> names;
-
-    struct fdb_kv_iterator iterator;
-    fdb_kv_iterator_init(&iterator);
-    while (fdb_kv_iterate(&db, &iterator)) {
-        if (std::strncmp(iterator.curr_kv.name, IdentityPrefix, sizeof(IdentityPrefix) - 1) != 0) {
-            names.emplace_back(iterator.curr_kv.name);
-        }
-    }
-
-    for (const auto& name : names) {
-        fdb_kv_del(&db, name.c_str());
-    }
-
-    return BkOk;
-}
-
-} // namespace kv
-
-// ---------------------------------------------------------------------------------------------------------------------
-
-// The library registers its network callbacks from the Matter task (add() / remove()), the loop reports the network
-// to them (backend::network()): the list and the state are only touched under the mutex, the callbacks themselves run
-// outside of it, from a copy (they may register again)
-namespace events {
-
-struct Callback {
-    event_module_t module;
-    event_cb_t callback;
-    void* arg;
-};
-
-espurna::system::Mutex mutex;
-std::vector<Callback> callbacks;
-bool connected { false };
-
-// the loop
-void notify(event_module_t module, int id, void* data) {
-    std::vector<Callback> copy;
-    {
-        espurna::system::MutexLock lock(mutex);
-        copy = callbacks;
-    }
-
-    for (const auto& callback : copy) {
-        if (callback.module == module) {
-            callback.callback(callback.arg, module, id, data);
-        }
-    }
-}
-
-// the loop, before notify()
-void network(bool up) {
-    espurna::system::MutexLock lock(mutex);
-    connected = up;
-}
-
-// the Matter task
-void add(event_module_t module, event_cb_t callback, void* arg) {
-    bool up;
-    {
-        espurna::system::MutexLock lock(mutex);
-        for (auto& entry : callbacks) {
-            if ((entry.module == module) && (entry.callback == callback)) {
-                entry.arg = arg;
-                return;
-            }
-        }
-
-        callbacks.push_back(Callback{module, callback, arg});
-        up = connected;
-    }
-
-    // Matter starts after ESPurna is already on the network
-    if (up) {
-        callback(arg, module,
-            (module == EVENT_MOD_NETIF) ? EventNetifGotIp4 : EventWifiStaConnected,
-            nullptr);
-    }
-}
-
-void remove(event_module_t module, event_cb_t callback) {
-    espurna::system::MutexLock lock(mutex);
-    for (auto it = callbacks.begin(); it != callbacks.end(); ++it) {
-        if (((*it).module == module) && ((*it).callback == callback)) {
-            callbacks.erase(it);
-            return;
-        }
-    }
-}
-
-} // namespace events
-
-// ---------------------------------------------------------------------------------------------------------------------
-
 // The lwIP port of the BDK brings the netif up without NETIF_FLAG_IGMP (MLD6 is set), joining an IPv4 multicast
-// group then fails with ERR_VAL, and the minimal mDNS of Matter cannot answer on 224.0.0.251. Runs in the tcpip thread
+// group then fails with ERR_VAL, and mDNS cannot answer on 224.0.0.251. Runs in the tcpip thread
 void enable_igmp(void*) {
     for (auto* netif = netif_list; netif; netif = netif->next) {
         if ((netif->flags & NETIF_FLAG_ETHARP) && !(netif->flags & NETIF_FLAG_IGMP)) {
@@ -751,59 +412,8 @@ uint16_t declared_type { 0 };
 
 namespace backend {
 
-// On the 2 MiB boards the start right at boot, with both controllers reconnecting at once (CASE, subscriptions, reads)
-// while DHCP, MQTT and the WebUI were busy too, filled the 16 KiB lwIP heap and receiving stopped: the board went deaf
-// until the network watchdog restarted it, often twice in a row
-uint32_t start_delay() {
-    return 75;
-}
-
-#if TERMINAL_SUPPORT
-// What the 'kvs' partition holds: a write of the Matter task that took 8.5 s (chip-counters/reboot-count at the start,
-// the loop watchdog fired, 2026-11-14) points at a full FlashDB that collects garbage on every write
-PROGMEM_STRING(Kvs, "MATTER.KVS");
-
-void kvs_report(::terminal::CommandContext&& ctx) {
-    if (!kv::init()) {
-        terminalError(ctx, "No FlashDB on the 'kvs' partition");
-        return;
-    }
-
-    size_t count { 0 };
-    size_t used { 0 };
-    struct fdb_kv_iterator iterator;
-    fdb_kv_iterator_init(&iterator);
-    while (fdb_kv_iterate(&kv::db, &iterator)) {
-        ++count;
-        used += iterator.curr_kv.len;
-        ctx.output.printf_P(PSTR("%s: value %u, record %u\n"), iterator.curr_kv.name,
-            static_cast<unsigned>(iterator.curr_kv.value_len), static_cast<unsigned>(iterator.curr_kv.len));
-    }
-
-    ctx.output.printf_P(PSTR("%u keys, %u bytes of live records; partition %u bytes, sector %u\n"),
-        static_cast<unsigned>(count), static_cast<unsigned>(used),
-        static_cast<unsigned>(kv::db.parent.max_size), static_cast<unsigned>(kv::db.parent.sec_size));
-    terminalOK(ctx);
-}
-
-constexpr ::terminal::Command Commands[] PROGMEM {
-    {Kvs, kvs_report},
-};
-#endif
-
-void setup() {
-#if TERMINAL_SUPPORT
-    espurna::terminal::add(Commands);
-#endif
-}
-
-// FlashDB of the library, and the Tuya factory identity decrypted here in the loop: the Matter task then only reads
-// the copy
+// the Tuya factory identity decrypted here in the loop: the Matter task then only reads the copy
 bool prepare() {
-    if (!kv::init()) {
-        return false;
-    }
-
     factory::tuya::get();
     declared_type = factory::tuya::declared_device_type();
 
@@ -816,285 +426,29 @@ uint16_t device_type() {
 
 void network(bool up) {
     if (up) {
-        events::network(true);
         tcpip_callback(enable_igmp, nullptr);
-        events::notify(EVENT_MOD_WIFI, EventWifiStaConnected, nullptr);
-        events::notify(EVENT_MOD_NETIF, EventNetifGotIp4, nullptr);
-        return;
-    }
-
-    if (events::connected) {
-        events::network(false);
-        matter_sta_disconnected_t data {};
-        events::notify(EVENT_MOD_WIFI, EventWifiStaDisconnected, &data);
     }
 }
 
-// The certificate steps of a pairing (attestation, CSR, AddNOC: ECDSA ~2 s per sign / verify on this chip) keep the
-// higher priority Matter task busy longer than the 10 s the loop has to feed the watchdog: a 4-relay bridge reset at
-// the hub's step 3. 30 s while a controller commissions, the loop value (system_beken.cpp LoopWdtTimeout) after it
-void commissioning(bool active) {
-    constexpr uint32_t LoopWdtMs { 10000 };
-    constexpr uint32_t CommissioningWdtMs { 30000 };
-    ::espurna::beken::wdt_enable(active ? CommissioningWdtMs : LoopWdtMs);
-}
-
-void describe(Identity& out) {
-    const auto source = factory::source();
-    // no factory data, or `matterIdentity` chose the own or the custom identity (matter_identity.cpp)
-    if (!source.length() || (identity::choice() != identity::Choice::Factory)) {
-        out.vendor = "ESPurna";
-        out.vendor_id = 0xfff1;
-        out.product = "ESPurna plug";
-        out.product_id = 0x8000;
-        identity::ids(out.vendor_id, out.product_id);
-        out.source = identity::status();
-        if (!source.length()) {
-            out.source += ", no factory data";
-        }
-        return;
-    }
-
-    out.vendor = factory::read_text("vendor-name");
-    out.vendor_id = factory::read_number("vendor-id");
-    out.product = factory::read_text("product-name");
-    out.product_id = factory::read_number("product-id");
-    out.source = "factory identity, ";
-    out.source += source;
-
-    // sizes only (a read without a buffer)
-    size_t dac { 0 };
-    size_t pai { 0 };
-    size_t cd { 0 };
-    factory::read("dac-cert", nullptr, 0, dac);
-    factory::read("pai-cert", nullptr, 0, pai);
-    factory::read("cert-dclrn", nullptr, 0, cd);
-
-    out.details = "certificates: DAC ";
-    out.details += espurna::string(dac);
-    out.details += ", PAI ";
-    out.details += espurna::string(pai);
-    out.details += ", declaration ";
-    out.details += espurna::string(cd);
-    out.details += " bytes";
-}
-
-// everything but the own identity of the board (namespace "espurna-id", matter_identity.cpp), so the pairing code stays
-bool reset() {
-    return kv::clear_all() == BkOk;
+size_t heap_total() {
+    return ::espurna::beken::heap_size();
 }
 
 } // namespace backend
 
-// The chip's part of the identity (matter_identity.cpp): FlashDB of the 'kvs' partition, namespace "espurna-id" next
-// to the stack's own; the factory data of the stock firmware, read only
+// The chip's part of the identity (matter_identity.cpp): the factory data of the stock firmware, read only
 namespace identity {
-namespace {
-
-constexpr char Namespace[] = "espurna-id";
-
-} // namespace
-
-bool store_read(const char* name, uint8_t* out, size_t size, size_t& length) {
-    uint32_t read { 0 };
-    if (kv::read(Namespace, name, reinterpret_cast<char*>(out), size, &read) != BkOk) {
-        return false;
-    }
-
-    length = read;
-    return true;
-}
-
-bool store_write(const char* name, const uint8_t* data, size_t size) {
-    return kv::write(Namespace, name, reinterpret_cast<const char*>(data), size) == BkOk;
-}
 
 bool factory_read(const char* name, uint8_t* out, size_t size, size_t& length) {
     return factory::read(name, out, size, length);
 }
 
+espurna::string factory_source() {
+    return factory::source();
+}
+
 } // namespace identity
 } // namespace matter
 } // namespace espurna
-
-
-// ---------------------------------------------------------------------------------------------------------------------
-// The bk_* platform API of the Matter library
-
-extern "C" {
-
-// "chip-factory": the keys of the stock factory table are read only, the ones Matter adds there itself (uniqueId)
-// go to the key-value store like every other namespace
-int bk_read_data(const char* ns, const char* name, char* buf, uint32_t len, uint32_t* out_len) {
-    using namespace espurna::matter;
-    if (std::strcmp(ns, FactoryNamespace) == 0) {
-        size_t length { 0 };
-        if (factory::read(name, reinterpret_cast<uint8_t*>(buf), len, length)) {
-            if (out_len) {
-                *out_len = std::min(static_cast<size_t>(len), length);
-            }
-            return BkOk;
-        }
-
-        // Basic Information SerialNumber: the stock factory data has none, Matter then reports the SDK test value
-        // (matter.cpp: the speaker hub reads it while commissioning)
-        if (std::strcmp(name, "serial-num") == 0) {
-            const auto* serial = matter_serial_number();
-            const auto copy = std::min(static_cast<size_t>(len), std::strlen(serial));
-            std::memcpy(buf, serial, copy);
-            if (out_len) {
-                *out_len = copy;
-            }
-            return BkOk;
-        }
-    }
-
-    return kv::read(ns, name, buf, len, out_len);
-}
-
-namespace {
-
-bool factory_key(const char* ns, const char* name) {
-    using namespace espurna::matter;
-    size_t length { 0 };
-    return (std::strcmp(ns, FactoryNamespace) == 0) && factory::read(name, nullptr, 0, length);
-}
-
-} // namespace
-
-int bk_write_data(const char* ns, const char* name, const char* buf, uint32_t len) {
-    using namespace espurna::matter;
-    if (factory_key(ns, name)) {
-        return BkFail;
-    }
-
-    return kv::write(ns, name, buf, len);
-}
-
-int bk_clean_data(const char* ns, const char* name) {
-    using namespace espurna::matter;
-    if (factory_key(ns, name)) {
-        return BkFail;
-    }
-
-    return kv::remove(ns, name);
-}
-
-int bk_ensure_namespace(const char*) {
-    return espurna::matter::BkOk;
-}
-
-int bk_ensure_name_data(const char* ns, const char* name) {
-    using namespace espurna::matter;
-    if (factory_key(ns, name)) {
-        return BkOk;
-    }
-
-    return kv::exists(ns, name) ? BkOk : BkFail;
-}
-
-// Clears only what is in the key-value store, never the stock factory table
-int bK_clear_namespace(const char* ns) {
-    return espurna::matter::kv::clear(ns);
-}
-
-int bk_erase_all(int) {
-    return espurna::matter::kv::clear_all();
-}
-
-bk_err_t bk_event_register_cb(event_module_t module, int, event_cb_t cb, void* arg) {
-    espurna::matter::events::add(module, cb, arg);
-    return espurna::matter::BkOk;
-}
-
-bk_err_t bk_event_unregister_cb(event_module_t module, int, event_cb_t cb) {
-    espurna::matter::events::remove(module, cb);
-    return espurna::matter::BkOk;
-}
-
-// Wi-Fi belongs to ESPurna. A controller that commissions over BLE (the matter_ble module) gives the network with
-// Network Commissioning: matterWifiFromController() (matter.cpp, both chips); the library learns the result from the
-// Wi-Fi events, as on the network
-namespace espurna {
-namespace matter {
-namespace {
-
-wifi_sta_config_t staging {};
-
-} // namespace
-} // namespace matter
-} // namespace espurna
-
-bk_err_t bk_wifi_sta_set_config(const wifi_sta_config_t* config) {
-    if (!config || !config->ssid[0]) {
-        return espurna::matter::BkFail;
-    }
-    espurna::matter::staging = *config;
-    espurna::matter::staging.ssid[sizeof(espurna::matter::staging.ssid) - 1] = 0;
-    espurna::matter::staging.password[sizeof(espurna::matter::staging.password) - 1] = 0;
-    return espurna::matter::BkOk;
-}
-
-bk_err_t bk_wifi_sta_start(void) {
-    return espurna::matter::BkOk;
-}
-
-bk_err_t bk_wifi_sta_connect(void) {
-    const auto& staging = espurna::matter::staging;
-    return matterWifiFromController(staging.ssid, strnlen(staging.ssid, sizeof(staging.ssid)), staging.password,
-        strnlen(staging.password, sizeof(staging.password))) ? espurna::matter::BkOk : espurna::matter::BkFail;
-}
-
-bk_err_t bk_wifi_sta_get_link_status(wifi_link_status_t* status) {
-    std::memset(status, 0, sizeof(*status));
-    if (!espurna::matter::events::connected) {
-        return espurna::matter::BkFail;
-    }
-
-    const auto info = wifiStaInfo();
-    std::strncpy(status->ssid, info.ssid.c_str(), sizeof(status->ssid) - 1);
-    std::memcpy(status->bssid, info.bssid.data(), std::min(sizeof(status->bssid), info.bssid.size()));
-    status->channel = info.channel;
-    status->rssi = info.rssi;
-
-    return espurna::matter::BkOk;
-}
-
-bk_err_t bk_wifi_sta_get_mac(uint8_t* mac) {
-    ::espurna::core::chip::wifi_mac(false, mac);
-    return espurna::matter::BkOk;
-}
-
-bk_err_t bk_wifi_scan_start(const wifi_scan_config_t*) {
-    return espurna::matter::BkFail;
-}
-
-bk_err_t bk_wifi_scan_get_result(wifi_scan_result_t* result) {
-    result->ap_num = 0;
-    result->aps = nullptr;
-    return espurna::matter::BkFail;
-}
-
-void bk_wifi_scan_free_result(wifi_scan_result_t*) {
-}
-
-// No OTA through Matter, ESPurna updates itself
-int bk_write_ota_data_to_flash(char*, uint32_t, uint32_t) {
-    return espurna::matter::BkFail;
-}
-
-int bk_read_ota_data_in_flash(char*, uint32_t, uint32_t) {
-    return espurna::matter::BkFail;
-}
-
-void bk_erase_ota_data_in_flash(void) {
-}
-
-size_t prvHeapGetTotalSize(void) {
-    return ::espurna::beken::heap_size();
-}
-
-} // extern "C"
-
 
 #endif

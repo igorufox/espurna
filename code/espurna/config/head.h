@@ -107,7 +107,7 @@ light | light.cpp.o module_light.cpp.o | | lightBlue lightBrightness lightBright
 light_pwm | module_light_pwm.cpp.o | pwm.cpp.o | | light
 light_my92xx | module_light_my92xx.cpp.o | | | light
 rf | rfbridge.cpp.o module_rf.cpp.o | | rfbSend rfbOnCode| tools arduino_emu
-matter | matter.cpp.o matter_app.cpp.o matter_identity.cpp.o module_matter.cpp.o | | matterWindowOpen matterWindowStart matterPairingCodes | mdns tools
+matter | matter.cpp.o matter_app.cpp.o matter_identity.cpp.o matter_port.cpp.o module_matter.cpp.o | | matterWindowOpen matterWindowStart matterPairingCodes | mdns tools
 matter_ble | matter_ble.cpp.o module_matter_ble.cpp.o | || ble matter tools
 nextion | nextion_link.cpp.o nextion_flash.cpp.o nextion_lovelace.cpp.o nextion_ohpanel.cpp.o nextion_screen.cpp.o module_nextion.cpp.o | | | screen uart tls http tools
 uart | uart.cpp.o module_uart.cpp.o | | uartPort uartClaim uartClaimed uartOnClaim uartOpen uartBaud| tools

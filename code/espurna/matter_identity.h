@@ -14,14 +14,15 @@ namespace espurna {
 namespace matter {
 namespace identity {
 
-// The chip's part (arch/<chip>/matter_*.cpp): the key-value store of the chip, namespace "espurna-id" (ESP32 NVS,
-// Beken FlashDB)
+// The key-value store of the platform layer (matter_port.cpp, FlashDB on every chip), namespace "espurna-id"
 bool store_read(const char* name, uint8_t* out, size_t size, size_t& length);
 bool store_write(const char* name, const uint8_t* data, size_t size);
 
 // Factory data of a stock firmware ("dac-cert", "pai-cert", "cert-dclrn", "dac-pub-key", "dac-key", "vendor-id" ...),
 // false when the board has none (every ESP32). A read without a buffer gives the size only
 bool factory_read(const char* name, uint8_t* out, size_t size, size_t& length);
+// where the factory data is (the chip's part), empty without any
+espurna::string factory_source();
 
 // `matterIdentity` (owner 11-16): which identity the board uses. Not set: factory when the board has factory data, else
 // espurna (the automatic choice before the setting)
@@ -37,7 +38,7 @@ const char* name(Choice);
 bool parse(const char* value, Choice& out);
 
 // The module setup, in the loop before any start: reads `matterIdentity` (a choice the board cannot use falls back to
-// espurna). An identity other than the one of the last start forgets the controllers (backend::reset()), they verified
+// espurna). An identity other than the one of the last start forgets the controllers (port::reset()), they verified
 // the old DAC
 void setup();
 

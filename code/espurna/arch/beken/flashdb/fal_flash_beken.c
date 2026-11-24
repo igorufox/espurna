@@ -1,11 +1,11 @@
 /*
 
-The flash device of FAL (FlashDB, config/fal_cfg.h) on the BDK's flash driver, as LibreTiny's
+The flash device of FAL (FlashDB, fal_cfg.h of this folder, scripts/flashdb.py) on the BDK's flash driver, as LibreTiny's
 port/fal_flash_bk72xx_port.c (MIT, Kuba Szczodrzyński)
 
 */
 
-#include "../bdk.h"
+#include "../bdk/bdk.h"
 
 #include <fal.h>
 

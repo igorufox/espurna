@@ -515,6 +515,10 @@ void sta_prepare() {
     sta_disconnect();
 }
 
+bool sta_associated() {
+    return internal::associated;
+}
+
 // Lengths are checked by the common code before this call (ref. StaConnect)
 bool sta_connect(const StaConnect& connect) {
     // DHCP stays disabled after a static IP, unless explicitly reset: otherwise one network with a static IP makes

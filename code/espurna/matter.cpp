@@ -45,8 +45,12 @@ namespace {
 bool started { false };
 bool connected { false };
 
-// The automatic start (`matterAuto`, on by default) waits `matterDelay` seconds after the station got its address, by default the
-// backend's start_delay(). After a restart by the network watchdog the start waits at least 5 minutes.
+// The automatic start (`matterAuto`, on by default) waits `matterDelay` seconds after the station got its address.
+// At once, with both controllers reconnecting (CASE, subscriptions, reads) while DHCP, MQTT and the WebUI were busy too,
+// it filled the 16 KiB lwIP heap of the 2 MiB Beken boards (deaf until the network watchdog restarted them) and took all
+// 32 Wi-Fi buffers of the ESP32 (~1 KB of heap left, 2026-11-24). After a restart by the network watchdog the start
+// waits at least 5 minutes.
+constexpr uint32_t StartDelay { 75 };
 constexpr uint32_t NetworkResetStartDelay { 300 };
 
 // espurna::time::ms() | 1 of the automatic start that is due, 0 when none
@@ -95,6 +99,16 @@ constexpr auto EventWait = duration::Milliseconds{ 50 };
 // Commissioning in progress, for the Matter task itself (only that task reads and writes it): the message trace of the
 // log only goes out then
 bool commissioning_active { false };
+
+// The certificate steps of a pairing (PASE, attestation, CSR, AddNOC: ECDSA ~2 s per sign / verify on the BK7231N)
+// keep the Matter task busy above the loop task for longer than the loop watchdog allows: a 4-relay bridge reset at the
+// hub's step 3 (Beken), the 5 s task watchdog reset the ESP32 mid-pairing (2026-11-24). 30 s while a controller
+// commissions, the chip's own period after it
+constexpr uint32_t CommissioningWdtMs { 30000 };
+
+void loop_watchdog(bool commissioning) {
+    systemLoopWatchdog(commissioning ? CommissioningWdtMs : 0);
+}
 
 // The pairing window is open (the Matter task): the message trace goes out too, a controller that tries and never
 // gets to the PASE step shows in the log (2026-11-14: the speaker hub "did not even start", the log had nothing)
@@ -434,7 +448,7 @@ bool start_stack() {
     MATTER_STEP("start");
     heap_step("start", true);
 
-    if (!backend::prepare()) {
+    if (!port::prepare() || !backend::prepare()) {
         DEBUG_MSG_P(PSTR("[MATTER] Storage or identity of the chip failed\n"));
         return false;
     }
@@ -530,8 +544,8 @@ bool codes(char* manual, size_t manual_size, char* qr, size_t qr_size) {
 
 // "vendor (0xVID) / product (0xPID), identity" for the panel and the status command
 espurna::string product() {
-    backend::Identity identity;
-    backend::describe(identity);
+    port::Identity identity;
+    port::describe(identity);
 
     espurna::string out;
     out.reserve(112);
@@ -572,10 +586,11 @@ void wifi_event(espurna::wifi::Event event) {
     case espurna::wifi::Event::StationConnected:
         connected = true;
         backend::network(true);
+        port::network(true);
         // the matter module switched on = Matter runs; `matterAuto 0` keeps it for MATTER.START. A crash loop is the
         // module guard's (the modules go off with a reason)
         if (getSetting("matterAuto", true) && !started && !start_at) {
-            auto delay = getSetting("matterDelay", backend::start_delay());
+            auto delay = getSetting("matterDelay", StartDelay);
             if (customResetReason() == CustomResetReason::Network) {
                 delay = std::max(delay, NetworkResetStartDelay);
             }
@@ -592,6 +607,7 @@ void wifi_event(espurna::wifi::Event event) {
     case espurna::wifi::Event::StationDisconnected:
         if (connected) {
             connected = false;
+            port::network(false);
             backend::network(false);
         }
         break;
@@ -711,8 +727,8 @@ PROGMEM_STRING(Factory, "MATTER.FACTORY");
 
 // Where the device attestation comes from. Public part only, no keys, passcode or verifier
 void command_factory(::terminal::CommandContext&& ctx) {
-    backend::Identity identity;
-    backend::describe(identity);
+    port::Identity identity;
+    port::describe(identity);
 
     ctx.output.printf_P(PSTR("identity: %s\n"), identity.source.c_str());
     ctx.output.printf_P(PSTR("vendor: %s (0x%04X), product: %s (0x%04X)\n"),
@@ -734,7 +750,7 @@ void command_reset(::terminal::CommandContext&& ctx) {
         return;
     }
 
-    if (!backend::reset()) {
+    if (!port::reset()) {
         terminalError(ctx, "Matter storage failed");
         return;
     }
@@ -840,7 +856,7 @@ void message(uint32_t client_id, espurna::string text) {
 }
 
 // Another identity: the controllers verified the old DAC. The panel asked for the confirmation; the restart, and the
-// module setup forgets the controllers before Matter starts (identity::setup(), backend::reset() as MATTER.RESET)
+// module setup forgets the controllers before Matter starts (identity::setup(), port::reset() as MATTER.RESET)
 void use_identity(uint32_t client_id, identity::Choice choice) {
     setSetting(identity::Setting, espurna::string(identity::name(choice)));
     message(client_id, "Matter identity changed, restarting. Add the device to the controllers again.");
@@ -879,10 +895,10 @@ void action_identity_upload(uint32_t client_id, espurna::json::Value data) {
         error = "A controller is adding the device now, try again after it";
     } else {
         // two signature checks and a signature: seconds on the BK7231N, the loop watchdog gets the commissioning time
-        backend::commissioning(true);
+        loop_watchdog(true);
         identity::custom_store(dac.c_str(), const_cast<char*>(key.c_str()), pai.c_str(),
             cd.c_str(), error);
-        backend::commissioning(commissioning_active);
+        loop_watchdog(commissioning_active);
     }
 
     // the key text: the copy and the message it came in
@@ -989,7 +1005,7 @@ void setup() {
     // left by older builds (the Matter code in the OTA partition): nothing reads it any more
     delSetting("matterSkip");
 
-    backend::setup();
+    port::setup();
     // `matterIdentity`, before any start: another identity than at the last start forgets the controllers
     identity::setup();
 #if TERMINAL_SUPPORT
@@ -999,6 +1015,12 @@ void setup() {
     web::setup();
 #endif
     wifiRegister(wifi_event);
+    // The station may be connected already: the module set up after the Wi-Fi got its address (an Apply restart, a
+    // fast association - 214 2026-11-23: Matter never heard of the network, "IsWiFiStationProvisioned:0", nothing on
+    // DNS-SD, the hub could not find the board in its pairing window)
+    if (wifiConnected()) {
+        wifi_event(espurna::wifi::Event::StationConnected);
+    }
     relayOnStatusChange(set_onoff);
     espurnaRegisterLoop(loop);
     // no restart of ESPurna (Apply, settings, an update) while a controller commissions: it would roll the new fabric
@@ -1043,7 +1065,7 @@ void matter_onoff_changed(uint8_t endpoint, bool on) {
 
 void matter_commissioning(bool active) {
     using namespace espurna::matter;
-    backend::commissioning(active);
+    loop_watchdog(active);
     commissioning_active = active;
     events.push(Event{Event::Type::Commissioning, 0, active}, EventWait);
 }
@@ -1159,6 +1181,10 @@ bool matterWifiFromController(const char* ssid, size_t ssid_length, const char* 
     espurna::string pass_copy(pass ? pass : "", pass ? pass_length : 0);
     const auto bytes = ssid_copy.length() + pass_copy.length();
     return espurna::system::runInLoop([ssid_copy, pass_copy]() {
+        // the network ESPurna is on already (the stack asks again after every disconnection): nothing to change
+        if ((getSetting({"ssid", 0}) == ssid_copy) && (getSetting({"pass", 0}) == pass_copy)) {
+            return;
+        }
         DEBUG_MSG_P(PSTR("[MATTER] Network from the controller: %s\n"), ssid_copy.c_str());
         setSetting({"ssid", 0}, ssid_copy);
         setSetting({"pass", 0}, pass_copy);

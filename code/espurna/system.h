@@ -322,6 +322,10 @@ void systemHeapStep(const char* step);
 // the same after a loop callback, named by its address (main.cpp)
 void systemHeapStepAt(uintptr_t address);
 
+// The period of the loop watchdog in ms, 0 - the chip's own. For a module that holds the loop task up for longer for a
+// while (Matter: the certificate steps of a commissioning keep its task busy for seconds above the loop)
+void systemLoopWatchdog(uint32_t ms);
+
 [[noreturn]] void forceEraseSDKConfig();
 
 bool eraseSDKConfig();

@@ -1367,3 +1367,9 @@ _ZN7espurna4core4chip9pin_validEh esp8266
 esp_ota_set_boot_partition esp32
 _Z10hasSettingPKc esp32
 _Z10hasSettingPKc esp8266
+uxQueueSpacesAvailable esp32
+xPortGetFreeHeapSize esp32
+xPortGetMinimumEverFreeHeapSize esp32
+_Z18systemLoopWatchdogm beken
+_Z8wifiIpv6b beken
+_Z18systemLoopWatchdogm esp32

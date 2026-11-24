@@ -1,7 +1,7 @@
 /*
 
-FAL of FlashDB for the BK7231N (Matter's key-value store on the 'kvs' partition, arch/beken/matter_beken.cpp): one
-flash device (port/fal_flash_beken.c) and the partitions of the Tuya layout (FLASH_*_OFFSET / _LENGTH of
+FAL of FlashDB for the BK7231N (Matter's key-value store on the 'kvs' partition, matter_port.cpp): one
+flash device (fal_flash_beken.c) and the partitions of the Tuya layout (FLASH_*_OFFSET / _LENGTH of
 scripts/beken_bdk.py, from the board's flash layout). As LibreTiny's config/fal_cfg.h (MIT, Kuba Szczodrzyński)
 
 */

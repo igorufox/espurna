@@ -39,7 +39,7 @@ constexpr uint32_t FlagHasTags { 1u << 15 };
 // uf2ota/uf2types.h
 constexpr uint32_t TagFalPtable { 0x8288ED };
 
-// struct fal_partition of FlashDB with FAL_DEV_NAME_MAX 16 (the UF2 format, bdk/config/fal_cfg.h)
+// struct fal_partition of FlashDB with FAL_DEV_NAME_MAX 16 (the UF2 format, flashdb/fal_cfg.h)
 constexpr size_t PartitionSize { 48 };
 constexpr size_t PartitionName { 4 };
 constexpr size_t PartitionOffset { 36 };

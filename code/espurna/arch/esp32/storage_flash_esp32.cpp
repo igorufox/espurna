@@ -3,7 +3,8 @@
 SETTINGS STORAGE, the ESP32 flash (the storage itself is storage_eeprom.cpp, one for every chip)
 
 The pool: the top 8 sectors of the data partition "spiffs" (esp32_4mb.csv 0x3B0000, 256 KB; min_spiffs.csv of a
-board on the old layout 0x3D0000, 128 KB). No file system uses it any more, nothing else is written there.
+board on the old layout 0x3D0000, 128 KB). No file system uses it any more; the 32 KiB right below it are Matter's
+key-value store (FlashDB, arch/esp32/flashdb), nothing else is written there.
 
 Before: one blob "eeprom" in the NVS namespace "eeprom" (the end of the 4 KiB buffer). Taken over once when the pool
 has no valid copy yet, the blob is erased after the first write here: NVS is 20 KB with Matter's fabrics and the PHY
