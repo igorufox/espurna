@@ -1,7 +1,6 @@
 #include <unity.h>
 #include <unity_extra.hpp>
 
-#include <Arduino.h>
 
 #include <espurna/led_pattern.ipp>
 #include <espurna/led_parse.re.ipp>
@@ -43,7 +42,7 @@ void test_object() {
     TEST_ASSERT_EQUAL(1, a.size());
 
     const auto check = [&](const led::Pattern& pattern, int line = __builtin_LINE()) {
-        static String detail;
+        static espurna::string detail;
         EXTRA_DETAIL("pattern delays");
 
         const auto& delays = pattern.delays();
@@ -182,14 +181,14 @@ struct Runner {
 };
 
 void Runner::run(std::initializer_list<Expected> list, int line) {
-    static String detail;
+    static espurna::string detail;
 
     auto sequence = pattern.make_sequence();
 
     for (const auto& expected : list) {
         TEST_ASSERT_GREATER_OR_EQUAL(1, expected.iterations);
         for (size_t i = 0 ; i < expected.iterations; ++i) {
-            EXTRA_DETAIL(String("iteration #") + i);
+            EXTRA_DETAIL(espurna::string("iteration #") + i);
 
             const auto changed = sequence.run(
                 [&]() {

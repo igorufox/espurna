@@ -1,7 +1,6 @@
 #include <unity.h>
 #include <unity_extra.hpp>
 
-#include <Arduino.h>
 
 #include <espurna/types.h>
 
@@ -30,7 +29,7 @@ void test_view_nullptr() {
 }
 
 void test_view_convert() {
-    const String origin("12345");
+    const espurna::string origin("12345");
     StringView view(origin);
 
     TEST_ASSERT(origin.begin() == view.begin());

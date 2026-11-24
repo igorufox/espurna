@@ -1,6 +1,6 @@
 #include <unity.h>
-#include <Arduino.h>
-#include <StreamString.h>
+
+#include <espurna/libs/StreamEcho.h>
 
 #include <espurna/libs/Delimiter.h>
 #include <espurna/libs/PrintString.h>
@@ -25,13 +25,8 @@ namespace test {
 namespace {
 
 // Default 'print nothing' case
-struct BlackHole : public Print {
-    size_t write(uint8_t) override {
-        return 0;
-    }
-
-    size_t write(const uint8_t*, size_t) override {
-        return 0;
+struct BlackHole : public espurna::Output {
+    void write(const char*, size_t) override {
     }
 };
 
@@ -499,7 +494,7 @@ void test_line_buffer() {
     TEST_ASSERT_FALSE(first.overflow);
     TEST_ASSERT_EQUAL_STRING_VIEW(input, first.value);
 
-    StreamString stream;
+    StreamEcho stream;
     stream.concat(&input[0], __builtin_strlen(input));
 
     buffer.append(stream);

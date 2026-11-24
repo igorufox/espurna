@@ -1,4 +1,3 @@
-#include <Arduino.h>
 #include <unity.h>
 
 #include <espurna/modules_package.h>

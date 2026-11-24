@@ -1,8 +1,5 @@
 #include <unity.h>
 
-#include <Arduino.h>
-#include <StreamString.h>
-#include <ArduinoJson.h>
 
 #define DEVICE "NODEMCU"
 #define MANUFACTURER "LOLIN"
@@ -10,7 +7,6 @@
 #include <espurna/libs/StreamEcho.h>
 #include <espurna/utils.h>
 
-#include <espurna/sensor_emon.ipp>
 
 // TODO is ..._SUPPORT wrapping necessary inside of sensor includes?
 // TODO ..._PORT should not be used in the class itself?

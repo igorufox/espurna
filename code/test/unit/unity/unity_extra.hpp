@@ -7,4 +7,3 @@
 #define TEST_ASSERT_EQUAL_STRING_VIEW(e, a) test_assert_equal_string_view(e, a, __LINE__, NULL)
 
 void test_assert_equal_string_view(espurna::StringView expected, espurna::StringView actual, unsigned int line, const char* msg);
-

@@ -1,5 +1,4 @@
 #include <unity.h>
-#include <Arduino.h>
 
 #pragma GCC diagnostic warning "-Wall"
 #pragma GCC diagnostic warning "-Wextra"
@@ -137,7 +136,7 @@ struct StorageHandler {
 // - IncreasingLength: k:v, kk:vv, ...
 struct TestSequentialKvGenerator {
 
-    using kv = std::pair<String, String>;
+    using kv = std::pair<espurna::string, espurna::string>;
     enum class Mode {
         Indexed,
         IncreasingLength
@@ -156,8 +155,8 @@ struct TestSequentialKvGenerator {
 
         switch (_mode) {
         case Mode::Indexed:
-            _current.first = String("key") + String(index);
-            _current.second = String("val") + String(index);
+            _current.first = espurna::string("key") + espurna::string(index);
+            _current.second = espurna::string("val") + espurna::string(index);
             break;
         case Mode::IncreasingLength: {
             size_t sizes = _index;
@@ -197,7 +196,7 @@ struct TestSequentialKvGenerator {
 using TestStorageHandler = StorageHandler<2048>;
 
 template <typename T>
-void check_kv(T& instance, const String& key, const String& value) {
+void check_kv(T& instance, const espurna::string& key, const espurna::string& value) {
     auto result = instance.kvs.get(key);
     TEST_ASSERT_MESSAGE(static_cast<bool>(result), key.c_str());
     TEST_ASSERT_EQUAL(value.length(), result.size());
@@ -236,7 +235,7 @@ void test_longkey() {
     TestStorageHandler instance;
     const auto estimate = instance.kvs.size() - 6;
 
-    String key;
+    espurna::string key;
     key.reserve(estimate);
     for (size_t n = 0; n < estimate; ++n) {
         key += 'a';
@@ -340,7 +339,7 @@ void test_small_gaps() {
     TEST_ASSERT(instance.kvs.set("empty_again", ""));
     TEST_ASSERT(instance.kvs.set("finally", "avalue"));
 
-    auto check_empty = [&instance](const String& key) {
+    auto check_empty = [&instance](const espurna::string& key) {
         auto result = instance.kvs.get(key);
         TEST_ASSERT(static_cast<bool>(result));
         TEST_ASSERT_FALSE(result.length());
@@ -351,7 +350,7 @@ void test_small_gaps() {
     check_empty("empty_again");
     check_empty("empty");
 
-    auto check_value = [&instance](const String& key, const String& value) {
+    auto check_value = [&instance](const espurna::string& key, const espurna::string& value) {
         auto result = instance.kvs.get(key);
         TEST_ASSERT(static_cast<bool>(result));
         TEST_ASSERT(result.length());
@@ -398,7 +397,7 @@ void test_remove_randomized() {
         index++;
     } while (std::next_permutation(indexes.begin(), indexes.end()));
 
-    String message("- keys: ");
+    espurna::string message("- keys: ");
     message += KeysNumber;
     message += ", permutations: ";
     message += index;
@@ -500,7 +499,7 @@ void test_storage() {
         auto key1 = slice.get("key1");
         TEST_ASSERT(static_cast<bool>(key1));
 
-        String updated(key1.ref());
+        espurna::string updated(key1.ref());
         for (size_t index = 0; index < key1.length(); ++index) {
             updated[index] = 'A';
         }
@@ -534,7 +533,7 @@ void test_keys_iterator() {
     TEST_ASSERT(instance.kvs.set("another", "thing"));
 
     // ensure we get the same order of keys when iterating via foreach
-    std::vector<String> keys;
+    std::vector<espurna::string> keys;
     instance.kvs.foreach([&keys](
         decltype(instance)::kvs_type::KeyValueResult&& kv) {
             keys.push_back(kv.key.toString());
@@ -563,7 +562,7 @@ void test_varying_values() {
     };
 
     auto genkey = [](auto&& prefix, size_t index) {
-        return String(prefix) + String(index, 10);
+        return espurna::string(prefix) + espurna::string(index, 10);
     };
 
     auto value_key = [&](size_t index) {
@@ -614,7 +613,7 @@ void test_varying_values() {
             values[index] = dist(generator);
 
             auto key = value_key(index);
-            auto val = String(values[index], 10);
+            auto val = espurna::string(values[index], 10);
 
             auto result = instance.kvs.set(key, val);
             if (!result) {

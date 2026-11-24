@@ -1,8 +1,5 @@
 #include <unity.h>
 
-#include <Arduino.h>
-#include <StreamString.h>
-#include <ArduinoJson.h>
 
 #include <espurna/filters/LastFilter.h>
 #include <espurna/filters/MaxFilter.h>

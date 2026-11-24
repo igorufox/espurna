@@ -7,11 +7,6 @@
 - [ ] **Beken 116: «malloc failed in task main … in the module homeassistant», 85 с после загрузки (24.11 ~17:0x).**
       Видно в /modules «off» после переустановки модулей (espota-проверка). 20 модулей, свободно 21 КБ через 100 с
       после Apply. Разобрать: какой запрос homeassistant столько берёт, минимум кучи на 116.
-- [ ] **espota без espota.py.** Приёмник включён на всех чипах (ESP32 и Beken проверены 24.11 повторной прошивкой
-      головы, «Result: OK», модули после него ставятся одним Apply). Но `espota.py` приезжал с фреймворком Arduino:
-      у PlatformIO `upload_protocol = espota` и у `code/ota.py` загрузчика теперь нет; проверял копией
-      `firmware_espota_slow_lib.py`. ESP32: первая попытка «Error Uploading» (34 с), вторая OK.
-
 - **Matter: одна реализация на оба чипа (23–24.11), хвосты.** Библиотека libmatter-20261123-def56f5: один слой
   платформы `external_platform/Port` (ESP32 больше не на платформе ESP-IDF), mDNS ESPurna на обоих; ESPurna: общий
   `matter_port.cpp` (FlashDB-хранилище, события, Wi-Fi, скан, OTA, описание), `scripts/flashdb.py`. Проверено: 214

@@ -1,8 +1,6 @@
 #include <unity.h>
 
-#include <Arduino.h>
-#include <StreamString.h>
-#include <ArduinoJson.h>
+#include <espurna/types.h>
 
 #include <string_view>
 using namespace std::string_view_literals;
@@ -88,7 +86,7 @@ struct WithTimezone {
     }
 
 private:
-    String _tz;
+    espurna::string _tz;
 };
 
 #include <espurna/utils.h>
@@ -652,7 +650,7 @@ void test_restore_delta_past() {
 }
 
 void test_restore_dst_sdt() {
-    WithTimezone _(":US/Pacific");
+    WithTimezone _(":America/Los_Angeles");
 
     // at 2006-10-29T02:33:04-08:00 TZ='US/Pacific'
     constexpr auto Timestamp = time_t{ 1162117984 };
@@ -746,7 +744,7 @@ void test_restore_dst_sdt() {
 }
 
 void test_restore_sdt_dst() {
-    WithTimezone _(":US/Pacific");
+    WithTimezone _(":America/Los_Angeles");
 
     // at 2006-04-02T04:33:04-07:00 TZ='US/Pacific'
     constexpr auto Timestamp = time_t{ 1143977584 };
@@ -1030,7 +1028,7 @@ void test_expect_delta_future() {
 }
 
 void test_expect_sdt_dst() {
-    WithTimezone _(":US/Pacific");
+    WithTimezone _(":America/Los_Angeles");
 
     // at 2006-04-02T01:33:04-08:00 TZ='US/Pacific'
     constexpr auto Timestamp = time_t{ 1143970384 };
@@ -1099,7 +1097,7 @@ void test_expect_sdt_dst() {
 }
 
 void test_expect_dst_sdt() {
-    WithTimezone _(":US/Pacific");
+    WithTimezone _(":America/Los_Angeles");
 
     // at 2006-10-29T00:33:04-07:00 TZ='US/Pacific'
     constexpr auto Timestamp = time_t{ 1162107184 };

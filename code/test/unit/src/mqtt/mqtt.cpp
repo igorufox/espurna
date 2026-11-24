@@ -1,7 +1,6 @@
 #include <unity.h>
 #include <unity_extra.hpp>
 
-#include <Arduino.h>
 
 #include <espurna/mqtt_common.ipp>
 

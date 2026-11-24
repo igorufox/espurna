@@ -12,6 +12,7 @@ Copyright (C) 2019 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #include <cstdint>
 #include <vector>
 
+#include "system_time.h"
 #include "tuya_types.h"
 
 namespace tuya {

@@ -1,10 +1,9 @@
-#include <Arduino.h>
 #include <unity.h>
 
 #include <cstring>
 #include <vector>
 
-// the parser is built here as it is in the firmware (HOST_MOCK: Arduino String + ArduinoJson only)
+// the parser is built here as it is in the firmware (HOST_MOCK: espurna::string and json.h only)
 #include <espurna/screen_pages_config.cpp>
 
 using namespace espurna::pages;
@@ -12,7 +11,7 @@ using namespace espurna::pages;
 namespace {
 
 // compiled into an image in the heap, bound to 'out' (as the firmware does on a chip without a data view)
-ParseResult parse(const char* json, const Limits& limits, Config& out, String& error, String& warnings) {
+ParseResult parse(const char* json, const Limits& limits, Config& out, espurna::string& error, espurna::string& warnings) {
     std::vector<char> text(json, json + strlen(json) + 1);
     ImageBlock image;
     const auto result = compile(text.data(), limits, image, error, warnings);
@@ -26,12 +25,12 @@ ParseResult parse(const char* json, const Limits& limits, Config& out, String& e
 }
 
 void appendText(void* ctx, const char* data, size_t length) {
-    static_cast<String*>(ctx)->concat(data, length);
+    static_cast<espurna::string*>(ctx)->concat(data, length);
 }
 
 // the JSON the image gives back
-String json(const Config& config) {
-    String out;
+espurna::string json(const Config& config) {
+    espurna::string out;
     writeJson(reinterpret_cast<const uint8_t*>(config.image), appendText, &out);
     return out;
 }
@@ -43,7 +42,7 @@ Limits relays(size_t count, size_t mqtt_buffer = 0) {
     return out;
 }
 
-bool contains(const String& text, const char* part) {
+bool contains(const espurna::string& text, const char* part) {
     return text.indexOf(part) >= 0;
 }
 
@@ -67,11 +66,11 @@ void test_weekday() {
 }
 
 void test_text_helpers() {
-    String text("Привет");      // 2 bytes per letter
+    espurna::string text("Привет");      // 2 bytes per letter
     utf8Truncate(text, 5);
     TEST_ASSERT_EQUAL_STRING("Пр", text.c_str());
 
-    TEST_ASSERT_EQUAL_STRING("При", utf8Prefix(String("Привет"), 3).c_str());
+    TEST_ASSERT_EQUAL_STRING("При", utf8Prefix(espurna::string("Привет"), 3).c_str());
     TEST_ASSERT_EQUAL_STRING("a-b c", sanitize("a~b\r\nc", 30).c_str());
     TEST_ASSERT_EQUAL_STRING("", sanitize(nullptr, 30).c_str());
     TEST_ASSERT_EQUAL_STRING("\xEE\xA5\xBD", utf8(0xE97D).c_str());
@@ -80,8 +79,8 @@ void test_text_helpers() {
 
 void test_default_config() {
     Config config;
-    String error;
-    String warnings;
+    espurna::string error;
+    espurna::string warnings;
     TEST_ASSERT(ParseResult::Ok == parse(DefaultConfig, relays(2), config, error, warnings));
     TEST_ASSERT_EQUAL_STRING("", error.c_str());
     TEST_ASSERT_EQUAL_STRING("", warnings.c_str());
@@ -103,8 +102,8 @@ void test_default_config() {
 
 void test_no_such_relay() {
     Config config;
-    String error;
-    String warnings;
+    espurna::string error;
+    espurna::string warnings;
     TEST_ASSERT(ParseResult::Invalid == parse(DefaultConfig, relays(0), config, error, warnings));
     TEST_ASSERT(contains(error, "no such relay"));
 }
@@ -134,8 +133,8 @@ void test_full_config() {
     })";
 
     Config config;
-    String error;
-    String warnings;
+    espurna::string error;
+    espurna::string warnings;
     TEST_ASSERT(ParseResult::Ok == parse(Text, relays(1, 1024), config, error, warnings));
     TEST_ASSERT_EQUAL_STRING("", error.c_str());
 
@@ -225,8 +224,8 @@ void test_round_trip() {
         "groups": {"g": ["home/a", 0]}, "beep": false, "debug": null})";
 
     Config config;
-    String error;
-    String warnings;
+    espurna::string error;
+    espurna::string warnings;
     TEST_ASSERT(ParseResult::Ok == parse(Text, relays(1), config, error, warnings));
     TEST_ASSERT(contains(warnings, "unknown key 'version' in the config dropped"));
     TEST_ASSERT(contains(warnings, "unknown key 'extra' in an item dropped"));
@@ -237,7 +236,7 @@ void test_round_trip() {
     TEST_ASSERT_EQUAL(-1, config.items[2].target.entity);
     TEST_ASSERT_EQUAL_STRING("", config.items[0].action.c_str());
 
-    const String first = json(config);
+    const espurna::string first = json(config);
     TEST_ASSERT(!contains(first, "version"));
     TEST_ASSERT(contains(first, "\"action\": \"matter-pair\""));
     TEST_ASSERT(contains(first, "\"min\": 1.50"));
@@ -246,7 +245,7 @@ void test_round_trip() {
     TEST_ASSERT(contains(first, "\n  \"mqtt\": {\n    \"on\": \"ON\"\n  },"));
 
     Config again;
-    String warnings_again;
+    espurna::string warnings_again;
     TEST_ASSERT(ParseResult::Ok == parse(first.c_str(), relays(1), again, error, warnings_again));
     TEST_ASSERT(!contains(warnings_again, "unknown key"));
     TEST_ASSERT_EQUAL_STRING(first.c_str(), json(again).c_str());
@@ -261,8 +260,8 @@ void test_no_mqtt_warning_without_mqtt() {
         R"({"pages": [{"items": [{"type": "thermostat", "topic": "t", "room": "r"}]}]})";
 
     Config config;
-    String error;
-    String warnings;
+    espurna::string error;
+    espurna::string warnings;
     TEST_ASSERT(ParseResult::Ok == parse(Text, relays(0, 0), config, error, warnings));
     TEST_ASSERT(!contains(warnings, "mqttBuffer"));
 }
@@ -287,8 +286,8 @@ void test_errors() {
 
     for (const auto& test : cases) {
         Config config;
-        String error;
-        String warnings;
+        espurna::string error;
+        espurna::string warnings;
         const auto result = parse(test.text, relays(2), config, error, warnings);
         TEST_ASSERT_MESSAGE(ParseResult::Invalid == result, test.text);
         TEST_ASSERT_MESSAGE(contains(error, test.error), error.c_str());
@@ -304,8 +303,8 @@ void test_warnings() {
     })";
 
     Config config;
-    String error;
-    String warnings;
+    espurna::string error;
+    espurna::string warnings;
     TEST_ASSERT(ParseResult::Ok == parse(Text, relays(0), config, error, warnings));
     TEST_ASSERT(contains(warnings, "layout must be"));
     TEST_ASSERT(contains(warnings, "per_screen must be 1..9"));
@@ -319,16 +318,9 @@ void test_warnings() {
     TEST_ASSERT(config.pages[0].grid == Grid::G4x2);
 }
 
-// a parse into one buffer of exactly the given size
-struct ExactJsonBuffer : public ArduinoJson::Internals::StaticJsonBufferBase {
-    ExactJsonBuffer(char* buffer, size_t capacity) :
-        StaticJsonBufferBase(buffer, capacity)
-    {}
-};
-
 void test_buffer_size() {
-    // jsonBufferSize() (the heap estimate of a compile) holds every node of the parse; the compile itself (nodes in
-    // blocks) gets as far as the missing "pages"
+    // jsonBufferSize() (the heap estimate of a compile) covers the text the parse reads in place; the compile itself
+    // gets as far as the missing "pages"
     const char* texts[] {
         R"({"a": [1, 2, [3, {"b": 4}]], "c": {}, "d": [], "e": "x,y]}"})",
         R"({"a": [[[[]]]], "b": [{}, {}, {"c": [1, {"d": [2, 3]}]}]})",
@@ -337,14 +329,11 @@ void test_buffer_size() {
 
     for (const auto* text : texts) {
         std::vector<char> copy(text, text + strlen(text) + 1);
-        const size_t size = jsonBufferSize(copy.data(), copy.size() - 1);
-        std::vector<char> nodes(size);
-        ExactJsonBuffer buffer(nodes.data(), size);
-        TEST_ASSERT_MESSAGE(buffer.parseObject(copy.data(), build::ConfigNestingLimit).success(), text);
+        TEST_ASSERT_MESSAGE(jsonBufferSize(copy.data(), copy.size() - 1) >= (copy.size() - 1), text);
 
         Config config;
-        String error;
-        String warnings;
+        espurna::string error;
+        espurna::string warnings;
         TEST_ASSERT(ParseResult::Invalid == parse(text, relays(0), config, error, warnings));
         TEST_ASSERT_EQUAL_STRING_MESSAGE("'pages' must be an array", error.c_str(), text);
     }
@@ -352,36 +341,36 @@ void test_buffer_size() {
 
 // more strings and tree than one compile block, one text longer than a block: the image is the same read back
 void test_large_config() {
-    String long_title;
+    espurna::string long_title;
     for (size_t index = 0; index < (build::CompileBlock + 200); ++index) {
         long_title += static_cast<char>('a' + (index % 26));
     }
 
-    String text = F("{\"pages\": [{\"title\": \"");
+    espurna::string text = "{\"pages\": [{\"title\": \"";
     text += long_title;
-    text += F("\", \"items\": [");
+    text += "\", \"items\": [";
     for (int index = 0; index < 120; ++index) {
         if (index) {
             text += ',';
         }
-        text += F("{\"name\": \"n");
+        text += "{\"name\": \"n";
         text += index;
-        text += F("\", \"topic\": \"home/sensor/");
+        text += "\", \"topic\": \"home/sensor/";
         text += index;
-        text += F("\"}");
+        text += "\"}";
     }
-    text += F("]}]}");
+    text += "]}]}";
 
     Config config;
-    String error;
-    String warnings;
+    espurna::string error;
+    espurna::string warnings;
     TEST_ASSERT_MESSAGE(ParseResult::Ok == parse(text.c_str(), relays(0), config, error, warnings), error.c_str());
     TEST_ASSERT_EQUAL(120, config.items.size());
     TEST_ASSERT_EQUAL_STRING("n0", config.items[0].name.c_str());
     TEST_ASSERT_EQUAL_STRING("n119", config.items[119].name.c_str());
     TEST_ASSERT_EQUAL_STRING("home/sensor/119", config.entities[config.items[119].target.entity].topic.c_str());
 
-    const String first = json(config);
+    const espurna::string first = json(config);
     TEST_ASSERT(contains(first, long_title.c_str()));
     TEST_ASSERT(contains(first, "\"topic\": \"home/sensor/119\""));
 
@@ -395,7 +384,7 @@ struct FailingSink : public ImageSink {
     size_t limit { 64 };
     size_t written { 0 };
 
-    bool begin(size_t, String&) override {
+    bool begin(size_t, espurna::string&) override {
         return true;
     }
 
@@ -404,7 +393,7 @@ struct FailingSink : public ImageSink {
         return written <= limit;
     }
 
-    bool end(String&) override {
+    bool end(espurna::string&) override {
         return true;
     }
 };
@@ -412,8 +401,8 @@ struct FailingSink : public ImageSink {
 void test_sink_failure() {
     std::vector<char> text(DefaultConfig, DefaultConfig + strlen(DefaultConfig) + 1);
     FailingSink sink;
-    String error;
-    String warnings;
+    espurna::string error;
+    espurna::string warnings;
     TEST_ASSERT(ParseResult::WriteFailed == compile(text.data(), relays(2), sink, error, warnings));
     TEST_ASSERT(error.length() > 0);
 }

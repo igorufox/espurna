@@ -358,19 +358,6 @@ void setup() {
 
 namespace time {
 
-// c/p from the Core 3.1.0, allow an additional calculation, so we don't delay more than necessary
-// plus, another helper when there are no external blocking checker
-
-bool tryDelay(CoreClock::time_point start, CoreClock::duration timeout, CoreClock::duration interval) {
-    auto elapsed = CoreClock::now() - start;
-    if (elapsed < timeout) {
-        espurna::time::sleep(std::min((timeout - elapsed), interval));
-        return false;
-    }
-
-    return true;
-}
-
 bool blockingDelay(CoreClock::duration timeout, CoreClock::duration interval) {
     return blockingDelay(
         timeout,

@@ -1,5 +1,4 @@
 #include <unity.h>
-#include <Arduino.h>
 
 #include <espurna/settings_convert.h>
 
@@ -10,21 +9,21 @@ namespace internal {
 using CustomSeconds = std::chrono::duration<float, std::ratio<1>>;
 
 template <>
-CustomSeconds convert(const String& value) {
+CustomSeconds convert(const espurna::string& value) {
     return espurna::duration::unchecked_parse<CustomSeconds>(value);
 }
 
 using CustomMinutes = std::chrono::duration<float, std::ratio<60>>;
 
 template <>
-CustomMinutes convert(const String& value) {
+CustomMinutes convert(const espurna::string& value) {
     return espurna::duration::unchecked_parse<CustomMinutes>(value);
 }
 
 using CustomHours = std::chrono::duration<float, std::ratio<3600>>;
 
 template <>
-CustomHours convert(const String& value) {
+CustomHours convert(const espurna::string& value) {
     return espurna::duration::unchecked_parse<CustomHours>(value);
 }
 
@@ -101,7 +100,7 @@ void test_convert_uint() {
 
 template <typename Convert, typename Expected>
 void test_convert(Expected expected, StringView spec, int line = __builtin_LINE()) {
-    String message = "\"";
+    espurna::string message = "\"";
     message += spec;
     message += "\" ";
     message += "unchecked conversion failed";
@@ -163,7 +162,7 @@ void test_convert_duration() {
 
 template <typename Ratio>
 void test_parse_fail(StringView spec, Ratio ratio, int line = __builtin_LINE()) {
-    String message = "\"";
+    espurna::string message = "\"";
     message += spec;
     message += "\" ";
     message += "should trigger parsing failure";
@@ -177,7 +176,7 @@ void test_parse_fail(StringView spec, int line = __builtin_LINE()) {
 
 template <typename Expected, typename Ratio>
 void test_parse(Expected expected, Ratio ratio, StringView spec, int line = __builtin_LINE()) {
-    String base = "\"";
+    espurna::string base = "\"";
     base += spec;
     base += "\" ";
 

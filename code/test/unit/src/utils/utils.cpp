@@ -1,9 +1,9 @@
 #include <unity.h>
-#include <Arduino.h>
-#include <StreamString.h>
-#include <ArduinoJson.h>
+
+#include <espurna/libs/StreamEcho.h>
 
 #include <espurna/utils.h>
+#include <unity_extra.hpp>
 
 namespace espurna {
 namespace test {
@@ -17,8 +17,7 @@ void test_consume_available() {
         "dddd"
     };
 
-    StreamString stream;
-    TEST_ASSERT(stream.hasPeekBufferAPI());
+    StreamEcho stream;
 
     stream.concat(&tmp[0], __builtin_strlen(tmp));
 

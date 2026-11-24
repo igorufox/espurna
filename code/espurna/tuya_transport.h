@@ -9,6 +9,7 @@ Copyright (C) 2019 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #pragma once
 
 #include "byte_stream.h"
+#include "system_time.h"
 
 
 #include <iterator>

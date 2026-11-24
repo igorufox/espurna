@@ -8,6 +8,7 @@
 #include "../config/types.h"
 #include "../sensor.h"
 #include "../gpio.h"
+#include "../pins.h"
 #include "../espurna_isr.h"
 
 #include <cstddef>

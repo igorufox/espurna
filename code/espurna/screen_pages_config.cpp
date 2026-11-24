@@ -1332,7 +1332,7 @@ bool parseRoot(espurna::json::Value root, Draft& out, espurna::string& error, es
     }
 
     const auto pages = root["pages"];
-    if (!pages.valid()) {
+    if (!pages.isArray()) {
         error = "'pages' must be an array";
         return false;
     }

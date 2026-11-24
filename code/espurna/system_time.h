@@ -180,7 +180,16 @@ inline void sleep(CoreClock::duration value) {
     chip::delay(value.count());
 }
 
-bool tryDelay(CoreClock::time_point start, CoreClock::duration timeout, CoreClock::duration interval);
+// sleep up to `interval`, never past `timeout` from `start`; true once the timeout is over
+inline bool tryDelay(CoreClock::time_point start, CoreClock::duration timeout, CoreClock::duration interval) {
+    const auto elapsed = CoreClock::now() - start;
+    if (elapsed < timeout) {
+        sleep(std::min((timeout - elapsed), interval));
+        return false;
+    }
+
+    return true;
+}
 
 template <typename T>
 bool blockingDelay(CoreClock::duration timeout, CoreClock::duration interval, T&& blocked) {

@@ -58,7 +58,7 @@ jobs:
       run: |
         python scripts/ci_ini_lint.py platformio_esp8266.ini platformio_esp32.ini platformio_beken.ini
 
-  # unit tests of code/test/unit: the host compiler, the esp8266 mock framework (tests/host of the Core) and Unity
+  # unit tests of code/test/unit: the host compiler, ESPurna's own code without Arduino (host/ in place of the chip) and Unity
   host-tests:
     needs: ini-lint
     runs-on: ubuntu-26.04
