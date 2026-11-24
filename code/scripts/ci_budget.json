@@ -2,7 +2,7 @@
  "_comment": [
   "Size budgets of the release images, checked by scripts/ci_budget.py in the build job of .github/workflows/esp32.yml.",
   "Key: release name (`name` of the build matrix). flash_max / ram_max: PlatformIO's 'Flash: used' / 'RAM: used' bytes",
-  "(same formulas); heap_min (ESP8266): 0x3FFFC000 - _heap_start. null = reported, not checked.",
+  "(same formulas); heap_min (ESP8266): 0x3FFFC000 - _bss_end. null = reported, not checked.",
   "Limits: the measured numbers + 1.5 % (flash, RAM) / - 1.5 % (heap). Raising a limit goes into the commit that needs it,",
   "with the reason; 'measured' is where the limit came from.",
   "The heads of the one-env-per-chip build (esp8266, esp32, beken) are report-only until their first measured CI run."

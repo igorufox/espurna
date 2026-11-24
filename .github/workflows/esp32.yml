@@ -164,7 +164,8 @@ jobs:
     - name: Install PlatformIO
       run: |
         # ESP32: pioarduino needs PlatformIO Core >= 6.2
-        pip install 'platformio==6.2.0'
+        # cryptography: the AES of the Beken OTA package (scripts/beken_image.py package_ota)
+        pip install 'platformio==6.2.0' 'cryptography==46.0.3'
     - name: esptool of the ESP8266 build
       if: matrix.arch == 'esp8266'
       run: |

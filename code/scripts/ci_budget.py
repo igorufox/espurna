@@ -5,7 +5,7 @@
 
 Reads the ELF with the toolchain of the env (`<prefix>-size -A -d`, `<prefix>-nm`) and computes the numbers the way
 PlatformIO prints them after the build ("RAM: used N bytes", "Flash: used N bytes", the SIZEDATAREGEXP /
-SIZEPROGREGEXP of the platform's builder), plus for ESP8266 the heap region 0x3FFFC000 - _heap_start (the static RAM
+SIZEPROGREGEXP of the platform's builder), plus for ESP8266 the heap region 0x3FFFC000 - _bss_end (the static RAM
 eats into it: 06.11 ~13 KB of static init on esp8266-4m left ~4 KB of heap at runtime and the board boot-looped).
 
 Limits come from scripts/ci_budget.json, per release name (`name` of the build matrix): flash_max, ram_max,
@@ -26,20 +26,26 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TABLE = os.path.join(HERE, "ci_budget.json")
 
 # arch of the build matrix -> toolchain prefix and PlatformIO's formulas
-# - espressif8266/builder/main.py
-# - pioarduino platform-espressif32/builder/main.py
+# - pioarduino platform-espressif32/builder/main.py: the sections of an ESP-IDF image, the ESP8266_RTOS_SDK image has
+#   the same ones (scripts/esp8266_rtos_sdk.py)
 # - libretiny/builder/family/beken-72xx.py
+XTENSA_FLASH = r"^(?:\.iram0\.text|\.iram0\.vectors|\.dram0\.data|\.flash\.text|\.flash\.rodata|)\s+([0-9]+).*"
+XTENSA_RAM = r"^(?:\.dram0\.data|\.dram0\.bss|\.noinit)\s+([0-9]+).*"
+
 ARCHS = {
     "esp8266": {
-        "prefix": ["xtensa-lx106-elf"],
-        "flash": r"^(?:\.irom0\.text|\.text|\.text1|\.data|\.rodata|)\s+([0-9]+).*",
-        "ram": r"^(?:\.data|\.rodata|\.bss)\s+([0-9]+).*",
+        # the GCC 14.2 of the ESP32 compiles for the lx106 too ([toolchain] esp8266_toolchain of libraries.ini)
+        "prefix": ["xtensa-esp-elf"],
+        "flash": XTENSA_FLASH,
+        "ram": XTENSA_RAM,
+        # the DRAM heap of the RTOS SDK: from the end of .bss to the end of the DRAM
+        "heap_start": "_bss_end",
         "heap_end": 0x3FFFC000,
     },
     "esp32": {
         "prefix": ["xtensa-esp32-elf", "xtensa-esp-elf"],
-        "flash": r"^(?:\.iram0\.text|\.iram0\.vectors|\.dram0\.data|\.flash\.text|\.flash\.rodata|)\s+([0-9]+).*",
-        "ram": r"^(?:\.dram0\.data|\.dram0\.bss|\.noinit)\s+([0-9]+).*",
+        "flash": XTENSA_FLASH,
+        "ram": XTENSA_RAM,
     },
     "beken": {
         "prefix": ["arm-none-eabi"],
@@ -88,11 +94,11 @@ def measure(arch, elf):
                             check=True, capture_output=True, text=True).stdout
         for line in nm.splitlines():
             parts = line.split()
-            if len(parts) == 3 and parts[2] == "_heap_start":
+            if len(parts) == 3 and parts[2] == spec["heap_start"]:
                 out["heap"] = spec["heap_end"] - int(parts[0], 16)
                 break
         else:
-            raise SystemExit(f"{elf}: no _heap_start symbol")
+            raise SystemExit(f"{elf}: no {spec['heap_start']} symbol")
     return out
 
 
