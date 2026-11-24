@@ -197,8 +197,7 @@ jobs:
         case "${{ matrix.arch }}" in
         esp32)
           build=code/.pio/build_esp32/${env}
-          # the merged image (bootloader, partitions, boot_app0, the head): serial flash at 0x0. The ESP32 head is not
-          # replaced over the network (no safeboot), the modules are
+          # the merged image (bootloader, partitions, boot_app0, the head): serial flash at 0x0
           cp ${build}/${name}.bin dist/${name}.bin
           # the install image: the head and every module package (the Apply of the MODULES panel)
           cp ${build}/${name}.ota dist/
@@ -210,8 +209,6 @@ jobs:
           cp ${build}/${name}-tuya.uf2 ${build}/${name}-quectel.uf2 dist/
           # the install image: both heads and every module package (the Apply of the MODULES panel)
           cp ${build}/${name}.ota dist/
-          # LibreTiny links raw_firmware.elf
-          cp ${build}/raw_firmware.elf ${build}/firmware.elf
           ;;
         esp8266)
           build=code/.pio/build_esp8266/${env}
@@ -274,7 +271,7 @@ jobs:
           Boards installed with the 4 MB layout (`espurna-esp8266-4m`) keep their settings elsewhere: back them up and restore them after the update.
 
           ESP32 on ESP-IDF 5.5, one application partition (ESPurna at 0x10000, 3712 KB with the modules):
-          - `espurna-esp32.bin` - the head, any ESP32 with 4 MB flash (the NSPanel too: the `screen` and `nextion` modules; the M5Stack: `screen` and `lcd`): serial flash at 0x0; the head is not replaced over the network
+          - `espurna-esp32.bin` - the head, any ESP32 with 4 MB flash (the NSPanel too: the `screen` and `nextion` modules; the M5Stack: `screen` and `lcd`): serial flash at 0x0, the head over the network from the `.ota`
           - `espurna-esp32.ota` - the install image: the head and every module (sensors, scheduler, alexa, mdns, mqtt, homeassistant, domoticz, thingspeak, light, rf, matter, screen, oled, lcd, nextion, captive); not for a serial flash tool
 
           Beken BK7231N (see `beken/README.md`): one head, an initial image per bootloader

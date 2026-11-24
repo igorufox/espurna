@@ -56,12 +56,14 @@ ARCHS = {
 
 
 def find_tool(prefixes, tool):
-    """<prefix>-<tool> of the PlatformIO packages (the env's toolchain), else from PATH"""
+    """<prefix>-<tool> of the PlatformIO packages or tools (the env's toolchain), else from PATH"""
     core = os.environ.get("PLATFORMIO_CORE_DIR") or os.path.join(os.path.expanduser("~"), ".platformio")
     for prefix in prefixes:
         name = f"{prefix}-{tool}"
         for exe in (name, name + ".exe"):
-            found = sorted(glob.glob(os.path.join(core, "packages", "toolchain-*", "bin", exe)))
+            # <core>/tools: the ESP8266 compiler (scripts/esp8266_rtos_sdk.py idf_tool())
+            found = sorted(glob.glob(os.path.join(core, "packages", "toolchain-*", "bin", exe))
+                           + glob.glob(os.path.join(core, "tools", "toolchain-*", "bin", exe)))
             if found:
                 return found[0]
         found = shutil.which(name)
