@@ -171,6 +171,16 @@ jobs:
       run: |
         # ESP32: pioarduino needs PlatformIO Core >= 6.2
         pip install 'platformio==6.2.0'
+    - name: esptool of the ESP8266 build
+      if: matrix.arch == 'esp8266'
+      run: |
+        # [platforms] esptool of libraries.ini: the esptool 5.4.0 pioarduino puts into <core>/tools (one esptool for
+        # both chips, owner 2026-11-09); on its own runner the ESP8266 job makes that folder itself
+        dir=~/.platformio/tools/tool-esptoolpy
+        if [ ! -f "$dir/package.json" ]; then
+          python -m pip install --no-deps --target "$dir" 'esptool==5.4.0'
+          echo '{"name": "tool-esptoolpy", "version": "5.4.0"}' > "$dir/package.json"
+        fi
     - name: Build
       working-directory: code
       env:

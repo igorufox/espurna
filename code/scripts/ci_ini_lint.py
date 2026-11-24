@@ -10,7 +10,7 @@ platform checks. Fails on:
   `-UX -DX=1` leaves X undefined (06.11: options silently off)
 - a macro defined twice with different values in one env's resolved build_flags + build_src_flags
   (`-DX` counts as `-DX=1`)
-- ARDUINO_ARCH_<...> in the flags: the framework defines it
+- ARDUINO_ARCH_<...> in the flags of an Arduino framework env: the framework defines it
 - ESPURNA_IMAGE of a chip anywhere but in build_flags, or other than "<chip>" (one form on every chip)
 - a build dir other than .pio/build_esp8266, .pio/build_esp32, .pio/build_beken (one per chip): `build_dir` of
   [platformio] missing (PlatformIO's default .pio/build) or anything else, and `build_dir` in any other section
@@ -242,6 +242,10 @@ def env_macros(config, env):
 
 
 def check_arch_macros(config, env):
+    # only an Arduino framework defines ARDUINO_ARCH_<...>; without one (espidf, no Arduino 2026-11-17) the head's
+    # own layer defines it for the libraries
+    if "arduino" not in str(option(config, "env:" + env, "framework", "")):
+        return []
     return [f"{name}: -D{macro}, the framework defines it"
             for name, kind, macro, _ in env_macros(config, env) if kind == "D" and macro.startswith("ARDUINO_ARCH_")]
 
@@ -399,9 +403,10 @@ def check_module_libs(configs):
     return problems
 
 
-# one exact version: `name @ 1.2.3`, a release zip, a git URL at a commit
+# one exact version: `name @ 1.2.3`, a release zip, a git URL at a commit, or the esptool folder of <core>/tools (the
+# one esptool 5.4.0 of both chips, [platforms] esptool of libraries.ini)
 PINNED_RE = re.compile(r"^(?:[\w./ -]+\s*@\s*)?(?:\d+(?:\.\d+)+|https?://\S+/releases/download/\S+\.zip|"
-                       r"https?://\S+#[0-9a-f]{7,40})$")
+                       r"https?://\S+#[0-9a-f]{7,40}|file://\S*/tools/tool-esptoolpy)$")
 
 
 def pinned(spec):
@@ -499,8 +504,8 @@ def check_shared_versions(paths):
                 for name in parser.options(section):
                     value = parser.get(section, name)
                     if shared:
-                        # lwip: the version the platform brings built in (MAJOR.MINOR.REVISION)
-                        bare = name.startswith("lwip") and re.match(r"^\d+\.\d+\.\d+$", value)
+                        # lwip, mbedtls: the version the platform / SDK brings built in (MAJOR.MINOR.REVISION)
+                        bare = name.startswith(("lwip", "mbedtls")) and re.match(r"^\d+\.\d+\.\d+$", value)
                         if section in ("libraries", "platforms") and not (pinned(value) or GIT_TAG_RE.match(value)
                                                                           or bare):
                             problems.append(f"{file}: [{section}] {name} = {value}: not one exact version")
