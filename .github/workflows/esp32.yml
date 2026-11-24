@@ -2,10 +2,10 @@ name: Firmware Build
 
 on:
   push:
-    branches: [unify]
+    branches: [unify, rtos]
     tags: ['esp32-*']
   pull_request:
-    branches: [unify]
+    branches: [unify, rtos]
   # Release channels: every build above becomes a PRE-release ("preview", not tested on hardware). A stable release
   # is only made by hand: Actions -> Firmware Build -> Run workflow, `promote` = the tag of a preview, `bench` = what was
   # tested on hardware. The stable release gets the files of that preview (tag esp32-stable-<the preview's tag>) and
