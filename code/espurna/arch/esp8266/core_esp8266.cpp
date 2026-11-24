@@ -145,9 +145,6 @@ uart_stop_bits_t stop_bits(uint16_t config) {
 // OTA
 // -----------------------------------------------------------------------------
 
-esp_ota_handle_t ota_handle { 0 };
-const esp_partition_t* ota_partition { nullptr };
-
 // -----------------------------------------------------------------------------
 // Wi-Fi
 // -----------------------------------------------------------------------------
@@ -794,67 +791,6 @@ namespace {
     *reinterpret_cast<volatile uint32_t*>(0x60000a00 + 0x348) |= 0x2;
     *reinterpret_cast<volatile uint32_t*>(0x60000a00 + 0x348) &= ~uint32_t{0x2};
     uart_download();
-}
-
-const char* ota_begin(size_t size) {
-    ota_abort();
-
-    ota_partition = esp_ota_get_next_update_partition(nullptr);
-    if (!ota_partition) {
-        return "No OTA partition";
-    }
-
-    if ((size != OtaSizeUnknown) && (size > ota_partition->size)) {
-        ota_partition = nullptr;
-        return "Not enough space";
-    }
-
-    const auto image = (size == OtaSizeUnknown) ? OTA_SIZE_UNKNOWN : size;
-    if (esp_ota_begin(ota_partition, image, &ota_handle) != ESP_OK) {
-        ota_partition = nullptr;
-        ota_handle = 0;
-        return "Flash Erase Failed";
-    }
-
-    return nullptr;
-}
-
-const char* ota_write(const uint8_t* data, size_t size) {
-    if (!ota_handle) {
-        return "Not running";
-    }
-
-    const auto err = esp_ota_write(ota_handle, data, size);
-    if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
-        return "Wrong Magic Byte";
-    }
-
-    return (err == ESP_OK) ? nullptr : "Flash Write Failed";
-}
-
-const char* ota_end() {
-    if (!ota_handle) {
-        return "Not running";
-    }
-
-    const auto handle = ota_handle;
-    ota_handle = 0;
-
-    if (esp_ota_end(handle) != ESP_OK) {
-        ota_partition = nullptr;
-        return "Could Not Activate The Firmware";
-    }
-
-    const auto err = esp_ota_set_boot_partition(ota_partition);
-    ota_partition = nullptr;
-
-    return (err == ESP_OK) ? nullptr : "Could Not Activate The Firmware";
-}
-
-// the SDK has no esp_ota_abort(): the next begin() erases again
-void ota_abort() {
-    ota_handle = 0;
-    ota_partition = nullptr;
 }
 
 bool wifi_mode(wifi_mode_t mode) {

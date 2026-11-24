@@ -67,6 +67,11 @@ public:
         _on_start = std::move(callback);
     }
 
+    // the target took the image: what is written from here on replaces what was there
+    void onAccepted(Callback callback) {
+        _on_accepted = std::move(callback);
+    }
+
     void onEnd(Callback callback) {
         _on_end = std::move(callback);
     }
@@ -363,9 +368,15 @@ private:
             }
 
             md5.update(data, got);
+            const bool started = receiver.started();
             error = receiver.push(data, got);
             if (error) {
                 break;
+            }
+
+            // once the target took the image (its header checked), never for a refused one
+            if (!started && receiver.started() && _on_accepted) {
+                _on_accepted();
             }
 
             received += got;
@@ -448,6 +459,7 @@ private:
     char _md5[Md5Hex] {};
 
     Callback _on_start;
+    Callback _on_accepted;
     Callback _on_end;
     Fail _on_error;
     Progress _on_progress;

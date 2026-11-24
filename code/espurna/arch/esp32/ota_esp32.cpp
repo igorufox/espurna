@@ -62,7 +62,6 @@ uint32_t headEnd() {
     return espurna_rbl_round(headAt() + ::espurna::core::chip::sketch_size());
 }
 
-std::unique_ptr<rbl::Writer> current;
 espurna_rbl_t current_header {};
 uint32_t current_package { 0 };
 
@@ -71,42 +70,30 @@ uint32_t current_package { 0 };
 constexpr uint32_t BootloaderAt { 0x1000 };
 constexpr uint32_t BootloaderEnd { 0x8000 };
 
-// a chunk of the package (u16 length, then a raw deflate) that is one stored block of a whole sector: 0x01, LEN,
-// NLEN, the bytes (scripts/esp8266_rbl.py STORED_BELOW)
-constexpr size_t StoredChunk { 2 + 5 + rbl::Sector };
-
 struct BootSector {
     uint32_t chunk;     // where its chunk starts in the flash
 };
 
-// the chunk after the one at `at` (u16 length, padded to 4 bytes)
+// the chunk after the one at `at` (the chunk format: libs/rbl_layout.h, the same as the bootloader reads)
 bool chunkNext(uint32_t& at) {
     uint8_t word[4];
     if (!flashRead(at, word, sizeof(word))) {
         return false;
     }
 
-    const uint32_t size = word[0] | (word[1] << 8);
-    at += (2 + size + 3) & ~static_cast<uint32_t>(3);
+    at += espurna_rbl_chunk_span(word[0] | (word[1] << 8));
     return true;
 }
 
-// the stored sector in the chunk at `at` into `out` (rbl::Sector bytes)
+// the stored sector in the chunk at `at` (libs/rbl_layout.h espurna_rbl_stored_sector()), read into `buffer`
 bool storedSector(uint32_t at, uint8_t* buffer, const uint8_t*& out) {
-    const size_t size = (StoredChunk + 3) & ~static_cast<size_t>(3);
+    const size_t size = (ESPURNA_RBL_STORED_CHUNK + 3) & ~static_cast<size_t>(3);
     if (!flashRead(at, buffer, size)) {
         return false;
     }
 
-    const uint32_t length = buffer[0] | (buffer[1] << 8);
-    const uint32_t len = buffer[3] | (buffer[4] << 8);
-    const uint32_t nlen = buffer[5] | (buffer[6] << 8);
-    if ((length != (StoredChunk - 2)) || (buffer[2] != 0x01) || (len != rbl::Sector) || ((len ^ 0xFFFF) != nlen)) {
-        return false;
-    }
-
-    out = &buffer[7];
-    return true;
+    out = espurna_rbl_stored_sector(buffer);
+    return out != nullptr;
 }
 
 // the image of the flash under another bootloader (the head is not at ESPURNA_RBL_HEAD_AT): its bootloader sectors
@@ -121,7 +108,7 @@ const char* migrationBootloader(const espurna_rbl_t& header, uint32_t package) {
         return PSTR("ERROR: The image of the flash has no bootloader");
     }
 
-    std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[StoredChunk + 4]);
+    std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[ESPURNA_RBL_STORED_CHUNK + 4]);
     std::unique_ptr<uint8_t[]> check(new (std::nothrow) uint8_t[rbl::Sector]);
     if (!buffer || !check) {
         return PSTR("ERROR: Not enough memory");
@@ -146,21 +133,48 @@ const char* migrationBootloader(const espurna_rbl_t& header, uint32_t package) {
         }
     }
 
+    // the bootloader the chip runs now, whole: written back when a sector of the new one does not take (the ROM boots
+    // only from 0x1000, there is no second bootloader to fall back on). A power loss in between still needs the wire
+    constexpr size_t BootloaderSize { BootloaderEnd - BootloaderAt };
+    std::unique_ptr<uint8_t[]> old(new (std::nothrow) uint8_t[BootloaderSize]);
+    if (!old) {
+        return PSTR("ERROR: Not enough memory");
+    }
+    if (!flashRead(BootloaderAt, old.get(), BootloaderSize)) {
+        return PSTR("ERROR: Flash read failed");
+    }
+
+    // one sector: erase, write, read back; three tries
+    auto put = [&](uint32_t offset, const uint8_t* data) {
+        for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+            if (flashErase(offset) && flashWrite(offset, data, rbl::Sector)
+                && flashRead(offset, check.get(), rbl::Sector)
+                && (std::memcmp(check.get(), data, rbl::Sector) == 0))
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
     DEBUG_MSG_P(PSTR("[OTA] Another bootloader: writing the one of the image (0x%05X..0x%05X)\n"),
         BootloaderAt, BootloaderEnd);
     for (size_t index = 0; index < (sizeof(sectors) / sizeof(sectors[0])); ++index) {
         const uint32_t offset = BootloaderAt + (index * rbl::Sector);
         const uint8_t* data { nullptr };
-        bool ok = false;
-        for (uint32_t attempt = 0; !ok && (attempt < 3); ++attempt) {
-            ok = storedSector(sectors[index].chunk, buffer.get(), data)
-                && flashErase(offset) && flashWrite(offset, data, rbl::Sector)
-                && flashRead(offset, check.get(), rbl::Sector)
-                && (std::memcmp(check.get(), data, rbl::Sector) == 0);
+        if (storedSector(sectors[index].chunk, buffer.get(), data) && put(offset, data)) {
+            continue;
         }
-        if (!ok) {
-            return PSTR("ERROR: Writing the bootloader failed");
+
+        // the old bootloader back: every sector written so far and this one
+        bool back = true;
+        for (size_t undo = 0; undo <= index; ++undo) {
+            const uint32_t at = BootloaderAt + (undo * rbl::Sector);
+            back = put(at, &old[at - BootloaderAt]) && back;
         }
+        return back
+            ? PSTR("ERROR: Writing the bootloader failed, the old one is back")
+            : PSTR("ERROR: Writing the bootloader failed, the old one could not be put back (wire)");
     }
 
     return nullptr;
@@ -169,7 +183,7 @@ const char* migrationBootloader(const espurna_rbl_t& header, uint32_t package) {
 } // namespace
 
 const char* begin(const uint8_t* data, size_t len, size_t) {
-    current.reset();
+    rbl::upload::abort();
 
     espurna_rbl_t header {};
     const char* error = rbl::header(data, len, header);
@@ -179,18 +193,17 @@ const char* begin(const uint8_t* data, size_t len, size_t) {
             : PSTR("ERROR: Not an RBL of this chip (the head of espurna-esp32.ota)");
     }
 
-    // the package under the data of the modules (modulesData(): the tile pages of the screen module), named in the
-    // header: right under the header sector it was written over that data and the data was gone after a head update.
-    // The bootloader's zone for the old head ends at the package's top (zone_top()), under the data too
-    uint32_t limit = ESPURNA_RBL_HEADER_AT;
+    // the one place rule (rbl::place()): the free gap above the running head, under the header sector or under the data
+    // of the modules (modulesData(): the tile pages of the screen module)
     const uint32_t data_at = modulesDataBottom();
-    if (data_at && (data_at < limit)) {
-        const uint32_t size = espurna_rbl_round(header.data_size);
-        if (size >= data_at) {
-            return PSTR("ERROR: The package does not fit under the data of the modules");
-        }
-        espurna_rbl_set_package_at(&header, data_at - size);
-        limit = data_at;
+    const rbl::Gap gaps[] {
+        {headEnd(), (data_at && (data_at < ESPURNA_RBL_HEADER_AT)) ? data_at : ESPURNA_RBL_HEADER_AT},
+    };
+
+    uint32_t limit { 0 };
+    error = rbl::place(header, gaps, std::size(gaps), limit);
+    if (error) {
+        return error;
     }
 
     error = espurna_rbl_check(&header);
@@ -203,20 +216,14 @@ const char* begin(const uint8_t* data, size_t len, size_t) {
         return PSTR("ERROR: The package does not fit above the running head");
     }
 
-    current.reset(new (std::nothrow) rbl::Writer());
-    if (!current) {
-        return PSTR("ERROR: Not enough memory");
-    }
-
     const rbl::Place place {
         .header = ESPURNA_RBL_HEADER_AT,
         .package = package_at,
         .limit = limit,
     };
 
-    error = current->begin(Flash, header, place);
+    error = rbl::upload::begin(Flash, header, place);
     if (error) {
-        current.reset();
         return error;
     }
 
@@ -226,25 +233,11 @@ const char* begin(const uint8_t* data, size_t len, size_t) {
 }
 
 const char* write(const uint8_t* data, size_t len) {
-    if (!current) {
-        return PSTR("ERROR: No upload");
-    }
-
-    const auto* error = current->write(data, len);
-    if (error) {
-        current.reset();
-    }
-
-    return error;
+    return rbl::upload::write(data, len);
 }
 
 const char* end() {
-    if (!current) {
-        return PSTR("ERROR: Incomplete image");
-    }
-
-    const auto* error = current->end();
-    current.reset();
+    const auto* error = rbl::upload::end();
     if (!error) {
         error = migrationBootloader(current_header, current_package);
     }
@@ -253,7 +246,7 @@ const char* end() {
 }
 
 void abort() {
-    current.reset();
+    rbl::upload::abort();
 }
 
 // the new head confirms itself to the bootloader (the common part, ota_rbl.h)

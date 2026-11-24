@@ -564,7 +564,7 @@
 
 #elif defined(MOES_MS_104B)
 
-    #if !defined(ARDUINO_ARCH_ESP8266)
+    #if !defined(ESP8266)
     #error "MOES_MS_104B is an ESP8266 board"
     #endif
 

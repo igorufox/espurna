@@ -92,19 +92,45 @@ void i2c_clock(uint32_t frequency) {
     }
 }
 
+// a write without a stop (the register of a read that follows) waits here; whatever comes next on the bus sends it
+// first, with a repeated start, as the software master does (arch/soft): no bytes are lost to another address
+static void i2c_pending_put(i2c_cmd_handle_t cmd) {
+    if (i2c_pending_size) {
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, static_cast<uint8_t>(i2c_pending_address << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_write(cmd, i2c_pending, i2c_pending_size, true);
+    }
+    i2c_pending_size = 0;
+}
+
 uint8_t i2c_write(uint8_t address, const uint8_t* data, size_t size, bool stop) {
     if (!i2c_started) {
         return 4;
     }
 
     if (!stop) {
+        // the one waiting before goes out now
+        if (i2c_pending_size) {
+            auto cmd = i2c_cmd_link_create();
+            i2c_pending_put(cmd);
+            i2c_master_stop(cmd);
+            i2c_master_cmd_begin(I2cPort, cmd, I2cTimeout);
+            i2c_cmd_link_delete(cmd);
+        }
+
+        // more than the buffer: Wire's "data too long", nothing is cut
+        if (size > sizeof(i2c_pending)) {
+            return 1;
+        }
+
         i2c_pending_address = address;
-        i2c_pending_size = (size < sizeof(i2c_pending)) ? size : sizeof(i2c_pending);
-        memcpy(i2c_pending, data, i2c_pending_size);
+        i2c_pending_size = size;
+        memcpy(i2c_pending, data, size);
         return 0;
     }
 
     auto cmd = i2c_cmd_link_create();
+    i2c_pending_put(cmd);
     i2c_master_start(cmd);
     i2c_master_write_byte(cmd, static_cast<uint8_t>(address << 1) | I2C_MASTER_WRITE, true);
     if (size) {
@@ -124,12 +150,7 @@ size_t i2c_read(uint8_t address, uint8_t* out, size_t size, bool) {
     }
 
     auto cmd = i2c_cmd_link_create();
-    if (i2c_pending_size && (i2c_pending_address == address)) {
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, static_cast<uint8_t>(address << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_write(cmd, i2c_pending, i2c_pending_size, true);
-    }
-    i2c_pending_size = 0;
+    i2c_pending_put(cmd);
 
     i2c_master_start(cmd);
     i2c_master_write_byte(cmd, static_cast<uint8_t>(address << 1) | I2C_MASTER_READ, true);

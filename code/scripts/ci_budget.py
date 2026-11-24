@@ -28,7 +28,7 @@ TABLE = os.path.join(HERE, "ci_budget.json")
 # arch of the build matrix -> toolchain prefix and PlatformIO's formulas
 # - pioarduino platform-espressif32/builder/main.py: the sections of an ESP-IDF image, the ESP8266_RTOS_SDK image has
 #   the same ones (scripts/esp8266_rtos_sdk.py)
-# - libretiny/builder/family/beken-72xx.py
+# - igorufox/platform-beken: the sections of its link
 XTENSA_FLASH = r"^(?:\.iram0\.text|\.iram0\.vectors|\.dram0\.data|\.flash\.text|\.flash\.rodata|)\s+([0-9]+).*"
 XTENSA_RAM = r"^(?:\.dram0\.data|\.dram0\.bss|\.noinit)\s+([0-9]+).*"
 

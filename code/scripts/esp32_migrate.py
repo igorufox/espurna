@@ -1,7 +1,7 @@
 # The migration of ESP32 boards both ways (owner 22.11: «не может быть что для ESP8266 есть миграция для ESP32 нет»,
 # «унификация»): between the safeboot layout of the Arduino builds (esp32_4mb_safeboot.csv up to 2026-11-17: safeboot in
 # factory 0x10000, ESPurna in app0 0xE0000) and the one app partition of this build (esp32_4mb.csv: app0 0x10000). Both
-# keep nvs 0x9000, otadata 0xE000, spiffs 0x3B0000 (the settings pool in its top) and coredump at the same places, so the
+# keep nvs 0x9000, spiffs 0x3B0000 (the settings pool in its top) and coredump at the same places, so the
 # settings and the NVS (Matter's keys) stay. The tool of both ways is the ESP8266's: an RBL package of an image of the
 # flash from 0x0 (scripts/esp8266_rbl.py --flash, ESPURNA_RBL_FLASH), written by the bootloader step
 # (arch/rtos/bootloader/espurna_rbl.c) from the top sector down, itself last; the NVS kept (chunks of length 0).
@@ -10,8 +10,8 @@
 #   1. the old ESPurna's update (its safeboot page) takes this build's firmware.bin (0xE9): safeboot writes it into app0
 #      at 0xE0000 and this head starts there, under the old bootloader
 #   2. its /upgrade takes espurna-esp32-migrate.rbl: the image of this build's flash from 0x0 (bootloader 0x1000,
-#      partition table 0x8000, the head 0x10000; nvs kept, otadata blank: the old one may hold the state of an image
-#      safeboot wrote, this layout has no factory app and boots ota_0). The old bootloader has no RBL step, so the head
+#      partition table 0x8000, the head 0x10000; nvs kept, the old otadata blank (0xE000 is no partition of this
+#      layout: app0 is its factory app). The old bootloader has no RBL step, so the head
 #      writes the new bootloader itself (ota_esp32.cpp: the stored sectors of the package) and restarts; the new
 #      bootloader writes the image. Then the modules by the Apply, as after every head
 # Back (this build -> old), by hand from the merged image of an old release (espurna-esp32-matter.bin):
@@ -56,10 +56,10 @@ def table(data):
     return out
 
 
-def check_table(entries, what):
-    """the places both layouts share: nvs, otadata, spiffs"""
+def check_table(entries, what, otadata):
+    """the places both layouts share: nvs, spiffs; otadata of the old layout (this build has none since 2026-11-24)"""
     places = {label: (offset, size) for label, _, _, offset, size in entries}
-    for label, place in (("nvs", NVS), ("otadata", OTADATA)):
+    for label, place in (("nvs", NVS), ("otadata", OTADATA))[:2 if otadata else 1]:
         if places.get(label) != place:
             raise ValueError(f"{what}: '{label}' is not at 0x{place[0]:X} size 0x{place[1]:X}: {places.get(label)}")
     if "spiffs" not in places:
@@ -73,7 +73,7 @@ def over(bootloader, partitions, head):
         raise ValueError("the bootloader and the head start with 0xE9")
     if BOOTLOADER_AT + len(bootloader) > TABLE_AT:
         raise ValueError("the bootloader reaches the partition table")
-    places = check_table(table(partitions), "this build")
+    places = check_table(table(partitions), "this build", False)
     if places.get("app0", (0, 0))[0] != HEAD_AT:
         raise ValueError("this build's app0 is not at 0x10000")
 
@@ -89,7 +89,7 @@ def back(merged):
     if len(merged) < OLD_APP_AT + SECTOR:
         raise ValueError("not a merged image of the safeboot layout (too short)")
     entries = table(merged[TABLE_AT:TABLE_AT + TABLE_SIZE])
-    places = check_table(entries, "the old image")
+    places = check_table(entries, "the old image", True)
     if places.get("app0", (0, 0))[0] != OLD_APP_AT or places.get("safeboot", (0, 0))[0] != HEAD_AT:
         raise ValueError(f"not the safeboot layout (safeboot 0x10000, app0 0xE0000): {places}")
     if merged[HEAD_AT:HEAD_AT + 1] != b"\xe9":

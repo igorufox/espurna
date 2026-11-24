@@ -14,6 +14,7 @@ digitalWrite(), digitalRead(), analogRead(), analogWrite() and HIGH / LOW / INPU
 #include <cstdint>
 
 #include <chip_sdk.h>
+#include <pins_chip.h>
 
 // IRAM_ATTR of the chip: .iram1 on ESP8266 and ESP32 (esp_attr.h), nothing on Beken (no IRAM, the module linker has no
 // place for an IRAM section there)
@@ -33,14 +34,8 @@ constexpr uint8_t InputPullup { core::chip::pin::InputPullup };
 constexpr uint8_t InputPulldown { core::chip::pin::InputPulldown };
 constexpr uint8_t OutputOpenDrain { core::chip::pin::OutputOpenDrain };
 
-// the first ADC pin of the chip (ESP8266: the TOUT pad, ESP32: GPIO36 of ADC1)
-#if defined(ESP8266)
-constexpr uint8_t Adc0 { 17 };
-#elif defined(ESP_PLATFORM)
-constexpr uint8_t Adc0 { 36 };
-#else
-constexpr uint8_t Adc0 { 0 };
-#endif
+// the first ADC pin of the chip (arch/<chip>/pins_chip.h)
+constexpr uint8_t Adc0 { chip::Adc0 };
 
 // interrupt edges
 constexpr uint8_t Rising { core::chip::edge::Rising };

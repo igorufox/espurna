@@ -163,6 +163,9 @@ static int s_failures;
     printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 /* the flash as the head leaves it after an OTA: the old head, the package and its header, the rest a pattern */
+/* where the data of the modules starts under the header sector (the screen module's pages), 0 - none */
+static uint32_t g_data_at;
+
 static void flash_setup(uint32_t chip) {
     s_chip = chip;
     g_rom_flashchip.chip_size = 0x100000u;
@@ -175,9 +178,17 @@ static void flash_setup(uint32_t chip) {
     espurna_rbl_t header;
     memcpy(&header, s_rbl, sizeof(header));
     const uint32_t data_size = s_rbl_len - ESPURNA_RBL_SIZE;
-    const uint32_t top = espurna_rbl_top_at(chip, data_size);
-    if (top) {
-        espurna_rbl_set_package_at(&header, top);
+    /* the one place rule of the head (ota_rbl.cpp rbl::place()): the highest gap the package fits - the top zone of a
+       chip of 2 MB and more, else above the running head under the header sector, or under the data of the modules */
+    const uint32_t size = espurna_rbl_round(data_size);
+    const uint32_t head_end = espurna_rbl_round(ESPURNA_RBL_HEAD_AT + g_old_len);
+    uint32_t bottom = 0;
+    uint32_t top = 0;
+    if (espurna_rbl_top_zone(chip, &bottom, &top) && ((top - bottom) >= size)) {
+        espurna_rbl_set_place(&header, top - size, bottom);
+    } else {
+        top = g_data_at ? g_data_at : ESPURNA_RBL_HEADER_AT;
+        espurna_rbl_set_place(&header, top - size, head_end);
     }
     const uint32_t package = espurna_rbl_package_at(&header);
     memset(&s_flash[package], 0xFF, espurna_rbl_round(data_size));
@@ -502,6 +513,15 @@ int main(int argc, char** argv) {
             g_keep_len = 0;
         }
     }
+
+    /* 1 MB with the data of the modules under the header: the package under the data, the data never written */
+    g_data_at = ESPURNA_RBL_HEADER_AT - 0x1000u;
+    printf("  1 MB, the data of the modules at 0x%06x\n", g_data_at);
+    test_swap(0x100000u);
+    test_rollback(0x100000u);
+    test_power_cut(0x100000u, step);
+    test_rollback_power_cut(0x100000u, step);
+    g_data_at = 0;
 
     printf("%s: %d failures\n", s_failures ? "FAIL" : "PASS", s_failures);
     return s_failures ? 1 : 0;

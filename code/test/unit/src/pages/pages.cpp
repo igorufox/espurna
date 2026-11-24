@@ -318,9 +318,8 @@ void test_warnings() {
     TEST_ASSERT(config.pages[0].grid == Grid::G4x2);
 }
 
-void test_buffer_size() {
-    // jsonBufferSize() (the heap estimate of a compile) covers the text the parse reads in place; the compile itself
-    // gets as far as the missing "pages"
+void test_nested_without_pages() {
+    // the compile gets as far as the missing "pages" (or "pages" that is no array)
     const char* texts[] {
         R"({"a": [1, 2, [3, {"b": 4}]], "c": {}, "d": [], "e": "x,y]}"})",
         R"({"a": [[[[]]]], "b": [{}, {}, {"c": [1, {"d": [2, 3]}]}]})",
@@ -328,9 +327,6 @@ void test_buffer_size() {
     };
 
     for (const auto* text : texts) {
-        std::vector<char> copy(text, text + strlen(text) + 1);
-        TEST_ASSERT_MESSAGE(jsonBufferSize(copy.data(), copy.size() - 1) >= (copy.size() - 1), text);
-
         Config config;
         espurna::string error;
         espurna::string warnings;
@@ -426,7 +422,7 @@ int main(int, char**) {
     RUN_TEST(test_no_mqtt_warning_without_mqtt);
     RUN_TEST(test_errors);
     RUN_TEST(test_warnings);
-    RUN_TEST(test_buffer_size);
+    RUN_TEST(test_nested_without_pages);
     RUN_TEST(test_large_config);
     RUN_TEST(test_sink_failure);
     RUN_TEST(test_icons);

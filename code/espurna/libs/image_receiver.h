@@ -61,6 +61,11 @@ public:
     Receiver(const Receiver&) = delete;
     Receiver& operator=(const Receiver&) = delete;
 
+    // the target took the first piece (its check passed): from here on the image is written
+    bool started() const {
+        return _started;
+    }
+
     // the size of the file when known in advance (an upload of a raw body, a download), 0 - not known
     void expect(size_t size) {
         _expected = size;

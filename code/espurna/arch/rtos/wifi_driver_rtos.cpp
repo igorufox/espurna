@@ -468,10 +468,14 @@ int8_t sta_rssi() {
 }
 
 // Same as the esp8266 station config, last requested network stays known after the disconnect
+// associated without an address yet: the AP the station is on now (the SDK's pick when no BSSID was asked for)
 void sta_info(Mac& bssid, AUTH_MODE& authmode) {
+    sdk::WifiInfo info{};
     bssid = internal::state.linked
         ? internal::state.linked_bssid
-        : internal::target_bssid;
+        : (internal::associated && sdk::wifi_sta_info(info))
+            ? to_mac(info.bssid)
+            : internal::target_bssid;
     authmode = internal::passphrase.length()
         ? WIFI_AUTH_WPA_PSK
         : WIFI_AUTH_OPEN;

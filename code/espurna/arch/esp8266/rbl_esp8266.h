@@ -28,6 +28,7 @@ package (no overlapping inflate), the package must start above the running head 
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -44,7 +45,6 @@ package (no overlapping inflate), the package must start above the running head 
    core with its eboot, owner 21.11: «пиши 1.15 по воздуху»). No swap and no rollback: the SDK's bootloader is
    overwritten too. A bootloader without this kind refuses it ("RBL of another kind"), the head stays */
 #define ESPURNA_RBL_FLASH       3u
-#define ESPURNA_RBL_WINDOW      4096u
 
 #define ESPURNA_RBL_TOP_TAIL    0x10000u        /* the last 64 KB of the chip: the SDK's system parameters */
 #define ESPURNA_RBL_TOP_ZONE    0x80000u        /* 512 KB under it for the package, the data modules below */
@@ -52,17 +52,14 @@ package (no overlapping inflate), the package must start above the running head 
 /* the swap state, the package place, the header check: the same on every chip */
 #include "../../libs/rbl_layout.h"
 
-/* the top of a chip of 2 MB and more, 0 - none (a chip of 1 MB) */
-static inline uint32_t espurna_rbl_top_at(uint32_t chip, uint32_t data_size) {
+/* the top zone of a chip of 2 MB and more, a free gap for the package (ota_esp8266.cpp); false - none (1 MB) */
+static inline bool espurna_rbl_top_zone(uint32_t chip, uint32_t* bottom, uint32_t* top) {
     if (chip < 0x200000u) {
-        return 0;
+        return false;
     }
 
-    const uint32_t size = espurna_rbl_round(data_size);
-    if (size > ESPURNA_RBL_TOP_ZONE) {
-        return 0;
-    }
-
-    return chip - ESPURNA_RBL_TOP_TAIL - size;
+    *top = chip - ESPURNA_RBL_TOP_TAIL;
+    *bottom = *top - ESPURNA_RBL_TOP_ZONE;
+    return true;
 }
 

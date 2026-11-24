@@ -24,7 +24,8 @@ running head (it is written while that one runs)
 
 #define ESPURNA_RBL_SECTOR      0x1000u
 #define ESPURNA_RBL_HEAD_AT     0x10000u
-#define ESPURNA_RBL_APP_END     0x3B0000u   /* the end of app0 (code/esp32_4mb.csv) */
+/* the end of app0 of code/esp32_4mb.csv (scripts/esp32_merge.py stops the build when they differ) */
+#define ESPURNA_RBL_APP_END     0x3B0000u
 #define ESPURNA_RBL_HEADER_AT   (ESPURNA_RBL_APP_END - (2u * ESPURNA_RBL_SECTOR))
 #define ESPURNA_RBL_NAME        "esp32"
 #define ESPURNA_RBL_SECTORS     2u          /* compression: a raw deflate chunk per 4 KB sector */

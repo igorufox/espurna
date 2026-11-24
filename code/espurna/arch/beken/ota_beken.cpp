@@ -148,13 +148,6 @@ bool flashRead(uint32_t at, uint8_t* data, size_t size) {
 
 const rbl::Flash Flash { flashErase, flashWrite, flashRead };
 
-rbl::Writer* current { nullptr };
-
-void rbl_drop() {
-    delete current;
-    current = nullptr;
-}
-
 } // namespace
 
 bool rbl_magic(const uint8_t* data, size_t len) {
@@ -162,7 +155,7 @@ bool rbl_magic(const uint8_t* data, size_t len) {
 }
 
 const char* rbl_begin(const uint8_t* data, size_t len) {
-    rbl_drop();
+    rbl::upload::abort();
 
     const auto& layout = ::espurna::beken::flashLayout();
     if (layout.layout == ::espurna::beken::Layout::Unknown) {
@@ -179,6 +172,14 @@ const char* rbl_begin(const uint8_t* data, size_t len) {
         return error;
     }
 
+    // the package of this chip only (scripts/beken_image.py package_ota): the BDK's "app", AES-256-CBC (2) of a gzip
+    // (1). The RBL of the ESP chips is another name and plain deflate chunks
+    if ((std::strncmp(header.name, "app", sizeof(header.name)) != 0)
+        || (header.encryption != 2) || (header.compression != 1))
+    {
+        return PSTR("ERROR: Not an RBL of this chip (espurna-beken.ota)");
+    }
+
     const uint32_t length = ESPURNA_RBL_SIZE + header.data_size;
     if (length > layout.download_length) {
         return PSTR("ERROR: The image does not fit the download partition");
@@ -189,50 +190,25 @@ const char* rbl_begin(const uint8_t* data, size_t len) {
         return PSTR("ERROR: The download partition is past the flash this head can write");
     }
 
-    current = new (std::nothrow) rbl::Writer();
-    if (!current) {
-        return PSTR("ERROR: Not enough memory");
-    }
-
     const rbl::Place place {
         .header = layout.download_offset,
         .package = layout.download_offset + ESPURNA_RBL_SIZE,
         .limit = layout.download_offset + layout.download_length,
     };
 
-    error = current->begin(Flash, header, place);
-    if (error) {
-        rbl_drop();
-    }
-
-    return error;
+    return rbl::upload::begin(Flash, header, place);
 }
 
 const char* rbl_write(const uint8_t* data, size_t len) {
-    if (!current) {
-        return PSTR("ERROR: No upload");
-    }
-
-    const auto* error = current->write(data, len);
-    if (error) {
-        rbl_drop();
-    }
-
-    return error;
+    return rbl::upload::write(data, len);
 }
 
 const char* rbl_end() {
-    if (!current) {
-        return PSTR("ERROR: Incomplete image");
-    }
-
-    const auto* error = current->end();
-    rbl_drop();
-    return error;
+    return rbl::upload::end();
 }
 
 void rbl_abort() {
-    rbl_drop();
+    rbl::upload::abort();
 }
 
 } // namespace driver

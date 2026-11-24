@@ -213,11 +213,8 @@ public:
     }
 
 private:
-#if defined(BK72XX)
-    static constexpr bool OpenDrain { false };
-#else
-    static constexpr bool OpenDrain { true };
-#endif
+    // whether the chip has open drain outputs (arch/<chip>/pins_chip.h)
+    static constexpr bool OpenDrain { espurna::pins::chip::OpenDrain };
 
     static void lock() {
         espurna::core::chip::irq_disable();

@@ -57,9 +57,22 @@ namespace chip {
 
 using namespace esp8266;
 
-// the output off (duty 0), its channel stays the pin's until a restart of the SDK's driver
+// the pin back to a plain GPIO and its channel free, as on the other chips: the SDK's driver takes the channels again
+// without it (one restart), the period of the others stays
 void pwm_stop(uint8_t pin) {
-    pwm_write(pin, 0, 1, 1000);
+    for (size_t index = 0; index < pwm_used; ++index) {
+        if (pwm_pins[index] != pin) {
+            continue;
+        }
+
+        for (size_t next = index + 1; next < pwm_used; ++next) {
+            pwm_pins[next - 1] = pwm_pins[next];
+            pwm_duties[next - 1] = pwm_duties[next];
+        }
+        --pwm_used;
+        pwm_restart();
+        return;
+    }
 }
 
 void pwm_write(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency) {

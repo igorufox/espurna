@@ -458,6 +458,9 @@ public:
     }
     virtual void weatherChanged() = 0;
     virtual void temperatureChanged() = 0;
+    // the config is about to be replaced (config() is still the old one): what is pending of it goes out now
+    virtual void beforeReload() {
+    }
     virtual void reload() = 0;
     virtual void showPage(int page) = 0;
     virtual void send(espurna::string payload) = 0;

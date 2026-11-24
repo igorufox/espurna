@@ -47,6 +47,10 @@ private:
 } // namespace
 
 ESPURNA_MODULE(light_pwm, "light_pwm", 11) {
+    // the PWM of the chip for every user (chip::pwm_bus: pins::pwm(), the buzzer, the LCD backlight), the light or not:
+    // pwm.cpp is this module's, the head does not set it up
+    pwmSetup();
+
     const auto provider = getSetting("ltProvider");
     if (provider.length() && !provider.equals("dimmer")) {
         return;

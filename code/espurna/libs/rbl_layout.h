@@ -6,7 +6,7 @@ package of this chip is. C and C++. The chip's header defines its places first a
 
   ESPURNA_RBL_SECTOR, ESPURNA_RBL_HEADER_AT (the header sector, under the modules' directory), ESPURNA_RBL_HEAD_AT
   (the head: the start of the one app partition), ESPURNA_RBL_NAME (the name of the chip in the header),
-  ESPURNA_RBL_SECTORS (the kind: a raw deflate chunk per sector), ESPURNA_RBL_FLASH (optional: an image of the flash)
+  ESPURNA_RBL_SECTORS (the kind: a raw deflate chunk per sector), ESPURNA_RBL_FLASH (an image of the flash)
 
 arch/esp8266/rbl_esp8266.h, arch/esp32/rbl_esp32.h
 
@@ -45,10 +45,33 @@ static inline uint32_t espurna_rbl_round(uint32_t value) {
     return (value + ESPURNA_RBL_SECTOR - 1u) & ~(ESPURNA_RBL_SECTOR - 1u);
 }
 
-/* where the package lies, named by the head in the header's 'sn' (zero from the build, scripts/esp8266_rbl.py):
-   "PKG@" and the flash offset (ESP8266 of 2 MB and more: its top zone, rbl_esp8266.h); without the tag: right under the
-   header sector */
-#define ESPURNA_RBL_AT_TAG      "PKG@"
+/* a chunk of the package: u16 length (little endian), the raw deflate data of one sector, padded to 4 bytes. What the
+   chunk with this first word takes in the flash, the length word too */
+static inline uint32_t espurna_rbl_chunk_span(uint32_t first_word) {
+    return (2u + (first_word & 0xFFFFu) + 3u) & ~3u;
+}
+
+/* a chunk that holds its sector as one stored deflate block (scripts/esp8266_rbl.py STORED_BELOW: the bootloader
+   sectors of an image of the flash): length, BFINAL|BTYPE 00, LEN, NLEN, then the sector. The sector's bytes or NULL */
+#define ESPURNA_RBL_STORED_CHUNK (2u + 5u + ESPURNA_RBL_SECTOR)
+static inline const uint8_t* espurna_rbl_stored_sector(const uint8_t* chunk) {
+    const uint32_t length = (uint32_t)chunk[0] | ((uint32_t)chunk[1] << 8);
+    const uint32_t len = (uint32_t)chunk[3] | ((uint32_t)chunk[4] << 8);
+    const uint32_t nlen = (uint32_t)chunk[5] | ((uint32_t)chunk[6] << 8);
+    if ((length != (ESPURNA_RBL_STORED_CHUNK - 2u)) || (chunk[2] != 0x01u) || (len != ESPURNA_RBL_SECTOR)
+        || ((len ^ 0xFFFFu) != nlen))
+    {
+        return NULL;
+    }
+
+    return &chunk[7];
+}
+
+/* where the package lies (owner 24.11, one rule on every chip): the head puts it at the top of the highest free gap
+   of the flash it fits (ota_rbl.cpp rbl::place(); the gaps are the chip's: under the header or under the data of the
+   modules, the ESP8266's top zone), and names it in the header's 'sn' (zero from the build, scripts/esp8266_rbl.py):
+   "PKG@", the package's offset, the bottom of its gap. Without the tag: right under the header sector, the gap from the
+   heads up. The bootloader keeps the old head inside that gap (zone_bottom()): nothing outside of it is written */
 
 static inline uint32_t espurna_rbl_package_at(const espurna_rbl_t* rbl) {
     if (memcmp(rbl->sn, ESPURNA_RBL_AT_TAG, 4) == 0) {
@@ -60,21 +83,9 @@ static inline uint32_t espurna_rbl_package_at(const espurna_rbl_t* rbl) {
     return ESPURNA_RBL_HEADER_AT - espurna_rbl_round(rbl->data_size);
 }
 
-/* the head names where it wrote the package; the header's CRC follows */
-static inline void espurna_rbl_set_package_at(espurna_rbl_t* rbl, uint32_t at) {
-    memcpy(rbl->sn, ESPURNA_RBL_AT_TAG, 4);
-    memcpy(rbl->sn + 4, &at, sizeof(at));
-    rbl->info_crc = espurna_rbl_crc32(0, rbl, ESPURNA_RBL_SIZE - 4u);
-}
-
 /* where the inflated image goes: the head's place, or 0x0 for an image of the flash */
 static inline uint32_t espurna_rbl_dest(const espurna_rbl_t* rbl) {
-#ifdef ESPURNA_RBL_FLASH
     return (rbl->compression == ESPURNA_RBL_FLASH) ? 0u : ESPURNA_RBL_HEAD_AT;
-#else
-    (void)rbl;
-    return ESPURNA_RBL_HEAD_AT;
-#endif
 }
 
 /* the header itself (libs/rbl.h), and a package this chip takes. NULL - fine, else what is wrong */
@@ -84,11 +95,7 @@ static inline const char* espurna_rbl_check(const espurna_rbl_t* rbl) {
         return error;
     }
 
-#ifdef ESPURNA_RBL_FLASH
     const bool kind = (rbl->compression == ESPURNA_RBL_SECTORS) || (rbl->compression == ESPURNA_RBL_FLASH);
-#else
-    const bool kind = (rbl->compression == ESPURNA_RBL_SECTORS);
-#endif
     if ((rbl->encryption != 0) || !kind) {
         return "RBL of another kind (encrypted, or not deflate chunks)";
     }

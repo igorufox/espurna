@@ -1,6 +1,6 @@
 /*
 
-OTA MODULE: the RBL package of a new head (libs/rbl.h), the same on every chip that takes one (ESP8266, Beken). The
+OTA MODULE: the RBL package of a new head (libs/rbl.h), the same on every chip (ESP8266, ESP32, Beken). The
 header comes first in the upload and is written LAST, after the package is in the flash and its CRC32 read back matches:
 until then the bootloader finds nothing to install, an interrupted upload installs nothing.
 
@@ -90,6 +90,28 @@ private:
     bool _active { false };
     Stream _stream;
 };
+
+// A free gap of the flash for the package of a new head: [bottom, top)
+struct Gap {
+    uint32_t bottom;
+    uint32_t top;
+};
+
+// The one place rule of every chip (libs/rbl_layout.h): the package at the top of the highest gap it fits, named in
+// the header with the gap's bottom (the bootloader keeps the old head inside that gap). `limit` - the gap's top.
+// nullptr, else the error
+const char* place(espurna_rbl_t& header, const Gap* gaps, size_t count, uint32_t& limit);
+
+// The one RBL upload of the board, the driver part of every chip (ota_<chip>.cpp): begin() after the chip's own checks
+// of the header and its place, then write() / end() / abort() of ota_driver.h as they are. An error drops the upload
+namespace upload {
+
+const char* begin(const Flash& flash, const espurna_rbl_t& header, const Place& place);
+const char* write(const uint8_t* data, size_t len);
+const char* end();
+void abort();
+
+} // namespace upload
 
 // The new head confirms itself (owner 20.11, every chip of the scheme): the bootloader swapped the heads and keeps the
 // old one compressed; 60 s of running with Wi-Fi and the header sector at `header_at` is erased - the swap is final.

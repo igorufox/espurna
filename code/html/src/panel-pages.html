@@ -13,7 +13,7 @@
 
                 <div class="pure-control-group">
                     <span class="pure-form-message">
-                        What shows the pages: <span class="nspanel-status">?</span> (the NEXTION panel: a Nextion display
+                        What shows the pages: <span class="pages-status">?</span> (the NEXTION panel: a Nextion display
                         on a UART, the NSPanel's; else the screen's own panel - an SPI TFT of the lcd module, an OLED -
                         once a configuration is saved here)
                     </span>
@@ -30,18 +30,18 @@
                     </span>
                 </div>
 
-                <div class="pure-control-group nspanel-buttons">
-                    <button type="button" class="pure-button button-nspanel-load">Load</button>
-                    <button type="button" class="pure-button button-nspanel-validate">Validate</button>
-                    <button type="button" class="pure-button button-nspanel-save">Save</button>
+                <div class="pure-control-group pages-buttons">
+                    <button type="button" class="pure-button button-pages-load">Load</button>
+                    <button type="button" class="pure-button button-pages-validate">Validate</button>
+                    <button type="button" class="pure-button button-pages-save">Save</button>
                 </div>
 
                 <div class="pure-control-group">
-                    <textarea id="nspanel-config" class="pure-input-1 nspanel-editor" spellcheck="false" autocomplete="off" aria-label="nspanel.json"></textarea>
+                    <textarea id="pages-config" class="pure-input-1 pages-editor" spellcheck="false" autocomplete="off" aria-label="nspanel.json"></textarea>
                 </div>
 
                 <div class="pure-control-group">
-                    <pre class="nspanel-result"></pre>
+                    <pre class="pages-result"></pre>
                 </div>
             </fieldset>
 
@@ -70,10 +70,10 @@
                     </span>
                 </div>
 
-                <div class="nspanel-palette"></div>
-                <div class="nspanel-workspace">
-                    <div class="nspanel-preview-area"></div>
-                    <div class="nspanel-form"></div>
+                <div class="pages-palette"></div>
+                <div class="pages-workspace">
+                    <div class="pages-preview-area"></div>
+                    <div class="pages-form"></div>
                 </div>
             </fieldset>
 

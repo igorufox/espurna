@@ -67,15 +67,12 @@ uint32_t headEnd() {
     return espurna_rbl_round(ESPURNA_RBL_HEAD_AT + ::espurna::core::chip::sketch_size());
 }
 
-// from the heap for one upload (636 bytes held for good before, 11-18 memory pass)
-std::unique_ptr<rbl::Writer> current;
-
 } // namespace
 
 // the one image this chip takes over the network: the RBL (one app partition, nothing for a plain app image to go to).
 // The common part (ota_rbl.h) writes it; here only where it goes and what this chip's bootloader installs
 const char* begin(const uint8_t* data, size_t len, size_t) {
-    current.reset();
+    rbl::upload::abort();
 
     espurna_rbl_t header {};
     const char* error = rbl::header(data, len, header);
@@ -85,24 +82,20 @@ const char* begin(const uint8_t* data, size_t len, size_t) {
             : PSTR("ERROR: Not an RBL of this chip (espurna-esp8266.ota, or esp8266_rbl.py --flash of an image)");
     }
 
-    // a chip of 2 MB and more: the top of the flash (out of the modules' area), named in the header - before the check,
-    // which tells whether the image and the package fit where the package goes (21.11: an image of the flash of 585 KB
-    // was refused by the 1 MB place of its package). Naming the place signs the header again
-    const uint32_t top_at = espurna_rbl_top_at(spi_flash_get_chip_size(), header.data_size);
-    if (top_at) {
-        espurna_rbl_set_package_at(&header, top_at);
-    }
+    // the one place rule (rbl::place()), before the check, which tells whether the image and the package fit where the
+    // package goes (21.11: an image of the flash of 585 KB needs the top zone of a 4 MB chip). The gaps of this chip:
+    // above the running head, under the header sector or under the data of the modules; the top zone of 2 MB and more
+    const uint32_t data_at = modulesDataBottom();
+    rbl::Gap gaps[2] {
+        {headEnd(), (data_at && (data_at < ESPURNA_RBL_HEADER_AT)) ? data_at : ESPURNA_RBL_HEADER_AT},
+        {0, 0},
+    };
+    espurna_rbl_top_zone(spi_flash_get_chip_size(), &gaps[1].bottom, &gaps[1].top);
 
-    // 1 MB: the package right under the header sector is where the Apply keeps the data of the modules
-    // (modulesData(): the tile pages of the screen module) - written over it the data is gone. The bootloader reads a
-    // package named in the header as the one of the top zone (2 MB and more), so on 1 MB it can not go under the data
-    // instead: refused (2 MB and more: the data is in Area::upper, the package in the top zone, nothing is lost)
-    if (!top_at) {
-        const uint32_t data_at = modulesDataBottom();
-        if (data_at && (data_at < ESPURNA_RBL_HEADER_AT)) {
-            return PSTR("ERROR: The package goes where the modules keep their data (the screen module's pages): "
-                "MODULES.REMOVE that module, update, then install it and upload its data again");
-        }
+    uint32_t limit { 0 };
+    error = rbl::place(header, gaps, std::size(gaps), limit);
+    if (error) {
+        return error;
     }
 
     error = espurna_rbl_check(&header);
@@ -115,50 +108,25 @@ const char* begin(const uint8_t* data, size_t len, size_t) {
         return PSTR("ERROR: The package does not fit above the running head");
     }
 
-    current.reset(new (std::nothrow) rbl::Writer());
-    if (!current) {
-        return PSTR("ERROR: Not enough memory");
-    }
-
     const rbl::Place place {
         .header = ESPURNA_RBL_HEADER_AT,
         .package = package_at,
-        .limit = top_at ? (top_at + espurna_rbl_round(header.data_size)) : ESPURNA_RBL_HEADER_AT,
+        .limit = limit,
     };
 
-    error = current->begin(Flash, header, place);
-    if (error) {
-        current.reset();
-    }
-
-    return error;
+    return rbl::upload::begin(Flash, header, place);
 }
 
 const char* write(const uint8_t* data, size_t len) {
-    if (!current) {
-        return PSTR("ERROR: No upload");
-    }
-
-    const auto* error = current->write(data, len);
-    if (error) {
-        current.reset();
-    }
-
-    return error;
+    return rbl::upload::write(data, len);
 }
 
 const char* end() {
-    if (!current) {
-        return PSTR("ERROR: Incomplete image");
-    }
-
-    const auto* error = current->end();
-    current.reset();
-    return error;
+    return rbl::upload::end();
 }
 
 void abort() {
-    current.reset();
+    rbl::upload::abort();
 }
 
 } // namespace driver

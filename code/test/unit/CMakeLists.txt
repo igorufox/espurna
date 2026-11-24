@@ -138,6 +138,12 @@ function(build_tests)
     endforeach()
 endfunction()
 
+# the vsnprintf of the ESP8266 (arch/esp8266/stdio_esp8266.c) against the host's C library, every case
+add_executable(test-stdio_esp8266 src/stdio_esp8266/compare.c)
+target_include_directories(test-stdio_esp8266 PRIVATE src/stdio_esp8266/host)
+target_compile_options(test-stdio_esp8266 PRIVATE -O1 -ffp-contract=off)
+add_test(NAME stdio_esp8266 COMMAND test-stdio_esp8266)
+
 build_tests(
     datetime
     embedis

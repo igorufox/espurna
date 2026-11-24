@@ -414,9 +414,12 @@ void loop() {
         }
     }
 
+    // no end event in time: everything the commissioning changed goes back (the loop watchdog's 30 s too)
     if (!commissioning && quiet_since && ((espurna::time::ms() - quiet_since) > QuietMaxMs)) {
         DEBUG_MSG_P(PSTR("[MATTER] No end of commissioning in %u s, resuming\n"), QuietMaxMs / 1000);
         quiet(false);
+        commissioning_active = false;
+        loop_watchdog(false);
     }
 
     log::print();
@@ -1181,13 +1184,24 @@ bool matterWifiFromController(const char* ssid, size_t ssid_length, const char* 
     espurna::string pass_copy(pass ? pass : "", pass ? pass_length : 0);
     const auto bytes = ssid_copy.length() + pass_copy.length();
     return espurna::system::runInLoop([ssid_copy, pass_copy]() {
-        // the network ESPurna is on already (the stack asks again after every disconnection): nothing to change
-        if ((getSetting({"ssid", 0}) == ssid_copy) && (getSetting({"pass", 0}) == pass_copy)) {
-            return;
+        // a network of the board's list already (the stack asks again after every disconnection): nothing to change.
+        // Else the first free entry: the owner's networks stay as they are (ssid0 of the WebUI is not overwritten),
+        // the last entry when the list is full
+        size_t free = WIFI_MAX_NETWORKS - 1;
+        for (size_t index = 0; index < WIFI_MAX_NETWORKS; ++index) {
+            const auto known = getSetting({"ssid", index});
+            if (!known.length()) {
+                free = index;
+                break;
+            }
+            if ((known == ssid_copy) && (getSetting({"pass", index}) == pass_copy)) {
+                return;
+            }
         }
-        DEBUG_MSG_P(PSTR("[MATTER] Network from the controller: %s\n"), ssid_copy.c_str());
-        setSetting({"ssid", 0}, ssid_copy);
-        setSetting({"pass", 0}, pass_copy);
+        DEBUG_MSG_P(PSTR("[MATTER] Network from the controller: %s (entry %u)\n"), ssid_copy.c_str(),
+            static_cast<unsigned>(free));
+        setSetting({"ssid", free}, ssid_copy);
+        setSetting({"pass", free}, pass_copy);
         espurnaReload();
     }, bytes);
 }

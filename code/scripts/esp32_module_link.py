@@ -40,7 +40,7 @@ DROM_A = 0x50000000
 IROM_A = 0x70000000
 IRAM_A = 0x40000000
 
-# esp32_4mb.csv: app0 (ota_0)
+# esp32_4mb.csv: app0 (the factory app)
 APP_OFFSET = 0x10000
 APP_SIZE = 0x3A0000
 # the MMU page: the module area starts on one (modules_esp32.cpp findArea())

@@ -494,8 +494,9 @@ def check_shared_versions(paths):
                 for name in parser.options(section):
                     value = parser.get(section, name)
                     if shared:
-                        # lwip, mbedtls: the version the platform / SDK brings built in (MAJOR.MINOR.REVISION)
-                        bare = name.startswith(("lwip", "mbedtls")) and re.match(r"^\d+\.\d+\.\d+$", value)
+                        # lwip, mbedtls: the version the platform / SDK brings built in; esptool_version: the pip
+                        # version of the esptool folder (MAJOR.MINOR.REVISION)
+                        bare = name.startswith(("lwip", "mbedtls", "esptool_version")) and re.match(r"^\d+\.\d+\.\d+$", value)
                         if section in ("libraries", "platforms") and not (pinned(value) or GIT_TAG_RE.match(value)
                                                                           or bare):
                             problems.append(f"{file}: [{section}] {name} = {value}: not one exact version")

@@ -615,6 +615,9 @@ namespace internal {
 
 // the round: the networks in their order, ConnectionRetries attempts each
 size_t network { 0 };
+// the network the next round begins with: after one that associates without an address, the one after it (a round
+// from network 0 again would never get past it)
+size_t resume { 0 };
 int retry { 0 };
 bool round { false };
 
@@ -1031,6 +1034,7 @@ bool no_address() {
         internal::fast = false;
         last_ap::forget(internal::network);
     }
+    internal::resume = internal::network + 1;
 
     DEBUG_MSG_P(PSTR("[WIFI] Associated without an address (no DHCP answer), the fallback AP for now\n"));
     stop();
@@ -1052,19 +1056,31 @@ void start() {
 
     // Somebody uses the fallback AP: a round now takes the one radio away from it (the attempts move and restart the
     // AP, its clients drop - 214 2026-11-23: the AP was up for seconds between the attempts, nobody could stay on it).
-    // The round waits until the AP is free
+    // The round waits until the AP is free, at most ApClientsWaitMs (owner 2026-11-24: 10 minutes): a phone left on the
+    // AP does not keep the board off its network for good, one round goes then
+    static constexpr uint32_t ApClientsWaitMs { 10 * 60 * 1000 };
+    static uint32_t ap_clients_since { 0 };
     if (ap::stations()) {
-        DEBUG_MSG_P(PSTR("[WIFI] The AP has clients, the station waits\n"));
-        schedule(build::ReconnectionInterval, start);
-        return;
+        const auto now = time::ms();
+        if (!ap_clients_since) {
+            ap_clients_since = now ? now : 1;
+        }
+        if ((now - ap_clients_since) < ApClientsWaitMs) {
+            DEBUG_MSG_P(PSTR("[WIFI] The AP has clients, the station waits\n"));
+            schedule(build::ReconnectionInterval, start);
+            return;
+        }
+        DEBUG_MSG_P(PSTR("[WIFI] The AP has had clients for %u min, one round anyway\n"), ApClientsWaitMs / 60000);
     }
+    ap_clients_since = 0;
 
     // a round started by hand (WIFI.RESET, settings) while the timer holds another start or attempt: that one would
     // begin the round again a few seconds later and cut the attempt in progress (20.11: wifi.reset right after the
     // disconnect of the station, which schedules a start in WIFI_CONNECT_INTERVAL)
     internal::timer.stop();
 
-    internal::network = 0;
+    internal::network = (internal::resume < countNetworks()) ? internal::resume : 0;
+    internal::resume = 0;
     internal::retry = 0;
     internal::assoc_retry = 0;
     internal::round = true;

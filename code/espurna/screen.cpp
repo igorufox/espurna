@@ -4,7 +4,7 @@ SCREEN MODULE
 
 What every screen of a board has in common (screen.h): the drawing in the fonts and icons of the module, the pages of
 lines, the Matter QR page, blanking, the keys and the WebUI mirror. The panels are the modules that need this one
-(oled, lcd, nspanel); one panel at a time.
+(oled, lcd, nextion); one panel at a time.
 
 Settings (one set for every panel):
 
@@ -25,15 +25,15 @@ The oled module had the lines as oledLbl / oledSrc / oledFont / oledPage / oledO
 become these once (the first boot with the screen module).
 
 The QR page: while the pairing window of the matter module is open (MATTER.WINDOW, the MATTER panel, a controller
-asking, the nspanel tile "matter-pair": screenMatterPair()) the screen shows the QR code of the pairing payload and the
-manual code over whatever it shows, a blanked screen wakes up for it; a key (or a touch of the NSPanel) takes it away
+asking, the tile "matter-pair": screenMatterPair()) the screen shows the QR code of the pairing payload and the
+manual code over whatever it shows, a blanked screen wakes up for it; a key (or a touch of the Nextion) takes it away
 until the next window. The matter module is reached through the head (matterWindowOpen(), matterPairingCodes()),
 without it there is no window and no page. `SCREEN.QR` shows the Matter code for a minute whatever the window,
 `SCREEN.QR <text>` a QR code of the text, `SCREEN.QR off` takes it away. The codes carry the setup passcode: drawn on
 the screen and the WebUI mirror (the owner's screens, as the MATTER panel), never kept, printed or logged.
 
 The WebUI mirror (the SCREEN panel, src/screen.mjs): what is drawn as a list of drawing commands, the browser draws them
-again (its fonts, the MDI font of the icons); an own-pages panel (the NSPanel) has its mirror in the NSPANEL panel.
+again (its fonts, the MDI font of the icons); an own-pages panel (the Nextion) has its mirror in the NEXTION panel.
 
 */
 
@@ -670,7 +670,37 @@ size_t rows() {
     return std::max<size_t>(1, static_cast<size_t>(state.panel->height()) / line_pitch());
 }
 
+// the whole screen drawn for the WebUI mirror alone: what the panel shows is not what this pass computes, the caches of
+// what was drawn stay the panel's (else a value that changed meanwhile never reaches the panel)
+struct MirrorPassCaches {
+    MirrorPassCaches() :
+        _keep(state.mirror_only)
+    {
+        if (_keep) {
+            for (size_t row = 0; row < Lines; ++row) {
+                _rows[row] = state.rows[row];
+            }
+            _drawn = state.drawn;
+        }
+    }
+
+    ~MirrorPassCaches() {
+        if (_keep) {
+            for (size_t row = 0; row < Lines; ++row) {
+                state.rows[row] = std::move(_rows[row]);
+            }
+            state.drawn = std::move(_drawn);
+        }
+    }
+
+private:
+    bool _keep;
+    espurna::string _rows[Lines];
+    espurna::string _drawn;
+};
+
 void lines_draw(bool full) {
+    const MirrorPassCaches caches;
     size_t used[Lines];
     const auto count = used_lines(used);
     const auto per_page = rows();
@@ -742,17 +772,23 @@ void lines_draw(bool full) {
             continue;
         }
         state.rows[row] = std::move(shown);
-        fill(0, y, width, pitch, ScreenBlack);
-        MIRROR("F 0 %d %d %d 0", y, width, pitch);
+
+        // the texts with their black background, side by side over the whole row: nothing is cleared first (a row
+        // filled black and drawn again flashes on a SPI panel, up to 4 times a second with a changing value)
+        if (margin) {
+            fill(0, y, margin, pitch, ScreenBlack);
+            fill(width - margin, y, margin, pitch, ScreenBlack);
+            MIRROR("F 0 %d %d %d 0", y, margin, pitch);
+            MIRROR("F %d %d %d %d 0", width - margin, y, margin, pitch);
+        }
 
         if (line.label.length()) {
-            text(margin, y, width - 2 * margin, pitch, font, ScreenWhite, ScreenNoBack, ScreenAlign::Left,
-                line.label.c_str());
-            const int label = text_width(font_of(font), line.label.c_str()) + 4;
-            text(margin + label, y, width - 2 * margin - label, pitch, font, ScreenWhite, ScreenNoBack,
+            const int label = std::min(width - 2 * margin, text_width(font_of(font), line.label.c_str()) + 4);
+            text(margin, y, label, pitch, font, ScreenWhite, ScreenBlack, ScreenAlign::Left, line.label.c_str());
+            text(margin + label, y, width - 2 * margin - label, pitch, font, ScreenWhite, ScreenBlack,
                 ScreenAlign::Right, values[row].c_str());
         } else {
-            text(margin, y, width - 2 * margin, pitch, font, ScreenWhite, ScreenNoBack, ScreenAlign::Left,
+            text(margin, y, width - 2 * margin, pitch, font, ScreenWhite, ScreenBlack, ScreenAlign::Left,
                 values[row].c_str());
         }
     }
@@ -774,11 +810,13 @@ void lines_draw(bool full) {
         for (size_t page = 0; page < pages; ++page) {
             const int x = width - 1 - static_cast<int>((pages - 1 - page) * 3);
             const int y = height - 1;
+            // the current page's dot is two pixels high, the others one: the upper pixel of the page shown before
+            // goes off
+            const bool current = (page == state.page);
             fill(x, y, 1, 1, ScreenWhite);
-            if (page == state.page) {
-                fill(x, y - 1, 1, 1, ScreenWhite);
-            }
-            MIRROR("F %d %d 1 %d 65535", x, (page == state.page) ? y - 1 : y, (page == state.page) ? 2 : 1);
+            fill(x, y - 1, 1, 1, current ? ScreenWhite : ScreenBlack);
+            MIRROR("F %d %d 1 1 %d", x, y - 1, current ? 65535 : 0);
+            MIRROR("F %d %d 1 1 65535", x, y);
         }
     }
 }
@@ -911,9 +949,12 @@ bool qr_draw(const char* payload, const char* const* lines, size_t count) {
     std::memset(buffer, 0, sizeof(buffer));
 
     if (wide) {
+        // the lines that fit the height, the last ones (the code; its title goes first on a 32 px screen)
+        const size_t fit = std::max<size_t>(1, static_cast<size_t>(height / line));
+        const size_t skip = (count > fit) ? (count - fit) : 0;
         const int x = side + 4;
-        for (size_t index = 0; index < count; ++index) {
-            text(x, static_cast<int>(index) * line, width - x, line, font, ScreenBlack, ScreenNoBack,
+        for (size_t index = skip; index < count; ++index) {
+            text(x, static_cast<int>(index - skip) * line, width - x, line, font, ScreenBlack, ScreenNoBack,
                 ScreenAlign::Left, lines[index]);
         }
     } else {
@@ -1025,9 +1066,11 @@ void power(bool on) {
     state.on = on;
     state.dimmed = false;
     if (on) {
+        // the panel kept what it showed (OLED and LCD keep their RAM while off): what changed meanwhile is drawn, by
+        // what the screen knows it drew (the rows, the content's own), not the whole screen again
         if (was_off) {
             state.panel->power(true);
-            state.full = true;
+            state.dirty = true;
         }
         state.panel->brightness(state.config.brightness);
     } else {
@@ -1268,7 +1311,36 @@ void configure() {
         state.config.dim = 0;
     }
 
+    std::vector<espurna::string> topics_before;
+    for (const auto& line : state.lines) {
+        if (line.mqtt_topic.length()) {
+            topics_before.push_back(line.mqtt_topic);
+        }
+    }
+
     read_lines();
+
+    // the mqtt:<topic> lines that came and went: subscribed and unsubscribed now (the connect event subscribes all of
+    // them only at the next connection)
+    if (mqttConnected()) {
+        for (const auto& topic : topics_before) {
+            const bool kept = std::any_of(std::begin(state.lines), std::end(state.lines),
+                [&](const Line& line) {
+                    return line.mqtt_topic == topic;
+                });
+            if (!kept) {
+                mqttUnsubscribeRaw(topic.c_str());
+            }
+        }
+
+        for (const auto& line : state.lines) {
+            if (line.mqtt_topic.length()
+                && (std::find(topics_before.begin(), topics_before.end(), line.mqtt_topic) == topics_before.end()))
+            {
+                mqttSubscribeRaw(line.mqtt_topic.c_str());
+            }
+        }
+    }
 
     espurna::string after;
     for (const auto& line : state.lines) {
@@ -1364,7 +1436,7 @@ PROGMEM_STRING(Screen, "SCREEN");
 
 void terminal_screen(::terminal::CommandContext&& ctx) {
     if (!state.panel) {
-        terminalError(ctx, STRING_VIEW("no panel (the oled, lcd or nspanel module, its settings)"));
+        terminalError(ctx, STRING_VIEW("no panel (the oled, lcd or nextion module, its settings)"));
         return;
     }
 
@@ -1582,6 +1654,24 @@ void mirror_loop() {
 } // namespace
 } // namespace screen
 } // namespace espurna
+
+bool screenLocalTime(tm& out) {
+    return espurna::screen::local_time(out);
+}
+
+uint16_t screenFirstCode(const char* text) {
+    uint16_t out { 0 };
+    if (text) {
+        bool first = true;
+        espurna::screen::each_code(text, [&](uint16_t code) {
+            if (first) {
+                out = code;
+                first = false;
+            }
+        });
+    }
+    return out;
+}
 
 // -----------------------------------------------------------------------------
 // The panels' default

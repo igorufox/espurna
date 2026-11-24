@@ -55,12 +55,15 @@ void loop() {
     server.handle();
 }
 
-void start() {
+// the image passed the target's check: it is written where the modules are, they do not start again. Not before:
+// a refused or foreign image leaves the modules as they are
+void accepted() {
 #if MODULES_SUPPORT
-    // the image is written where the modules are: they do not start again
     modulesForget();
 #endif
+}
 
+void start() {
     // Disabling EEPROM rotation to prevent writing to EEPROM after the upgrade
     // espota takes the whole image inside one loop(): force the backup right now instead of waiting for the next loop()
     eepromRotate(false);
@@ -178,6 +181,7 @@ void setup() {
     espurnaRegisterReload(configure);
 
     server.onStart(start);
+    server.onAccepted(accepted);
     server.onEnd(end);
     server.onError(error);
     server.onProgress(progress);

@@ -11,6 +11,7 @@ priority 1, its task watchdog once enableLoopWDT() turns it on
 
 #include <chip_sdk.h>
 #include <core_arduino_chip.h>
+#include <rbl_esp32.h>
 
 #include <driver/gpio.h>
 #include <driver/uart.h>
@@ -213,9 +214,6 @@ uart_stop_bits_t stop_bits(uint16_t config) {
 // -----------------------------------------------------------------------------
 // OTA
 // -----------------------------------------------------------------------------
-
-esp_ota_handle_t ota_handle { 0 };
-const esp_partition_t* ota_partition { nullptr };
 
 // -----------------------------------------------------------------------------
 // Wi-Fi
@@ -705,9 +703,11 @@ uint32_t sketch_size() {
     return data.image_len;
 }
 
+// one app partition (esp32_4mb.csv): what a new head has between the end of this one and the RBL header sector, the same
+// rule as the ESP8266 of 1 MB
 uint32_t sketch_space() {
-    const auto* next = esp_ota_get_next_update_partition(nullptr);
-    return next ? next->size : 0;
+    const uint32_t end = espurna_rbl_round(ESPURNA_RBL_HEAD_AT + sketch_size());
+    return (ESPURNA_RBL_HEADER_AT > end) ? (ESPURNA_RBL_HEADER_AT - end) : 0;
 }
 
 uint32_t cycle_count() {
@@ -757,70 +757,6 @@ const char* chip_model() {
 
 void restart() {
     esp_restart();
-}
-
-const char* ota_begin(size_t size) {
-    ota_abort();
-
-    ota_partition = esp_ota_get_next_update_partition(nullptr);
-    if (!ota_partition) {
-        return "No OTA partition";
-    }
-
-    if ((size != chip::OtaSizeUnknown) && (size > ota_partition->size)) {
-        ota_partition = nullptr;
-        return "Not enough space";
-    }
-
-    const auto image = (size == chip::OtaSizeUnknown) ? OTA_SIZE_UNKNOWN : size;
-    if (esp_ota_begin(ota_partition, image, &ota_handle) != ESP_OK) {
-        ota_partition = nullptr;
-        ota_handle = 0;
-        return "Flash Erase Failed";
-    }
-
-    return nullptr;
-}
-
-const char* ota_write(const uint8_t* data, size_t size) {
-    if (!ota_handle) {
-        return "Not running";
-    }
-
-    const auto err = esp_ota_write(ota_handle, data, size);
-    if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
-        return "Wrong Magic Byte";
-    }
-
-    return (err == ESP_OK) ? nullptr : "Flash Write Failed";
-}
-
-const char* ota_end() {
-    if (!ota_handle) {
-        return "Not running";
-    }
-
-    const auto handle = ota_handle;
-    ota_handle = 0;
-
-    if (esp_ota_end(handle) != ESP_OK) {
-        ota_partition = nullptr;
-        return "Could Not Activate The Firmware";
-    }
-
-    const auto err = esp_ota_set_boot_partition(ota_partition);
-    ota_partition = nullptr;
-
-    return (err == ESP_OK) ? nullptr : "Could Not Activate The Firmware";
-}
-
-void ota_abort() {
-    if (ota_handle) {
-        esp_ota_abort(ota_handle);
-        ota_handle = 0;
-    }
-
-    ota_partition = nullptr;
 }
 
 bool wifi_mode(wifi_mode_t mode) {

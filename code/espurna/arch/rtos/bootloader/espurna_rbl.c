@@ -200,7 +200,7 @@ static uint32_t chunk_size(uint32_t at) {
 }
 
 static uint32_t chunk_next(uint32_t at) {
-    return at + ((2u + chunk_size(at) + 3u) & ~3u);
+    return at + espurna_rbl_chunk_span(chunk_size(at));
 }
 
 /* --- the output: one sector in RAM ----------------------------------------------------------------------------- */
@@ -714,17 +714,13 @@ static bool package_crc_ok(const espurna_rbl_t* rbl) {
     return crc == rbl->data_crc;
 }
 
-/* the bottom of the zone: above both heads; a chip with a top zone (ESP8266 of 2 MB and more) - that zone, the package
-   lies at its top */
+/* the bottom of the zone, the same on every chip: above both heads and inside the package's gap (named by the head in
+   the header, libs/rbl_layout.h): what lies under the gap (the modules, their data) is never written */
 static uint32_t zone_bottom(const espurna_rbl_t* rbl, uint32_t old_size) {
-#ifdef ESPURNA_RBL_TOP_ZONE
-    if (memcmp(rbl->sn, ESPURNA_RBL_AT_TAG, 4) == 0) {
-        return espurna_rbl_package_at(rbl) + espurna_rbl_round(rbl->data_size) - ESPURNA_RBL_TOP_ZONE;
-    }
-#endif
-
     const uint32_t larger = (old_size > rbl->raw_size) ? old_size : rbl->raw_size;
-    return round_up(ESPURNA_RBL_HEAD_AT + larger);
+    const uint32_t heads = round_up(ESPURNA_RBL_HEAD_AT + larger);
+    const uint32_t gap = espurna_rbl_gap_bottom(rbl);
+    return (gap > heads) ? gap : heads;
 }
 
 static uint32_t zone_top(const espurna_rbl_t* rbl) {
@@ -791,6 +787,12 @@ static bool backup_fits(const espurna_rbl_t* rbl, uint32_t old_size, uint32_t* o
     const uint32_t old_sectors = sectors_of(old_size);
     const uint32_t new_sectors = sectors_of(rbl->raw_size);
     const uint32_t count = (old_sectors > new_sectors) ? old_sectors : new_sectors;
+
+    /* the bit tables and the size tables of the swap hold ESPURNA_RBL_SECTORS_MAX sectors (the new head is checked
+     * against it with the header): an old head larger than that is not kept, the new one goes on without a rollback */
+    if (old_sectors > ESPURNA_RBL_SECTORS_MAX) {
+        return false;
+    }
 
     uint32_t out = zone_bottom(rbl, old_size);
     uint32_t package = espurna_rbl_package_at(rbl);
@@ -1083,18 +1085,27 @@ static void rbl_step(void) {
         RBL_PRINTF("ESPURNA RBL: the new head did not confirm itself in %u starts, the old head back\n",
             ESPURNA_RBL_STARTS);
         RBL_FAST();
-        bool ok = rolling || backup_ok(&record);
-        if (ok && !rolling) {
+        /* the backup is checked once, before the first write. A rollback cut half way (the mark is set) goes on from
+         * the backup at the next start, whatever the head holds by then */
+        const bool backup = rolling || backup_ok(&record);
+        if (backup && !rolling) {
             word_put(ESPURNA_RBL_ROLLBACK_AT, 0);
         }
-        ok = ok && rollback(&record);
+        const bool ok = backup && rollback(&record);
         RBL_SLOW();
 
-        if (ok || !rolling) {
+        /* the header goes only when nothing is left to do: the old head is back, or the backup was broken before
+         * anything of the head was written (the new head stays). A rollback that failed half way keeps the header
+         * and starts again: the half written head is never run */
+        if (ok || !backup) {
             header_erase();
         }
         RBL_PRINTF(ok ? "ESPURNA RBL: the old head is back (read back)\n"
+            : backup ? "ESPURNA RBL: the rollback failed, again after a reset\n"
             : "ESPURNA RBL: the backup is broken, the new head stays\n");
+        if (backup && !ok) {
+            RBL_RESET();
+        }
         return;
     }
 

@@ -2,18 +2,20 @@ name: Firmware Build
 
 on:
   push:
-    branches: [unify, rtos]
-    tags: ['esp32-*']
+    branches: [rtos]
+    tags: ['rtos-*']
   pull_request:
-    branches: [unify, rtos]
+    branches: [rtos]
+  # One line, the rtos branch (owner 2026-11-24: the unify branch is not needed): releases tagged rtos-*, the lists on
+  # Pages (firmware.json, firmware-preview.json) of those only - the esp32-* releases of the old line are never offered.
   # Release channels: every build above becomes a PRE-release ("preview", not tested on hardware). A stable release
   # is only made by hand: Actions -> Firmware Build -> Run workflow, `promote` = the tag of a preview, `bench` = what was
-  # tested on hardware. The stable release gets the files of that preview (tag esp32-stable-<the preview's tag>) and
+  # tested on hardware. The stable release gets the files of that preview (tag rtos-stable-<the preview's tag>) and
   # becomes Latest. Without `promote` a manual run is a normal build (preview)
   workflow_dispatch:
     inputs:
       promote:
-        description: 'Promote: tag of the preview release to make stable (e.g. esp32-261109-4846d7f). Empty = a normal build'
+        description: 'Promote: tag of the preview release to make stable (e.g. rtos-261124-4846d7f). Empty = a normal build'
         required: false
         default: ''
         type: string
@@ -169,12 +171,13 @@ jobs:
     - name: esptool of the ESP8266 build
       if: matrix.arch == 'esp8266'
       run: |
-        # [platforms] esptool of libraries.ini: the esptool 5.4.0 pioarduino puts into <core>/tools (one esptool for
+        # [platforms] esptool of libraries.ini: the esptool of esptool_version that pioarduino puts into <core>/tools (one esptool for
         # both chips, owner 2026-11-09); on its own runner the ESP8266 job makes that folder itself
         dir=~/.platformio/tools/tool-esptoolpy
+        version=$(python -c "import configparser; c = configparser.ConfigParser(interpolation=None); c.read('code/libraries.ini'); print(c['platforms']['esptool_version'])")
         if [ ! -f "$dir/package.json" ]; then
-          python -m pip install --no-deps --target "$dir" 'esptool==5.4.0'
-          echo '{"name": "tool-esptoolpy", "version": "5.4.0"}' > "$dir/package.json"
+          python -m pip install --no-deps --target "$dir" "esptool==${version}"
+          echo "{\"name\": \"tool-esptoolpy\", \"version\": \"${version}\"}" > "$dir/package.json"
         fi
     - name: Build
       working-directory: code
@@ -189,6 +192,22 @@ jobs:
         # pio libs sometimes use raw hash instead of version, avoid useless warnings
         git config --global advice.detachedHead false
         pio run -c ${{ matrix.config }} -e ${{ matrix.env }}
+    # the host tests that need what this build made: the bootloader step's swap and rollback with power cuts on the
+    # head just built (code/test/unit/src/rbl_swap), the SDK's Legendre symbol against mbedTLS (sae_legendre), the
+    # lx106 code of the compiler: call0 ABI, no entry / retw (gcc14_esp8266/probe.c)
+    - name: ESP8266 host checks
+      if: matrix.arch == 'esp8266'
+      run: |
+        sh code/test/unit/src/rbl_swap/run.sh "${PWD}/code/.pio/build_esp8266/${{ matrix.env }}/firmware.bin" 7 | tail -3
+        (cd code/test/unit/src/sae_legendre && sh run.sh ~/.platformio/packages/framework-esp8266-rtos-sdk)
+        tools=~/.platformio/tools/toolchain-xtensa-esp-elf
+        "${tools}/bin/xtensa-esp-elf-gcc" -mdynconfig="${tools}/lib/xtensa_esp8266.so" -O2 -c \
+          code/test/unit/src/gcc14_esp8266/probe.c -o probe.o
+        "${tools}/bin/xtensa-esp-elf-objdump" -d probe.o > probe.txt
+        if grep -E '\s(entry|retw)(\.n)?(\s|$)' probe.txt; then
+          echo "::error::the lx106 code has windowed calls (entry / retw)"
+          exit 1
+        fi
     - name: Collect binaries
       run: |
         env=${{ matrix.env }}
@@ -204,8 +223,8 @@ jobs:
           ;;
         beken)
           build=code/.pio/build_beken/${env}
-          # the two initial images of the head, one per bootloader (Tuya, Quectel): first flash over UART1 with
-          # ltchiptool, and OTA from the WebUI
+          # the two initial images of the head, one per bootloader (Tuya, Quectel): first flash over UART1, and OTA from
+          # the WebUI
           cp ${build}/${name}-tuya.uf2 ${build}/${name}-quectel.uf2 dist/
           # the install image: both heads and every module package (the Apply of the MODULES panel)
           cp ${build}/${name}.ota dist/
@@ -231,7 +250,7 @@ jobs:
       run: |
         python code/scripts/ci_budget.py --arch ${{ matrix.arch }} --name ${{ matrix.name }} dist/espurna-${{ matrix.name }}.elf
 
-  # every push to unify (or esp32-* tag, or manual run without `promote`) becomes a single PRE-release
+  # every push to rtos (or rtos-* tag, or manual run without `promote`) becomes a single PRE-release
   # ("preview") with the images of all boards; boards offer it only from the preview list (pages job)
   release:
     needs: [ini-lint, host-tests, webui-tests, build]
@@ -248,12 +267,15 @@ jobs:
     - name: Release variables
       id: release
       run: |
-        if [[ "${GITHUB_REF}" == refs/tags/esp32-* ]]; then
+        # the one line: rtos (its tags rtos-*)
+        line=rtos
+        if [[ "${GITHUB_REF}" == refs/tags/rtos-* ]]; then
           tag="${GITHUB_REF_NAME}"
         else
-          tag="esp32-$(date +'%y%m%d')-${GITHUB_SHA::7}"
+          tag="${line}-$(date +'%y%m%d')-${GITHUB_SHA::7}"
         fi
         echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+        echo "line=${line}" >> "$GITHUB_OUTPUT"
         ls -l dist
     - uses: softprops/action-gh-release@v3
       with:
@@ -265,7 +287,7 @@ jobs:
 
           One head image per chip, the board is picked after flashing: WebUI, ADMIN, *Device Template* (Tasmota templates, OpenBeken devices and the boards of this firmware) or *Tasmota Profile Import*. The features are modules: tick them in the WebUI, *MODULES*, and *Apply* (the board writes the ticked ones anew from the `.ota` of the same release, see `docs/modules.md`).
 
-          ESP8266, core 3.1.2 + SDK 3.0.5, the 1 MB flash layout on every chip size:
+          ESP8266 on ESP8266_RTOS_SDK 3.4 (FreeRTOS 11), the 1 MB flash layout on every chip size:
           - `espurna-esp8266.bin` - the head: serial flash at 0x0 or OTA (the WebUI takes the compressed copy from the release list by itself)
           - `espurna-esp8266.ota` - the install image: the head and every module (sensors, scheduler, alexa, mdns, mqtt, homeassistant, domoticz, thingspeak, light, rf, captive, the WebUI); not for a serial flash tool
           Boards installed with the 4 MB layout (`espurna-esp8266-4m`) keep their settings elsewhere: back them up and restore them after the update.
@@ -275,7 +297,7 @@ jobs:
           - `espurna-esp32.ota` - the install image: the head and every module (sensors, scheduler, alexa, mdns, mqtt, homeassistant, domoticz, thingspeak, light, rf, matter, screen, oled, lcd, nextion, captive); not for a serial flash tool
 
           Beken BK7231N (see `beken/README.md`): one head, an initial image per bootloader
-          - `espurna-beken-tuya.uf2` - the head, Tuya bootloader (CB2S, CB3S, CBU ...): first flash over UART1 with `ltchiptool`, and OTA from the WebUI
+          - `espurna-beken-tuya.uf2` - the head, Tuya bootloader (CB2S, CB3S, CBU ...): first flash over UART1, and OTA from the WebUI
           - `espurna-beken-quectel.uf2` - the same head, Quectel bootloader (XH-CB2S / BK7231M, 4 MB): first flash over UART1, and OTA from the WebUI
           - `espurna-beken.ota` - the install image: both heads (the board takes the one of its bootloader) and every module (sensors, scheduler, alexa, mdns, mqtt, homeassistant, domoticz, thingspeak, light, rf, matter, captive); not for a serial flash tool
         prerelease: true
@@ -285,23 +307,25 @@ jobs:
           dist/*.bin.gz
           dist/*.uf2
           dist/*.ota
-    # keep only the newest automatic previews (pre-releases tagged esp32-YYMMDD-sha). Never deleted: stable releases
-    # (not pre-release; promoted ones are tagged esp32-stable-*), releases of hand-made esp32-* tags
+    # keep only the newest automatic previews of this line (pre-releases tagged <line>-YYMMDD-sha). Never deleted:
+    # stable releases (not pre-release; promoted ones are tagged <line>-stable-*), releases of hand-made tags, the
+    # previews of the other line
     - name: Prune old previews
       env:
         GH_TOKEN: ${{ github.token }}
         KEEP: 5
+        LINE: ${{ steps.release.outputs.line }}
       run: |
         gh release list --repo "${GITHUB_REPOSITORY}" --limit 200 --json tagName,createdAt,isPrerelease \
             --jq '[.[] | select(.isPrerelease)] | sort_by(.createdAt) | reverse | .[].tagName' \
-          | grep -E '^esp32-[0-9]{6}-[0-9a-f]{7}$' \
+          | grep -E "^${LINE}-[0-9]{6}-[0-9a-f]{7}\$" \
           | tail -n +$((KEEP + 1)) \
           | while read -r tag; do
               echo "deleting ${tag}"
               gh release delete "${tag}" --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes
             done
 
-  # manual run with `promote`: the files of a preview go into a new full release esp32-stable-<preview tag> at the same
+  # manual run with `promote`: the files of a preview go into a new full release rtos-stable-<preview tag> at the same
   # commit, marked Latest, with the `bench` text in its notes. The preview itself stays (and is pruned later as usual)
   promote:
     if: ${{ inputs.promote }}
@@ -317,8 +341,9 @@ jobs:
       run: |
         set -euo pipefail
         repo="${GITHUB_REPOSITORY}"
-        if [[ ! "${PREVIEW}" =~ ^esp32-[0-9A-Za-z._-]+$ ]] || [[ "${PREVIEW}" == esp32-stable-* ]]; then
-          echo "::error::promote: '${PREVIEW}' is not the tag of a preview release (esp32-YYMMDD-sha)"
+        line="${PREVIEW%%-*}"
+        if [[ ! "${PREVIEW}" =~ ^rtos-[0-9A-Za-z._-]+$ ]] || [[ "${PREVIEW}" == "${line}"-stable-* ]]; then
+          echo "::error::promote: '${PREVIEW}' is not the tag of a preview release (rtos-YYMMDD-sha)"
           exit 1
         fi
         if [ -z "${BENCH//[[:space:]]/}" ]; then
@@ -333,7 +358,7 @@ jobs:
           echo "::error::${PREVIEW} is not a preview (pre-release)"
           exit 1
         fi
-        stable="esp32-stable-${PREVIEW#esp32-}"
+        stable="${line}-stable-${PREVIEW#"${line}"-}"
         if gh release view "${stable}" --repo "${repo}" > /dev/null 2>&1; then
           echo "::error::${stable} exists already"
           exit 1
@@ -389,22 +414,26 @@ jobs:
         KEEP: 5
         KEEP_STABLE: 3
       run: |
-        mkdir -p site
-        gh release list --repo "${GITHUB_REPOSITORY}" --limit 200 --exclude-drafts --json tagName,createdAt,isPrerelease \
-            --jq 'sort_by(.createdAt) | reverse | .[] | select(.tagName | startswith("esp32-"))
-                  | "\(.tagName) \(if .isPrerelease then "preview" else "stable" end)"' > site/all.txt
-        cat site/all.txt
-        # lines "<tag> <channel>"
-        {
-          grep ' stable$' site/all.txt | head -n "${KEEP_STABLE}"
-          grep ' preview$' site/all.txt | head -n "${KEEP}"
-        } > site/tags.txt
-        rm site/all.txt
-        while read -r tag channel; do
-          gh release download "${tag}" --repo "${GITHUB_REPOSITORY}" --dir "site/${tag}"
-          gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json tagName,publishedAt,targetCommitish,url \
-            > "site/${tag}/release.json"
-        done < site/tags.txt
+        # the releases of the line (rtos-*), into site/
+        for line in rtos; do
+          folder=site
+          mkdir -p "${folder}"
+          gh release list --repo "${GITHUB_REPOSITORY}" --limit 200 --exclude-drafts --json tagName,createdAt,isPrerelease \
+              --jq 'sort_by(.createdAt) | reverse | .[] | select(.tagName | startswith("'"${line}"'-"))
+                    | "\(.tagName) \(if .isPrerelease then "preview" else "stable" end)"' > "${folder}/all.txt"
+          cat "${folder}/all.txt"
+          # lines "<tag> <channel>"
+          {
+            grep ' stable$' "${folder}/all.txt" | head -n "${KEEP_STABLE}" || true
+            grep ' preview$' "${folder}/all.txt" | head -n "${KEEP}" || true
+          } > "${folder}/tags.txt"
+          rm "${folder}/all.txt"
+          while read -r tag channel; do
+            gh release download "${tag}" --repo "${GITHUB_REPOSITORY}" --dir "${folder}/${tag}"
+            gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json tagName,publishedAt,targetCommitish,url \
+              > "${folder}/${tag}/release.json"
+          done < "${folder}/tags.txt"
+        done
     # A release has one file per image; the board-side copies the WebUI needs are made here, for Pages only:
     # - ESP8266 .bin.gz: OTA; none of the modules file and the full image (no OTA files)
     - name: Pages copies (.bin.gz)
@@ -423,8 +452,6 @@ jobs:
       run: |
         python3 - <<'PY'
         import datetime, hashlib, html, json, os, re
-
-        SITE = "site"
 
         # espurna-<image>.bin / .bin.gz / .uf2 / -initial-<loader>.uf2 (and -ota.bin / -full.bin of the
         # older releases), <image> = the dist name of the build matrix and the ESPURNA_IMAGE of the firmware (WebUI
@@ -485,103 +512,111 @@ jobs:
             "beken": "beken-tuya",
         }
 
-        releases = []
-        # "<tag> <channel>" lines, channel: stable (full release) / preview (pre-release)
-        with open(os.path.join(SITE, "tags.txt")) as f:
-            tags = [line.split() for line in f if line.strip()]
+        # the releases of the line in site/ (the download step)
+        def write_line(SITE):
+            if not os.path.exists(os.path.join(SITE, "tags.txt")):
+                return
 
-        for tag, channel in tags:
-            folder = os.path.join(SITE, tag)
-            with open(os.path.join(folder, "release.json")) as f:
-                info = json.load(f)
-            os.remove(os.path.join(folder, "release.json"))
+            releases = []
+            # "<tag> <channel>" lines, channel: stable (full release) / preview (pre-release)
+            with open(os.path.join(SITE, "tags.txt")) as f:
+                tags = [line.split() for line in f if line.strip()]
 
-            images = {}
-            shared = []
-            for name in sorted(os.listdir(folder)):
-                path = os.path.join(folder, name)
-                for image, kind in classify(name):
-                    entry = {
-                        "name": name,
-                        "kind": kind,
-                        "size": os.path.getsize(path),
-                        "sha256": sha256(path),
-                        "url": f"{tag}/{name}",
-                    }
-                    if image.endswith("-*"):
-                        shared.append((image[:-1], entry))
-                    else:
-                        images.setdefault(image, []).append(entry)
+            for tag, channel in tags:
+                folder = os.path.join(SITE, tag)
+                with open(os.path.join(folder, "release.json")) as f:
+                    info = json.load(f)
+                os.remove(os.path.join(folder, "release.json"))
 
-            for prefix, entry in shared:
-                for image, files in images.items():
-                    if image.startswith(prefix) or (image + "-") == prefix:
-                        files.append(dict(entry))
+                images = {}
+                shared = []
+                for name in sorted(os.listdir(folder)):
+                    path = os.path.join(folder, name)
+                    for image, kind in classify(name):
+                        entry = {
+                            "name": name,
+                            "kind": kind,
+                            "size": os.path.getsize(path),
+                            "sha256": sha256(path),
+                            "url": f"{tag}/{name}",
+                        }
+                        if image.endswith("-*"):
+                            shared.append((image[:-1], entry))
+                        else:
+                            images.setdefault(image, []).append(entry)
 
-            # the images of the older releases a board may still run: their WebUI looks for its own image name, it
-            # gets the files of the chip's head. Not esp8266-4m (its settings are not where the head keeps them, the
-            # board moves them first)
-            for old, new in LEGACY.items():
-                if old not in images and new in images:
-                    images[old] = [dict(entry) for entry in images[new] if entry["kind"] == "ota"]
+                for prefix, entry in shared:
+                    for image, files in images.items():
+                        if image.startswith(prefix) or (image + "-") == prefix:
+                            files.append(dict(entry))
 
-            for files in images.values():
-                files.sort(key=lambda x: (KIND_ORDER.get(x["kind"], 9), x["size"]))
+                # the images of the older releases a board may still run: their WebUI looks for its own image name, it
+                # gets the files of the chip's head. Not esp8266-4m (its settings are not where the head keeps them, the
+                # board moves them first)
+                for old, new in LEGACY.items():
+                    if old not in images and new in images:
+                        images[old] = [dict(entry) for entry in images[new] if entry["kind"] == "ota"]
 
-            commit = info.get("targetCommitish", "")
-            if not re.fullmatch(r"[0-9a-f]{40}", commit):
-                commit = tag.rsplit("-", 1)[-1]
+                for files in images.values():
+                    files.sort(key=lambda x: (KIND_ORDER.get(x["kind"], 9), x["size"]))
 
-            releases.append({
-                "tag": tag,
-                "channel": channel,
-                "date": info.get("publishedAt", ""),
-                "commit": commit,
-                "release": info.get("url", ""),
-                "images": dict(sorted(images.items())),
-            })
+                commit = info.get("targetCommitish", "")
+                if not re.fullmatch(r"[0-9a-f]{40}", commit):
+                    commit = tag.rsplit("-", 1)[-1]
 
-        # newest first (the WebUI's "install the newest" takes the first one)
-        releases.sort(key=lambda release: release["date"], reverse=True)
-        generated = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                releases.append({
+                    "tag": tag,
+                    "channel": channel,
+                    "date": info.get("publishedAt", ""),
+                    "commit": commit,
+                    "release": info.get("url", ""),
+                    "images": dict(sorted(images.items())),
+                })
 
-        def manifest(channels):
-            return {
-                "version": 1,
-                "repository": os.environ["GITHUB_REPOSITORY"],
-                "generated": generated,
-                "channels": channels,
-                "releases": [release for release in releases if release["channel"] in channels],
-            }
+            # newest first (the WebUI's "install the newest" takes the first one)
+            releases.sort(key=lambda release: release["date"], reverse=True)
+            generated = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # the default list of every board: stable only. Previews on demand: webFwUrl = firmware-preview.json
-        stable = manifest(["stable"])
-        preview = manifest(["stable", "preview"])
-        with open(os.path.join(SITE, "firmware.json"), "w") as f:
-            json.dump(stable, f, indent=1)
-        with open(os.path.join(SITE, "firmware-preview.json"), "w") as f:
-            json.dump(preview, f, indent=1)
+            def manifest(channels):
+                return {
+                    "version": 1,
+                    "repository": os.environ["GITHUB_REPOSITORY"],
+                    "generated": generated,
+                    "channels": channels,
+                    "releases": [release for release in releases if release["channel"] in channels],
+                }
 
-        rows = []
-        for release in releases:
-            rows.append(f"<h2>{html.escape(release['tag'])} ({release['channel']})</h2><ul>")
-            for image, files in release["images"].items():
-                links = ", ".join(
-                    f"<a href=\"{html.escape(x['url'])}\">{html.escape(x['name'])}</a> ({x['kind']}, {x['size']} bytes)"
-                    for x in files)
-                rows.append(f"<li><b>{html.escape(image)}</b>: {links}</li>")
-            rows.append("</ul>")
+            # the default list of every board: stable only. Previews on demand: webFwUrl = firmware-preview.json
+            stable = manifest(["stable"])
+            preview = manifest(["stable", "preview"])
+            with open(os.path.join(SITE, "firmware.json"), "w") as f:
+                json.dump(stable, f, indent=1)
+            with open(os.path.join(SITE, "firmware-preview.json"), "w") as f:
+                json.dump(preview, f, indent=1)
 
-        with open(os.path.join(SITE, "index.html"), "w") as f:
-            f.write("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>ESPurna firmware</title></head><body>"
-                    "<h1>ESPurna firmware</h1><p>Copies of the newest releases for the WebUI, ADMIN, OTA, "
-                    "<i>Install from GitHub</i>: <a href=\"firmware.json\">firmware.json</a> (stable, tested on "
-                    "hardware), <a href=\"firmware-preview.json\">firmware-preview.json</a> (stable and preview "
-                    "builds)</p>"
-                    + "".join(rows) + "</body></html>\n")
+            rows = []
+            for release in releases:
+                rows.append(f"<h2>{html.escape(release['tag'])} ({release['channel']})</h2><ul>")
+                for image, files in release["images"].items():
+                    links = ", ".join(
+                        f"<a href=\"{html.escape(x['url'])}\">{html.escape(x['name'])}</a> ({x['kind']}, {x['size']} bytes)"
+                        for x in files)
+                    rows.append(f"<li><b>{html.escape(image)}</b>: {links}</li>")
+                rows.append("</ul>")
 
-        os.remove(os.path.join(SITE, "tags.txt"))
-        print(json.dumps(preview, indent=1))
+            with open(os.path.join(SITE, "index.html"), "w") as f:
+                f.write("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>ESPurna firmware</title></head><body>"
+                        "<h1>ESPurna firmware</h1><p>Copies of the newest releases for the WebUI, ADMIN, OTA, "
+                        "<i>Install from GitHub</i>: <a href=\"firmware.json\">firmware.json</a> (stable, tested on "
+                        "hardware), <a href=\"firmware-preview.json\">firmware-preview.json</a> (stable and preview "
+                        "builds)</p>"
+                        + "".join(rows) + "</body></html>\n")
+
+            os.remove(os.path.join(SITE, "tags.txt"))
+            print(json.dumps(preview, indent=1))
+
+        for folder in ("site",):
+            write_line(folder)
         PY
     # one artifact per attempt: a re-run of this job otherwise finds the github-pages artifact of the failed
     # attempt as well and deploy-pages stops ("Multiple artifacts named github-pages")

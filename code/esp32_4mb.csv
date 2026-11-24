@@ -1,9 +1,8 @@
-# ESP32 4 MB (owner 2026-11-18: no safeboot): one application partition, the head at its start and the modules behind
+# ESP32 4 MB (owner 2026-11-18: no safeboot; 2026-11-24: no otadata, app0 is the factory app): one application partition, the head at its start and the modules behind
 # it; the settings pool in the top sectors of spiffs (arch/esp32/storage_flash_esp32.cpp), Matter's key-value store in
 # the 32 KiB below it (arch/esp32/flashdb), coredump at the end
 # Name,   Type, SubType,  Offset,   Size
 nvs,      data, nvs,      0x9000,   0x5000,
-otadata,  data, ota,      0xE000,   0x2000,
-app0,     app,  ota_0,    0x10000,  0x3A0000,
+app0,     app,  factory,  0x10000,  0x3A0000,
 spiffs,   data, spiffs,   0x3B0000, 0x40000,
 coredump, data, coredump, 0x3F0000, 0x10000,

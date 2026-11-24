@@ -14,6 +14,7 @@ import { listenAppConnected } from './connection.mjs';
 import { variableListeners } from './settings.mjs';
 import { pageReloadIn } from './core.mjs';
 
+// the release list of the rtos line on Pages: its rtos-* releases (the release workflow)
 export const FIRMWARE_URL = 'https://igorufox.github.io/espurna/firmware.json';
 
 /**

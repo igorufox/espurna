@@ -5,6 +5,9 @@
 // over what is there. Touches go back as the display's own events. The design's geometry, pictures and fonts are
 // OHpanel's (Apache-2.0), loaded from its repository at the commit the TFT was built from.
 
+// the icons' font and the colours: the same as the SCREEN panel's mirror (screen.mjs)
+import { MDI_SHIFT, MDI_URL, rgb565 as rgb565Channels } from './screen.mjs';
+
 /** OHpanel commit of the stock TFT bc629e1e (v0.9.2) */
 export const OHPANEL_COMMIT = "ba9361982399414d1612aea85504d9707b329e75";
 
@@ -18,8 +21,6 @@ export const HEIGHT = 320;
 // a finger moving this far is a swipe (the TFT's own test, ohpanel-protocol.md 4.1)
 const SWIPE = 100;
 
-// display code point of an icon -> materialdesignicons-webfont code point (fonts.py MDI_SHIFT)
-const MDI_SHIFT = 0xF0001 - 0xE000;
 
 /**
  * the display's fonts (OHpanel boards/nspanel/nextion/fonts.py): cell height, then the TrueType font for text
@@ -43,7 +44,7 @@ export const FONTS = [
 const FONT_FILES = {
     "nsp-ubuntu": "boards/nspanel/nextion/assets/fonts/Ubuntu-R.ttf",
     "nsp-noto": "boards/nspanel/nextion/assets/fonts/NotoSans-Regular.ttf",
-    "nsp-mdi": "boards/nspanel/nextion/assets/fonts/materialdesignicons-webfont.ttf",
+    "nsp-mdi": MDI_URL,
 };
 
 /**
@@ -51,11 +52,8 @@ const FONT_FILES = {
  * @returns {string}
  */
 export function rgb565(value) {
-    const v = Number(value) & 0xFFFF;
-    const r = (v >> 11) & 0x1F;
-    const g = (v >> 5) & 0x3F;
-    const b = v & 0x1F;
-    return `rgb(${(r << 3) | (r >> 2)},${(g << 2) | (g >> 4)},${(b << 3) | (b >> 2)})`;
+    const [r, g, b] = rgb565Channels(value);
+    return `rgb(${r},${g},${b})`;
 }
 
 /**
@@ -396,7 +394,7 @@ export class Screen {
         }));
 
         const fonts = Object.entries(FONT_FILES).map(async ([family, path]) => {
-            const face = new FontFace(family, `url(${ASSETS}${path})`);
+            const face = new FontFace(family, `url(${path.startsWith("https:") ? path : ASSETS + path})`);
             document.fonts.add(await face.load());
         });
 

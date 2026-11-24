@@ -3,57 +3,57 @@ import { styleInject } from './core.mjs';
 
 // style rules of the NSPANEL panel, injected by init()
 const STYLE = [
-    `.nspanel-editor { font-family: 'Courier New', monospace; font-size: 85%; line-height: 1.3;
+    `.pages-editor { font-family: 'Courier New', monospace; font-size: 85%; line-height: 1.3;
         height: 480px; resize: vertical; tab-size: 2; white-space: pre; }`,
-    ".nspanel-buttons .pure-button { margin-right: 6px; }",
-    ".nspanel-result { margin: 0; white-space: pre-wrap; word-break: break-word; }",
-    ".nspanel-result.nspanel-ok { color: #1b7f1b; }",
-    ".nspanel-result.nspanel-error { color: #c0392b; }",
-    ".nspanel-card { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 0 0 12px; max-width: 520px; }",
-    ".nspanel-card-title { font-weight: bold; margin: 0 0 6px; }",
-    ".nspanel-card.nspanel-nested .nspanel-card-title { font-weight: normal; font-style: italic; }",
-    ".nspanel-grid { display: grid; gap: 6px; grid-template-columns: repeat(4, 1fr); }",
-    ".nspanel-grid.nspanel-shortcuts { grid-template-columns: repeat(7, 1fr); }",
-    `.nspanel-tile { background: #f2f2f2; border-radius: 6px; padding: 6px 4px; text-align: center;
+    ".pages-buttons .pure-button { margin-right: 6px; }",
+    ".pages-result { margin: 0; white-space: pre-wrap; word-break: break-word; }",
+    ".pages-result.pages-ok { color: #1b7f1b; }",
+    ".pages-result.pages-error { color: #c0392b; }",
+    ".pages-card { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 0 0 12px; max-width: 520px; }",
+    ".pages-card-title { font-weight: bold; margin: 0 0 6px; }",
+    ".pages-card.pages-nested .pages-card-title { font-weight: normal; font-style: italic; }",
+    ".pages-grid { display: grid; gap: 6px; grid-template-columns: repeat(4, 1fr); }",
+    ".pages-grid.pages-shortcuts { grid-template-columns: repeat(7, 1fr); }",
+    `.pages-tile { background: #f2f2f2; border-radius: 6px; padding: 6px 4px; text-align: center;
         font-size: 12px; min-height: 48px; overflow: hidden; word-break: break-word; }`,
-    ".nspanel-tile.nspanel-bad { outline: 1px solid #c0392b; }",
-    ".nspanel-tile-icon { color: #777; font-size: 10px; }",
-    ".nspanel-tile-name { margin-top: 3px; }",
-    ".nspanel-tile-type { color: #1f8dd6; font-size: 10px; }",
-    ".nspanel-tile.nspanel-empty { background: transparent; border: 1px dashed #e4e4e4; }",
-    ".nspanel-rows { display: flex; flex-direction: column; gap: 4px; }",
-    `.nspanel-row { display: flex; gap: 8px; align-items: baseline; background: #f2f2f2; border-radius: 6px;
+    ".pages-tile.pages-bad { outline: 1px solid #c0392b; }",
+    ".pages-tile-icon { color: #777; font-size: 10px; }",
+    ".pages-tile-name { margin-top: 3px; }",
+    ".pages-tile-type { color: #1f8dd6; font-size: 10px; }",
+    ".pages-tile.pages-empty { background: transparent; border: 1px dashed #e4e4e4; }",
+    ".pages-rows { display: flex; flex-direction: column; gap: 4px; }",
+    `.pages-row { display: flex; gap: 8px; align-items: baseline; background: #f2f2f2; border-radius: 6px;
         padding: 6px 8px; font-size: 12px; }`,
-    ".nspanel-row.nspanel-bad { outline: 1px solid #c0392b; }",
-    ".nspanel-row .nspanel-tile-icon { flex: 0 0 25%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
-    ".nspanel-row .nspanel-tile-name { flex: 1 1 auto; margin: 0; }",
-    `.nspanel-palette { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    ".pages-row.pages-bad { outline: 1px solid #c0392b; }",
+    ".pages-row .pages-tile-icon { flex: 0 0 25%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
+    ".pages-row .pages-tile-name { flex: 1 1 auto; margin: 0; }",
+    `.pages-palette { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
         background: #fff; padding: 6px 0; margin: 0 0 8px; border-bottom: 1px solid #eee; }`,
-    `.nspanel-chip { border: 1px solid #ccc; border-radius: 12px; padding: 3px 10px; font-size: 12px; background: #fafafa;
+    `.pages-chip { border: 1px solid #ccc; border-radius: 12px; padding: 3px 10px; font-size: 12px; background: #fafafa;
         cursor: grab; user-select: none; }`,
-    ".nspanel-chip.nspanel-trash { border-style: dashed; border-color: #c0392b; color: #c0392b; cursor: default; }",
-    ".nspanel-palette .pure-button { font-size: 12px; padding: 3px 10px; }",
-    ".nspanel-card-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin: 0 0 6px; }",
-    ".nspanel-card-head .nspanel-card-title { margin: 0; flex: 1 1 auto; min-width: 0; }",
-    ".nspanel-card-head select { flex: 0 0 auto; width: auto; font-size: 12px; padding: 1px 4px; height: auto; }",
-    ".nspanel-card-title[draggable='true'], .nspanel-tile[draggable='true'], .nspanel-row[draggable='true'] { cursor: grab; }",
-    ".nspanel-dragging { opacity: 0.4; }",
-    ".nspanel-drop { outline: 2px dashed #1f8dd6 !important; outline-offset: 1px; }",
-    ".nspanel-rename { width: 100%; box-sizing: border-box; font-size: 12px; padding: 1px 2px; }",
-    ".nspanel-workspace { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }",
-    ".nspanel-workspace .nspanel-preview-area { flex: 1 1 360px; min-width: 0; max-width: 540px; }",
-    `.nspanel-form { flex: 0 0 280px; position: sticky; top: 48px; border: 1px solid #1f8dd6; border-radius: 6px;
+    ".pages-chip.pages-trash { border-style: dashed; border-color: #c0392b; color: #c0392b; cursor: default; }",
+    ".pages-palette .pure-button { font-size: 12px; padding: 3px 10px; }",
+    ".pages-card-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin: 0 0 6px; }",
+    ".pages-card-head .pages-card-title { margin: 0; flex: 1 1 auto; min-width: 0; }",
+    ".pages-card-head select { flex: 0 0 auto; width: auto; font-size: 12px; padding: 1px 4px; height: auto; }",
+    ".pages-card-title[draggable='true'], .pages-tile[draggable='true'], .pages-row[draggable='true'] { cursor: grab; }",
+    ".pages-dragging { opacity: 0.4; }",
+    ".pages-drop { outline: 2px dashed #1f8dd6 !important; outline-offset: 1px; }",
+    ".pages-rename { width: 100%; box-sizing: border-box; font-size: 12px; padding: 1px 2px; }",
+    ".pages-workspace { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }",
+    ".pages-workspace .pages-preview-area { flex: 1 1 360px; min-width: 0; max-width: 540px; }",
+    `.pages-form { flex: 0 0 280px; position: sticky; top: 48px; border: 1px solid #1f8dd6; border-radius: 6px;
         padding: 8px 10px; font-size: 12px; background: #fff; max-height: calc(100vh - 64px); overflow-y: auto; }`,
-    ".nspanel-form:empty { display: none; }",
-    ".nspanel-form-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 0 0 6px; }",
-    ".nspanel-form-head .pure-button, .nspanel-form .nspanel-remove { font-size: 12px; padding: 2px 8px; }",
-    ".nspanel-form .nspanel-remove { margin-top: 8px; background: #c0392b; color: #fff; }",
-    ".nspanel-field { display: block; margin: 0 0 6px; }",
-    ".nspanel-field span { display: block; color: #777; margin: 0 0 1px; }",
-    `.nspanel-field input, .nspanel-field select, .nspanel-field textarea { width: 100%; box-sizing: border-box; font-size: 12px;
+    ".pages-form:empty { display: none; }",
+    ".pages-form-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 0 0 6px; }",
+    ".pages-form-head .pure-button, .pages-form .pages-remove { font-size: 12px; padding: 2px 8px; }",
+    ".pages-form .pages-remove { margin-top: 8px; background: #c0392b; color: #fff; }",
+    ".pages-field { display: block; margin: 0 0 6px; }",
+    ".pages-field span { display: block; color: #777; margin: 0 0 1px; }",
+    `.pages-field input, .pages-field select, .pages-field textarea { width: 100%; box-sizing: border-box; font-size: 12px;
         padding: 2px 4px; height: auto; }`,
-    ".nspanel-field textarea { white-space: pre; overflow-x: auto; resize: vertical; font-family: 'Courier New', monospace; }",
-    ".nspanel-selected { outline: 2px solid #1f8dd6; outline-offset: 1px; }",
+    ".pages-field textarea { white-space: pre; overflow-x: auto; resize: vertical; font-family: 'Courier New', monospace; }",
+    ".pages-selected { outline: 2px solid #1f8dd6; outline-offset: 1px; }",
 ];
 
 // tiles per screen, OHpanel and Lovelace TFT >= 51 (a 4x2 grid of slots)
@@ -947,25 +947,25 @@ export function previewTarget(item, groups) {
 function previewTile(item, groups, row = false) {
     const tile = document.createElement("div");
     if (item === null) {
-        tile.classList.add("nspanel-tile", "nspanel-empty");
+        tile.classList.add("pages-tile", "pages-empty");
         return tile;
     }
 
     const what = previewTarget(item, groups);
-    tile.classList.add(row ? "nspanel-row" : "nspanel-tile");
-    tile.classList.toggle("nspanel-bad", what.bad);
+    tile.classList.add(row ? "pages-row" : "pages-tile");
+    tile.classList.toggle("pages-bad", what.bad);
     tile.title = what.target;
 
     const icon = document.createElement("div");
-    icon.classList.add("nspanel-tile-icon");
+    icon.classList.add("pages-tile-icon");
     icon.textContent = (typeof item === "string") ? "" : String(item?.icon ?? "");
 
     const name = document.createElement("div");
-    name.classList.add("nspanel-tile-name");
+    name.classList.add("pages-tile-name");
     name.textContent = itemName(item);
 
     const type = document.createElement("div");
-    type.classList.add("nspanel-tile-type");
+    type.classList.add("pages-tile-type");
     type.textContent = what.type;
 
     tile.append(icon, name, type);
@@ -981,23 +981,23 @@ function previewTile(item, groups, row = false) {
  */
 function previewCard(title, depth = 0, kind = "grid", columns = 4) {
     const card = document.createElement("div");
-    card.classList.add("nspanel-card");
-    card.classList.toggle("nspanel-nested", depth > 0);
+    card.classList.add("pages-card");
+    card.classList.toggle("pages-nested", depth > 0);
     if (depth > 0) {
         card.style.marginLeft = `${depth * 24}px`;
     }
 
     const head = document.createElement("div");
-    head.classList.add("nspanel-card-head");
+    head.classList.add("pages-card-head");
 
     const name = document.createElement("div");
-    name.classList.add("nspanel-card-title");
+    name.classList.add("pages-card-title");
     name.textContent = (depth > 0) ? `↳ ${title}` : title;
     head.appendChild(name);
 
     const grid = document.createElement("div");
-    grid.classList.add((kind === "rows") ? "nspanel-rows" : "nspanel-grid");
-    grid.classList.toggle("nspanel-shortcuts", kind === "shortcuts");
+    grid.classList.add((kind === "rows") ? "pages-rows" : "pages-grid");
+    grid.classList.toggle("pages-shortcuts", kind === "shortcuts");
     if ((kind === "grid") && (columns !== 4)) {
         grid.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
     }
@@ -1106,9 +1106,9 @@ function onUndo() {
 }
 
 function clearDropMarks() {
-    document.querySelectorAll("#panel-pages .nspanel-drop")
+    document.querySelectorAll("#panel-pages .pages-drop")
         .forEach((elem) => {
-            elem.classList.remove("nspanel-drop");
+            elem.classList.remove("pages-drop");
         });
 }
 
@@ -1125,10 +1125,10 @@ function dragSource(elem, make) {
             event.dataTransfer.setData("text/plain", "");
             event.dataTransfer.effectAllowed = "copyMove";
         }
-        elem.classList.add("nspanel-dragging");
+        elem.classList.add("pages-dragging");
     });
     elem.addEventListener("dragend", () => {
-        elem.classList.remove("nspanel-dragging");
+        elem.classList.remove("pages-dragging");
         clearDropMarks();
         __drag = null;
     });
@@ -1145,12 +1145,12 @@ function dropZone(elem, accepts, drop) {
             event.preventDefault();
             event.stopPropagation();
             clearDropMarks();
-            elem.classList.add("nspanel-drop");
+            elem.classList.add("pages-drop");
         }
     });
     elem.addEventListener("dragleave", (event) => {
         if (!(event.relatedTarget instanceof Node) || !elem.contains(event.relatedTarget)) {
-            elem.classList.remove("nspanel-drop");
+            elem.classList.remove("pages-drop");
         }
     });
     elem.addEventListener("drop", (event) => {
@@ -1231,7 +1231,7 @@ function startRename(elem, current, apply) {
     }
 
     const input = document.createElement("input");
-    input.classList.add("nspanel-rename");
+    input.classList.add("pages-rename");
     input.value = current;
 
     let done = false;
@@ -1287,7 +1287,7 @@ function editableTile(tile, list, index) {
         select(tile, {kind: "item", item: list()[index], list, index});
     });
     tile.addEventListener("dblclick", (event) => {
-        const name = tile.querySelector(".nspanel-tile-name");
+        const name = tile.querySelector(".pages-tile-name");
         if (!(name instanceof HTMLElement)) {
             return;
         }
@@ -1328,7 +1328,7 @@ function editableTiles(grid, slots, indexes, list, append, groups, rows = false)
             if ((__selected?.kind === "item") && (item === __selected.item) && (typeof item === "object")) {
                 __selected.list = list;
                 __selected.index = indexes[slot];
-                tile.classList.add("nspanel-selected");
+                tile.classList.add("pages-selected");
                 __selectedShown = true;
             }
         }
@@ -1348,7 +1348,7 @@ function editableTiles(grid, slots, indexes, list, append, groups, rows = false)
  * @param {boolean} form draw the settings form again
  */
 function renderConfig(config, form = true) {
-    const area = document.querySelector("#panel-pages .nspanel-preview-area");
+    const area = document.querySelector("#panel-pages .pages-preview-area");
     if (!(area instanceof HTMLElement) || (config === null) || (typeof config !== "object")) {
         return;
     }
@@ -1427,7 +1427,7 @@ function renderConfig(config, form = true) {
             select(title, {kind: "page", page});
         });
         if ((__selected?.kind === "page") && (__selected.page === page)) {
-            title.classList.add("nspanel-selected");
+            title.classList.add("pages-selected");
             __selectedShown = true;
         }
         title.addEventListener("dblclick", (event) => {
@@ -1478,11 +1478,11 @@ function renderConfig(config, form = true) {
  * @param {Selection} selection
  */
 function select(elem, selection) {
-    document.querySelectorAll("#panel-pages .nspanel-selected")
+    document.querySelectorAll("#panel-pages .pages-selected")
         .forEach((other) => {
-            other.classList.remove("nspanel-selected");
+            other.classList.remove("pages-selected");
         });
-    elem.classList.add("nspanel-selected");
+    elem.classList.add("pages-selected");
     __selected = selection;
     renderForm();
 }
@@ -1515,7 +1515,7 @@ function suggestions(name) {
 function formField(form, owner, field) {
     const target = (typeof owner === "function") ? owner : () => owner;
     const row = document.createElement("label");
-    row.classList.add("nspanel-field");
+    row.classList.add("pages-field");
 
     const label = document.createElement("span");
     label.textContent = field.label;
@@ -1549,7 +1549,7 @@ function formField(form, owner, field) {
         const proposals = suggestions(field.suggest);
         if (proposals.length) {
             const list = document.createElement("datalist");
-            list.id = `nspanel-suggest-${field.key}`;
+            list.id = `pages-suggest-${field.key}`;
             for (const proposal of proposals) {
                 const elem = document.createElement("option");
                 elem.value = proposal;
@@ -1579,7 +1579,7 @@ function formField(form, owner, field) {
 
 /** the settings of the selected tile or page, next to the preview */
 function renderForm() {
-    const form = document.querySelector("#panel-pages .nspanel-form");
+    const form = document.querySelector("#panel-pages .pages-form");
     if (!(form instanceof HTMLElement)) {
         return;
     }
@@ -1591,7 +1591,7 @@ function renderForm() {
     }
 
     const head = document.createElement("div");
-    head.classList.add("nspanel-form-head");
+    head.classList.add("pages-form-head");
     const title = document.createElement("strong");
     const close = document.createElement("button");
     close.type = "button";
@@ -1626,7 +1626,7 @@ function renderForm() {
 
     // what it does: the fields of the kind follow
     const what = document.createElement("label");
-    what.classList.add("nspanel-field");
+    what.classList.add("pages-field");
     const label = document.createElement("span");
     label.textContent = "What it does";
     const kinds = document.createElement("select");
@@ -1669,7 +1669,7 @@ function renderForm() {
 
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.classList.add("pure-button", "nspanel-remove");
+    remove.classList.add("pure-button", "pages-remove");
     remove.textContent = "Remove the tile";
     remove.addEventListener("click", () => {
         commit(() => {
@@ -1702,7 +1702,7 @@ function renderPreview(text) {
 
 /** the palette over the preview: templates to drag in, the trash, Undo */
 function buildPalette() {
-    const palette = document.querySelector("#panel-pages .nspanel-palette");
+    const palette = document.querySelector("#panel-pages .pages-palette");
     if (!(palette instanceof HTMLElement)) {
         return;
     }
@@ -1714,7 +1714,7 @@ function buildPalette() {
      */
     const chip = (label, hint) => {
         const out = document.createElement("span");
-        out.classList.add("nspanel-chip");
+        out.classList.add("pages-chip");
         out.textContent = label;
         out.title = hint;
         palette.appendChild(out);
@@ -1729,7 +1729,7 @@ function buildPalette() {
     }
 
     const trash = chip("✕ Trash", "drop a tile or a page title here to remove it");
-    trash.classList.add("nspanel-trash");
+    trash.classList.add("pages-trash");
     trash.draggable = false;
     dropZone(trash, (drag) => (drag.kind === "item") || (drag.kind === "page"), (drag) => {
         commit((config) => {
@@ -1745,13 +1745,13 @@ function buildPalette() {
 
     const undo = document.createElement("button");
     undo.type = "button";
-    undo.classList.add("pure-button", "button-nspanel-undo");
+    undo.classList.add("pure-button", "button-pages-undo");
     undo.textContent = "Undo";
     undo.addEventListener("click", onUndo);
     palette.appendChild(undo);
 
     // a new (or moved) page dropped below the cards goes last
-    const area = document.querySelector("#panel-pages .nspanel-preview-area");
+    const area = document.querySelector("#panel-pages .pages-preview-area");
     if (area instanceof HTMLElement) {
         dropZone(area, isPage, (drag) => {
             dropPage(drag, Number.MAX_SAFE_INTEGER);
@@ -1775,7 +1775,7 @@ function onEditorInput() {
 
 /** @returns {HTMLTextAreaElement | null} */
 function editor() {
-    const out = document.getElementById("nspanel-config");
+    const out = document.getElementById("pages-config");
     return (out instanceof HTMLTextAreaElement) ? out : null;
 }
 
@@ -1784,14 +1784,14 @@ function editor() {
  * @param {"ok" | "error" | ""} kind
  */
 function showResult(text, kind = "") {
-    const elem = document.querySelector("#panel-pages .nspanel-result");
+    const elem = document.querySelector("#panel-pages .pages-result");
     if (!(elem instanceof HTMLElement)) {
         return;
     }
 
     elem.textContent = text;
-    elem.classList.toggle("nspanel-ok", kind === "ok");
-    elem.classList.toggle("nspanel-error", kind === "error");
+    elem.classList.toggle("pages-ok", kind === "ok");
+    elem.classList.toggle("pages-error", kind === "error");
 }
 
 /** @param {boolean} value */
@@ -1959,7 +1959,7 @@ export function previewDesignGrids(status, current = true) {
 }
 
 async function updateStatus() {
-    const elem = document.querySelector("#panel-pages .nspanel-status");
+    const elem = document.querySelector("#panel-pages .pages-status");
     if (!(elem instanceof HTMLElement)) {
         return;
     }
@@ -2028,11 +2028,11 @@ export function init() {
         };
     });
 
-    document.querySelector(".button-nspanel-load")
+    document.querySelector(".button-pages-load")
         ?.addEventListener("click", onLoad);
-    document.querySelector(".button-nspanel-validate")
+    document.querySelector(".button-pages-validate")
         ?.addEventListener("click", onValidate);
-    document.querySelector(".button-nspanel-save")
+    document.querySelector(".button-pages-save")
         ?.addEventListener("click", onSave);
     buildPalette();
 

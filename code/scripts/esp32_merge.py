@@ -1,4 +1,4 @@
-# ESP32: the merged image espurna-<env>.bin (bootloader, partitions, boot_app0, ESPurna), flashed at 0x0, and the
+# ESP32: the merged image espurna-<env>.bin (bootloader, partitions, ESPurna), flashed at 0x0, and the
 # release file (naming, listing: scripts/release_image.py). The partition table of the build (board_build.partitions,
 # esp32_4mb.csv) is read by scripts/esp32_partitions.py
 
@@ -18,31 +18,37 @@ def _partitions_csv(env):
     return os.path.join(env.subst("$PROJECT_DIR"), csv)
 
 
+def _check_app_end(env):
+    """ESPURNA_RBL_APP_END of arch/esp32/rbl_esp32.h is the end of app0 of the partition csv: the bootloader (an ESP-IDF
+    subproject, no flags of this build) and the head take the header sector from it. A csv changed without it moves
+    the header sector out of what the head keeps (the ESP8266 bug of 22.11): the build stops"""
+    import re
+
+    path = _partitions_csv(env)
+    entries = esp32_partitions.read_csv(path)
+    apps = [entry for entry in entries if entry.type == esp32_partitions.TYPES["app"]]
+    app0 = apps[0] if apps else None
+    header = os.path.join(env.subst("$PROJECT_DIR"), "espurna", "arch", "esp32", "rbl_esp32.h")
+    with open(header, encoding="utf-8") as f:
+        match = re.search(r"#define\s+ESPURNA_RBL_APP_END\s+(0x[0-9A-Fa-f]+)u?", f.read())
+    if not app0 or not match:
+        raise Exception("[ESP32] no app0 in {} or no ESPURNA_RBL_APP_END in {}".format(path, header))
+    if (app0.offset + app0.size) != int(match.group(1), 16):
+        raise Exception("[ESP32] ESPURNA_RBL_APP_END {} of {} is not the end of app0 0x{:X} of {}".format(
+            match.group(1), header, app0.offset + app0.size, path))
+
+
+_check_app_end(env)  # noqa: F821
+
+
 def _app_offset(env):
-    """the offset of the application partition (ota_0, else the first app)"""
+    """the offset of the application partition (the first app)"""
     path = _partitions_csv(env)
     try:
         offset = esp32_partitions.app_offset(esp32_partitions.read_csv(path))
     except ValueError as error:
         raise Exception("[POST-BUILD] {}: {}".format(path, error))
     return hex(offset)
-
-
-def _otadata_app0(path):
-    """the OTA data that boots app0 (ota_0), what Arduino-ESP32's boot_app0.bin held: in the first sector the entry of
-    sequence 1 (its label and state erased, CRC-32 of the sequence as esp_rom_crc32_le(UINT32_MAX, ...) computes it),
-    in the second one sequence 0"""
-    import struct
-    import zlib
-
-    sequence = struct.pack("<I", 1)
-    erased = bytes([0xFF])
-    first = sequence + erased * 24 + struct.pack("<I", zlib.crc32(sequence, 0xFFFFFFFF))
-    second = struct.pack("<I", 0)
-    data = first.ljust(0x1000, erased) + second.ljust(0x1000, erased)
-    with open(path, "wb") as f:
-        f.write(data)
-    return path
 
 
 def _esptool(env, platform):
@@ -92,16 +98,15 @@ def merge_bin(source, target, env):
 
     output = path(build_dir, pio_env)
 
-    # ESP-IDF builds the bootloader of sdkconfig.defaults and the partition table; the OTA data that boots app0
-    # (otadata at 0xE000 of esp32_4mb.csv) is made here
+    # ESP-IDF builds the bootloader of sdkconfig.defaults and the partition table (esp32_4mb.csv: app0 the factory app,
+    # no otadata)
     bootloader = os.path.join(build_dir, "bootloader.bin")
     partitions = os.path.join(build_dir, "partitions.bin")
-    boot_app0 = _otadata_app0(os.path.join(build_dir, "boot_app0.bin"))
 
     firmware = os.path.join(build_dir, "firmware.bin")
     app_offset = _app_offset(env)
 
-    missing = [f for f in (bootloader, partitions, boot_app0, firmware) if not os.path.exists(f)]
+    missing = [f for f in (bootloader, partitions, firmware) if not os.path.exists(f)]
     if missing:
         # Fail the PIO build so CI doesn't publish an un-merged binary as success.
         raise Exception("[POST-BUILD] Missing components for merge: {}".format(", ".join(missing)))
@@ -111,7 +116,6 @@ def merge_bin(source, target, env):
         "--flash_mode {fmode} --flash_size {fsize} "
         "0x1000 {bootloader} "
         "0x8000 {partitions} "
-        "0xe000 {boot_app0} "
         "{app_offset} {firmware}"
     ).format(
         esptool=esptool,
@@ -121,7 +125,6 @@ def merge_bin(source, target, env):
         fsize=flash_size,
         bootloader=_quote(bootloader),
         partitions=_quote(partitions),
-        boot_app0=_quote(boot_app0),
         firmware=_quote(firmware),
         app_offset=app_offset,
     )

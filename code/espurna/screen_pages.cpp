@@ -159,6 +159,12 @@ void temperatureChanged() {
     }
 }
 
+void beforeReload() {
+    if (auto* out = active()) {
+        out->beforeReload();
+    }
+}
+
 void reload() {
     if (auto* out = active()) {
         out->reload();
@@ -1033,6 +1039,9 @@ void applyConfig(Config&& next, const espurna::string& warnings, const char* sou
         || (next.lat != running.lat) || (next.lon != running.lon);
     const bool display_changed = (next.display != running.display);
 
+    if (current_display && started) {
+        driver::beforeReload();
+    }
     unsubscribeAll();
     running = std::move(next);
     ++generation;

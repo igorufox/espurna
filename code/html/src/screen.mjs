@@ -6,8 +6,8 @@ import { init as initPages } from './pages.mjs';
 // pages of the same module are the PAGES panel (src/pages.mjs)
 
 // the icons of the board (screen_icons.h) are from this font: its code point - 0xF0001 + 0xE000 on the board
-const MDI_URL = "https://cdn.jsdelivr.net/gh/bruestel/ohpanel@ba9361982399414d1612aea85504d9707b329e75/boards/nspanel/nextion/assets/fonts/materialdesignicons-webfont.ttf";
-const MDI_SHIFT = 0xF0001 - 0xE000;
+export const MDI_URL = "https://cdn.jsdelivr.net/gh/bruestel/ohpanel@ba9361982399414d1612aea85504d9707b329e75/boards/nspanel/nextion/assets/fonts/materialdesignicons-webfont.ttf";
+export const MDI_SHIFT = 0xF0001 - 0xE000;
 
 // ScreenFont of screen.h: the height of a line, the pixel size and weight of DejaVu on the board
 export const FONTS = [
@@ -169,7 +169,18 @@ function draw(ctx, command) {
  * @param {string} _key
  * @param {string} value
  */
-async function onMirror(_key, value) {
+function onMirror(_key, value) {
+    // one frame after the other: a frame with icons waits for their font, the frames after it wait for it
+    __frames = __frames.then(() => drawFrame(value));
+}
+
+/** @type {Promise<void>} */
+let __frames = Promise.resolve();
+
+/**
+ * @param {string} value
+ */
+async function drawFrame(value) {
     const canvas = document.getElementById("screen-mirror");
     if (!(canvas instanceof HTMLCanvasElement) || (typeof value !== "string")) {
         return;

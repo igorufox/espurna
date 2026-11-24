@@ -12,6 +12,7 @@ it. What the package is (compression, name) and where it goes is the chip's; the
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #define ESPURNA_RBL_MAGIC       0x004C4252u     /* "RBL\0" */
 #define ESPURNA_RBL_SIZE        96u
@@ -34,6 +35,9 @@ typedef struct {
 
 typedef char espurna_rbl_size_check[(sizeof(espurna_rbl_t) == ESPURNA_RBL_SIZE) ? 1 : -1];
 
+/* the place of the package in the header's 'sn' (libs/rbl_layout.h): "PKG@", the offset, the bottom of its free gap */
+#define ESPURNA_RBL_AT_TAG      "PKG@"
+
 /* CRC32 (zlib's), a nibble table: small code for the bootloader */
 static inline uint32_t espurna_rbl_crc32(uint32_t crc, const void* data, size_t size) {
     static const uint32_t table[16] = {
@@ -50,6 +54,24 @@ static inline uint32_t espurna_rbl_crc32(uint32_t crc, const void* data, size_t 
     }
 
     return ~crc;
+}
+
+/* the bottom of the package's free gap, 0 - from the heads up */
+static inline uint32_t espurna_rbl_gap_bottom(const espurna_rbl_t* rbl) {
+    uint32_t out = 0;
+    if (memcmp(rbl->sn, ESPURNA_RBL_AT_TAG, 4) == 0) {
+        memcpy(&out, rbl->sn + 8, sizeof(out));
+    }
+
+    return out;
+}
+
+/* the head names where it wrote the package and the bottom of its gap; the header's CRC follows */
+static inline void espurna_rbl_set_place(espurna_rbl_t* rbl, uint32_t at, uint32_t gap_bottom) {
+    memcpy(rbl->sn, ESPURNA_RBL_AT_TAG, 4);
+    memcpy(rbl->sn + 4, &at, sizeof(at));
+    memcpy(rbl->sn + 8, &gap_bottom, sizeof(gap_bottom));
+    rbl->info_crc = espurna_rbl_crc32(0, rbl, ESPURNA_RBL_SIZE - 4u);
 }
 
 #define ESPURNA_RBL_FNV_START   0x811C9DC5u

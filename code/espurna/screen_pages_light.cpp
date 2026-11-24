@@ -141,20 +141,8 @@ void invalidate() {
 
 // the first code point of a UTF-8 icon text (the TFT's code points of screen_pages_icons.h), 0 none
 uint16_t icon_code(const char* text) {
-    const auto* p = reinterpret_cast<const uint8_t*>(text);
-    if (!p || !*p) {
-        return 0;
-    }
-    if (*p < 0x80) {
-        return 0;
-    }
-    if (((p[0] & 0xe0) == 0xc0) && p[1]) {
-        return static_cast<uint16_t>(((p[0] & 0x1f) << 6) | (p[1] & 0x3f));
-    }
-    if (((p[0] & 0xf0) == 0xe0) && p[1] && p[2]) {
-        return static_cast<uint16_t>(((p[0] & 0x0f) << 12) | ((p[1] & 0x3f) << 6) | (p[2] & 0x3f));
-    }
-    return 0;
+    const auto code = screenFirstCode(text);
+    return (code >= 0x80) ? code : 0;
 }
 
 uint16_t default_icon(ItemType type) {
@@ -398,18 +386,9 @@ void draw_tile(const Card& card, size_t n) {
 // Header, home, thermostat
 // -----------------------------------------------------------------------------
 
-bool local_time(tm& out) {
-    const auto now = ::time(nullptr);
-    if (now < 1000000000) {
-        return false;
-    }
-    localtime_r(&now, &out);
-    return true;
-}
-
 espurna::string clock_text() {
     tm t{};
-    if (!local_time(t)) {
+    if (!screenLocalTime(t)) {
         return "--:--";
     }
     char buffer[8];
@@ -494,7 +473,7 @@ void draw_home(bool full) {
     const int top = header_height();
 
     tm t{};
-    const bool time_known = local_time(t);
+    const bool time_known = screenLocalTime(t);
     const auto time = clock_text();
 
     if (full) {
@@ -770,7 +749,13 @@ void send_target() {
     state.target_unsent = false;
 }
 
-void show_home() {
+// force: drawn again even when home shows already (a reload of the config)
+void show_home(bool force = false) {
+    // home already (the Back key on it): nothing to draw again
+    if (!force && (state.view == View::Home) && (state.card < 0)) {
+        return;
+    }
+
     state.view = View::Home;
     state.card = -1;
     state.back_card = -1;
@@ -997,7 +982,7 @@ public:
 
         // the clock of the header and of home
         tm t{};
-        if (local_time(t) && (t.tm_min != state.minute)) {
+        if (screenLocalTime(t) && (t.tm_min != state.minute)) {
             state.minute = t.tm_min;
             state.header = true;
             if (state.view == View::Home) {
@@ -1068,15 +1053,23 @@ public:
         weatherChanged();
     }
 
+    // a setpoint not sent yet (ThermostatSendMs) goes to the thermostat of the config it was set on
+    void beforeReload() override {
+        send_target();
+    }
+
+    // back where it was: the card (the thermostat's card too), else home
     void reload() override {
         const auto view = state.view;
         const int card = state.card;
         const size_t focus = state.focus;
         apply();
-        if ((view == View::Card) && (card >= 0) && (static_cast<size_t>(card) < state.cards.size())) {
+        if (((view == View::Card) || (view == View::Thermostat)) && (card >= 0)
+            && (static_cast<size_t>(card) < state.cards.size()))
+        {
             show_card(card, focus);
         } else {
-            show_home();
+            show_home(true);
         }
     }
 

@@ -109,8 +109,20 @@ bool crc(const Flash& flash, uint32_t at, uint32_t size, uint32_t& out) {
 
 // --- Writer --------------------------------------------------------------------------------------------------------
 
+namespace {
+
+bool confirm_pending();
+
+} // namespace
+
 const char* Writer::begin(const Flash& flash, const espurna_rbl_t& header, const Place& place) {
     abort();
+
+    // a new head that has not confirmed itself yet keeps its swap record (in the header sector) and the old head
+    // (where the package goes): another upload now would leave it with no way back
+    if (confirm_pending()) {
+        return PSTR("ERROR: The new head confirms itself first (60 s with Wi-Fi), retry then");
+    }
 
     // an older header goes first: nothing half-written is ever installed
     const uint32_t header_sector = place.header & ~(Sector - 1);
@@ -189,6 +201,79 @@ void Writer::abort() {
     _active = false;
 }
 
+// --- the place of the package ------------------------------------------------------------------------------------
+
+const char* place(espurna_rbl_t& header, const Gap* gaps, size_t count, uint32_t& limit) {
+    const uint32_t size = (header.data_size + Sector - 1) & ~(Sector - 1);
+    const Gap* best { nullptr };
+    for (size_t index = 0; index < count; ++index) {
+        const auto& gap = gaps[index];
+        if ((gap.top > gap.bottom) && ((gap.top - gap.bottom) >= size) && (!best || (gap.top > best->top))) {
+            best = &gap;
+        }
+    }
+
+    if (!best) {
+        return PSTR("ERROR: No free place for the package of the new head");
+    }
+
+    espurna_rbl_set_place(&header, best->top - size, best->bottom);
+    limit = best->top;
+    return nullptr;
+}
+
+// --- the one upload of the board --------------------------------------------------------------------------------------
+
+namespace upload {
+namespace {
+
+std::unique_ptr<Writer> current;
+
+} // namespace
+
+const char* begin(const Flash& flash, const espurna_rbl_t& header, const Place& place) {
+    current.reset(new (std::nothrow) Writer());
+    if (!current) {
+        return PSTR("ERROR: Not enough memory");
+    }
+
+    const char* error = current->begin(flash, header, place);
+    if (error) {
+        current.reset();
+    }
+
+    return error;
+}
+
+const char* write(const uint8_t* data, size_t len) {
+    if (!current) {
+        return PSTR("ERROR: No upload");
+    }
+
+    const char* error = current->write(data, len);
+    if (error) {
+        current.reset();
+    }
+
+    return error;
+}
+
+const char* end() {
+    if (!current) {
+        return PSTR("ERROR: Incomplete image");
+    }
+
+    const char* error = current->end();
+    current.reset();
+    return error;
+}
+
+void abort() {
+    current.reset();
+}
+
+} // namespace upload
+
 // --- the confirmation of a new head --------------------------------------------------------------------------------
 
 namespace {
@@ -198,8 +283,32 @@ constexpr uint32_t ConfirmAfterMs { 60000 };
 const Flash* confirm_flash { nullptr };
 uint32_t confirm_header { 0 };
 
+// since when the Wi-Fi is up without a break (0: not up)
+uint32_t connected_since { 0 };
+
+bool confirm_pending() {
+    return confirm_flash != nullptr;
+}
+
+// 60 s with the Wi-Fi up, counted from the connection (not from the boot): a head that cannot keep the network
+// does not confirm itself
 void confirm_check() {
-    if (!confirm_flash || (espurna::time::ms() < ConfirmAfterMs) || !wifiConnected()) {
+    if (!confirm_flash) {
+        return;
+    }
+
+    if (!wifiConnected()) {
+        connected_since = 0;
+        return;
+    }
+
+    const auto now = espurna::time::ms();
+    if (!connected_since) {
+        connected_since = now ? now : 1;
+        return;
+    }
+
+    if ((now - connected_since) < ConfirmAfterMs) {
         return;
     }
 

@@ -41,9 +41,10 @@ idf_component_register(
         nvs_flash
         spi_flash)
 
-# ringbuf.c's event list calls through the kernel's critical on the SMP kernel (arch/esp32/ringbuf_smp_esp32.c)
-if(CONFIG_FREERTOS_SMP)
-    target_link_libraries(${COMPONENT_LIB} INTERFACE
-        "-Wl,--wrap=xTaskRemoveFromEventList"
-        "-Wl,--wrap=vTaskPlaceOnEventList")
-endif()
+# ringbuf.c's event list calls through the kernel's critical (arch/esp32/ringbuf_smp_esp32.c): renamed in esp_ringbuf
+# only, at its compile. Not a --wrap of the link: that would take the kernel's own queue.c calls as well (every queue,
+# semaphore and mutex)
+idf_component_get_property(ringbuf_lib esp_ringbuf COMPONENT_LIB)
+target_compile_definitions(${ringbuf_lib} PRIVATE
+    "xTaskRemoveFromEventList=espurna_ringbuf_xTaskRemoveFromEventList"
+    "vTaskPlaceOnEventList=espurna_ringbuf_vTaskPlaceOnEventList")

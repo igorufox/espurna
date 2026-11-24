@@ -50,8 +50,29 @@ struct AnalogPin {
 
 constexpr uint8_t AnalogChannels { 6 };
 constexpr uint8_t AnalogFirst { 14 };
+constexpr uint8_t AnalogFree { 0xFF };
 AnalogPin analog_pins[AnalogChannels] {};
 uint8_t analog_used { 0 };
+
+// the other analog slot on the same LEDC timer (two channels per timer: the frequency is the timer's), nullptr none
+AnalogPin* timer_partner(const AnalogPin& slot) {
+    for (uint8_t index = 0; index < analog_used; ++index) {
+        auto& other = analog_pins[index];
+        if ((&other != &slot) && (other.pin != AnalogFree) && (ledc::timer(other.channel) == ledc::timer(slot.channel))
+            && (ledc::mode(other.channel) == ledc::mode(slot.channel)))
+        {
+            return &other;
+        }
+    }
+
+    return nullptr;
+}
+
+// a slot can run at `frequency` when the other channel of its timer is free or runs at the same one
+bool frequency_free(const AnalogPin& slot, uint32_t frequency) {
+    const auto* partner = timer_partner(slot);
+    return !partner || !partner->frequency || (partner->frequency == frequency);
+}
 
 uint8_t bits_for(uint32_t range) {
     uint8_t out { 1 };
@@ -122,6 +143,8 @@ using esp32::AnalogChannels;
 using esp32::AnalogFirst;
 using esp32::AnalogPin;
 using esp32::bits_for;
+using esp32::AnalogFree;
+using esp32::frequency_free;
 
 void pwm_write(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency) {
     AnalogPin* slot { nullptr };
@@ -137,15 +160,35 @@ void pwm_write(uint8_t pin, uint32_t duty, uint32_t range, uint32_t frequency) {
             return;
         }
 
-        if (analog_used >= AnalogChannels) {
+        // a free slot (a stopped pin's) whose timer takes this frequency, else a new one
+        for (uint8_t index = 0; !slot && (index < analog_used); ++index) {
+            if ((analog_pins[index].pin == AnalogFree) && frequency_free(analog_pins[index], frequency)) {
+                slot = &analog_pins[index];
+            }
+        }
+
+        while (!slot && (analog_used < AnalogChannels)) {
+            auto& next = analog_pins[analog_used];
+            next.pin = AnalogFree;
+            next.channel = static_cast<uint8_t>(AnalogFirst - analog_used);
+            next.frequency = 0;
+            ++analog_used;
+            if (frequency_free(next, frequency)) {
+                slot = &next;
+            }
+        }
+
+        if (!slot) {
             return;
         }
 
-        slot = &analog_pins[analog_used];
         slot->pin = pin;
-        slot->channel = static_cast<uint8_t>(AnalogFirst - analog_used);
         slot->frequency = 0;
-        ++analog_used;
+    }
+
+    // another frequency on a timer the other channel uses at its own: not this one's to change
+    if ((slot->frequency != frequency) && !frequency_free(*slot, frequency)) {
+        return;
     }
 
     const auto bits = bits_for(range);
@@ -171,6 +214,7 @@ void pwm_stop(uint8_t pin) {
         if (analog_pins[index].pin == pin) {
             const auto channel = analog_pins[index].channel;
             ledc_stop(esp32::ledc::mode(channel), static_cast<ledc_channel_t>(channel % 8), 0);
+            analog_pins[index].pin = esp32::AnalogFree;
             analog_pins[index].frequency = 0;
             return;
         }

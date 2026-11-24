@@ -586,10 +586,6 @@ _Z21lightfoxMakeButtonPinj esp32
 _Z8fanSpeed8FanSpeed esp32
 _Z9displayOnv esp32
 removeApbChangeCallback esp32
-esp_ota_abort esp32
-esp_ota_begin esp32
-esp_ota_end esp32
-esp_ota_write esp32
 uart_set_hw_flow_ctrl esp32
 uart_set_pin esp32
 uart_set_sw_flow_ctrl esp32
@@ -1225,7 +1221,6 @@ _Z6wsPostmOSt8functionIFvRN7espurna4json6WriterEEEj esp8266
 _Z8uartBaudjm esp8266
 _ZN7espurna7modules11crc32UpdateEmPKhj esp8266
 _ZN7espurna4core4chip9pin_validEh esp8266
-esp_ota_set_boot_partition esp32
 _Z10hasSettingPKc esp32
 _Z10hasSettingPKc esp8266
 uxQueueSpacesAvailable esp32
@@ -1234,3 +1229,4 @@ xPortGetMinimumEverFreeHeapSize esp32
 _Z18systemLoopWatchdogm beken
 _Z8wifiIpv6b beken
 _Z18systemLoopWatchdogm esp32
+ledc_stop esp32

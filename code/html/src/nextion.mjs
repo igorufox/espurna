@@ -8,10 +8,10 @@ import { DESIGN, Screen } from './nextion-screen.mjs';
 
 const STYLE = [
     // the NSPanel EU's frame hides the rightmost 30 px of the 480x320 display
-    `.nspanel-screen-frame { width: 100%; max-width: 675px; aspect-ratio: 450 / 320; overflow: hidden;
+    `.nextion-screen-frame { width: 100%; max-width: 675px; aspect-ratio: 450 / 320; overflow: hidden;
         border: 10px solid #222; border-radius: 12px; background: #000; }`,
-    ".nspanel-screen { display: block; width: 106.667%; aspect-ratio: 3 / 2; touch-action: none; cursor: pointer; }",
-    ".nspanel-screen-note { color: #777; font-size: 12px; margin: 4px 0 0; }",
+    ".nextion-screen { display: block; width: 106.667%; aspect-ratio: 3 / 2; touch-action: none; cursor: pointer; }",
+    ".nextion-screen-note { color: #777; font-size: 12px; margin: 4px 0 0; }",
 ];
 
 /** @type {{status: URL} | null} */
@@ -74,7 +74,7 @@ let __flash_timer = null;
  * @param {any} status
  */
 function showFlash(status) {
-    const elem = document.querySelector("#panel-nextion .nspanel-flash");
+    const elem = document.querySelector("#panel-nextion .nextion-flash");
     if (elem instanceof HTMLElement) {
         elem.textContent = String(status?.flash ?? "?");
     }
@@ -94,7 +94,7 @@ function showFlash(status) {
 }
 
 function onFlash() {
-    const input = document.querySelector("#panel-nextion .nspanel-tft-url");
+    const input = document.querySelector("#panel-nextion .nextion-tft-url");
     const url = (input instanceof HTMLInputElement) ? input.value.trim() : "";
     if (!url) {
         return;
@@ -113,7 +113,7 @@ function onFlash() {
  * @param {any} value
  */
 function onFlashAnswer(_, value) {
-    const elem = document.querySelector("#panel-nextion .nspanel-flash");
+    const elem = document.querySelector("#panel-nextion .nextion-flash");
     if (elem instanceof HTMLElement) {
         elem.textContent = String(value);
     }
@@ -138,7 +138,7 @@ let __screen_loading = null;
 
 /** @param {string} text */
 function screenNote(text) {
-    const note = document.querySelector("#panel-nextion .nspanel-screen-note");
+    const note = document.querySelector("#panel-nextion .nextion-screen-note");
     if (note instanceof HTMLElement) {
         note.textContent = text;
     }
@@ -160,7 +160,7 @@ export function screenUnsupported(status) {
 }
 
 async function screenStart() {
-    const canvas = document.querySelector("#panel-nextion .nspanel-screen");
+    const canvas = document.querySelector("#panel-nextion .nextion-screen");
     if (!(canvas instanceof HTMLCanvasElement) || !(canvas.parentElement instanceof HTMLElement) || !__status) {
         return;
     }
@@ -206,12 +206,12 @@ export function init() {
         };
     });
 
-    document.querySelector(".button-nspanel-flash")
+    document.querySelector(".button-nextion-flash")
         ?.addEventListener("click", onFlash);
     // a choice of the list goes into the URL field, which also takes any other .tft
-    document.querySelector(".nspanel-tft-choice")
+    document.querySelector(".nextion-tft-choice")
         ?.addEventListener("change", (event) => {
-            const input = document.querySelector("#panel-nextion .nspanel-tft-url");
+            const input = document.querySelector("#panel-nextion .nextion-tft-url");
             if ((event.target instanceof HTMLSelectElement) && (input instanceof HTMLInputElement)) {
                 input.value = event.target.value;
             }

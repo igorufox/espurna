@@ -10,7 +10,7 @@ the firmware is the matter_port_* API of its matter_port.h, implemented here onc
   (backend: identity::factory_read(), the Beken's stock Quectel / Tuya data)
 - Wi-Fi is ESPurna's: the station's state as events, its link, its MAC and netif; a network a controller gives goes to
   ESPurna's settings (matterWifiFromController()); the scan is ESPurna's
-- the update a controller sends: ESPurna's own OTA path (ota_driver.h)
+- the update a controller sends: ESPurna's one OTA path (ota.cpp otaUpdateTarget())
 - the log, the reboot, the size of the heap (backend::heap_total())
 What only a chip has stays in arch/<chip>/matter_<chip>.cpp (backend::*: espurna_matter.h).
 
@@ -24,7 +24,7 @@ What only a chip has stays in arch/<chip>/matter_<chip>.cpp (backend::*: espurna
 #include "espurna_tasks.h"
 #include "espurna_wifi.h"
 #include "matter_identity.h"
-#include "ota_driver.h"
+#include "espurna_ota.h"
 #include "terminal.h"
 
 #include <wifi_sdk.h>
@@ -90,14 +90,19 @@ int read(const char* ns, const char* name, void* buf, size_t len, size_t* out_le
         return MATTER_PORT_FAIL;
     }
 
-    struct fdb_kv obj;
+    // the record and its value under one hold of the database's lock (recursive, FlashDB takes it again inside): a
+    // write of the Matter task in between moves the record (garbage collection) and the read takes the wrong bytes
     const auto full = key(ns, name);
+    espurna::system::MutexLock guard(mutex);
+
+    struct fdb_kv obj;
     if (!fdb_kv_get_obj(&db, full.c_str(), &obj)) {
         return MATTER_PORT_FAIL;
     }
 
     // a read without a buffer: the size only
-    const auto copy = buf ? std::min(len, static_cast<size_t>(obj.value_len)) : static_cast<size_t>(obj.value_len);
+    const auto value_len = static_cast<size_t>(obj.value_len);
+    const auto copy = buf ? std::min(len, value_len) : value_len;
     if (buf && copy) {
         struct fdb_blob blob;
         fdb_blob_read(reinterpret_cast<fdb_db_t>(&db), fdb_kv_to_blob(&obj, fdb_blob_make(&blob, buf, copy)));
@@ -107,7 +112,9 @@ int read(const char* ns, const char* name, void* buf, size_t len, size_t* out_le
         *out_len = copy;
     }
 
-    return MATTER_PORT_OK;
+    // the value is longer than the buffer: its first bytes are there, the caller learns it is cut (CHIP's
+    // CHIP_ERROR_BUFFER_TOO_SMALL, matter-espurna's KVS manager), never a plain OK
+    return (buf && (len < value_len)) ? MATTER_PORT_BUFFER_TOO_SMALL : MATTER_PORT_OK;
 }
 
 int write(const char* ns, const char* name, const void* buf, size_t len) {
@@ -166,6 +173,8 @@ int remove_if(T&& filter) {
 
     std::vector<espurna::string> names;
 
+    // the walk under the database's lock: a write between two records would move them
+    espurna::system::MutexLock guard(mutex);
     struct fdb_kv_iterator iterator;
     fdb_kv_iterator_init(&iterator);
     while (fdb_kv_iterate(&db, &iterator)) {
@@ -220,6 +229,11 @@ espurna::system::Mutex mutex;
 std::vector<Callback> callbacks;
 bool connected { false };
 
+// the station's link as the loop saw it at the connection, for the Matter task (matter_port_wifi_link()): the
+// strings of wifiStaInfo() belong to the loop, which assigns them again while the Matter task would copy them. No
+// passphrase here, only whether there is one
+matter_port_link_t link {};
+
 bool wanted(const Callback& callback, matter_port_event_module_t module, int id) {
     return (callback.module == module)
         && ((callback.id == MATTER_PORT_EVENT_ID_ALL) || (callback.id == id));
@@ -242,6 +256,13 @@ void notify(matter_port_event_module_t module, int id, void* data) {
 
 bool up() {
     espurna::system::MutexLock lock(mutex);
+    return connected;
+}
+
+// the Matter task: the link of the last connection, false while not connected
+bool current(matter_port_link_t& out) {
+    espurna::system::MutexLock lock(mutex);
+    out = link;
     return connected;
 }
 
@@ -286,9 +307,19 @@ void remove(matter_port_event_module_t module, matter_port_event_cb_t callback) 
 // the loop
 void network(bool up) {
     if (up) {
+        matter_port_link_t now {};
+        {
+            const auto info = wifiStaInfo();
+            std::strncpy(now.ssid, info.ssid.c_str(), sizeof(now.ssid) - 1);
+            std::memcpy(now.bssid, info.bssid.data(), std::min(sizeof(now.bssid), info.bssid.size()));
+            now.channel = info.channel;
+            now.rssi = info.rssi;
+            now.security = info.passphrase.length() ? MATTER_PORT_SECURITY_WPA2 : MATTER_PORT_SECURITY_NONE;
+        }
         {
             espurna::system::MutexLock lock(mutex);
             connected = true;
+            link = now;
         }
         notify(MATTER_PORT_EVENT_WIFI, MATTER_PORT_EVENT_WIFI_STA_CONNECTED, nullptr);
         notify(MATTER_PORT_EVENT_NETIF, MATTER_PORT_EVENT_NETIF_GOT_IP4, nullptr);
@@ -354,6 +385,7 @@ void kvs_report(::terminal::CommandContext&& ctx) {
 
     size_t count { 0 };
     size_t used { 0 };
+    espurna::system::MutexLock guard(kv::mutex);
     struct fdb_kv_iterator iterator;
     fdb_kv_iterator_init(&iterator);
     while (fdb_kv_iterate(&kv::db, &iterator)) {
@@ -590,17 +622,12 @@ int matter_port_wifi_connect(const char* ssid, size_t ssid_len, const char* pass
 
 int matter_port_wifi_link(matter_port_link_t* link) {
     std::memset(link, 0, sizeof(*link));
-    if (!espurna::matter::port::events::up()) {
+    if (!espurna::matter::port::events::current(*link)) {
         return MATTER_PORT_FAIL;
     }
 
-    const auto info = wifiStaInfo();
-    std::strncpy(link->ssid, info.ssid.c_str(), sizeof(link->ssid) - 1);
-    std::memcpy(link->bssid, info.bssid.data(), std::min(sizeof(link->bssid), info.bssid.size()));
-    link->channel = info.channel;
-    link->rssi = info.rssi;
-    link->security = info.passphrase.length() ? MATTER_PORT_SECURITY_WPA2 : MATTER_PORT_SECURITY_NONE;
-
+    // the signal now (an SDK call, any task); the rest as it was at the connection
+    link->rssi = wifiStaRssi();
     return MATTER_PORT_OK;
 }
 
@@ -629,10 +656,9 @@ int matter_port_wifi_scan_start(const char* ssid) {
         scan::ssid = ssid ? espurna::string(ssid) : espurna::string();
     }
 
+    // a scan that does not start reports it through on_done itself (wifi.cpp scan::start()), once
     return espurna::system::runInLoop([]() {
-        if (!wifiScanStart(scan::on_found, scan::on_done)) {
-            scan::on_done(espurna::string());
-        }
+        wifiScanStart(scan::on_found, scan::on_done);
     }) ? MATTER_PORT_OK : MATTER_PORT_FAIL;
 }
 
@@ -674,21 +700,40 @@ size_t matter_port_heap_total(void) {
     return espurna::matter::backend::heap_total();
 }
 
-// ESPurna's own update path (ota_driver.h): the image the chip takes there, the same as /upgrade
+// the one update path of the firmware (ota.cpp otaUpdateTarget(), the same as /upgrade and espota): one update at a
+// time, otaRunning(), the settings rotation off while the image is written
+namespace {
+
+size_t ota_size { 0 };
+
+} // namespace
+
+// the first block: the target's check (begin), then its bytes (begin writes nothing, as for image::Receiver)
 int matter_port_ota_begin(const uint8_t* data, size_t len, size_t size) {
-    return espurna::ota::driver::begin(data, len, size) ? MATTER_PORT_FAIL : MATTER_PORT_OK;
+    ota_size = 0;
+    auto& target = otaUpdateTarget();
+    if (target.begin(data, len, size)) {
+        return MATTER_PORT_FAIL;
+    }
+
+    return matter_port_ota_write(data, len);
 }
 
 int matter_port_ota_write(const uint8_t* data, size_t len) {
-    return espurna::ota::driver::write(data, len) ? MATTER_PORT_FAIL : MATTER_PORT_OK;
+    if (otaUpdateTarget().write(data, len)) {
+        return MATTER_PORT_FAIL;
+    }
+
+    ota_size += len;
+    return MATTER_PORT_OK;
 }
 
 int matter_port_ota_end(void) {
-    return espurna::ota::driver::end() ? MATTER_PORT_FAIL : MATTER_PORT_OK;
+    return otaUpdateTarget().end(ota_size) ? MATTER_PORT_FAIL : MATTER_PORT_OK;
 }
 
 void matter_port_ota_abort(void) {
-    espurna::ota::driver::abort();
+    otaUpdateTarget().abort();
 }
 
 } // extern "C"

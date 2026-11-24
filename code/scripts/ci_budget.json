@@ -5,24 +5,37 @@
   "(same formulas); heap_min (ESP8266): 0x3FFFC000 - _bss_end. null = reported, not checked.",
   "Limits: the measured numbers + 1.5 % (flash, RAM) / - 1.5 % (heap). Raising a limit goes into the commit that needs it,",
   "with the reason; 'measured' is where the limit came from.",
-  "The heads of the one-env-per-chip build (esp8266, esp32, beken) are report-only until their first measured CI run."
+  "Limits set 2026-11-24 (owner: «да, включай») from the local builds of the rtos branch with the fixes of review d4c0eaf5."
  ],
  "images": {
   "esp8266": {
    "env": "esp8266",
-   "flash_max": null,
-   "ram_max": null,
-   "heap_min": null
+   "flash_max": 511120,
+   "ram_max": 17946,
+   "heap_min": 63268,
+   "measured": {
+    "flash": 503566,
+    "ram": 17680,
+    "heap": 64232
+   }
   },
   "esp32": {
    "env": "esp32",
-   "flash_max": null,
-   "ram_max": null
+   "flash_max": 1306146,
+   "ram_max": 54888,
+   "measured": {
+    "flash": 1286843,
+    "ram": 54076
+   }
   },
   "beken": {
    "env": "beken",
-   "flash_max": null,
-   "ram_max": null
+   "flash_max": 624727,
+   "ram_max": 92203,
+   "measured": {
+    "flash": 615494,
+    "ram": 90840
+   }
   }
  }
 }
