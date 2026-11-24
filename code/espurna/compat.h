@@ -9,13 +9,6 @@ COMPATIBILITY: C++ backports for the toolchains, then the chip part
 
 #include "progmem.h"
 
-// ESPurna's own code (owner 2026-11-18, without the layer): a string literal is a string literal. The chips map their
-// flash for reading (the RTOS SDK's .rodata is in flash already), no __FlashStringHelper type of the layer
-#undef F
-#define F(string_literal) (string_literal)
-#undef FPSTR
-#define FPSTR(pstr_pointer) (pstr_pointer)
-
 // ------------------------------------------------------------------------------
 // Arduino.h hijacks several useful names
 // ------------------------------------------------------------------------------

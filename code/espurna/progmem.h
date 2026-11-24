@@ -26,14 +26,6 @@ are the plain C calls. A library header of a module may define the same names fi
 #define PSTR(s) (s)
 #endif
 
-#ifndef F
-#define F(s) (s)
-#endif
-
-#ifndef FPSTR
-#define FPSTR(p) (p)
-#endif
-
 #ifndef pgm_read_byte
 #define pgm_read_byte(addr) (*reinterpret_cast<const uint8_t*>(addr))
 #endif

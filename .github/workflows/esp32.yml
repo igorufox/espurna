@@ -57,12 +57,6 @@ jobs:
       working-directory: code
       run: |
         python scripts/ci_ini_lint.py platformio_esp8266.ini platformio_esp32.ini platformio_beken.ini
-    - name: Check generated files
-      # espurna/config/arduino.h is generated (scripts/generate_arduino_h.py): the copy in git is up to date
-      working-directory: code
-      run: |
-        python scripts/generate_arduino_h.py espurna/config/arduino.h
-        git --no-pager diff --stat --exit-code
 
   # unit tests of code/test/unit: the host compiler, the esp8266 mock framework (tests/host of the Core) and Unity
   host-tests:

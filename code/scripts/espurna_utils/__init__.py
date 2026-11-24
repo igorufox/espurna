@@ -28,7 +28,7 @@ from .build import (
     app_patch_cachedir,
 )
 from .checks import check_env
-from .config import generate_arduino_h, app_add_compiledb_defines
+from .config import app_add_compiledb_defines
 from .flags import app_inject_flags
 from .version import app_inject_version, app_full_version_for_env
 
@@ -45,5 +45,4 @@ __all__ = [
     "app_version",
     "check_env",
     "firmware_destination",
-    "generate_arduino_h",
 ]

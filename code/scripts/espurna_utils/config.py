@@ -25,64 +25,6 @@ def raw_support_defines(path: pathlib.Path) -> list[str]:
     return out
 
 
-def raw_hardware_defines(path: pathlib.Path) -> list[str]:
-    out = []
-
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            match = re.search(r"^#elif defined\((\w*)\)", line)
-            if match:
-                out.append(match.group(1))
-
-    out = [*set(out)]
-    out.sort()
-
-    return out
-
-
-def generate_arduino_h(path: pathlib.Path):
-    LINES = "-" * 80
-
-    def format_defines(fmt: str, defines: list[str]) -> str:
-        return "\n".join([fmt.format(d=d) for d in defines])
-
-    hardware = raw_hardware_defines(
-        make_config_path("hardware.h"))
-
-    features = raw_support_defines(
-        make_config_path("general.h"))
-
-    sensors = raw_support_defines(
-        make_config_path("sensors.h"))
-
-    with path.open("w", encoding="utf-8") as f:
-        f.write(rf"""//{LINES}
-// These settings are normally provided by PlatformIO
-// Uncomment the appropiate line(s) to build from the Arduino IDE
-//{LINES}
-
-#pragma once
-
-//{LINES}
-// Hardware
-//{LINES}
-
-{format_defines("//#define {d}", hardware)}
-
-//{LINES}
-// Enable features (values below may not be our default values!)
-//{LINES}
-
-{format_defines("//#define {d} 1", features)}
-
-//{LINES}
-// Enable sensors (values below may not be our default values!)
-//{LINES}
-
-{format_defines("//#define {d} 1", sensors)}
-""")
-
-
 def app_add_compiledb_defines(env):
     from SCons.Script import COMMAND_LINE_TARGETS
 

@@ -143,33 +143,6 @@
 #endif
 
 //------------------------------------------------------------------------------
-// These depend on newest Core libraries
-
-#if LLMNR_SUPPORT && defined(ARDUINO_ESP8266_RELEASE_2_3_0)
-#undef LLMNR_SUPPORT
-#define LLMNR_SUPPORT 0
-#endif
-
-#if NETBIOS_SUPPORT && defined(ARDUINO_ESP8266_RELEASE_2_3_0)
-#undef NETBIOS_SUPPORT
-#define NETBIOS_SUPPORT 0
-#endif
-
-#if SSDP_SUPPORT && defined(ARDUINO_ESP8266_RELEASE_2_3_0)
-#undef SSDP_SUPPORT
-#define SSDP_SUPPORT 0
-#endif
-
-//------------------------------------------------------------------------------
-// Disable BME680 support if using Core version 2.3.0 due to memory constraints.
-
-#if BME680_SUPPORT && defined(ARDUINO_ESP8266_RELEASE_2_3_0)
-#warning "BME680_SUPPORT is not available when using Arduino Core 2.3.0 due to memory constraints. Please use Arduino Core 2.6.3+ instead (or set `platform = ${common.platform_latest}` for the latest version)."
-#undef BME680_SUPPORT
-#define BME680_SUPPORT 0
-#endif
-
-//------------------------------------------------------------------------------
 // Prometheus needs web server + request handler API
 
 #if PROMETHEUS_SUPPORT

@@ -52,8 +52,6 @@ body:
         If ESPurna was built manually, please describe build configuration and the tools that were used.  
         Please mention **any modifications** to our configuration headers or command line flags.
 
-        For ArduinoIDE / arduino-cli, which version was used.
-
         For PlatformIO, also include
         * What environment was used *or* what command line was used to build
         * Output of `pio system info`
@@ -78,8 +76,7 @@ body:
         Note that no source code changes or rebuilds should happen in the meantime. Decoder output would not be helpful unless it is the **exact same version that was uploaded to the device**!
         * When telnet connection is available, run `pio device monitor --echo --port socket://<DEVICE IP OR HOSTNAME>:23 --environment <ENV> --filter esp8266_exception_decoder` and call `crash`
         * When connected via serial, run `pio device monitor --echo --environment <ENV> --filter esp8266_exception_decoder` and call `crash`. Or, wait for the crash to happen.
-        * https://github.com/xoseperez/espurna/blob/dev/code/scripts/decoder.py (when using PlatformIO or Arduino IDE, either using the intermediate .elf file from the build directory; or, when using releases, similarly named .elf.debug from the Debug.zip)
-        * https://github.com/me-no-dev/EspExceptionDecoder (when using Arduino IDE)
+        * https://github.com/xoseperez/espurna/blob/dev/code/scripts/decoder.py (either using the intermediate .elf file from the build directory; or, when using releases, similarly named .elf.debug from the Debug.zip)
       placeholder: |
           Abort called
           sp: 3ffffde0 end: 3fffffc0 offset: 0000

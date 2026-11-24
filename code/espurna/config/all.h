@@ -33,7 +33,6 @@
 
 #include "version.h"
 #include "types.h"
-#include "arduino.h"
 #include "hardware.h"
 #include "general.h"
 #include "defaults.h"

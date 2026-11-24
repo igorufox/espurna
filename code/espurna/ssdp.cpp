@@ -65,12 +65,12 @@ espurna::string response() {
     espurna::string out;
     out.reserve(512);
 
-    out += F("<?xml version=\"1.0\"?>"
+    out += "<?xml version=\"1.0\"?>"
              "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">"
              "<specVersion>"
                 "<major>1</major>"
                 "<minor>0</minor>"
-             "</specVersion>");
+             "</specVersion>";
 
     // <URLBase>http://%s:%u/</URLBase>
     espurna::string base;
